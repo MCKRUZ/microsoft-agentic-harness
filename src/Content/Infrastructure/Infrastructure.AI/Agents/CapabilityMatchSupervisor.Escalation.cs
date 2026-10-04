@@ -3,7 +3,6 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
-using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
@@ -319,8 +318,9 @@ public sealed partial class CapabilityMatchSupervisor
         // of this that leaked the scope if the agent-build step (immediately below) threw, since
         // nothing had taken ownership of disposal yet at that point. Only the ADMISSION-PIPELINE
         // ambient (ToolAdmissionAccessor.Begin) is narrowly scoped to the RunAsync call itself.
-        var governance = ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
-        await using var governanceScope = governance.Scope;
+        var (scope, armedGovernance) =
+            ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
+        await using var governanceScope = scope;
 
         // #518: a named-agent delegation (SubagentType.NamedAgent) has no ISubagentProfileRegistry
         // entry — GetProfile only knows the built-in profiles. Build the runnable agent the same way
@@ -410,7 +410,7 @@ public sealed partial class CapabilityMatchSupervisor
         LlmUsageSnapshot usage;
         try
         {
-            using (ToolAdmissionAccessor.Begin(governance.Pipeline))
+            using (armedGovernance.Activate())
             {
                 response = await agent.RunAsync(
                     [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
@@ -503,34 +503,23 @@ public sealed partial class CapabilityMatchSupervisor
     /// does: it always runs inside a governed turn's scope.
     /// </para>
     /// </remarks>
-    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) ArmDelegationGovernance(
+    private (AsyncServiceScope Scope, ArmedGovernance Governance) ArmDelegationGovernance(
         string delegateAgentId, Guid delegationId)
     {
         var parentContext = _ambientScope.Current?.GetService<IAgentExecutionContext>();
-        var fallbackScope = delegationId.ToString();
 
         var scope = _scopeFactory.CreateAsyncScope();
         try
         {
-            var delegatedContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            delegatedContext.Initialize(
+            // GovernanceArmingPolicy.Delegation: the choices described above — the delegation id is the
+            // fallback wherever the parent turn supplies no conversation id or call-once scope.
+            var governance = GovernanceArmer.Arm(
+                scope.ServiceProvider,
                 delegateAgentId,
-                conversationId: string.IsNullOrEmpty(parentContext?.ConversationId)
-                    ? fallbackScope : parentContext.ConversationId,
-                turnNumber: 1,
-                callOnceScopeId: string.IsNullOrEmpty(parentContext?.CallOnceScopeId)
-                    ? fallbackScope : parentContext.CallOnceScopeId);
-            if (parentContext?.AgentIdentity is { } parentIdentity)
-                delegatedContext.SetIdentity(parentIdentity);
-
-            // Reset, not just resolved fresh: matches every other call site that arms this pipeline
-            // (DirectToolInvoker.Arming.cs, ExecuteAgentTurnCommandHandler, RunOrchestratedTaskCommandHandler,
-            // MagenticAgentTurnRunner, AgentEvaluationService) — harmless today since a brand-new scope
-            // can only resolve a pipeline already in default state, but explicit so this call site
-            // doesn't silently start relying on that invariant if scope lifetimes ever change.
-            var pipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
-            pipeline.Reset();
-            return (scope, pipeline);
+                GovernanceArmingPolicy.Delegation,
+                parentContext,
+                delegationId.ToString());
+            return (scope, governance);
         }
         catch
         {

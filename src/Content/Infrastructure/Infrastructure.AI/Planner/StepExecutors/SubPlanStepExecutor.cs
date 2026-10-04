@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Planner;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -165,27 +166,18 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
         if (string.IsNullOrEmpty(_agentContext.AgentId))
             return;
 
-        var childAgentContext = childServices.GetRequiredService<IAgentExecutionContext>();
-        childAgentContext.Initialize(
+        // GovernanceArmingPolicy.SubPlan: the child is the same principal as the parent, so agent id,
+        // conversation id, turn number, workload identity and — as-is, never re-derived from the child
+        // plan id — the call-once scope all travel. A child scope that invented its own call-once id
+        // would let a sub-plan step call a call-once tool the parent already claimed, silently
+        // defeating the "once per conversation/run" guarantee for every plan that nests another.
+        // The child plan id is only the fallback when the parent has no conversation id.
+        GovernanceArmer.Arm(
+            childServices,
             _agentContext.AgentId,
-            // Empty counts as missing, not just null: IAgentExecutionContext enforces no non-empty
-            // invariant, and an empty id inherited as-is would pool unrelated children under one key.
-            string.IsNullOrEmpty(_agentContext.ConversationId)
-                ? childPlanId.Value.ToString()
-                : _agentContext.ConversationId,
-            _agentContext.TurnNumber ?? 1,
-            // Inherit the parent's call-once scope, not derive a new one from the child plan id.
-            // A call-once tool declared "once per conversation/run" must mean once across the whole
-            // parent execution, sub-plans included — a child scope that invented its own id here
-            // would let a sub-plan step call a call-once tool the parent already claimed, silently
-            // defeating the guarantee for every plan that delegates to a nested plan.
-            callOnceScopeId: _agentContext.CallOnceScopeId);
-
-        // The workload identity travels too, for the same reason the agent id does: the child is the
-        // same principal as the parent. Without it an A2A- or identity-propagated caller's sub-plan
-        // would be authorized as the host's own default identity. Delegation does the same.
-        if (_agentContext.AgentIdentity is { } workloadIdentity)
-            childAgentContext.SetIdentity(workloadIdentity);
+            GovernanceArmingPolicy.SubPlan,
+            _agentContext,
+            childPlanId.Value.ToString());
     }
 
     private async Task<PlanId?> ResolveChildPlanId(SubPlanConfig config, CancellationToken ct)
