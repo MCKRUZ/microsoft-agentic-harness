@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
+using Domain.AI.Identity;
 using Domain.AI.Planner;
 using Domain.Common;
 using Infrastructure.AI.Planner.StepExecutors;
@@ -203,6 +204,48 @@ public sealed class SubPlanStepExecutorTests
             c => c.Initialize(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
             Times.Never);
+    }
+
+    // The two tests below pin CURRENT behaviour that differs from delegation
+    // (CapabilityMatchSupervisor.ArmDelegationGovernance) and looks like drift rather than intent (#770).
+    // They exist so the move onto the shared arming helper is provably behaviour-preserving; the
+    // follow-up commit that fixes the drift flips both, and its diff shows exactly what changed.
+
+    [Fact]
+    public async Task ExecuteAsync_ParentEmptyConversationId_IsInheritedAsIsRatherThanFallingBack()
+    {
+        // `??` only catches null, so an empty-string parent conversation id is stamped onto the child
+        // as-is. Delegation treats empty as missing and falls back to a unique id.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns(string.Empty);
+        _parentAgentContext.SetupGet(c => c.TurnNumber).Returns(3);
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(c => c.Initialize("caller-agent", string.Empty, 3, null), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ParentCarriesWorkloadIdentity_IsNotPropagatedToTheChild()
+    {
+        // Delegation propagates the parent's workload identity so the child is authorized as the real
+        // caller rather than the host's default; a sub-plan child currently is not.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
+        _parentAgentContext.SetupGet(c => c.AgentIdentity)
+            .Returns(new AgentIdentity { Id = "caller-principal", Kind = AgentIdentityKind.Development });
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(c => c.SetIdentity(It.IsAny<AgentIdentity>()), Times.Never);
     }
 
     /// <summary>

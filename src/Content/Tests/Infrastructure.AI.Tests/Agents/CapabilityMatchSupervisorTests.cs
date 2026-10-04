@@ -514,6 +514,28 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     }
 
     /// <summary>
+    /// A delegation is a fresh unit of work, so its context starts at turn 1 whatever turn the parent
+    /// is on. Pinned for the shared governance-arming helper (#770), which must not start inheriting
+    /// the parent's turn number here (sub-plans do; delegation deliberately does not).
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_StartsTheDelegatedContextAtTurnOne_WhateverTurnTheParentIsOn()
+    {
+        var parentContextMock = ArrangeAmbientParentContext();
+        parentContextMock.SetupGet(c => c.TurnNumber).Returns(7);
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        _delegatedContextMock.Verify(
+            c => c.Initialize(
+                _defaultSelection.SelectedAgent.AgentId,
+                It.IsAny<string>(),
+                1,
+                It.IsAny<string>()),
+            Times.Once);
+    }
+
+    /// <summary>
     /// Wires a fresh <see cref="IAgentExecutionContext"/> mock as the parent turn's ambient context
     /// and returns it so the caller can set up only the one property its test cares about.
     /// </summary>

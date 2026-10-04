@@ -109,6 +109,47 @@ public sealed class DirectToolInvokerTests
         _governor.AgentIdWhenAuthorizing.Should().NotBe(alice);
     }
 
+    // The three tests below pin the arming choices a direct invocation makes, which the shared
+    // governance-arming helper (#770) must preserve: this surface MINTS rather than inherits, because
+    // it has no request-level session to inherit from.
+
+    [Fact]
+    public async Task Mints_a_fresh_one_shot_conversation_id_for_every_invocation()
+    {
+        // #325's retry-attribution memory is keyed on (conversation, agent, tool) so that it expires.
+        // The caller's synthetic agent id is stable across every call that caller makes, so reusing it
+        // (or any shared value) as the conversation id would give that memory no expiry at all.
+        await Invoke(Request("alpha", owner: "alice"), Tool("alpha"));
+        var first = _governor.ConversationIdWhenAuthorizing;
+
+        await Invoke(Request("alpha", owner: "alice"), Tool("alpha"));
+        var second = _governor.ConversationIdWhenAuthorizing;
+
+        first.Should().NotBeNullOrWhiteSpace();
+        second.Should().NotBeNullOrWhiteSpace();
+        second.Should().NotBe(first, "each direct invocation is its own one-shot conversation");
+        first.Should().NotBe(_governor.AgentIdWhenAuthorizing);
+    }
+
+    [Fact]
+    public async Task Leaves_the_call_once_scope_unset_because_a_direct_call_has_no_session_to_key_on()
+    {
+        // A call-once gate fails open on a null scope — the documented answer here, not a gap. Giving
+        // this surface a scope would make a call-once tool enforceable against a session that does not
+        // exist.
+        await Invoke(Request("alpha"), Tool("alpha"));
+
+        _governor.CallOnceScopeIdWhenAuthorizing.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Starts_every_invocation_at_turn_one()
+    {
+        await Invoke(Request("alpha"), Tool("alpha"));
+
+        _governor.TurnNumberWhenAuthorizing.Should().Be(1);
+    }
+
     // NOTE: there is deliberately no test asserting that the ambient accessors are clear once the
     // invocation returns. Both are AsyncLocal<T>, and a value set inside an awaited async method is
     // never visible to the awaiting caller — the ExecutionContext is restored on return. Such an
@@ -969,6 +1010,9 @@ public sealed class DirectToolInvokerTests
             Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null)
         {
             record.AgentIdWhenAuthorizing = executionContext.AgentId;
+            record.ConversationIdWhenAuthorizing = executionContext.ConversationId;
+            record.CallOnceScopeIdWhenAuthorizing = executionContext.CallOnceScopeId;
+            record.TurnNumberWhenAuthorizing = executionContext.TurnNumber;
 
             if (record.Delay > TimeSpan.Zero)
                 await Task.Delay(record.Delay, cancellationToken);
@@ -985,6 +1029,9 @@ public sealed class DirectToolInvokerTests
     {
         public ToolInvocationDecision Decision { get; set; } = ToolInvocationDecision.Allow();
         public string? AgentIdWhenAuthorizing { get; set; }
+        public string? ConversationIdWhenAuthorizing { get; set; }
+        public string? CallOnceScopeIdWhenAuthorizing { get; set; }
+        public int? TurnNumberWhenAuthorizing { get; set; }
 
         /// <summary>Makes authorization slow, so the deadline's reach over it is observable.</summary>
         public TimeSpan Delay { get; set; }
