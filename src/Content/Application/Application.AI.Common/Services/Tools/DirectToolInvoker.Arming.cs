@@ -178,7 +178,8 @@ public sealed partial class DirectToolInvoker
         // would give #325's retry-attribution memory no expiry), and omits call-once scope (a direct
         // invocation has no request-level session to key a repeat-call check on, and a null scope
         // fails the call-once gate open — the documented answer, not a gap).
-        var armed = GovernanceArmer.Arm(scopedProvider, agentId, GovernanceArmingPolicy.DirectInvocation);
+        var admissionPipeline = GovernanceArmer.ArmWithAdmission(
+            scopedProvider, agentId, GovernanceArmingPolicy.DirectInvocation);
 
         // Both ambient values are published with restoring scopes rather than assigned and nulled. The
         // difference only shows under nesting, where it is the whole game: nulling on teardown disarms
@@ -188,9 +189,9 @@ public sealed partial class DirectToolInvoker
         // The chain is armed as well as called directly, because a tool that spawns an agent turn
         // beneath it must reach the same chain rather than run unadmitted.
         var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(envelope);
-        var armedAdmission = armed.Activate();
+        var armedAdmission = ToolAdmissionAccessor.Begin(admissionPipeline);
 
-        return (armed.Pipeline, grantedEnvelope, armedAdmission);
+        return (admissionPipeline, grantedEnvelope, armedAdmission);
     }
 
     /// <summary>

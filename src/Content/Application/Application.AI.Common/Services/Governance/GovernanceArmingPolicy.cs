@@ -2,14 +2,12 @@ namespace Application.AI.Common.Services.Governance;
 
 /// <summary>
 /// The inherit-or-mint choices a child governance scope makes when it is armed by
-/// <see cref="GovernanceArmer"/>. One named preset per surface that arms a child scope, each recording
-/// that surface's deliberate choices in one place instead of re-deriving them by hand.
+/// <see cref="GovernanceArmer"/>. One named preset per surface that arms a child scope.
 /// </summary>
 /// <remarks>
-/// Every property is a real decision a surface makes, not a toggle added for flexibility: the three
-/// presets differ on exactly these axes, and a fourth surface (a Magentic participant, #769) should
-/// pick or add a preset rather than hand-roll the arming sequence — that duplication is what drifted
-/// the earlier copies apart.
+/// Each property is a real decision the surfaces differ on, not a toggle added for flexibility.
+/// The parent's workload identity is not a choice: it travels whenever the parent has one, so the child
+/// is always authorized as the real caller rather than the host's default identity.
 /// </remarks>
 public sealed record GovernanceArmingPolicy
 {
@@ -29,57 +27,39 @@ public sealed record GovernanceArmingPolicy
     public required bool InheritTurnNumber { get; init; }
 
     /// <summary>
-    /// Whether the parent's resolved workload identity (an A2A- or identity-propagated caller) is
-    /// stamped onto the child, so it is authorized as the real caller rather than the host's default.
-    /// </summary>
-    public required bool PropagateWorkloadIdentity { get; init; }
-
-    /// <summary>
-    /// Whether to resolve the child scope's <c>IToolCallAdmissionPipeline</c> and reset it. Off for a
-    /// surface whose step executors call the child scope's pipeline directly rather than through the
-    /// ambient <see cref="ToolAdmissionAccessor"/>.
-    /// </summary>
-    public required bool ResolvePipeline { get; init; }
-
-    /// <summary>
     /// A direct tool invocation: one standalone call with no request-level session, so it mints its own
-    /// conversation id (keeping #325's retry-attribution memory expiring), omits call-once scope and
-    /// starts at turn 1.
+    /// conversation id (keeping #325's retry-attribution memory expiring), omits call-once scope (a null
+    /// scope fails the call-once gate open, the documented answer for a surface with no session to key a
+    /// repeat-call check on) and starts at turn 1.
     /// </summary>
     public static GovernanceArmingPolicy DirectInvocation { get; } = new()
     {
         MintConversationId = true,
         CallOnceScope = CallOnceScopeSource.Omit,
         InheritTurnNumber = false,
-        PropagateWorkloadIdentity = false,
-        ResolvePipeline = true,
     };
 
     /// <summary>
     /// A sub-plan: the child is the same principal as the parent, so it inherits conversation id,
-    /// call-once scope (as-is — a call-once tool claimed by the parent stays claimed), turn number and
-    /// workload identity. It does not resolve a pipeline: its step executors call the child scope's own.
+    /// call-once scope and turn number. The call-once scope passes through as-is, never re-derived: a
+    /// call-once tool the parent already claimed must stay claimed, or a nested plan could call it again.
     /// </summary>
     public static GovernanceArmingPolicy SubPlan { get; } = new()
     {
         MintConversationId = false,
         CallOnceScope = CallOnceScopeSource.InheritAsIs,
         InheritTurnNumber = true,
-        PropagateWorkloadIdentity = true,
-        ResolvePipeline = false,
     };
 
     /// <summary>
     /// A delegation: a fresh unit of work run as the delegate's own agent, inside the parent's session.
-    /// Inherits conversation id and call-once scope (falling back to the delegation id), and workload
-    /// identity, but starts at turn 1.
+    /// Inherits conversation id and call-once scope (falling back to the delegation id) but starts at
+    /// turn 1.
     /// </summary>
     public static GovernanceArmingPolicy Delegation { get; } = new()
     {
         MintConversationId = false,
         CallOnceScope = CallOnceScopeSource.InheritOrFallback,
         InheritTurnNumber = false,
-        PropagateWorkloadIdentity = true,
-        ResolvePipeline = true,
     };
 }

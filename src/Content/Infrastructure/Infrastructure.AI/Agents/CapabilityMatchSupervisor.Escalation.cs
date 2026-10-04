@@ -3,6 +3,7 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
@@ -318,9 +319,8 @@ public sealed partial class CapabilityMatchSupervisor
         // of this that leaked the scope if the agent-build step (immediately below) threw, since
         // nothing had taken ownership of disposal yet at that point. Only the ADMISSION-PIPELINE
         // ambient (ToolAdmissionAccessor.Begin) is narrowly scoped to the RunAsync call itself.
-        var (scope, armedGovernance) =
-            ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
-        await using var governanceScope = scope;
+        var governance = ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
+        await using var governanceScope = governance.Scope;
 
         // #518: a named-agent delegation (SubagentType.NamedAgent) has no ISubagentProfileRegistry
         // entry — GetProfile only knows the built-in profiles. Build the runnable agent the same way
@@ -410,7 +410,7 @@ public sealed partial class CapabilityMatchSupervisor
         LlmUsageSnapshot usage;
         try
         {
-            using (armedGovernance.Activate())
+            using (ToolAdmissionAccessor.Begin(governance.Pipeline))
             {
                 response = await agent.RunAsync(
                     [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
@@ -503,7 +503,7 @@ public sealed partial class CapabilityMatchSupervisor
     /// does: it always runs inside a governed turn's scope.
     /// </para>
     /// </remarks>
-    private (AsyncServiceScope Scope, ArmedGovernance Governance) ArmDelegationGovernance(
+    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) ArmDelegationGovernance(
         string delegateAgentId, Guid delegationId)
     {
         var parentContext = _ambientScope.Current?.GetService<IAgentExecutionContext>();
@@ -513,13 +513,13 @@ public sealed partial class CapabilityMatchSupervisor
         {
             // GovernanceArmingPolicy.Delegation: the choices described above — the delegation id is the
             // fallback wherever the parent turn supplies no conversation id or call-once scope.
-            var governance = GovernanceArmer.Arm(
+            var pipeline = GovernanceArmer.ArmWithAdmission(
                 scope.ServiceProvider,
                 delegateAgentId,
                 GovernanceArmingPolicy.Delegation,
                 parentContext,
                 delegationId.ToString());
-            return (scope, governance);
+            return (scope, pipeline);
         }
         catch
         {
