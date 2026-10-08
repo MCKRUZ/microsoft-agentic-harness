@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
@@ -74,9 +73,11 @@ public sealed partial class DirectToolInvoker
     /// The arm/authorize/catch skeleton every direct-invocation surface runs, whatever kind of tool
     /// it turns out to be (#481) — extracted so <c>RunArmedAsync</c> and
     /// <c>DirectToolInvoker.Mcp.cs</c>'s <c>RunMcpArmedAsync</c> share the one implementation rather
-    /// than each re-deriving it by hand (#494). <see cref="ArmGovernance"/> was already extracted for
-    /// exactly this reason but stopped one level too shallow — the scope creation, the arm, the
-    /// three-arm catch ladder, and the trace log around all of it were still duplicated.
+    /// than each re-deriving it by hand (#494). <see cref="ArmGovernance"/> was extracted first (#481)
+    /// for exactly this reason but stopped one level too shallow — the scope creation, the arm, the
+    /// three-arm catch ladder, and the trace log around all of it were still duplicated. Its
+    /// context-initialisation half now lives in <see cref="GovernanceArmer"/> (#770), shared with
+    /// sub-plans and delegation.
     /// </summary>
     /// <param name="request">Everything this invocation needs to arm — see <see cref="ArmingRequest"/>.</param>
     /// <param name="cancellationToken">The caller's own token — see the first catch arm for why it
@@ -99,9 +100,9 @@ public sealed partial class DirectToolInvoker
         {
             // Identity and envelope. Both must be in place before AuthorizeAsync — see the type
             // remarks for what the governor reads, and when. The conversation-id and
-            // callOnceScopeId choices ArmGovernance makes are documented on ArmGovernance itself,
-            // not repeated here — this method only calls it (#494: the repeat was stale
-            // documentation left behind when ArmGovernance was first extracted).
+            // callOnceScopeId choices are documented on GovernanceArmingPolicy.DirectInvocation, not
+            // repeated here — this method only calls ArmGovernance (#494: the repeat was stale
+            // documentation left behind when the arming was first extracted).
             var (admissionPipeline, grantedEnvelope, armedAdmission) =
                 ArmGovernance(scope.ServiceProvider, request.AgentId, request.Envelope);
             using var _grantedEnvelope = grantedEnvelope;
@@ -174,26 +175,13 @@ public sealed partial class DirectToolInvoker
         // Identity and envelope. Both must be in place before AdmitAsync — see the type remarks for
         // what the governor reads, and when.
         //
-        // The conversation id is deliberately NOT agentId. #325's retry-attribution memory is keyed on
-        // (conversation, agent, tool) precisely so it expires — but agentId here is the caller's stable
-        // synthetic identity, reused for every direct invocation that caller ever makes. Passing it as
-        // the conversation id too would give the failure-memory key no expiry at all. A direct
-        // invocation is a single, standalone call with no request-level session concept to key on, so
-        // each one mints its own one-shot id.
-        //
-        // callOnceScopeId is deliberately omitted (null), for the identical reason: a direct invocation
-        // has no request-level session to key a repeat-call check on either. A call-once tool reached
-        // through this surface is therefore not enforceable here — the call-once gate fails open on a
-        // null scope, which is the documented, correct answer, not a gap. See
-        // IAgentExecutionContext.CallOnceScopeId's remarks.
-        var executionContext = scopedProvider.GetRequiredService<IAgentExecutionContext>();
-        executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
-
-        // Required, not GetService: the chain is registered unconditionally, and an absent one is
-        // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
-        // null here would let a broken composition run this path silently unguarded.
-        var admissionPipeline = scopedProvider.GetRequiredService<IToolCallAdmissionPipeline>();
-        admissionPipeline.Reset();
+        // GovernanceArmingPolicy.DirectInvocation records what this surface deliberately does: it mints a
+        // one-shot conversation id (agentId is the caller's stable synthetic identity, so reusing it
+        // would give #325's retry-attribution memory no expiry), and omits call-once scope (a direct
+        // invocation has no request-level session to key a repeat-call check on, and a null scope
+        // fails the call-once gate open — the documented answer, not a gap).
+        var admissionPipeline = GovernanceArmer.ArmWithAdmission(
+            scopedProvider, agentId, GovernanceArmingPolicy.DirectInvocation);
 
         // Both ambient values are published with restoring scopes rather than assigned and nulled. The
         // difference only shows under nesting, where it is the whole game: nulling on teardown disarms

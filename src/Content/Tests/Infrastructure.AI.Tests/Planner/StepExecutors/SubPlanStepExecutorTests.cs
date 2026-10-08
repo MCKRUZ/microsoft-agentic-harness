@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
+using Domain.AI.Identity;
 using Domain.AI.Planner;
 using Domain.Common;
 using Infrastructure.AI.Planner.StepExecutors;
@@ -203,6 +204,63 @@ public sealed class SubPlanStepExecutorTests
             c => c.Initialize(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
             Times.Never);
+    }
+
+    // Sub-plans match delegation (CapabilityMatchSupervisor.ArmDelegationGovernance) on these two (#770):
+    // an empty conversation id is missing, and the workload identity travels with the agent id.
+
+    [Fact]
+    public async Task ExecuteAsync_ParentEmptyConversationId_FallsBackToTheChildPlanId()
+    {
+        // `??` only catches null; an empty-string parent id inherited as-is would pool unrelated
+        // children under one key. Empty is treated as missing, as delegation does.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns(string.Empty);
+        _parentAgentContext.SetupGet(c => c.TurnNumber).Returns(3);
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(
+            c => c.Initialize("caller-agent", childPlanId.Value.ToString(), 3, null), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ParentCarriesWorkloadIdentity_PropagatesItToTheChild()
+    {
+        // The child is the same principal as the parent. Without this an A2A- or identity-propagated
+        // caller's sub-plan is authorized as the host's own default identity.
+        var identity = new AgentIdentity { Id = "caller-principal", Kind = AgentIdentityKind.Development };
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
+        _parentAgentContext.SetupGet(c => c.AgentIdentity).Returns(identity);
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(c => c.SetIdentity(identity), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ParentHasNoWorkloadIdentity_NeverCallsSetIdentityOnTheChild()
+    {
+        // Control for the test above: no parent identity means nothing is invented for the child.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(c => c.SetIdentity(It.IsAny<AgentIdentity>()), Times.Never);
     }
 
     /// <summary>
