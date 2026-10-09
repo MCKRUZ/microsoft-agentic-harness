@@ -79,7 +79,7 @@
                     <div class="def"><div class="def-term"><code>ResearchAgentExample</code></div><div class="def-desc">An example class that builds an <code>ExecuteAgentTurnCommand</code> and dispatches it via MediatR.</div></div>
                     <div class="def"><div class="def-term">MediatR pipeline</div><div class="def-desc">A series of <code>IPipelineBehavior</code> wrappers (validation, content safety, governance, etc.) that every command flows through.</div></div>
                     <div class="def"><div class="def-term"><code>ExecuteAgentTurnCommandHandler</code></div><div class="def-desc">The handler that actually invokes the agent for a single turn.</div></div>
-                    <div class="def"><div class="def-term"><code>AgentConversationCache</code></div><div class="def-desc">Caches built agents per <code>(conversationId, skillId)</code> so subsequent turns reuse the same configured instance.</div></div>
+                    <div class="def"><div class="def-term"><code>AgentConversationCache</code></div><div class="def-desc">Caches one built agent per conversation. A later turn reuses it only while its skills and build options match what it was built from; otherwise the agent is rebuilt.</div></div>
                     <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a new agent — loads the skill, resolves tools, wires content safety, attaches OTel.</div></div>
                     <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Creates the LLM client (Azure OpenAI, OpenAI, or AI Foundry) from <code>AppConfig.AI.AgentFramework</code>.</div></div>
                     <div class="def"><div class="def-term">The agent</div><div class="def-desc">A <code>Microsoft.Agents.AI.AIAgent</code> — assembles the prompt, calls the LLM, dispatches tool calls, loops until done.</div></div>
@@ -223,8 +223,9 @@ return await next();   // call the next behavior / handler</code></pre>
                             <div class="step-title">Get the agent from cache, or build a new one</div>
                             <p>
                                 <code>AgentConversationCache.GetOrCreateAsync()</code> keys by
-                                <code>(conversationId, skillId)</code>. If an agent for that key already exists, it's
-                                reused (preserving any in-memory state). Otherwise, <code>AgentFactory</code> builds one
+                                <code>conversationId</code>. If a cached agent exists and its build fingerprint (the ordered
+                                skill ids plus the build options) matches this turn's, it's reused (preserving any in-memory
+                                state). Otherwise, <code>AgentFactory</code> builds one
                                 — <code>CreateAgentFromSkillsAsync(...)</code> for a skill set, or
                                 <code>CreateAgentAsync(context)</code> from an assembled execution context.
                                 <code>AgentFactory</code> lives in <code>Application.AI.Common/Factories/</code>.

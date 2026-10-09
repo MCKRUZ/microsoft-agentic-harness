@@ -406,7 +406,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     /// Proves the H1 fix: a call-once tool the parent turn already claimed must stay claimed for
     /// every delegation it spawns. Re-minting the scope from the delegation id (the pre-fix
     /// behavior) would let a delegation call a call-once tool again -- the identical rule
-    /// <c>SubPlanStepExecutor.PropagateGovernanceIdentity</c> documents for sub-plans.
+    /// <c>GovernanceArmingPolicy.SubPlan</c> documents for sub-plans.
     /// </summary>
     [Fact]
     public async Task DelegateAsync_InheritsTheParentTurnsConversationIdAndCallOnceScope()

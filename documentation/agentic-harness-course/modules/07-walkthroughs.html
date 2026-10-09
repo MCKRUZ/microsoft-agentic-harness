@@ -59,7 +59,7 @@
           <div class="chat-avatar" style="background: var(--color-actor-2)">H</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: var(--color-actor-2)">AG-UI / AgUiRunHandler</span>
-            <p>I am the chat front door. When you press Send the browser POSTs to <code>/ag-ui/run</code> and I respond with a <span class="term" data-definition="Server-Sent Events (SSE) is a one-way HTTP streaming protocol. The server sends a long series of named events to the browser over a single open connection.">Server-Sent Events</span> stream. I validate ownership, take a per-conversation lock so two turns can&rsquo;t collide, then dispatch the turn. (A separate SignalR hub is open in the background for retry / edit / settings &mdash; not for the message itself.)</p>
+            <p>I am the chat front door. When you press Send the browser POSTs to <code>/ag-ui/run</code> and I respond with a <span class="term" data-definition="Server-Sent Events (SSE) is a one-way HTTP streaming protocol. The server sends a long series of named events to the browser over a single open connection.">Server-Sent Events</span> stream. I validate ownership, take the conversation&rsquo;s turn lease so two turns can&rsquo;t collide, then dispatch the turn. (A separate SignalR hub is open in the background for retry / edit / settings &mdash; not for the message itself.)</p>
           </div>
         </div>
         <div class="chat-message" data-msg="2" data-sender="actor-3" style="display:none">
@@ -152,7 +152,7 @@
         <div class="step-body">
           <strong><code>AgUiRunHandler</code> validates, locks, dispatches</strong>
           <p><code>Presentation.AgentHub/AgUi/AgUiRunHandler.cs</code> &mdash; <code>HandleRunAsync</code></p>
-          <p>The handler does the same ownership/lock/persist work the old <code>SendMessage</code> path did: validates the conversation belongs to the caller, acquires a per-conversation <span class="term" data-definition="A semaphore is a counter-based lock. Here it holds one slot per conversation, so two messages in the same conversation cannot run simultaneously &mdash; preventing interleaved turns from corrupting history.">semaphore</span>, appends the user message to the conversation store, then builds and dispatches the <code>ExecuteAgentTurnCommand</code>. Comment on the class explicitly says: &ldquo;mirrors the logic in <code>AgentTelemetryHub.DispatchTurnAsync</code> but targets SSE.&rdquo;</p>
+          <p>The handler does the same ownership/lock/persist work the old <code>SendMessage</code> path did: validates the conversation belongs to the caller, acquires the conversation&rsquo;s <span class="term" data-definition="A turn lease is a lock held per conversation. While one message is being processed no other turn in that conversation can start, which prevents interleaved turns from corrupting history. It can be shared across hosts, and if a host loses it mid-turn that turn is cancelled.">turn lease</span>, appends the user message to the conversation store, then builds and dispatches the <code>ExecuteAgentTurnCommand</code>. Comment on the class explicitly says: &ldquo;mirrors the logic in <code>AgentTelemetryHub.DispatchTurnAsync</code> but targets SSE.&rdquo;</p>
         </div>
       </div>
 
@@ -170,7 +170,7 @@
         <div class="step-body">
           <strong>The handler resolves the skill, asks the agent cache</strong>
           <p><code>Application.Core/CQRS/Agents/ExecuteAgentTurn/ExecuteAgentTurnCommandHandler.cs:42&ndash;96</code></p>
-          <p>The handler asks <code>IAgentRegistry</code> for the agent record by name &mdash; falling back to the agent name as the skill ID if no record exists. It then asks the <code>IAgentConversationCache</code> for an agent for this conversation: on the first turn the cache builds one via the factory; on later turns it returns the cached instance. Same agent, same conversation.</p>
+          <p>The handler asks <code>IAgentRegistry</code> for the agent record by name &mdash; falling back to the agent name as the skill ID if no record exists. It then asks the <code>IAgentConversationCache</code> for an agent for this conversation: on the first turn the cache builds one via the factory; on later turns it returns the cached instance, unless the turn&rsquo;s skills or build options changed, in which case it rebuilds. Same agent, same conversation.</p>
         </div>
       </div>
 
@@ -179,7 +179,7 @@
         <div class="step-body">
           <strong>On a cache miss: <code>AgentFactory</code> builds the agent</strong>
           <p><code>Application.AI.Common/Factories/AgentFactory.cs:199&ndash;212</code> + <code>71&ndash;147</code></p>
-          <p>Only fires on the first turn of a conversation (or after the cache evicts). The factory looks up the <code>SkillDefinition</code>, maps it to an <code>AgentExecutionContext</code> (instructions, tools, temperature, deployment), then asks <code>ChatClientFactory</code> for an <code>IChatClient</code> and wraps it in a middleware tower: <code>UseOpenTelemetry</code>, <code>UseFunctionInvocation</code> (the inner tool-call loop), <code>ObservabilityMiddleware</code>, <code>ToolDiagnosticsMiddleware</code>, <code>UseDistributedCache</code>. The fully-wrapped client becomes a <code>ChatClientAgent</code>.</p>
+          <p>Fires on the first turn of a conversation, after the cache evicts or invalidates the agent, or when a turn&rsquo;s skills or build options changed. The factory looks up the <code>SkillDefinition</code>, maps it to an <code>AgentExecutionContext</code> (instructions, tools, temperature, deployment), then asks <code>ChatClientFactory</code> for an <code>IChatClient</code> and wraps it in a middleware tower: <code>UseOpenTelemetry</code>, <code>UseFunctionInvocation</code> (the inner tool-call loop), <code>ObservabilityMiddleware</code>, <code>ToolDiagnosticsMiddleware</code>, <code>UseDistributedCache</code>. The fully-wrapped client becomes a <code>ChatClientAgent</code>.</p>
         </div>
       </div>
 
@@ -266,7 +266,7 @@
           <p class="tl">&nbsp;</p>
           <p class="tl">Look up which skill this agent uses. If the registry has no record, fall back to using the agent name as the skill ID directly.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Ask the <span class="term" data-definition="The agent conversation cache keeps a per-conversation agent instance alive so we don't rebuild it on every turn. The factory only runs on the FIRST turn of a conversation; later turns reuse the cached agent.">agent cache</span> for an agent for this conversation. Cache miss &rarr; build via factory; cache hit &rarr; return the cached instance. Passes through any per-turn overrides from the WebUI settings panel.</p>
+          <p class="tl">Ask the <span class="term" data-definition="The agent conversation cache keeps a per-conversation agent instance alive so we don't rebuild it on every turn. The factory runs on the first turn, and again whenever a turn's skills or build options change or the agent is invalidated; otherwise later turns reuse the cached agent.">agent cache</span> for an agent for this conversation. Cache miss &rarr; build via factory; cache hit with matching skills and options &rarr; return the cached instance; hit with changed skills or options &rarr; rebuild. Passes through any per-turn overrides from the WebUI settings panel.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>

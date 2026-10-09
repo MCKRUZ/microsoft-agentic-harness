@@ -25,14 +25,14 @@ This harness solves those problems with real engineering, not abstractions on to
 
 Six learning resources, depending on what you need:
 
-- **[Developer Onboarding Guide](https://mckruz.github.io/microsoft-agentic-harness/)** — Step-by-step walkthrough of the codebase aimed at engineers who are forking this template to build something. 17 pages covering getting running, every config knob, the Clean Architecture layout, a full message-journey trace, the skills/tools/RAG/MCP systems, observability, the evaluation framework, the SkillOpt-port skill-training loop, generative UI, and the Bundle API for calling the harness over HTTP. Read this if you're going to write code.<br />
+- **[Developer Onboarding Guide](https://mckruz.github.io/microsoft-agentic-harness/)** — Step-by-step walkthrough of the codebase aimed at engineers who are forking this template to build something. 18 pages covering getting running, every config knob, the Clean Architecture layout, a full message-journey trace, the skills/tools/RAG/MCP systems, observability, the evaluation framework, the SkillOpt-port skill-training loop, generative UI, and the Bundle API for calling the harness over HTTP, and running it self-hosted in Docker. Read this if you're going to write code.<br />
   &nbsp;&nbsp;↳ **Calling the harness from another system over HTTP?** Go straight to **[Chapter 17 · Bundle API](https://mckruz.github.io/microsoft-agentic-harness/17-bundle-api.html)** — the consumer integration guide, with a hand-written [OpenAPI spec](https://mckruz.github.io/microsoft-agentic-harness/assets/openapi/bundle-api.yaml) you can point a client generator at.
 
 - **[Architecture Guide](https://mckruz.github.io/microsoft-agentic-harness/architecture/)** — Infrastructure playbook for deploying the harness on Azure. 7 pages covering the full Azure topology, compute and AI services (Container Apps, Azure OpenAI), data and retrieval infrastructure (AI Search, knowledge graph backends), networking and security (VNets, Entra ID, Key Vault), observability (OTel to Azure Monitor or Grafana), and operations with cost tiers from $50/month dev to $800+ production. Read this if you're planning a deployment.
 
 - **[Security Guide](https://mckruz.github.io/microsoft-agentic-harness/security/)** — Every runtime security protocol baked into the harness, explained plainly in the same style as the other guides. 12 pages organized as seven defense-in-depth layers plus untrusted-code and assurance chapters: the threat model, identity &amp; access (JWT/Entra, A2A mTLS, roles, CORS, rate limiting), autonomy &amp; governance (tiers, human-approval escalation), tool permissions (the Deny→Ask→Allow resolver, bypass-immune `DeniedTools`), sandbox &amp; execution (Job Objects, capability model, HMAC attestation), egress &amp; SSRF defense, content safety &amp; prompt-injection, data protection (multi-tenant isolation, provenance, right-to-erasure), externally-authored agents (capability envelopes, hostile-archive guards, ownership binding), and the OWASP Agentic Top-10 eval gate — each protocol cited to its real class. Read this if you need to understand, configure, or extend how the harness stays safe.
 
-- **[Patterns & Technologies Reference](https://mckruz.github.io/microsoft-agentic-harness/reference/patterns-and-technologies.html)** — Exhaustive catalogue of every architectural pattern, AI/RAG subsystem, governance behaviour, framework, and dependency the harness ships with — cross-linked to source paths. 11 sections covering the CQRS pipeline (all 14 MediatR behaviours in order), Result&lt;T&gt;, factories, keyed-DI strategies, the skills/plugin system, the full RAG pipeline (3 chunkers, RAPTOR, hybrid + RRF, CRAG, multi-source orchestration), four knowledge-graph backends, drift/learnings/escalation governance, the DAG plan executor, sandbox + HMAC attestation, the frontend stack, and the full NuGet/npm inventory. Read this when you know what you're looking for and just need the index.
+- **[Patterns & Technologies Reference](https://mckruz.github.io/microsoft-agentic-harness/reference/patterns-and-technologies.html)** — Exhaustive catalogue of every architectural pattern, AI/RAG subsystem, governance behaviour, framework, and dependency the harness ships with — cross-linked to source paths. 11 sections covering the CQRS pipeline (the MediatR pipeline behaviours), Result&lt;T&gt;, factories, keyed-DI strategies, the skills/plugin system, the full RAG pipeline (3 chunkers, RAPTOR, hybrid + RRF, CRAG, multi-source orchestration), four knowledge-graph backends, drift/learnings/escalation governance, the DAG plan executor, sandbox + HMAC attestation, the frontend stack, and the full NuGet/npm inventory. Read this when you know what you're looking for and just need the index.
 
 - **[Inside the Agentic Harness — Interactive Course](https://mckruz.github.io/microsoft-agentic-harness/agentic-harness-course/)** — A visual, scroll-based course that teaches how the harness works through animated diagrams, plain-English code translations, and interactive quizzes. No coding background required. Read this if you're trying to understand what the system *does* conceptually. (Local copy: `documentation/agentic-harness-course/index.html`.)
 
@@ -49,10 +49,10 @@ At its core, the harness runs a conversation loop. A user sends a message. The a
 This sounds simple, but the devil is in the execution. Every turn flows through a CQRS pipeline:
 
 ```
-Request --> Validation --> Caching --> Performance Logging --> Tool Output Compression --> Handler --> Response
+Request --> Validation --> Authorization --> Caching --> Tracing --> Content Safety --> ... --> Handler --> Response
 ```
 
-Validation catches malformed requests before they reach the LLM. Performance logging flags turns that take too long. Tool output compression detects content type (JSON, structured data, free text) and applies strategy-specific compression — array pruning, deduplication, sentence-boundary truncation — with an LLM fallback for content that exceeds token thresholds. The handler itself is where the actual AI interaction happens — sending messages to Azure OpenAI (or AI Foundry, or a Semantic Kernel backend), processing tool calls, and managing conversation state.
+Validation catches malformed requests before they reach the LLM. Request tracing records every turn as a span, so slow turns surface in the telemetry backend. Tool output compression detects content type (JSON, structured data, free text) and applies strategy-specific compression — array pruning, deduplication, sentence-boundary truncation — with an LLM fallback for content that exceeds token thresholds. The handler itself is where the actual AI interaction happens — sending messages to Azure OpenAI (or AI Foundry, or a Semantic Kernel backend), processing tool calls, and managing conversation state.
 
 Three commands drive everything:
 
@@ -219,7 +219,7 @@ Security is closed-by-default. Every tool declares the capabilities it needs by 
 
 The harness streams real-time progress to the WebUI through SignalR using the AG-UI event protocol. The `AgUiEventWriter` emits strongly-typed events that the React frontend consumes for live visualization of agent activity.
 
-34 event types span 8 categories: **Run lifecycle** (start, finish, error, step boundaries), **Streaming** (text message deltas), **Tool calls** (start, arguments, end, result), **State** (snapshots and JSON-Patch deltas), **Escalation** (requested, resolved, expiring), **Drift** (warn, alert, escalate, resolved), **Learning** (captured, applied, forgotten), and **Plan** (plan start, step start, step complete, state delta, sandbox status, plan complete, plan failed).
+35 event types span 8 categories: **Run lifecycle** (start, finish, error, step boundaries), **Streaming** (text message deltas), **Tool calls** (start, arguments, end, result), **State** (snapshots and JSON-Patch deltas), **Escalation** (requested, resolved, expiring, executed), **Drift** (warn, alert, escalate, resolved), **Learning** (captured, applied, forgotten), and **Plan** (plan start, step start, step complete, state delta, sandbox status, plan complete, plan failed).
 
 Plan events are the Phase 4 additions. When a plan starts executing, the frontend receives `PLAN_STARTED` with the full DAG structure. As each step runs, `PLAN_STEP_STARTED` and `PLAN_STEP_COMPLETED` fire with status, duration, and error details. `PLAN_STATE_DELTA` streams incremental updates for long-running steps. `SANDBOX_STATUS` reports resource usage and attestation hashes for tool execution steps. `PLAN_COMPLETED` and `PLAN_FAILED` signal terminal states.
 
@@ -374,6 +374,7 @@ src/
 │   │   ├── Compression/               ContentTypeDetector, strategies, ToolOutputCompressor
 │   │   └── ...                        ChatClientFactory, A2AAgentHost, state management
 │   ├── Infrastructure.AI.Connectors/   Unified external API adapters with ITool bridge
+│   ├── Infrastructure.AI.Evaluation/   Eval metrics, LLM judge and judge panel, dataset loaders
 │   ├── Infrastructure.AI.Governance/   Autonomy tiers, response sanitizers, AGT adapters
 │   ├── Infrastructure.AI.KnowledgeGraph/ Graph stores (Neo4j/PostgreSQL/in-memory), memory,
 │   │                                     compliance, feedback, provenance, scoping
@@ -389,15 +390,19 @@ src/
 │   │   ├── Orchestration/                RagOrchestrator, multi-source, decision gate, cost tracker
 │   │   └── CostControl/                 RagModelRouter (model tiering)
 │   ├── Infrastructure.APIAccess/       HTTP resilience policies, security middleware
-│   └── Infrastructure.Observability/   OTel pipeline, Prometheus, Jaeger, LLM span processor
+│   ├── Infrastructure.Observability/   OTel pipeline, Prometheus, Jaeger, LLM span processor
+│   └── Infrastructure.Postgres/        Shared Postgres schema migrations
 │
 └── Content/Presentation/
     ├── Presentation.Common/            DI composition root
-    ├── Presentation.ConsoleUI/         Interactive menu + 6 runnable examples
+    ├── Presentation.ConsoleUI/         Interactive menu + runnable examples
     ├── Presentation.LoggerUI/          Named pipe log viewer
+    ├── Presentation.EvalRunner/        Offline evaluation CLI — replay datasets, score, report
+    ├── Presentation.FoundryHost/       The harness packaged as an Azure AI Foundry hosted agent
+    ├── Presentation.Dashboard/         Operator metrics dashboard (React SPA, its own stack)
     ├── Presentation.AgentHub/          SignalR hub — real-time streaming to the WebUI
     │   ├── Auth/                       DevAuthHandler (dev bypass), Azure AD integration
-    │   └── AgUi/                       AG-UI event protocol (34 event types, SSE streaming)
+    │   └── AgUi/                       AG-UI event protocol (35 event types, SSE streaming)
     ├── Presentation.ExecutionApi/         HTTP front door for running externally-authored agent bundles
     │                                   → guide: https://mckruz.github.io/microsoft-agentic-harness/17-bundle-api.html
     │   ├── Controllers/                register → run → poll/stream → delete, owner-bound
@@ -548,7 +553,7 @@ dotnet test src/AgenticHarness.slnx --collect:"XPlat Code Coverage"
 
 ## Try It Out
 
-The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.net/) menu with six examples that demonstrate the harness at different levels of complexity:
+The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.net/) menu with runnable examples that demonstrate the harness at different levels of complexity:
 
 **Start here:** The **Research Agent** runs a standalone conversation — one agent, a few tools, a question to answer. It shows the basic loop: user message in, tool calls out, synthesized answer back.
 

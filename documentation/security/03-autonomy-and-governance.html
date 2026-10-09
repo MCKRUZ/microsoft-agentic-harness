@@ -257,10 +257,18 @@
                         A tier sets defaults, but the concrete gating happens on the <strong>live tool-execution
                         path</strong>, not the MediatR request pipeline. Every agent tool is wrapped by
                         <code>src/Content/Application/Application.AI.Common/Services/Tools/GovernedAIFunction.cs</code>,
-                        whose <code>InvokeCoreAsync</code> runs three ambient gates in order before the tool executes,
-                        then optionally scrubs the result:
+                        whose <code>InvokeCoreAsync</code> runs the admission chain (<code>IToolCallAdmissionPipeline</code>) — six ordered
+                        stages — before the tool executes, then optionally scrubs the result:
                     </p>
                     <ol>
+                        <li>
+                            <strong><code>IAgentToolAuthorizationGate</code></strong> — per-agent access control, the
+                            first and cheapest stage
+                            (<code>Services/Governance/DefaultAgentToolAuthorizationGate.cs</code>). The executing
+                            agent's own id and workload identity must be permitted the tool. A delegated sub-agent is
+                            authorised as itself, never as the entry agent that delegated to it. Behind a feature
+                            switch; with it off the stage allows the call.
+                        </li>
                         <li>
                             <strong><code>IToolInvocationGovernor</code></strong> — authorization
                             (<code>Services/Governance/ToolInvocationGovernor.cs</code>). Opt-in via
@@ -280,6 +288,11 @@
                             <a href="08-data-protection.html">Data Protection</a>.
                         </li>
                         <li>
+                            <strong><code>IToolCallObserverChain</code></strong> — the host's own rules. A consumer
+                            registers observers that can refuse a call after classification and before the loop
+                            guard; with none registered the stage is skipped.
+                        </li>
+                        <li>
                             <strong><code>IProgressEvaluator</code></strong> — the spin / no-progress guard. It halts a
                             tool call when the agent is repeating identical calls without making progress.
                         </li>
@@ -289,7 +302,10 @@
                             <code>call-once-per-conversation: true</code> in its SKILL.md <code>tools:</code> block is
                             refused on a second call within the same conversation — durably, keyed by conversation id,
                             surviving across turns, across separate runs continuing the same conversation, and across
-                            hosts sharing the governance-state database. Opt-in via
+                            hosts sharing the governance-state database. The key is the call-once scope, which for an
+                            agent turn is the conversation id. Sub-plans and delegated sub-agents share their parent's
+                            scope, so they cannot repeat a call the parent already made; a direct tool invocation
+                            carries no scope and is not subject to call-once. Opt-in via
                             <code>GovernanceDurableStateConfig.CallOnceEnforcementEnabled</code>; with it off, a tool
                             may still be declared call-once but nothing enforces it. Unlike the other gates here, this
                             is not an access-control decision — a tool is either declared call-once or it is not — so

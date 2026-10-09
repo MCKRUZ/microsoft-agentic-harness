@@ -44,7 +44,7 @@
 #   * Label overrides (`accepted-risk:correctness` / `accepted-risk:security`) have
 #     no local equivalent, so --accept-risk exists to mirror them for pre-flight
 #     purposes only. It records nothing and overrides nothing on the real PR.
-#   * The base is your local ref (default `main`), not github.base_ref.
+#   * The base is your local ref (default `origin/main`, falling back to `main`), not github.base_ref.
 #
 # THE PROVISIONAL-VERDICT FAIL-SAFE, preserved verbatim from CI: the reviewer is
 # told to write "BLOCK / PROVISIONAL" as its FIRST action, then overwrite it with

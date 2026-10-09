@@ -27,7 +27,7 @@ info:
     may invoke — each under a per-caller capability grant.
   description: |
     The Execution API is the harness's HTTP front door for **automation the host did not write**.
-    It exposes three families of operation, all sharing one authentication scheme, one owner-binding
+    It exposes five families of operation, all sharing one authentication scheme, one owner-binding
     rule, and one capability envelope:
 
     | Family | Routes | What it is for |
@@ -35,6 +35,8 @@ info:
     | **Bundles** | `/api/bundles` | Upload an agent the host did not write, then run it |
     | **Workflows** | `/api/workflows` | Submit a DAG of steps, run it, watch it, cancel it |
     | **Tools** | `/api/tools` | Discover which tool names *this* credential may invoke |
+    | **Evals** | `/api/evals` | Run the host's evaluation suites and poll their reports (operator role) |
+    | **Schedules** | `/api/schedules` | Run a stored workflow on a recurring cron schedule |
 
     Start with **Tools** if you are writing a workflow: a `ToolUse` step names a tool and an
     operation, and `GET /api/tools` is the authoritative answer to which names this host accepts
@@ -104,6 +106,11 @@ tags:
       budget on the operator's suites rather than running the caller's own work. Also off unless
       `AppConfig:AI:Evaluation:Enabled` is set, and the host refuses to start when it is set without
       any `DatasetRoots`.
+  - name: Schedules
+    description: >-
+      Recurring runs of a stored workflow on a cron schedule. Off unless
+      `AppConfig:AI:Schedules:Enabled` is set; while it is off, creating a schedule is refused
+      with `403`.
   - name: Tools
     description: >-
       Read-only discovery of the tools the calling credential may invoke. Distinct from AgentHub's
@@ -801,6 +808,142 @@ paths:
             The host or this caller is already at its concurrent-stream ceiling
             (`MaxConcurrentProgressStreams` / `MaxProgressStreamsPerOwner`). Close a stream and retry.
 
+  /api/schedules:
+    post:
+      tags: [Schedules]
+      operationId: createSchedule
+      summary: Create a recurring schedule
+      description: |
+        Stores a schedule that enqueues a run of a stored workflow each time its cron expression
+        fires, and returns its initial state, including the first `nextFireAt`.
+
+        **Ownership comes from your token, never the body.** For a `Workflow` schedule the caller must
+        be able to write the target workflow; anything else is a `404`, indistinguishable from a
+        workflow that does not exist.
+
+        **The capability envelope is resolved now, from the credential making this request**, and is
+        stored with the schedule. Every later fire runs under that envelope; it is not re-resolved on
+        each tick.
+
+        `cronExpression` is a standard five-field expression evaluated in `timeZoneId` (an IANA zone
+        id). `activeHoursStart` / `activeHoursEnd` optionally restrict fires to a window of the day in
+        that zone; the start must be earlier than the end. `cooldown` is the minimum gap between two
+        fires. `missedRunPolicy` decides what happens when the host was down at one or more ticks:
+        `Skip` drops whatever was missed, `CatchUpOnce` fires exactly one run for the whole backlog.
+
+        Each caller may hold a bounded number of schedules (`AppConfig:AI:Schedules:MaxSchedulesPerOwner`,
+        default 50); creating one past the limit is rejected with `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateScheduleRequest" }
+            examples:
+              weekdayMorning:
+                summary: Every weekday at 08:00 London time, in working hours only
+                value:
+                  kind: Workflow
+                  targetId: 3f0c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f
+                  cronExpression: "0 8 * * 1-5"
+                  timeZoneId: Europe/London
+                  activeHoursStart: "07:00:00"
+                  activeHoursEnd: "19:00:00"
+                  cooldown: "00:30:00"
+                  missedRunPolicy: Skip
+      responses:
+        "201":
+          description: The schedule was stored. The `Location` header points at it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleResponse" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: Recurring schedules are disabled on this host.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+        "404":
+          description: No such workflow, **or** it belongs to another caller.
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Schedules]
+      operationId: listSchedules
+      summary: List the schedules you own
+      description: Returns every schedule owned by the calling credential. Other callers' schedules are never listed.
+      responses:
+        "200":
+          description: The caller's schedules; empty when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScheduleResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/schedules/{scheduleId}/pause:
+    post:
+      tags: [Schedules]
+      operationId: pauseSchedule
+      summary: Pause a schedule
+      description: |
+        Stops the schedule firing until it is resumed. The call is version-guarded: send the `version`
+        you last read as `expectedVersion`, and a schedule changed since then is refused with `409`
+        rather than silently overwritten.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleVersionRequest" }
+      responses:
+        "204": { description: The schedule is paused. }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "404":
+          description: No such schedule, **or** it belongs to another caller.
+        "409":
+          description: The schedule changed since `expectedVersion`. Re-read it and retry.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/schedules/{scheduleId}/resume:
+    post:
+      tags: [Schedules]
+      operationId: resumeSchedule
+      summary: Resume a paused schedule
+      description: Version-guarded in the same way as `pauseSchedule`.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleVersionRequest" }
+      responses:
+        "204": { description: The schedule is enabled again. }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "404":
+          description: No such schedule, **or** it belongs to another caller.
+        "409":
+          description: The schedule changed since `expectedVersion`. Re-read it and retry.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/schedules/{scheduleId}:
+    delete:
+      tags: [Schedules]
+      operationId: deleteSchedule
+      summary: Delete a schedule
+      description: Removes a schedule you own.
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      responses:
+        "204": { description: The schedule was deleted. }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "404":
+          description: No such schedule, **or** it belongs to another caller.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /api/evals/datasets:
     get:
       tags: [Evals]
@@ -985,6 +1128,12 @@ components:
       required: true
       description: The server-minted workflow identifier returned by `submitWorkflow`.
       schema: { type: string, format: uuid }
+    ScheduleId:
+      name: scheduleId
+      in: path
+      required: true
+      description: The identifier returned by `createSchedule`.
+      schema: { type: string }
     RunJobId:
       name: jobId
       in: path
@@ -1790,6 +1939,89 @@ components:
           type: array
           items: { type: string }
           description: Advisory notes such as cost caveats. Never a failure reason.
+
+    CreateScheduleRequest:
+      type: object
+      required: [kind, targetId, cronExpression, timeZoneId]
+      properties:
+        kind:
+          type: string
+          description: Which kind of work each enqueued run performs. Sent as a name.
+          enum: [Workflow, Evaluation]
+        targetId:
+          type: string
+          description: >-
+            What each run targets. For `Workflow`, the id returned by `submitWorkflow`; any other value
+            is rejected with `400`.
+        cronExpression:
+          type: string
+          description: Standard five-field cron expression.
+          examples: ["0 8 * * 1-5"]
+        timeZoneId:
+          type: string
+          description: IANA time zone the cron fields are evaluated in.
+          examples: [Europe/London]
+        activeHoursStart:
+          type: string
+          nullable: true
+          description: >-
+            Earliest time of day, in `timeZoneId`, a fire may occur (`hh:mm:ss`). Must be earlier than
+            `activeHoursEnd` when both are set.
+        activeHoursEnd:
+          type: string
+          nullable: true
+          description: Latest time of day, in `timeZoneId`, a fire may occur (`hh:mm:ss`).
+        cooldown:
+          type: string
+          default: "00:00:00"
+          description: Minimum gap between two fires (`hh:mm:ss`). Must not be negative.
+        missedRunPolicy:
+          $ref: "#/components/schemas/MissedRunPolicy"
+
+    MissedRunPolicy:
+      type: string
+      default: Skip
+      description: |
+        Sent as a name. What happens when the host was not running at one or more scheduled ticks:
+        `Skip` drops whatever was missed and resumes from now; `CatchUpOnce` fires **one** run for the
+        whole missed backlog, never one per missed interval.
+      enum: [Skip, CatchUpOnce]
+
+    ScheduleVersionRequest:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          description: The `version` of the schedule as you last read it.
+
+    ScheduleResponse:
+      type: object
+      description: >-
+        A projection of the stored schedule. The capability envelope and tenant it carries are the
+        host's authorization state and are never echoed back.
+      required: [scheduleId, kind, targetId, cronExpression, timeZoneId, cooldown, missedRunPolicy, enabled, nextFireAt, createdAt, version]
+      properties:
+        scheduleId: { type: string }
+        kind:
+          type: string
+          enum: [Workflow, Evaluation]
+        targetId: { type: string }
+        cronExpression: { type: string }
+        timeZoneId: { type: string }
+        activeHoursStart: { type: string, nullable: true }
+        activeHoursEnd: { type: string, nullable: true }
+        cooldown: { type: string }
+        missedRunPolicy: { $ref: "#/components/schemas/MissedRunPolicy" }
+        enabled:
+          type: boolean
+          description: "`false` while the schedule is paused."
+        nextFireAt: { type: string, format: date-time }
+        lastFiredAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        version:
+          type: integer
+          description: Pass back unchanged as `expectedVersion` when pausing or resuming.
 
     WorkflowRunResponse:
       type: object

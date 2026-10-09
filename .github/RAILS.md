@@ -16,6 +16,9 @@ them live, and how to prove they actually catch things.
 | **security-review** | `workflows/security-review.yml` | every PR; reviews when the diff contains security-relevant code, touches a gated path, or carries `risk:high` | **Blocks on HIGH** |
 | **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when the diff touches `src/**` | **Blocks on a high-confidence defect** |
 | **grader** | `workflows/grader.yml` | every PR | Advisory comment |
+| **frontend (Presentation.Dashboard, Presentation.WebUI)** | `workflows/ci.yml` | every PR (no path filter) | Fails the run on a test, typecheck or lint failure; not one of the four required checks |
+| **Documentation Structure Check** | `workflows/docs-links.yml` | PRs and pushes to main touching `documentation/**` | Fails the run on a dead link, stale anchor or sidebar drift; not required |
+| **Dependency Audit** | `workflows/dependency-audit.yml` | PRs and pushes to main touching package manifests, plus a schedule | Fails the run on a vulnerable dependency outside the allowlist; not required |
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
 | **AgentHub container build** | `workflows/agenthub-container.yml` | PRs touching `src/`, `skills/`, `agents/`; nightly | Advisory (not required). PRs build amd64 only unless the Dockerfile changes; nightly builds arm64 too |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
@@ -42,7 +45,7 @@ them live, and how to prove they actually catch things.
 > (`.github/scripts/security-gate-scope.sh`), correctness-review from whether `src/**` changed.
 > Expect both on most source PRs; that is the intended trade, not a misconfiguration.
 
-Branch protection (`rulesets/main-branch-protection.json`) makes the three
+Branch protection (`rulesets/main-branch-protection.json`) makes the four
 blocking checks mandatory and requires a non-author approval + code-owner review.
 
 ### Running the gates locally, before you push

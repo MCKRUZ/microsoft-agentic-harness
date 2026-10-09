@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Structural integrity check for the five published documentation sites.
+ * Structural integrity check for the six published documentation sites.
  *
  * The doc sites have no build step — `pages.yml` copies folders verbatim — so nothing
  * validates them before they reach GitHub Pages. This script is that missing check.
