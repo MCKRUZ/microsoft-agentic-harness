@@ -97,11 +97,14 @@
     <PackageVersion Include="Scriban" Version="7.2.3" />
 
     <!-- Infrastructure.AI.MCP -->
-    <PackageVersion Include="ModelContextProtocol" Version="1.4.1" />
+    <!-- 2.x: Microsoft.Agents.AI.Foundry.Hosting 1.24 requires ModelContextProtocol 2.2.0, and NuGet would
+         otherwise run FoundryHost on 2.x under code compiled against 1.4.1 (a binary swap the compiler cannot
+         see). The whole solution is on 2.2.0 so the MCP client and server test suites run against what ships. -->
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
 
     <!-- Infrastructure.AI.MCPServer -->
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
 
     <!-- Infrastructure.APIAccess -->
