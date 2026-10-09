@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Agents.AI.Workflows.Specialized.Magentic;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -70,7 +71,7 @@ public sealed class MagenticEventSubscriber : IDisposable
     /// <summary>Total HITL plan-review pauses observed.</summary>
     public int PlanReviewsExecuted => _planReviewCount;
 
-    /// <summary>The manager's final output text (set on <see cref="WorkflowOutputEvent"/>).</summary>
+    /// <summary>The manager's final answer: the last message of the terminal transcript output.</summary>
     public string? FinalOutput => _finalOutput;
 
     /// <summary>Terminal error message (set on <see cref="WorkflowErrorEvent"/>).</summary>
@@ -144,7 +145,7 @@ public sealed class MagenticEventSubscriber : IDisposable
                 return await HandleRequestInfoAsync(requestInfo, ct).ConfigureAwait(false);
 
             case WorkflowOutputEvent output:
-                _finalOutput = output.Data?.ToString();
+                RecordFinalOutput(output);
                 return null;
 
             case WorkflowErrorEvent error:
@@ -154,6 +155,44 @@ public sealed class MagenticEventSubscriber : IDisposable
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Captures the manager's terminal answer: the last assistant message with text in the
+    /// <c>List&lt;ChatMessage&gt;</c> transcript MAF emits when the run completes (measured against the
+    /// real framework in <c>MagenticOrchestratorRunTests</c>). Participants' replies also arrive as
+    /// <see cref="WorkflowOutputEvent"/> subclasses (<see cref="AgentResponseUpdateEvent"/>,
+    /// <see cref="AgentResponseEvent"/>) and may be tagged <see cref="OutputTag.Intermediate"/>; neither
+    /// is the answer. An unrecognised payload is logged and left unset rather than stringified into a
+    /// type name.
+    /// </summary>
+    private void RecordFinalOutput(WorkflowOutputEvent output)
+    {
+        if (output is AgentResponseUpdateEvent or AgentResponseEvent) return;
+        if (output.Tags.Contains(OutputTag.Intermediate)) return;
+
+        // ChatMessage.Text is "" (not null) for a message with only tool-call content, and the user's
+        // own task is in the transcript too: take the last assistant message that has text.
+        var text = output.Data switch
+        {
+            IEnumerable<ChatMessage> transcript => transcript
+                .Where(m => m.Role == ChatRole.Assistant)
+                .Select(m => m.Text)
+                .LastOrDefault(t => !string.IsNullOrWhiteSpace(t)),
+            _ => LogUnrecognisedPayload(output)
+        };
+
+        if (!string.IsNullOrWhiteSpace(text)) _finalOutput = text;
+    }
+
+    private string? LogUnrecognisedPayload(WorkflowOutputEvent output)
+    {
+        // The shape a MAF upgrade would produce; it must be visible rather than a silent null answer.
+        _logger.LogWarning(
+            "Magentic workflow={WorkflowId} emitted terminal output of unrecognised payload type {PayloadType}",
+            _workflowId,
+            output.Data?.GetType().FullName ?? "<null>");
+        return null;
     }
 
     private void HandlePlanCreated(MagenticPlanCreatedEvent evt)

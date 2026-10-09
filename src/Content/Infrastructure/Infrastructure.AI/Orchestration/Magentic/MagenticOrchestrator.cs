@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Microsoft.Agents.AI.Workflows;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -95,9 +96,23 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         string completionReason;
         try
         {
+            // MAF's Magentic orchestrator does not start itself: it needs the input messages AND a
+            // TurnToken (Microsoft's own sample sends both). OpenStreamingAsync sends neither, so the
+            // run would wait forever for input.
+            ct.ThrowIfCancellationRequested();
             await using var run = await InProcessExecution
-                .OpenStreamingAsync(workflow, workflowId.ToString(), ct)
+                .RunStreamingAsync(
+                    workflow,
+                    new List<ChatMessage> { new(ChatRole.User, request.Task) },
+                    workflowId.ToString(),
+                    ct)
                 .ConfigureAwait(false);
+
+            if (!await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
+            {
+                _logger.LogError("Magentic workflow {WorkflowId} refused its start signal", workflowId);
+                return FailAndEndSpan(subscriber, "magentic.start_rejected");
+            }
 
             await foreach (var evt in run.WatchStreamAsync(ct).ConfigureAwait(false))
             {
@@ -108,22 +123,36 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
                 }
             }
 
+            // MAF's stream reader swallows cancellation and just ends the stream, which would read as a
+            // clean completion. Surface it as the cancellation it is. Unconditional on purpose: a caller
+            // that has cancelled cannot observe the result either way, and a partial answer captured
+            // before the cancel must not be reported as a finished one.
+            ct.ThrowIfCancellationRequested();
+
             completionReason = DeriveCompletionReason(subscriber, request);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            completionReason = MagenticConventions.CompletionReasonError;
-            subscriber.EndWorkflow(completionReason);
-            return Result<MagenticWorkflowResult>.Fail("magentic.cancelled");
+            return FailAndEndSpan(subscriber, "magentic.cancelled");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Magentic workflow {WorkflowId} failed with unhandled exception",
                 workflowId);
-            completionReason = MagenticConventions.CompletionReasonError;
-            subscriber.EndWorkflow(completionReason);
-            return Result<MagenticWorkflowResult>.Fail("magentic.unhandled_exception");
+            return FailAndEndSpan(subscriber, "magentic.unhandled_exception");
+        }
+
+        // "Satisfied" must mean an answer was captured. A run that simply stops (an unanswered request,
+        // an unrecognised output shape) is not a success, and reporting it as one is how an empty
+        // answer reaches a caller as if it were real. The round/reset limits stay successes without
+        // output: those are known, bounded endings the turn runner already handles.
+        if (completionReason == MagenticConventions.CompletionReasonSatisfied && subscriber.FinalOutput is null)
+        {
+            _logger.LogWarning(
+                "Magentic workflow {WorkflowId} ended without producing a final answer",
+                workflowId);
+            return FailAndEndSpan(subscriber, "magentic.no_final_output");
         }
 
         subscriber.EndWorkflow(completionReason);
@@ -143,6 +172,14 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         return completionReason == MagenticConventions.CompletionReasonError
             ? Result<MagenticWorkflowResult>.Fail(subscriber.ErrorMessage ?? "magentic.error")
             : Result<MagenticWorkflowResult>.Success(result);
+    }
+
+    // Every early exit closes the workflow span as an error and returns a stable code; one helper so
+    // the exits cannot drift apart.
+    private static Result<MagenticWorkflowResult> FailAndEndSpan(MagenticEventSubscriber subscriber, string code)
+    {
+        subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
+        return Result<MagenticWorkflowResult>.Fail(code);
     }
 
     private static string DeriveCompletionReason(MagenticEventSubscriber subscriber, MagenticWorkflowRequest request)
