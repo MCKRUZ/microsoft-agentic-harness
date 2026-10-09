@@ -22,7 +22,9 @@ namespace Application.AI.Common.Services.Governance;
 /// execution context.</strong> The context carries an identity only on the agent-turn path:
 /// the resolution behaviour stamps it for <c>IAgentScopedRequest</c>, and the plan engine's
 /// step executors and the Execution API's direct invoker each open a <em>fresh</em> DI scope,
-/// whose context therefore starts blank. Reading the context alone would leave this gate
+/// whose context therefore starts blank (sub-plans and delegations re-stamp the parent's agent id and
+/// workload identity onto theirs through <c>GovernanceArmer</c>; plan runs and direct invocations do not
+/// have a parent turn to inherit from). Reading the context alone would leave this gate
 /// enforcing on one of the four execution paths the admission chain covers, and a control
 /// that is skippable by issuing the same call from a plan step is not a control.
 /// </para>

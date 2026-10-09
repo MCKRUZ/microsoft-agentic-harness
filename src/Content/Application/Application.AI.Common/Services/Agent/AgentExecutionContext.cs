@@ -222,9 +222,10 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
     /// <remarks>
     /// <para>
     /// Called by the DI container when the scope owning this instance is disposed — which is what makes
-    /// attribution automatic rather than a per-call-site ritual. Three of the five initializing paths
-    /// create that scope themselves and dispose it in the same method
-    /// (<c>DirectToolInvoker</c>, <c>PlanRunExecutor</c>, <c>SubPlanStepExecutor</c>); the other two
+    /// attribution automatic rather than a per-call-site ritual. Four of the six initializing paths
+    /// create that scope themselves and dispose it in the same method (<c>PlanRunExecutor</c>, and
+    /// <c>DirectToolInvoker</c>, <c>SubPlanStepExecutor</c> and the capability supervisor's delegation, which
+    /// arm theirs through <c>GovernanceArmer</c>); the other two
     /// (<c>AgentContextPropagationBehavior</c> and <c>RunOrchestratedTaskCommandHandler</c>) are handed
     /// the ambient request-scoped context and rely on whoever opened that request scope to dispose it,
     /// which every dispatcher does. So no path publishes attribution without something releasing it.

@@ -484,7 +484,7 @@ public sealed partial class CapabilityMatchSupervisor
     /// <list type="bullet">
     /// <item>A call-once tool the parent already claimed must stay claimed for every delegation it
     /// spawns, or a delegation becomes a way to call it again — the identical rule
-    /// <c>SubPlanStepExecutor.PropagateGovernanceIdentity</c> documents for sub-plans, and the
+    /// <c>GovernanceArmingPolicy.SubPlan</c> documents for sub-plans, and the
     /// reason <c>RunOrchestratedTaskCommandHandler</c> shares its own <c>ConversationId</c> across
     /// every sub-agent it dispatches rather than minting a fresh one per dispatch.</item>
     /// <item>Workload identity flows the same way so an A2A- or identity-propagated turn's delegate

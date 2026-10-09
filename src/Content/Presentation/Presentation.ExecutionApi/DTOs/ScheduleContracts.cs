@@ -87,7 +87,7 @@ public sealed record ScheduleResponse
     /// <summary>Maps from <see cref="ScheduleSummary.CreatedAt"/>.</summary>
     public required DateTimeOffset CreatedAt { get; init; }
 
-    /// <summary>Maps from <see cref="ScheduleSummary.Version"/> — pass this back unchanged when pausing/resuming/deleting.</summary>
+    /// <summary>Maps from <see cref="ScheduleSummary.Version"/> — pass this back unchanged when pausing or resuming.</summary>
     public required int Version { get; init; }
 
     /// <summary>Projects an Application-layer summary onto the wire shape.</summary>
