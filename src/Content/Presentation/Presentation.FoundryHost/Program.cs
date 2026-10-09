@@ -114,16 +114,11 @@ public static class Program
             // agent's dedicated identity and never exposes the listening port (8088) beyond the
             // Foundry runtime. Do not publish this port directly; all access must go through Foundry.
             var builder = AgentHost.CreateBuilder(args);
-            // The session store is chosen explicitly. Agent Framework 1.10 defaulted to a file-system
-            // store ({HOME}/.checkpoints when hosted); 1.24 changed the default to FoundryAgentSessionStore,
-            // the platform's shared durable state store. Moving where that runtime state lives is a
-            // deliberate decision, not something a dependency bump should do silently, so the previous
-            // behaviour is kept here until it is made on purpose.
-            // HOME is the one directory the Foundry platform keeps writable and durable for a session's
-            // lifetime; locally it falls back to the working directory.
-            var sessionStoreRoot = Path.Combine(
-                Environment.GetEnvironmentVariable("HOME") ?? Directory.GetCurrentDirectory(),
-                ".checkpoints");
+            // Pinned to the file-system session store: Agent Framework 1.24 defaults to the platform's
+            // shared FoundryAgentSessionStore, and moving where that state lives should be a deliberate
+            // choice, not a side effect of a dependency bump.
+            var sessionStoreRoot = FoundryHostBootstrap.ResolveSessionStoreRoot(
+                Environment.GetEnvironmentVariable, Directory.GetCurrentDirectory());
             builder.Services.AddFoundryResponses(agent, new FileSystemAgentSessionStore(sessionStoreRoot));
             builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses());
 

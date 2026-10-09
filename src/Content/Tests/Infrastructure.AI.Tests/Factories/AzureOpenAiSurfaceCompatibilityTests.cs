@@ -132,16 +132,13 @@ public sealed class AzureOpenAiSurfaceCompatibilityTests
 
         private readonly List<string> _paths = [];
 
-        public IReadOnlyList<string> Paths
-        {
-            get { lock (_paths) return [.. _paths]; }
-        }
+        public IReadOnlyList<string> Paths => _paths;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
-            lock (_paths) _paths.Add(path);
+            _paths.Add(path);
 
             var requestBody = request.Content is null
                 ? string.Empty

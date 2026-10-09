@@ -72,13 +72,10 @@
     <PackageVersion Include="Cronos" Version="0.13.0" />
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
-    <!-- 2.9.0-beta.1 is the newest Azure.AI.OpenAI published, and it is compiled against an older
-         OpenAI library than the one Agent Framework 1.24 resolves (2.14.0). A mismatch throws
-         MissingMethodException at runtime, not at build time, and it did on this package's
-         Responses constructor — which is why the Foundry direct-Responses client no longer uses it.
-         The chat and embedding surfaces still work on 2.14.0; that is guarded by
-         AzureOpenAiSurfaceCompatibilityTests (it sends a request through each), not by this pin.
-         Re-run it on any OpenAI bump. See the follow-up to move off this package entirely. -->
+    <!-- Newest published, and compiled against an older OpenAI library than Agent Framework resolves.
+         A mismatch throws MissingMethodException at runtime, not at build time (it did on the
+         Responses constructor). AzureOpenAiSurfaceCompatibilityTests sends a request through each
+         surface still used; re-run it on any OpenAI bump. Moving off this package: #799. -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
     <!-- Foundry ships as a preview line that tracks the core family one-for-one

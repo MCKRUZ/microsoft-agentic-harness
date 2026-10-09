@@ -64,14 +64,13 @@ public sealed class A2AVersionPinTests
     }
 
     [Fact]
-    public void Maf_assembly_is_pinned_to_1_24_x()
+    public void Maf_assembly_minor_version_is_pinned()
     {
         var maf = typeof(Microsoft.Agents.AI.AIAgent).Assembly;
         var version = maf.GetName().Version;
         version.Should().NotBeNull();
         version!.Major.Should().Be(1, "harness pins to MAF 1.x");
         version.Minor.Should().Be(24,
-            "harness pins to MAF 1.24.x; the A2A-surface canary above was re-run at 1.24 and still finds " +
-            "no public A2A primitives in the loaded assemblies. Bumping minor requires re-running these canaries");
+            "bumping the minor version requires re-running the A2A canary above");
     }
 }
