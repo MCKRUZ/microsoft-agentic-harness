@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Microsoft.Agents.AI.Workflows;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -99,6 +100,20 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
                 .OpenStreamingAsync(workflow, workflowId.ToString(), ct)
                 .ConfigureAwait(false);
 
+            // MAF's Magentic orchestrator does not start itself: it needs the input messages AND a
+            // TurnToken, and OpenStreamingAsync sends neither (only RunStreamingAsync does). Without
+            // both the run just waits for input that never comes.
+            var taskMessages = new List<ChatMessage> { new(ChatRole.User, request.Task) };
+            if (!await run.TrySendMessageAsync(taskMessages).ConfigureAwait(false)
+                || !await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
+            {
+                _logger.LogError(
+                    "Magentic workflow {WorkflowId} refused its task or start signal",
+                    workflowId);
+                subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
+                return Result<MagenticWorkflowResult>.Fail("magentic.start_rejected");
+            }
+
             await foreach (var evt in run.WatchStreamAsync(ct).ConfigureAwait(false))
             {
                 var response = await subscriber.ProcessEventAsync(evt, ct).ConfigureAwait(false);
@@ -107,6 +122,10 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
                     await run.SendResponseAsync(response).ConfigureAwait(false);
                 }
             }
+
+            // MAF's stream reader swallows cancellation and just ends the stream, which would read as a
+            // clean completion with no output. Surface it as the cancellation it is.
+            ct.ThrowIfCancellationRequested();
 
             completionReason = DeriveCompletionReason(subscriber, request);
         }

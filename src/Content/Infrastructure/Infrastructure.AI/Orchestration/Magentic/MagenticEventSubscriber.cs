@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Agents.AI.Workflows.Specialized.Magentic;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -70,7 +71,7 @@ public sealed class MagenticEventSubscriber : IDisposable
     /// <summary>Total HITL plan-review pauses observed.</summary>
     public int PlanReviewsExecuted => _planReviewCount;
 
-    /// <summary>The manager's final output text (set on <see cref="WorkflowOutputEvent"/>).</summary>
+    /// <summary>The manager's final answer: the last message of the terminal transcript output.</summary>
     public string? FinalOutput => _finalOutput;
 
     /// <summary>Terminal error message (set on <see cref="WorkflowErrorEvent"/>).</summary>
@@ -144,7 +145,7 @@ public sealed class MagenticEventSubscriber : IDisposable
                 return await HandleRequestInfoAsync(requestInfo, ct).ConfigureAwait(false);
 
             case WorkflowOutputEvent output:
-                _finalOutput = output.Data?.ToString();
+                RecordFinalOutput(output);
                 return null;
 
             case WorkflowErrorEvent error:
@@ -154,6 +155,29 @@ public sealed class MagenticEventSubscriber : IDisposable
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Captures the manager's terminal answer: the last message of the <c>List&lt;ChatMessage&gt;</c>
+    /// transcript MAF emits when the run completes. Participants' replies also arrive as
+    /// <see cref="WorkflowOutputEvent"/> subclasses (<see cref="AgentResponseUpdateEvent"/>,
+    /// <see cref="AgentResponseEvent"/>) and a participant output may be tagged
+    /// <see cref="OutputTag.Intermediate"/>; none of those are the answer, and an unrecognised
+    /// payload is left unset rather than stringified into a type name.
+    /// </summary>
+    private void RecordFinalOutput(WorkflowOutputEvent output)
+    {
+        if (output is AgentResponseUpdateEvent or AgentResponseEvent) return;
+        if (output.Tags.Contains(OutputTag.Intermediate)) return;
+
+        var text = output.Data switch
+        {
+            string s => s,
+            IEnumerable<ChatMessage> transcript => transcript.LastOrDefault()?.Text,
+            _ => null
+        };
+
+        if (text is not null) _finalOutput = text;
     }
 
     private void HandlePlanCreated(MagenticPlanCreatedEvent evt)
