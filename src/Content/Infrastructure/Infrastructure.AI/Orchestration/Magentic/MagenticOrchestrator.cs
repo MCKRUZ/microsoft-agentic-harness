@@ -114,7 +114,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
                 _logger.LogError(
                     "Magentic workflow {WorkflowId} refused its task or start signal",
                     workflowId);
-                return Fail(subscriber, "magentic.start_rejected");
+                return FailAndEndSpan(subscriber, "magentic.start_rejected");
             }
 
             await foreach (var evt in run.WatchStreamAsync(ct).ConfigureAwait(false))
@@ -127,22 +127,23 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             }
 
             // MAF's stream reader swallows cancellation and just ends the stream, which would read as a
-            // clean completion with no output. Surface it as the cancellation it is — unless the run had
-            // already produced its answer, which a late cancellation must not discard.
-            if (subscriber.FinalOutput is null) ct.ThrowIfCancellationRequested();
+            // clean completion. Surface it as the cancellation it is. Unconditional on purpose: a caller
+            // that has cancelled cannot observe the result either way, and a partial answer captured
+            // before the cancel must not be reported as a finished one.
+            ct.ThrowIfCancellationRequested();
 
             completionReason = DeriveCompletionReason(subscriber, request);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return Fail(subscriber, "magentic.cancelled");
+            return FailAndEndSpan(subscriber, "magentic.cancelled");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Magentic workflow {WorkflowId} failed with unhandled exception",
                 workflowId);
-            return Fail(subscriber, "magentic.unhandled_exception");
+            return FailAndEndSpan(subscriber, "magentic.unhandled_exception");
         }
 
         if (completionReason == MagenticConventions.CompletionReasonSatisfied && subscriber.FinalOutput is null)
@@ -173,7 +174,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
 
     // Every early exit closes the workflow span as an error and returns a stable code; one helper so
     // the exits cannot drift apart.
-    private static Result<MagenticWorkflowResult> Fail(MagenticEventSubscriber subscriber, string code)
+    private static Result<MagenticWorkflowResult> FailAndEndSpan(MagenticEventSubscriber subscriber, string code)
     {
         subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
         return Result<MagenticWorkflowResult>.Fail(code);

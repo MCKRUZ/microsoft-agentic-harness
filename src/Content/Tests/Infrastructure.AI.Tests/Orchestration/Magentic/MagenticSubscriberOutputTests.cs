@@ -52,6 +52,22 @@ public sealed class MagenticSubscriberOutputTests
     }
 
     [Fact]
+    public async Task ProcessEvent_TranscriptWhoseLastMessageHasNoText_UsesTheLastMessageThatDoes()
+    {
+        var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);
+        var transcript = new List<ChatMessage>
+        {
+            new(ChatRole.User, "write the report"),
+            new(ChatRole.Assistant, "the finished report"),
+            new(ChatRole.Assistant, [new FunctionCallContent("c1", "lookup")])
+        };
+
+        await subscriber.ProcessEventAsync(new WorkflowOutputEvent(transcript, "manager"), default);
+
+        subscriber.FinalOutput.Should().Be("the finished report");
+    }
+
+    [Fact]
     public async Task ProcessEvent_TranscriptEndingInATextlessMessage_KeepsTheEarlierAnswer()
     {
         var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);

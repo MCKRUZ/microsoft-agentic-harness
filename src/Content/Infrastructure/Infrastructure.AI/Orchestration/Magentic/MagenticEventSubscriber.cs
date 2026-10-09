@@ -173,7 +173,10 @@ public sealed class MagenticEventSubscriber : IDisposable
         var text = output.Data switch
         {
             string s => s,
-            IEnumerable<ChatMessage> transcript => transcript.LastOrDefault()?.Text,
+            // ChatMessage.Text is "" (not null) for a message with only tool-call or data content, so
+            // take the last message that actually has text rather than a blank tail.
+            IEnumerable<ChatMessage> transcript =>
+                transcript.Select(m => m.Text).LastOrDefault(t => !string.IsNullOrWhiteSpace(t)),
             _ => null
         };
 
@@ -183,11 +186,18 @@ public sealed class MagenticEventSubscriber : IDisposable
             return;
         }
 
-        // ChatMessage.Text is "" (not null) for a message with only tool-call or data content, so a
-        // blank tail must not replace a real answer — and an unrecognised payload type is the shape a
-        // MAF upgrade would produce, which should be visible rather than a silent null answer.
+        // An unrecognised payload type is the shape a MAF upgrade would produce, and it must be
+        // visible rather than a silent null answer. A recognised payload with no text is routine
+        // (a tool-call-only transcript) and only worth a debug line.
+        if (output.Data is string or IEnumerable<ChatMessage>)
+        {
+            _logger.LogDebug(
+                "Magentic workflow={WorkflowId} emitted terminal output with no text", _workflowId);
+            return;
+        }
+
         _logger.LogWarning(
-            "Magentic workflow={WorkflowId} emitted terminal output with no usable text (payload {PayloadType})",
+            "Magentic workflow={WorkflowId} emitted terminal output of unrecognised payload type {PayloadType}",
             _workflowId,
             output.Data?.GetType().FullName ?? "<null>");
     }
