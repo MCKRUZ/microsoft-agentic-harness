@@ -51,7 +51,7 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 | `SendMessage(conversationId, messageId, content)` | Send user message, triggers agent turn |
 | `RetryFromMessage(conversationId, assistantMessageId)` | Regenerate from a specific point |
 | `EditAndResubmit(conversationId, userMessageId, newContent)` | Edit and re-run |
-| `SetConversationSettings(conversationId, settings)` | Adjust temperature/model/system prompt |
+| `SetConversationSettings(conversationId, settings)` | Adjust temperature/model/system prompt; applied under the turn lease, and the cached agent is invalidated so the next turn is built with the new settings |
 | `InvokeToolViaAgent(conversationId, toolName, argsJson)` | Direct tool invocation through agent |
 | `JoinConversationGroup` / `LeaveConversationGroup` | Subscribe to conversation-scoped spans |
 | `JoinGlobalTraces` / `LeaveGlobalTraces` | Subscribe to all OTel spans |
@@ -69,6 +69,8 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 | `HistoryTruncated` | `{ conversationId, keepCount }` | Context window compaction occurred |
 
 **Concurrency safety:** `IConversationTurnLease` serializes turns on one conversation, so concurrent `SendMessage` calls cannot interleave token streams or corrupt the transcript. A second turn *waits* for the one in flight rather than being rejected. Which implementation is live follows the transcript provider (see below): the `Sqlite` provider gets `SqliteConversationTurnLease`, which holds the lease as two columns on the conversation row and therefore serializes turns **across hosts**; the `FileSystem` provider gets `InProcessConversationTurnLease`, which reaches only this process — matching a store that is itself single-process. This replaces `ConversationLockRegistry`, which was in-process only and so said nothing to the Execution API.
+
+Reassigning a conversation to a different agent takes the same lease: the no-op check runs inside it, and a real change evicts the cached agent so its unlocked-skill state resets. A failed or cancelled turn's spend is still charged to the conversation budget and recorded in the session rollup (as an `assistant_failed` message row), and a delegated sub-agent's spend counts against the delegating turn.
 
 A durable lease expires (`AppConfig:AI:Conversations:TurnLease:ExpirySeconds`, default 60) so a host that dies mid-turn does not block its conversation forever, and the holder renews it every third of that while the turn runs. If a lease is nonetheless taken — a stalled host, a suspended container — the losing turn is **cancelled** rather than allowed to finish writing, and the client is told the conversation was continued elsewhere.
 
@@ -95,7 +97,7 @@ Two providers, selected by `AppConfig:AI:Conversations:Provider`:
 | Provider | Implementation | Fit |
 |----------|----------------|-----|
 | `Sqlite` (default) | `EfCoreConversationStore` over `ConversationDbContext` | Any number of hosts on one machine. One row per message, so appending is an `INSERT`; SQLite's file locking serializes writers across processes and WAL mode keeps readers unblocked. Database at `AppConfig:AI:Conversations:DatabasePath`. |
-| `FileSystem` | `FileSystemConversationStore` | Single-process development only. Its write lock is one in-process `SemaphoreSlim`, and every write stages through the same `.tmp` path, so two hosts sharing a directory can move a torn record into place. Directory at `AppConfig:AI:Conversations:ConversationsPath`. |
+| `FileSystem` | `FileSystemConversationStore` | Single-process development only. Writes are serialized per conversation by an in-process keyed lock (different conversations run concurrently), which does not reach other hosts: every write stages through the same `.tmp` file, so two hosts sharing a directory can interleave on one conversation and move a torn record into place. Directory at `AppConfig:AI:Conversations:ConversationsPath`. |
 
 Neither guarantee crosses a machine boundary. A horizontally scaled deployment needs a server-backed implementation behind the same interface.
 

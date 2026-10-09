@@ -350,9 +350,9 @@
                                 <td>int</td>
                                 <td><code>5</code></td>
                                 <td>
-                                    Any MediatR request that exceeds this duration is logged as a warning by
-                                    <code>RequestPerformanceBehavior</code>. Lower it to surface slowness more
-                                    aggressively in load tests.
+                                    Not read by anything at present. It belonged to a performance-logging behaviour
+                                    that <code>RequestTracingBehavior</code> replaced; slow requests are now found from
+                                    span durations in the telemetry backend, so changing this value has no effect.
                                 </td>
                             </tr>
                         </tbody>
@@ -1026,6 +1026,18 @@
                             <tr>
                                 <td><code>PiiFiltering</code></td>
                                 <td>Patterns redacted before any trace leaves the process.</td>
+                            </tr>
+                        <tr>
+                                <td><code>PropagateBaggage</code></td>
+                                <td>
+                                    Default <code>false</code>. Governs both baggage stores
+                                    (<code>Activity.Baggage</code> and OpenTelemetry <code>Baggage</code>): while
+                                    <code>false</code>, a trace-context-only propagator is installed on each, so
+                                    identity attribution is not sent on outbound calls or accepted from inbound ones.
+                                    Set <code>true</code> only after review; a startup check refuses to boot if baggage
+                                    propagation is re-registered while this is <code>false</code>. See
+                                    <a href="10-observability.html">Observability &amp; Safety</a>.
+                                </td>
                             </tr>
                         </tbody>
                     </table>

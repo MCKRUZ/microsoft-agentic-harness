@@ -792,6 +792,29 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>200</code></td>
                                 <td>Cancels a run that has not started. <code>stopped: false</code> means it was already executing and will finish — an eval in flight cannot be interrupted. <code>409</code> if already terminal.</td>
                             </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Schedules</strong> — run a stored workflow on a recurring cron schedule</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/schedules</code></td>
+                                <td><code>201</code></td>
+                                <td>Body: <code>kind</code>, <code>targetId</code> (a workflow id), <code>cronExpression</code>, <code>timeZoneId</code>, optional <code>activeHoursStart</code>, <code>activeHoursEnd</code>, <code>cooldown</code>, <code>missedRunPolicy</code>. Returns the schedule with its first <code>nextFireAt</code>. <code>400</code> for a bad cron expression, time zone, or active-hours window, or past your schedule limit; <code>403</code> if schedules are off; <code>404</code> if the workflow is not yours.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/schedules</code></td>
+                                <td><code>200</code></td>
+                                <td>Every schedule you own. Empty list when there are none.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/schedules/{scheduleId}/pause</code><br><code>POST /api/schedules/{scheduleId}/resume</code></td>
+                                <td><code>204</code></td>
+                                <td>Body: <code>expectedVersion</code>, the <code>version</code> you last read. <code>409</code> if the schedule changed since; <code>404</code> if it is not yours.</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/schedules/{scheduleId}</code></td>
+                                <td><code>204</code></td>
+                                <td>Removes a schedule you own. <code>404</code> if it is not yours.</td>
+                            </tr>
                         </tbody>
                     </table>
 
@@ -1022,7 +1045,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
                     <h2 id="evals">Evals: running the host's own test suites</h2>
                     <p>
-                        The other three surfaces run <em>your</em> work — your bundle, your workflow, your tool call.
+                        The other surfaces run <em>your</em> work — your bundle, your workflow, your tool call.
                         This one runs the host's. An evaluation suite is a file of test cases an operator has put on
                         the server, and running it asks the harness to answer every case and score itself. You use it
                         to check that a change to prompts, models, or tools did not make things worse.
@@ -1115,6 +1138,48 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                         gap: a workflow can be signalled to stop mid-flight, an evaluation cannot, and telling you it
                         had stopped when the spend was still accruing would be the worse answer. The real protection is
                         the cost cap above.
+                    </p>
+
+                    <h2 id="schedules">Schedules: running a workflow on a timer</h2>
+                    <p>
+                        A schedule is a standing instruction: &ldquo;run this stored workflow whenever this cron
+                        expression fires.&rdquo; You create it once; the host enqueues a run of that workflow each time it comes due.
+                    </p>
+                    <p>
+                        <strong>It is off unless someone turned it on.</strong> Creating a schedule
+                        <code>403</code>s until <code>AppConfig:AI:Schedules:Enabled</code> is set.
+                    </p>
+                    <h3>The grant is fixed when you create the schedule</h3>
+                    <p>
+                        The capability envelope is resolved from the credential that makes the
+                        <code>POST /api/schedules</code> call and stored with the schedule. Every later fire runs
+                        under that envelope; it is not looked up again on each tick. That is why a schedule cannot be
+                        created by an agent as a tool call &mdash; there is no calling credential to resolve it from at
+                        that point. Ownership works as everywhere else: it comes from your token, never the body, and
+                        a schedule that is not yours is a <code>404</code>.
+                    </p>
+                    <h3>The fields that matter</h3>
+                    <ul>
+                        <li><code>cronExpression</code> is a standard five-field expression, evaluated in <code>timeZoneId</code> (an IANA zone id such as <code>Europe/London</code>).</li>
+                        <li><code>activeHoursStart</code> / <code>activeHoursEnd</code> (<code>hh:mm:ss</code>) optionally confine fires to a window of the day in that zone. The start must be earlier than the end.</li>
+                        <li><code>cooldown</code> is the minimum gap between two fires.</li>
+                        <li><code>missedRunPolicy</code> decides what a host that was down does about ticks it missed: <code>Skip</code> (the default) drops them, <code>CatchUpOnce</code> fires <em>one</em> run for the whole backlog &mdash; never one per missed interval.</li>
+                    </ul>
+                    <div class="code-block">
+<pre><code>curl -sS -X POST http://localhost:5000/api/schedules \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "kind": "Workflow", "targetId": "'"$WORKFLOW_ID"'",
+        "cronExpression": "0 8 * * 1-5", "timeZoneId": "Europe/London" }'</code></pre>
+                    </div>
+                    <p>
+                        <strong>Pause and resume are version-guarded.</strong> Each response carries a
+                        <code>version</code>; send it back as <code>expectedVersion</code>, and a schedule that changed
+                        since you read it is refused with <code>409</code> rather than overwritten. Re-read and retry.
+                    </p>
+                    <p>
+                        Each caller can hold a bounded number of schedules
+                        (<code>MaxSchedulesPerOwner</code>, default 50); creating one past the limit is rejected with
+                        <code>400</code>.
                     </p>
 
                     <h2 id="two-ways">Two ways to get the output</h2>
@@ -1386,6 +1451,19 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>MaxDatasetBytes</code></td><td><code>5242880</code></td><td>Checked before the file is opened, so an oversized dataset is never parsed.</td></tr>
                             <tr><td><code>MaxRepeats</code></td><td><code>50</code></td><td>Ceiling on <code>repeats</code>.</td></tr>
                             <tr><td><code>MaxParallelism</code></td><td><code>128</code></td><td>Ceiling on <code>parallelism</code>.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The schedule endpoints read <code>AppConfig:AI:Schedules</code>.
+                    </p>
+                    <table>
+                        <thead><tr><th>Key</th><th>Default</th><th>Purpose</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Enabled</code></td><td><code>false</code></td><td>Master toggle. Off &rArr; creating a schedule <code>403</code>s.</td></tr>
+                            <tr><td><code>TickInterval</code></td><td><code>00:00:30</code></td><td>How often the host checks for schedules that are due.</td></tr>
+                            <tr><td><code>MaxSchedulesPerOwner</code></td><td><code>50</code></td><td>Schedules one caller may hold at once.</td></tr>
+                            <tr><td><code>DatabasePath</code></td><td><code>data/schedules.db</code></td><td>SQLite file backing the durable schedule store.</td></tr>
                         </tbody>
                     </table>
 

@@ -118,7 +118,19 @@
 }</code></pre>
                     </div>
 
-                    <p>The behaviours registered by the harness, in execution order (outermost first):</p>
+                    <p>
+                        Six general-purpose behaviours come from <code>Application.Common</code>, and are registered ahead of
+                        the AI behaviours below (the composition root calls <code>AddApplicationCommonDependencies</code> first):
+                    </p>
+                    <ul>
+                        <li><code>RequestValidationBehavior</code> — runs every registered FluentValidation validator in parallel; a <code>Result&lt;T&gt;</code> response gets a validation failure, anything else throws</li>
+                        <li><code>AuthorizationBehavior</code> — role- and policy-based authorization for requests marked <code>[Authorize]</code></li>
+                        <li><code>IdempotencyBehavior</code> — deduplicates retried <code>IIdempotentRequest</code>s by a per-user key</li>
+                        <li><code>CachingBehavior</code> — <code>HybridCache</code> (in-memory plus optional distributed) response caching</li>
+                        <li><code>RequestTracingBehavior</code> — wraps each request in an OpenTelemetry span (its duration is the timing; there is no separate performance behaviour)</li>
+                        <li><code>TimeoutBehavior</code> — a configurable timeout so a hung LLM call or MCP server cannot block the pipeline</li>
+                    </ul>
+                    <p>The AI behaviours registered by <code>Application.AI.Common</code>, in execution order (outermost first):</p>
                     <ol>
                         <li><code>UnhandledExceptionBehavior</code> — top-level safety net, structured log + rethrow</li>
                         <li><code>AmbientRequestScopeBehavior</code> — establishes the ambient request scope</li>
@@ -468,9 +480,9 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
 
                     <h3 id="conversation-cache">Conversation cache</h3>
                     <p>
-                        <code>AgentConversationCache</code> keeps reconstructed <code>ChatClientAgent</code> instances
-                        warm per <code>(conversationId, skillIds)</code>. Cuts LLM-state reconstruction overhead between
-                        turns; background sync to a persistent store survives restarts.
+                        <code>AgentConversationCache</code> keeps the built <code>ChatClientAgent</code> in memory
+                        per conversation (30-minute sliding TTL, lost on restart). Cuts LLM-state reconstruction overhead between
+                        turns; it is rebuilt when a turn's skills or build options change, and <code>Invalidate</code>/<code>Evict</code> drop it explicitly.
                         <code>src/Content/Application/Application.AI.Common/Services/AgentConversationCache.cs</code>
                     </p>
 

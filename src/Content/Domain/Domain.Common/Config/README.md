@@ -79,7 +79,7 @@ public class MyService
 
 ### Common Configuration (`AppConfig.Common`)
 
-- **SlowThresholdSec**: Threshold beyond which requests are considered slow (default: 5s). Used by `RequestPerformanceBehavior`.
+- **SlowThresholdSec**: Not read by anything at present (default: 5s). It belonged to `RequestPerformanceBehavior`, which `RequestTracingBehavior` replaced; slow requests are found from span durations in the telemetry backend.
 
 ### Logging Configuration (`AppConfig.Logging`)
 

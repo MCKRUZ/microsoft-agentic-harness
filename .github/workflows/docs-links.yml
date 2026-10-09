@@ -1,6 +1,6 @@
 name: Documentation Structure Check
 
-# The five documentation sites have no build step — pages.yml copies the folders
+# The six documentation sites have no build step — pages.yml copies the folders
 # verbatim to GitHub Pages — so nothing catches a dead link, a stale anchor, or a
 # sidebar that drifted out of sync with its siblings until a reader hits it.
 #

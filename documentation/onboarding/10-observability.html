@@ -196,8 +196,8 @@ docker run -d --name jaeger \
 
                     <p>
                         <strong>What gets reported.</strong> Every execution path that establishes an agent context —
-                        an ordinary agent turn, an orchestrated task, a plan run, a sub-plan, and a directly invoked
-                        tool — reports under the right identity, and you do not have to do anything per path to make
+                        an ordinary agent turn, an orchestrated task, a plan run, a sub-plan, a delegated sub-agent (<code>delegate_task</code>), and a
+                        directly invoked tool — reports under the right identity, and you do not have to do anything per path to make
                         that true. Identity is published by the act of establishing the context itself and released
                         when that context's scope ends, so a path cannot establish one and omit the attribution. That
                         used to be a separate call each path made, and three of five paths did not make it: their

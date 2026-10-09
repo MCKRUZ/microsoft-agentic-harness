@@ -48,6 +48,22 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  DELETE /runs/{jobId}            → CancelEvalRunCommand                │ │
 │  │                                                                        │ │
 │  │  Datasets are NAMED, never pathed — see "Evaluation" below             │ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  WorkflowsController  /api/workflows                                   │ │
+│  │                                                                        │ │
+│  │  POST   /                        → SubmitWorkflowCommand               │ │
+│  │  POST   /{id}/runs               → StartWorkflowRunCommand (202)       │ │
+│  │  GET    /{id}/runs/{jobId}       → GetWorkflowRunQuery                 │ │
+│  │  GET    /{id}/runs/{jobId}/stream → WorkflowProgressStreamer (SSE)     │ │
+│  │  DELETE /{id}/runs/{jobId}       → CancelWorkflowRunCommand            │ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  SchedulesController  /api/schedules   off unless Enabled              │ │
+│  │                                                                        │ │
+│  │  POST   /                        → CreateScheduleCommand ← envelope    │ │
+│  │  GET    /                        → ListSchedulesQuery                  │ │
+│  │  POST   /{id}/pause              → PauseScheduleCommand (versioned)    │ │
+│  │  POST   /{id}/resume             → ResumeScheduleCommand (versioned)   │ │
+│  │  DELETE /{id}                    → DeleteScheduleCommand               │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
@@ -104,7 +120,7 @@ The disjointness check exists because the global registries scan discovery roots
 
 ### Streaming transport
 
-`BundleRunStreamer` adds only the transport concern: it arms `AgentTurnStreamSink` so token deltas become `TEXT_MESSAGE_CONTENT` frames, and clears it in a `finally` so it can never leak onto a later request on the same thread. `BundleStreamEventWriter` serializes against the `BundleStreamEvent` *base type* so `[JsonPolymorphic]` emits the `type` discriminator -- serializing by runtime type silently drops it. The ten event records deliberately duplicate a small subset of AG-UI rather than referencing the dashboard's 25-event vocabulary; if a third host needs them, extract a shared SSE primitive then.
+`BundleRunStreamer` adds only the transport concern: it arms `AgentTurnStreamSink` so token deltas become `TEXT_MESSAGE_CONTENT` frames, and clears it in a `finally` so it can never leak onto a later request on the same thread. `BundleStreamEventWriter` serializes against the `BundleStreamEvent` *base type* so `[JsonPolymorphic]` emits the `type` discriminator -- serializing by runtime type silently drops it. The ten event records deliberately duplicate a small subset of AG-UI rather than referencing the dashboard's 35-event vocabulary; if a third host needs them, extract a shared SSE primitive then.
 
 ### Fail-closed authentication, own audience
 
@@ -132,11 +148,13 @@ Presentation.ExecutionApi/
 ├── Controllers/
 │   ├── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
 │   ├── WorkflowsController.cs       Workflow submission, runs, progress stream, cancel
+│   ├── SchedulesController.cs       Recurring schedules: create, list, pause/resume (version-guarded), delete
 │   ├── ToolsController.cs           Read-only tool discovery, filtered by the caller's envelope
 │   └── EvalsController.cs            Dataset listing + eval runs; names on the wire, never paths
 ├── DTOs/
 │   ├── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
 │   ├── WorkflowRunContracts.cs      Run start/cancel/status projections
+│   ├── ScheduleContracts.cs         Schedule create/version requests; ScheduleResponse drops the envelope
 │   ├── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
 │   └── EvalRunContracts.cs          Eval request/response; report projects counts + cost, never transcripts
 ├── Extensions/
@@ -146,11 +164,14 @@ Presentation.ExecutionApi/
 ├── Services/
 │   ├── BundleCallerIdentity.cs      Stable per-caller id (oid → objectidentifier → nameid → sub)
 │   ├── AnonymousAuthenticationHandler.cs
+│   ├── RequestSizeLimitFilter.cs
 │   └── ExecutionApiAnonymousModeStartupWarning.cs
 ├── Streaming/
 │   ├── BundleRunStreamer.cs         Arms the text sink, calls IBundleRunExecutor, emits lifecycle frames
 │   ├── BundleStreamEventWriter.cs   `data: {json}\n\n`, flushed, write-serialized
-│   └── BundleStreamEvents.cs        The ten AG-UI-shaped event records
+│   ├── BundleStreamEvents.cs        The ten AG-UI-shaped event records
+│   ├── WorkflowProgressStreamer.cs  SSE writer for a workflow run's progress frames
+│   └── WorkflowProgressEvents.cs    The workflow progress frame records
 ├── appsettings.json                 Enables BundleExecution; Auth intentionally empty
 └── appsettings.Development.json     Local opt-in (anonymous auth)
 ```
@@ -429,11 +450,11 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
 4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
 
-The spec covers **all three route families this host serves** -- bundles, workflows, and tool
-discovery -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
+The spec covers **all five route families this host serves** -- bundles, workflows, tool
+discovery, evals, and schedules -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
 (W3--W6) went in over four PRs without a single spec entry, and the drift was only caught when
 someone went looking. If you add a route here, add it to the spec in the same change. A published
-contract that describes two thirds of the surface is worse than one that admits its gaps, because
+contract that describes only part of the surface is worse than one that admits its gaps, because
 consumers cannot tell which third is missing.
 
 `BundleRunStatus` numeric values are anchored by a `Domain.AI` enum test -- add new states at the end only.

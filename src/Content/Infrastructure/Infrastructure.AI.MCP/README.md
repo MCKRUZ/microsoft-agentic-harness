@@ -50,7 +50,7 @@ The connection manager handles three transport types:
 3. Creates the appropriate transport (Stdio, HTTP, or SSE) from the definition.
 4. Calls `McpClient.CreateAsync()` with configured timeout and client metadata.
 5. Caches the connected client in a `ConcurrentDictionary`.
-6. Returns the cached client on subsequent calls.
+6. Returns the cached client on subsequent calls. The shared caches are keyed by server name only, so every caller in the process shares one session per server; that is safe only because no credential attached to a cached session is per-caller. Adding per-caller MCP credentials means widening the cache key first (see the `McpConnectionManager` entry in the root `CLAUDE.md`).
 7. Implements `IAsyncDisposable` to close all connections on shutdown.
 
 **Error handling:** Failed connections throw `McpConnectionException` with the server name and transport type, enabling structured error reporting. Disabled servers are explicitly rejected.

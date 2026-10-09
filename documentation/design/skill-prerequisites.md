@@ -64,7 +64,7 @@ public interface ISkillCompletionTracker
 }
 ```
 
-In-memory implementation using `ConcurrentDictionary<string, HashSet<string>>`. Conversation-scoped lifetime — entries are cleaned up when the conversation ends or the cache evicts the agent.
+In-memory implementation using `ConcurrentDictionary<string, HashSet<string>>`. Conversation-scoped lifetime — entries are cleared by `IAgentConversationCache.Evict` when the conversation ends or is reassigned to another agent. They are kept across `Invalidate` and across a rebuild triggered by changed skills or options, so a turn that only changes settings does not re-lock unlocked skills.
 
 ### Prerequisite Metadata
 

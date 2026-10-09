@@ -1,6 +1,6 @@
 # Presentation.ConsoleUI
 
-An interactive terminal application that demonstrates every capability of the Agentic Harness through nine runnable examples -- from single-agent conversations to multi-agent orchestration, RAG pipeline demos, and Azure AI Foundry persistent agents. Built with Spectre.Console for rich terminal UI (menus, tables, colored output).
+An interactive terminal application that demonstrates every capability of the Agentic Harness through runnable examples -- from single-agent conversations to multi-agent orchestration, RAG pipeline demos, and Azure AI Foundry persistent agents. Built with Spectre.Console for rich terminal UI (menus, tables, colored output).
 
 When you run it, you see a selection menu with categorized choices. Pick an example, and it runs end-to-end against your configured AI backend, exercising the full stack: Domain models, Application CQRS handlers, Infrastructure AI services, and tool execution. This is the fastest way to verify the harness works without needing a browser.
 
