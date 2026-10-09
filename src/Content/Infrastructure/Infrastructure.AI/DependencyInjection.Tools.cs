@@ -481,7 +481,8 @@ public static partial class DependencyInjection
         {
             // FoundryDirectResponses (issue #382): bypasses AIProjectClient's Project-scoped
             // routing — measured ~15x slower than calling the same model/tenant/credential via the
-            // bare resource endpoint — using a plain AzureOpenAIClient against ResourceEndpoint.
+            // bare resource endpoint — using an OpenAI-native ResponsesClient against ResourceEndpoint's
+            // /openai/v1/ surface (see AgentFrameworkHelper.CreateFoundryDirectResponsesClient).
             // Gated independently of IsConfigured/ProjectEndpoint: a consumer may configure only
             // this direct path, only the Project-scoped path, or both.
             if (!Uri.TryCreate(foundry.ResourceEndpoint, UriKind.Absolute, out var resourceUri))
@@ -493,14 +494,12 @@ public static partial class DependencyInjection
 
             services.AddKeyedSingleton(
                 AgentFrameworkHelper.FoundryDirectResponsesClientKey,
-                (_, _) => new AzureOpenAIClient(
-                    resourceUri, credential, AgentFrameworkHelper.GetAzureOpenAIClientOptions()));
+                (_, _) => AgentFrameworkHelper.CreateFoundryDirectResponsesClient(resourceUri, credential));
 
             services.AddKeyedSingleton(
                 AgentFrameworkHelper.FoundryDirectResponsesNoRetryClientKey,
-                (_, _) => new AzureOpenAIClient(
-                    resourceUri, credential,
-                    AgentFrameworkHelper.GetAzureOpenAIClientOptions(disableProviderRetry: true)));
+                (_, _) => AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
+                    resourceUri, credential, disableProviderRetry: true));
         }
     }
 }

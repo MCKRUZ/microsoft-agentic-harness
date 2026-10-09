@@ -12,6 +12,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OpenAI.Responses;
 using OpenAI;
 
 namespace Infrastructure.AI.Factories;
@@ -161,12 +162,12 @@ public sealed partial class ChatClientFactory
             ? AgentFrameworkHelper.FoundryDirectResponsesNoRetryClientKey
             : AgentFrameworkHelper.FoundryDirectResponsesClientKey;
 
-        var client = _serviceProvider.GetKeyedService<AzureOpenAIClient>(key)
+        var client = _serviceProvider.GetKeyedService<ResponsesClient>(key)
             ?? throw new AiProviderNotConfiguredException(
                 "FoundryDirectResponses is not configured. Set AppConfig:AI:AIFoundry:ResourceEndpoint " +
                 "and AppConfig:AI:AIFoundry:Entra.");
 
-        return Task.FromResult(client.GetResponsesClient().AsIChatClient(deploymentName));
+        return Task.FromResult(client.AsIChatClient(deploymentName));
     }
 
     private Task<IChatClient> GetOpenAIChatClientAsync(

@@ -183,7 +183,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.FoundryResponses => _appConfig.CurrentValue.AI.AIFoundry.IsConfigured,
             AIAgentFrameworkClientType.FoundryDirectResponses =>
                 _appConfig.CurrentValue.AI.AIFoundry.IsDirectResponsesConfigured
-                && _serviceProvider.GetKeyedService<AzureOpenAIClient>(
+                && _serviceProvider.GetKeyedService<OpenAI.Responses.ResponsesClient>(
                     AgentFrameworkHelper.FoundryDirectResponsesClientKey) != null,
             AIAgentFrameworkClientType.Echo => true,
             _ => false

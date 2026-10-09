@@ -67,8 +67,8 @@ public enum AIAgentFrameworkClientType
 	/// <summary>
 	/// Azure AI Foundry Responses (direct inference) — same model and credential as
 	/// <see cref="FoundryResponses"/>, but calls the bare resource endpoint
-	/// (<c>AppConfig:AI:AIFoundry:ResourceEndpoint</c>) via a plain
-	/// <c>AzureOpenAIClient.GetResponsesClient().AsIChatClient(...)</c> instead of routing through
+	/// (<c>AppConfig:AI:AIFoundry:ResourceEndpoint</c>) via an OpenAI SDK <c>ResponsesClient</c> on the
+	/// resource's <c>/openai/v1/</c> surface (<c>.AsIChatClient(...)</c>) instead of routing through
 	/// <c>AIProjectClient</c>'s Project-scoped endpoint.
 	/// </summary>
 	/// <remarks>
