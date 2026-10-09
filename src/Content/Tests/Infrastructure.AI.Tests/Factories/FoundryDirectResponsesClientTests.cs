@@ -75,6 +75,7 @@ public sealed class FoundryDirectResponsesClientTests
         var client = AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
             new Uri("https://myresource.services.ai.azure.com/"),
             new StaticTokenCredential("t"),
+            disableProviderRetry: false,
             transport: new HttpClientPipelineTransport(new HttpClient(handler)));
 
         var chat = client.AsIChatClient("my-deployment");

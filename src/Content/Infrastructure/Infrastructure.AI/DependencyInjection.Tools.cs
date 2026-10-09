@@ -492,6 +492,15 @@ public static partial class DependencyInjection
                     "valid absolute URI.");
             }
 
+            // An Entra bearer token is attached to every request, and the SDK refuses to send one over
+            // a non-TLS endpoint — but only on the first call, mid-conversation. Fail at startup instead.
+            if (resourceUri.Scheme != Uri.UriSchemeHttps)
+            {
+                throw new InvalidOperationException(
+                    $"AppConfig:AI:AIFoundry:ResourceEndpoint '{foundry.ResourceEndpoint}' must use https: " +
+                    "the Entra token is sent with every request.");
+            }
+
             services.AddKeyedSingleton(
                 AgentFrameworkHelper.FoundryDirectResponsesClientKey,
                 (_, _) => AgentFrameworkHelper.CreateFoundryDirectResponsesClient(resourceUri, credential));

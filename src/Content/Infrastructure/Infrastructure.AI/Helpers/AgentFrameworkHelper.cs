@@ -75,12 +75,22 @@ public static class AgentFrameworkHelper
     /// <param name="disableProviderRetry">
     /// When true the SDK makes no retries of its own, leaving retry to the Polly pipeline.
     /// </param>
-    /// <param name="transport">Test seam: replaces the HTTP transport. Production leaves this null.</param>
     public static ResponsesClient CreateFoundryDirectResponsesClient(
         Uri resourceEndpoint,
         TokenCredential credential,
-        bool disableProviderRetry = false,
-        PipelineTransport? transport = null)
+        bool disableProviderRetry = false) =>
+        CreateFoundryDirectResponsesClient(resourceEndpoint, credential, disableProviderRetry, transport: null);
+
+    /// <summary>
+    /// As <see cref="CreateFoundryDirectResponsesClient(Uri, TokenCredential, bool)"/> with a
+    /// replaceable HTTP transport. Internal so the seam cannot be used downstream to wrap a transport
+    /// that sees the <c>Authorization</c> header; tests reach it through InternalsVisibleTo.
+    /// </summary>
+    internal static ResponsesClient CreateFoundryDirectResponsesClient(
+        Uri resourceEndpoint,
+        TokenCredential credential,
+        bool disableProviderRetry,
+        PipelineTransport? transport)
     {
         ArgumentNullException.ThrowIfNull(resourceEndpoint);
         ArgumentNullException.ThrowIfNull(credential);

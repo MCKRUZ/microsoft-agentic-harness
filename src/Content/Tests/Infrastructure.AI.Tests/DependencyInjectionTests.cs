@@ -249,6 +249,29 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddInfrastructureAIDependencies_FoundryDirectResponsesNonHttpsResourceEndpoint_ThrowsAtRegistration()
+    {
+        // The Entra token goes out with every request; the SDK refuses a non-TLS endpoint, but only on the
+        // first call. A bad value must stop the host at startup, not a conversation.
+        var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig
+        {
+            AI = new Domain.Common.Config.AI.AIConfig
+            {
+                AIFoundry = new Domain.Common.Config.AI.AIFoundry.AIFoundryConfig
+                {
+                    ResourceEndpoint = "http://myresource.services.ai.azure.com"
+                }
+            }
+        });
+        var services = CreateBaseServices(config);
+
+        var act = () => services.AddInfrastructureAIDependencies(config);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*ResourceEndpoint*must use https*");
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_PlannerDatabaseDirectory_IsOwnerOnly()
     {
         // #660, following #640/#527's precedent: the directory is created directly inside DI
