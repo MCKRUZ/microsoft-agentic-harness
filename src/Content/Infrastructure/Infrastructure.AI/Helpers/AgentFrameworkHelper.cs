@@ -30,9 +30,10 @@ public static class AgentFrameworkHelper
     /// <summary>
     /// DI key for the <see cref="ResponsesClient"/> targeting the bare AI Foundry resource
     /// endpoint (<see cref="Domain.Common.Config.AI.AIAgentFrameworkClientType.FoundryDirectResponses"/>).
-    /// Keyed rather than resolved unkeyed because the harness's primary
-    /// <see cref="AzureOpenAIClient"/> registration (for <c>ClientType=AzureOpenAI</c>) uses a
-    /// different endpoint and credential (API key vs Entra) — the two must never share a slot.
+    /// Keyed rather than resolved unkeyed because this is one of two variants (this one and
+    /// <see cref="FoundryDirectResponsesNoRetryClientKey"/>) of the same client type, and a consumer
+    /// may register other <see cref="ResponsesClient"/> instances with different endpoints or
+    /// credentials that must never share a slot with it.
     /// </summary>
     public const string FoundryDirectResponsesClientKey = "foundry-direct-responses";
 
