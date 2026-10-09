@@ -73,7 +73,10 @@
     <!-- 2.9.0-beta.1 restores compatibility with OpenAI 2.9.*; needed so the resolved OpenAI
          package (2.10.0, pulled in by Microsoft.Agents.AI.OpenAI/Foundry) doesn't run against
          an Azure.AI.OpenAI build compiled for OpenAI 2.8.0 — that combination throws
-         MissingMethodException on the Responses surface at runtime, not at build time. -->
+         MissingMethodException at runtime, not at build time. Serves the chat and embedding
+         clients only: the Foundry direct-Responses client no longer uses this package, because
+         its Responses constructor throws the same exception on OpenAI 2.13+ and 2.9.0-beta.1 is
+         the newest version published. -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
     <!-- Foundry stays on the 1.10 preview line while the rest of the Microsoft.Agents.AI

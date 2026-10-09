@@ -50,7 +50,7 @@ public static class AgentFrameworkHelper
     /// <see cref="AzureOpenAIClient"/> uses by default, so moving off that client does not change
     /// which token the resource is asked to accept.
     /// </summary>
-    public const string AzureEntraScope = "https://cognitiveservices.azure.com/.default";
+    private const string AzureEntraScope = "https://cognitiveservices.azure.com/.default";
 
     /// <summary>
     /// Creates the OpenAI-native <see cref="ResponsesClient"/> for the Azure AI Foundry Responses API

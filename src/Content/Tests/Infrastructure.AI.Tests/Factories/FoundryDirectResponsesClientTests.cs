@@ -72,24 +72,21 @@ public sealed class FoundryDirectResponsesClientTests
     public async Task EndpointWithATrailingSlash_StillResolvesToTheV1Route()
     {
         var handler = new CapturingHandler(HttpStatusCode.OK, SuccessBody);
-        var client = AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
-            new Uri("https://myresource.services.ai.azure.com/"),
-            new StaticTokenCredential("t"),
-            disableProviderRetry: false,
-            transport: new HttpClientPipelineTransport(new HttpClient(handler)));
+        var chat = Build(handler, new StaticTokenCredential("t"), endpoint: new Uri(Resource, "/"));
 
-        var chat = client.AsIChatClient("my-deployment");
-        Func<Task> act = () => chat.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+        await chat.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
 
-        await act.Should().NotThrowAsync();
         handler.Requests.Should().ContainSingle()
             .Which.Uri.Should().Be("https://myresource.services.ai.azure.com/openai/v1/responses");
     }
 
     private static IChatClient Build(
-        CapturingHandler handler, StaticTokenCredential credential, bool disableProviderRetry = false) =>
+        CapturingHandler handler,
+        StaticTokenCredential credential,
+        bool disableProviderRetry = false,
+        Uri? endpoint = null) =>
         AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
-                Resource,
+                endpoint ?? Resource,
                 credential,
                 disableProviderRetry,
                 new HttpClientPipelineTransport(new HttpClient(handler)))

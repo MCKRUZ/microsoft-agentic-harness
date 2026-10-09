@@ -10,9 +10,9 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using OpenAI.Responses;
 using Microsoft.Extensions.Options;
 using OpenAI;
+using OpenAI.Responses;
 
 namespace Infrastructure.AI.Factories;
 
