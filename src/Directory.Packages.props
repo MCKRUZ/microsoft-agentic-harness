@@ -8,6 +8,8 @@
 
     <!-- Domain layer -->
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.9" />
+    <!-- 10.0.12 is the floor Microsoft.Agents.AI 1.24 and Microsoft.Extensions.AI 10.10 require
+         (NU1605 otherwise); the other Microsoft.Extensions.* pins are not forced up and stay put. -->
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
 
     <!-- Domain.AI -->
@@ -70,13 +72,13 @@
     <PackageVersion Include="Cronos" Version="0.13.0" />
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
-    <!-- 2.9.0-beta.1 restores compatibility with OpenAI 2.9.*; needed so the resolved OpenAI
-         package (2.10.0, pulled in by Microsoft.Agents.AI.OpenAI/Foundry) doesn't run against
-         an Azure.AI.OpenAI build compiled for OpenAI 2.8.0 — that combination throws
-         MissingMethodException at runtime, not at build time. Serves the chat and embedding
-         clients only: the Foundry direct-Responses client no longer uses this package, because
-         its Responses constructor throws the same exception on OpenAI 2.13+ and 2.9.0-beta.1 is
-         the newest version published. -->
+    <!-- 2.9.0-beta.1 is the newest Azure.AI.OpenAI published, and it is compiled against an older
+         OpenAI library than the one Agent Framework 1.24 resolves (2.14.0). A mismatch throws
+         MissingMethodException at runtime, not at build time, and it did on this package's
+         Responses constructor — which is why the Foundry direct-Responses client no longer uses it.
+         The chat and embedding surfaces still work on 2.14.0; that is guarded by
+         AzureOpenAiSurfaceCompatibilityTests (it sends a request through each), not by this pin.
+         Re-run it on any OpenAI bump. See the follow-up to move off this package entirely. -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
     <!-- Foundry ships as a preview line that tracks the core family one-for-one
