@@ -8,11 +8,13 @@
 
     <!-- Domain layer -->
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
+    <!-- 10.0.12 is the floor Microsoft.Agents.AI 1.24 and Microsoft.Extensions.AI 10.10 require
+         (NU1605 otherwise); the other Microsoft.Extensions.* pins are not forced up and stay put. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
 
     <!-- Domain.AI -->
-    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.13.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.7.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.24.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.1" />
 
     <!-- Application layer -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
@@ -29,10 +31,10 @@
 
     <!-- Application.AI.Common -->
     <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.0.0" />
-    <PackageVersion Include="Microsoft.Agents.AI" Version="1.13.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.13.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.7.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.24.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.24.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.10.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.12" />
 
     <!-- Infrastructure layer -->
     <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
@@ -70,22 +72,17 @@
     <PackageVersion Include="Cronos" Version="0.13.0" />
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
-    <!-- 2.9.0-beta.1 restores compatibility with OpenAI 2.9.*; needed so the resolved OpenAI
-         package (2.10.0, pulled in by Microsoft.Agents.AI.OpenAI/Foundry) doesn't run against
-         an Azure.AI.OpenAI build compiled for OpenAI 2.8.0 — that combination throws
-         MissingMethodException at runtime, not at build time. Serves the chat and embedding
-         clients only: the Foundry direct-Responses client no longer uses this package, because
-         its Responses constructor throws the same exception on OpenAI 2.13+ and 2.9.0-beta.1 is
-         the newest version published. -->
+    <!-- Newest published, and compiled against an older OpenAI library than Agent Framework resolves.
+         A mismatch throws MissingMethodException at runtime, not at build time (it did on the
+         Responses constructor). AzureOpenAiSurfaceCompatibilityTests sends a request through each
+         surface still used; re-run it on any OpenAI bump. Moving off this package: #799. -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
-    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
-    <!-- Foundry stays on the 1.10 preview line while the rest of the Microsoft.Agents.AI
-         family moves to 1.13.0: there is no 1.13 Foundry preview, and the 1.13 core does
-         not force it — Foundry 1.10.0-preview consumes Microsoft.Extensions.AI 10.7.0
-         cleanly (verified at restore). Bump both together when a matching preview ships. -->
-    <PackageVersion Include="Microsoft.Agents.AI.Foundry" Version="1.10.0-preview.260610.1" />
-    <PackageVersion Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.10.0-preview.260610.1" />
-    <PackageVersion Include="Azure.AI.Projects" Version="2.1.0-beta.3" />
+    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
+    <!-- Foundry ships as a preview line that tracks the core family one-for-one
+         (1.24.0-preview.261006.1 pairs with 1.24.0); bump both together. -->
+    <PackageVersion Include="Microsoft.Agents.AI.Foundry" Version="1.24.0-preview.261006.1" />
+    <PackageVersion Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.24.0-preview.261006.1" />
+    <PackageVersion Include="Azure.AI.Projects" Version="3.0.0-beta.3" />
     <PackageVersion Include="Microsoft.Extensions.AI.AzureAIInference" Version="10.0.0-preview.1.25559.3" />
     <PackageVersion Include="Microsoft.Security.AntiSSRF" Version="1.0.0" />
 
@@ -97,11 +94,14 @@
     <PackageVersion Include="Scriban" Version="7.2.3" />
 
     <!-- Infrastructure.AI.MCP -->
-    <PackageVersion Include="ModelContextProtocol" Version="1.4.1" />
+    <!-- 2.x: Microsoft.Agents.AI.Foundry.Hosting 1.24 requires ModelContextProtocol 2.2.0, and NuGet would
+         otherwise run FoundryHost on 2.x under code compiled against 1.4.1 (a binary swap the compiler cannot
+         see). The whole solution is on 2.2.0 so the MCP client and server test suites run against what ships. -->
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
 
     <!-- Infrastructure.AI.MCPServer -->
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
 
     <!-- Infrastructure.APIAccess -->

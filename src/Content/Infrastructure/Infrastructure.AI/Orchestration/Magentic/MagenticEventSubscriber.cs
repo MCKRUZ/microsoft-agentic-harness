@@ -23,7 +23,7 @@ namespace Infrastructure.AI.Orchestration.Magentic;
 /// <para>
 /// One instance per workflow run. <see cref="MagenticOrchestrator"/> creates the
 /// subscriber, opens spans by calling <see cref="StartWorkflow"/>, then iterates
-/// the workflow's <see cref="StreamingRun.WatchStreamAsync"/> and hands each
+/// the workflow's <see cref="StreamingRun.WatchStreamAsync(CancellationToken)"/> and hands each
 /// event to <see cref="ProcessEventAsync"/>. The HITL bridge round-trip is
 /// driven through this class so the plan-review span lifetime spans the entire
 /// pause.

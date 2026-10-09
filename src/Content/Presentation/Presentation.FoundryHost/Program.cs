@@ -114,7 +114,12 @@ public static class Program
             // agent's dedicated identity and never exposes the listening port (8088) beyond the
             // Foundry runtime. Do not publish this port directly; all access must go through Foundry.
             var builder = AgentHost.CreateBuilder(args);
-            builder.Services.AddFoundryResponses(agent);
+            // Pinned to the file-system session store: Agent Framework 1.24 defaults to the platform's
+            // shared FoundryAgentSessionStore, and moving where that state lives should be a deliberate
+            // choice, not a side effect of a dependency bump.
+            var sessionStoreRoot = FoundryHostBootstrap.ResolveSessionStoreRoot(
+                Environment.GetEnvironmentVariable, Directory.GetCurrentDirectory());
+            builder.Services.AddFoundryResponses(agent, new FileSystemAgentSessionStore(sessionStoreRoot));
             builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses());
 
             // AgentHost.CreateBuilder builds its OWN, separate DI container — the comment above

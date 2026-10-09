@@ -20,6 +20,23 @@ internal static class FoundryHostBootstrap
     internal const string StateRootSubdirectory = "agent-state";
 
     /// <summary>
+    /// Resolves the directory the agent session store persists the framework's runtime state to:
+    /// <c>{HOME}/.checkpoints</c>, falling back to the working directory when <c>HOME</c> is unset.
+    /// <c>$HOME</c> is the one directory the Foundry platform keeps writable and durable for a
+    /// session's lifetime.
+    /// </summary>
+    /// <param name="readEnv">Reads an environment variable by name (returns <c>null</c> when unset).</param>
+    /// <param name="currentDirectory">The working directory to fall back to.</param>
+    internal static string ResolveSessionStoreRoot(Func<string, string?> readEnv, string currentDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(readEnv);
+        ArgumentException.ThrowIfNullOrWhiteSpace(currentDirectory);
+
+        var home = readEnv("HOME");
+        return Path.Combine(string.IsNullOrWhiteSpace(home) ? currentDirectory : home, ".checkpoints");
+    }
+
+    /// <summary>
     /// Computes the harness configuration overrides implied by Foundry's runtime-injected
     /// environment variables. Returns the <c>AppConfig__...</c> keys that should be set, leaving the
     /// actual <see cref="Environment"/> mutation to the caller so this stays pure and testable.

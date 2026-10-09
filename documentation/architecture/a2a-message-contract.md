@@ -8,15 +8,20 @@ touching call sites.
 
 ## Why not a thin wrapper over MAF A2A?
 
-The plan calls for "thin wrapper over MAF" but Microsoft Agent
-Framework 1.10.0 (current pin — `Microsoft.Agents.AI`) does **not** ship
-an A2A client/server surface. The Linux Foundation A2A protocol is
-young (June 2025) and MAF has not yet published primitives that the
-harness could wrap. PR-7 therefore ships a harness-native A2A surface
-with the same goals — wire shape, identity propagation, OTel span
-linking, mutual-TLS-plus-JWT auth — and pins to MAF 1.10.0 via a
-canary test (`A2AVersionPinTests`) that fails the moment MAF adds an
-A2A surface, so the harness can switch to wrapping it.
+The plan calls for "thin wrapper over MAF" but the core Microsoft Agent
+Framework assemblies the harness loads (`Microsoft.Agents.AI`, current pin
+1.24.0) do **not** ship an A2A client/server surface. The Linux Foundation
+A2A protocol is young (June 2025) and the core assemblies publish no
+primitives that the harness could wrap. PR-7 therefore ships a
+harness-native A2A surface with the same goals — wire shape, identity
+propagation, OTel span linking, mutual-TLS-plus-JWT auth — and pins the MAF
+version via a canary test (`A2AVersionPinTests`) that fails if a loaded MAF
+assembly gains an A2A surface.
+
+Note the canary's limit: Microsoft also publishes A2A and AG-UI hosting as
+separate preview packages (for example `Microsoft.Agents.AI.Hosting.A2A`).
+The harness does not load them, so the canary cannot see them. Whether to
+wrap them instead is an open evaluation, not something this test answers.
 
 ## Envelope
 
@@ -219,9 +224,10 @@ Missing handlers surface as `a2a.skill_not_found`.
 
 `Infrastructure.AI.Tests/A2A/A2AVersionPinTests` asserts:
 
-- `Microsoft.Agents.AI` 1.10.0 does **not** expose a public A2A surface
-  (canary: when MAF adds one, this test fails and the harness should
-  switch to wrapping it).
+- The loaded `Microsoft.Agents.AI` assemblies (1.24.0) do **not** expose a
+  public A2A surface (canary: when one gains it, this test fails and the
+  harness should switch to wrapping it; separate preview hosting packages
+  are not covered).
 - `A2AEnvelope.CurrentSchemaVersion == 1` — bumping requires updating
   the test and writing a migration note.
 

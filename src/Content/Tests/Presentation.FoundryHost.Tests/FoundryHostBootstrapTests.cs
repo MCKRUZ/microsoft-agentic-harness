@@ -244,4 +244,31 @@ public sealed class FoundryHostBootstrapTests
 
         FoundryHostBootstrap.ResolveSkillIds(definition).Should().Equal("default");
     }
+
+    [Fact]
+    public void ResolveSessionStoreRoot_WithHome_RootsUnderHomeCheckpoints()
+    {
+        var root = FoundryHostBootstrap.ResolveSessionStoreRoot(Env(("HOME", "/home/session")), "/app");
+
+        root.Should().Be(Path.Combine("/home/session", ".checkpoints"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveSessionStoreRoot_WithoutUsableHome_FallsBackToTheWorkingDirectory(string? home)
+    {
+        var root = FoundryHostBootstrap.ResolveSessionStoreRoot(Env(("HOME", home)), "/app");
+
+        root.Should().Be(Path.Combine("/app", ".checkpoints"));
+    }
+
+    [Fact]
+    public void ModelContextProtocol_IsTheMajorVersionTheFoundryHostingPackageRequires()
+    {
+        // Microsoft.Agents.AI.Foundry.Hosting 1.24 requires ModelContextProtocol 2.x. Pinned solution-wide
+        // so every project, not just this host, is built and tested against the version that ships.
+        typeof(ModelContextProtocol.Client.McpClient).Assembly.GetName().Version!.Major.Should().Be(2);
+    }
 }
