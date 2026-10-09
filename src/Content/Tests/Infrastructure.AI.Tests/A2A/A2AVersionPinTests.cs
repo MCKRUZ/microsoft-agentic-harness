@@ -12,8 +12,9 @@ namespace Infrastructure.AI.Tests.A2A;
 /// <list type="number">
 /// <item><description>Pin the harness <see cref="A2AEnvelope"/> schema version
 /// so any breaking shape change forces an explicit bump.</description></item>
-/// <item><description>Assert <c>Microsoft.Agents.AI</c> (MAF) 1.13.0 still
-/// lacks a public A2A surface. The moment MAF ships one, this test fails and
+/// <item><description>Assert the <c>Microsoft.Agents.AI</c> (MAF) assemblies the harness loads still
+/// lack a public A2A surface (the separate preview <c>Microsoft.Agents.AI.A2A</c> package is not one
+/// of them). The moment MAF ships one, this test fails and
 /// the harness should switch to wrapping it instead of carrying its own
 /// transport implementation.</description></item>
 /// </list>
@@ -59,19 +60,18 @@ public sealed class A2AVersionPinTests
             .ToList();
 
         probes.Should().BeEmpty(
-            "Microsoft Agent Framework 1.13.0 does not expose A2A primitives; if this test fails MAF has added them and the harness should wrap them — see documentation/architecture/a2a-message-contract.md 'Version pin' section");
+            "The loaded Microsoft Agent Framework assemblies do not expose A2A primitives; if this test fails MAF has added them and the harness should wrap them — see documentation/architecture/a2a-message-contract.md 'Version pin' section");
     }
 
     [Fact]
-    public void Maf_assembly_is_pinned_to_1_13_x()
+    public void Maf_assembly_is_pinned_to_1_24_x()
     {
         var maf = typeof(Microsoft.Agents.AI.AIAgent).Assembly;
         var version = maf.GetName().Version;
         version.Should().NotBeNull();
         version!.Major.Should().Be(1, "harness pins to MAF 1.x");
-        version.Minor.Should().Be(13,
-            "harness pins to MAF 1.13.x (Track A catch-up from 1.10.x); the A2A-surface canary above " +
-            "was re-run at 1.13 and still finds no public A2A primitives. Bumping minor requires " +
-            "re-running these canaries");
+        version.Minor.Should().Be(24,
+            "harness pins to MAF 1.24.x; the A2A-surface canary above was re-run at 1.24 and still finds " +
+            "no public A2A primitives in the loaded assemblies. Bumping minor requires re-running these canaries");
     }
 }

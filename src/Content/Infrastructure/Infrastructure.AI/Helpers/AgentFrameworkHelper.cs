@@ -66,8 +66,8 @@ public static class AgentFrameworkHelper
     /// Agent Framework 1.21+ requires, a failure the compiler cannot see.
     /// </para>
     /// <para>
-    /// Timeout, user agent and retry suppression come from <see cref="GetOpenAIClientOptions"/>, so
-    /// this client behaves like every other OpenAI-protocol client the harness builds.
+    /// Timeout, user agent and retry suppression match <see cref="GetOpenAIClientOptions"/>, so this
+    /// client behaves like every other OpenAI-protocol client the harness builds.
     /// </para>
     /// </remarks>
     /// <param name="resourceEndpoint">The bare resource endpoint, e.g. <c>https://my-project.services.ai.azure.com</c>.</param>
@@ -95,10 +95,16 @@ public static class AgentFrameworkHelper
         ArgumentNullException.ThrowIfNull(resourceEndpoint);
         ArgumentNullException.ThrowIfNull(credential);
 
-        var options = GetOpenAIClientOptions(
-            endpoint: resourceEndpoint.AbsoluteUri.TrimEnd('/') + "/openai/v1/",
-            disableProviderRetry: disableProviderRetry);
+        // ResponsesClient takes its own options type (not OpenAIClientOptions), so the same settings
+        // GetOpenAIClientOptions applies are set here directly.
+        var options = new ResponsesClientOptions
+        {
+            Endpoint = new Uri(resourceEndpoint.AbsoluteUri.TrimEnd('/') + "/openai/v1/"),
+            NetworkTimeout = TimeSpan.FromSeconds(DefaultNetworkTimeoutSeconds),
+            UserAgentApplicationId = UserAgentValue
+        };
 
+        if (disableProviderRetry) options.RetryPolicy = new ClientRetryPolicy(maxRetries: 0);
         if (transport is not null) options.Transport = transport;
 
         return new ResponsesClient(new BearerTokenPolicy(credential, AzureEntraScope), options);
