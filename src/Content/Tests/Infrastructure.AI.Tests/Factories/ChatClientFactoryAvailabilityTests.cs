@@ -6,6 +6,7 @@ using Domain.Common.Config.AI.AIFoundry;
 using FluentAssertions;
 using Infrastructure.AI.Factories;
 using Infrastructure.AI.Helpers;
+using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -61,7 +62,8 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     private static void RegisterFakeFoundryDirectResponsesClient(ServiceCollection services) =>
         services.AddKeyedSingleton(
             AgentFrameworkHelper.FoundryDirectResponsesClientKey,
-            new AzureOpenAIClient(new Uri(FoundryDirectResponsesResourceEndpoint), new AzureKeyCredential("fake")));
+            AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
+                new Uri(FoundryDirectResponsesResourceEndpoint), new StaticTokenCredential("fake-token")));
 
     [Fact]
     public void IsAvailable_AzureOpenAI_NoClient_ReturnsFalse()

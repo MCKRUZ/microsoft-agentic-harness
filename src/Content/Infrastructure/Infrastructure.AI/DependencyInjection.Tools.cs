@@ -481,7 +481,8 @@ public static partial class DependencyInjection
         {
             // FoundryDirectResponses (issue #382): bypasses AIProjectClient's Project-scoped
             // routing — measured ~15x slower than calling the same model/tenant/credential via the
-            // bare resource endpoint — using a plain AzureOpenAIClient against ResourceEndpoint.
+            // bare resource endpoint — using an OpenAI-native ResponsesClient against ResourceEndpoint's
+            // /openai/v1/ surface (see AgentFrameworkHelper.CreateFoundryDirectResponsesClient).
             // Gated independently of IsConfigured/ProjectEndpoint: a consumer may configure only
             // this direct path, only the Project-scoped path, or both.
             if (!Uri.TryCreate(foundry.ResourceEndpoint, UriKind.Absolute, out var resourceUri))
@@ -491,16 +492,23 @@ public static partial class DependencyInjection
                     "valid absolute URI.");
             }
 
+            // An Entra bearer token is attached to every request, and the SDK refuses to send one over
+            // a non-TLS endpoint — but only on the first call, mid-conversation. Fail at startup instead.
+            if (resourceUri.Scheme != Uri.UriSchemeHttps)
+            {
+                throw new InvalidOperationException(
+                    $"AppConfig:AI:AIFoundry:ResourceEndpoint '{foundry.ResourceEndpoint}' must use https: " +
+                    "the Entra token is sent with every request.");
+            }
+
             services.AddKeyedSingleton(
                 AgentFrameworkHelper.FoundryDirectResponsesClientKey,
-                (_, _) => new AzureOpenAIClient(
-                    resourceUri, credential, AgentFrameworkHelper.GetAzureOpenAIClientOptions()));
+                (_, _) => AgentFrameworkHelper.CreateFoundryDirectResponsesClient(resourceUri, credential));
 
             services.AddKeyedSingleton(
                 AgentFrameworkHelper.FoundryDirectResponsesNoRetryClientKey,
-                (_, _) => new AzureOpenAIClient(
-                    resourceUri, credential,
-                    AgentFrameworkHelper.GetAzureOpenAIClientOptions(disableProviderRetry: true)));
+                (_, _) => AgentFrameworkHelper.CreateFoundryDirectResponsesClient(
+                    resourceUri, credential, disableProviderRetry: true));
         }
     }
 }

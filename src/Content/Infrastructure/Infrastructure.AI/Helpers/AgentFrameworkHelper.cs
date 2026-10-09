@@ -1,7 +1,9 @@
 using System.ClientModel.Primitives;
 using Azure.AI.OpenAI;
+using Azure.Core;
 using Infrastructure.AI.Caching;
 using OpenAI;
+using OpenAI.Responses;
 
 namespace Infrastructure.AI.Helpers;
 
@@ -26,11 +28,12 @@ public static class AgentFrameworkHelper
     public const string NoProviderRetryClientKey = "no-provider-retry";
 
     /// <summary>
-    /// DI key for the <see cref="AzureOpenAIClient"/> targeting the bare AI Foundry resource
+    /// DI key for the <see cref="ResponsesClient"/> targeting the bare AI Foundry resource
     /// endpoint (<see cref="Domain.Common.Config.AI.AIAgentFrameworkClientType.FoundryDirectResponses"/>).
-    /// Keyed rather than resolved unkeyed because the harness's primary
-    /// <see cref="AzureOpenAIClient"/> registration (for <c>ClientType=AzureOpenAI</c>) uses a
-    /// different endpoint and credential (API key vs Entra) — the two must never share a slot.
+    /// Keyed rather than resolved unkeyed because this is one of two variants (this one and
+    /// <see cref="FoundryDirectResponsesNoRetryClientKey"/>) of the same client type, and a consumer
+    /// may register other <see cref="ResponsesClient"/> instances with different endpoints or
+    /// credentials that must never share a slot with it.
     /// </summary>
     public const string FoundryDirectResponsesClientKey = "foundry-direct-responses";
 
@@ -41,6 +44,65 @@ public static class AgentFrameworkHelper
     /// whichever provider <see cref="NoProviderRetryClientKey"/> would otherwise resolve.
     /// </summary>
     public const string FoundryDirectResponsesNoRetryClientKey = "foundry-direct-responses-no-retry";
+
+    /// <summary>
+    /// The Entra scope the direct Responses client requests a token for. The same audience
+    /// <see cref="AzureOpenAIClient"/> uses by default, so moving off that client does not change
+    /// which token the resource is asked to accept.
+    /// </summary>
+    private const string AzureEntraScope = "https://cognitiveservices.azure.com/.default";
+
+    /// <summary>
+    /// Creates the OpenAI-native <see cref="ResponsesClient"/> for the Azure AI Foundry Responses API
+    /// called directly against the bare resource endpoint
+    /// (<see cref="Domain.Common.Config.AI.AIAgentFrameworkClientType.FoundryDirectResponses"/>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Built on the OpenAI SDK against the resource's <c>/openai/v1/</c> surface rather than on
+    /// <c>AzureOpenAIClient.GetResponsesClient()</c>. Azure.AI.OpenAI's newest published version
+    /// (2.9.0-beta.1) is compiled against an older OpenAI library, and its Responses constructor
+    /// throws <see cref="MissingMethodException"/> at runtime once the OpenAI library is the one
+    /// Agent Framework 1.21+ requires, a failure the compiler cannot see.
+    /// </para>
+    /// <para>
+    /// Timeout, user agent and retry suppression come from <see cref="GetOpenAIClientOptions"/>, so
+    /// this client behaves like every other OpenAI-protocol client the harness builds.
+    /// </para>
+    /// </remarks>
+    /// <param name="resourceEndpoint">The bare resource endpoint, e.g. <c>https://my-project.services.ai.azure.com</c>.</param>
+    /// <param name="credential">The Entra credential shared with the Project-scoped Foundry path.</param>
+    /// <param name="disableProviderRetry">
+    /// When true the SDK makes no retries of its own, leaving retry to the Polly pipeline.
+    /// </param>
+    public static ResponsesClient CreateFoundryDirectResponsesClient(
+        Uri resourceEndpoint,
+        TokenCredential credential,
+        bool disableProviderRetry = false) =>
+        CreateFoundryDirectResponsesClient(resourceEndpoint, credential, disableProviderRetry, transport: null);
+
+    /// <summary>
+    /// As <see cref="CreateFoundryDirectResponsesClient(Uri, TokenCredential, bool)"/> with a
+    /// replaceable HTTP transport. Internal so the seam cannot be used downstream to wrap a transport
+    /// that sees the <c>Authorization</c> header; tests reach it through InternalsVisibleTo.
+    /// </summary>
+    internal static ResponsesClient CreateFoundryDirectResponsesClient(
+        Uri resourceEndpoint,
+        TokenCredential credential,
+        bool disableProviderRetry,
+        PipelineTransport? transport)
+    {
+        ArgumentNullException.ThrowIfNull(resourceEndpoint);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        var options = GetOpenAIClientOptions(
+            endpoint: resourceEndpoint.AbsoluteUri.TrimEnd('/') + "/openai/v1/",
+            disableProviderRetry: disableProviderRetry);
+
+        if (transport is not null) options.Transport = transport;
+
+        return new ResponsesClient(new BearerTokenPolicy(credential, AzureEntraScope), options);
+    }
 
     /// <summary>
     /// Gets configured options for <see cref="AzureOpenAIClient"/>.

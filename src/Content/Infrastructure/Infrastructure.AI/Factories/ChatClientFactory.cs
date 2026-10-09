@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI;
+using OpenAI.Responses;
 
 namespace Infrastructure.AI.Factories;
 
@@ -183,7 +184,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.FoundryResponses => _appConfig.CurrentValue.AI.AIFoundry.IsConfigured,
             AIAgentFrameworkClientType.FoundryDirectResponses =>
                 _appConfig.CurrentValue.AI.AIFoundry.IsDirectResponsesConfigured
-                && _serviceProvider.GetKeyedService<AzureOpenAIClient>(
+                && _serviceProvider.GetKeyedService<ResponsesClient>(
                     AgentFrameworkHelper.FoundryDirectResponsesClientKey) != null,
             AIAgentFrameworkClientType.Echo => true,
             _ => false
