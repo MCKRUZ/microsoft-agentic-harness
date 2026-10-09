@@ -103,6 +103,10 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             // MAF's Magentic orchestrator does not start itself: it needs the input messages AND a
             // TurnToken, and OpenStreamingAsync sends neither (only RunStreamingAsync does). Without
             // both the run just waits for input that never comes.
+            // TrySendMessageAsync takes no token, so honour an already-cancelled caller before it starts
+            // the manager's model calls.
+            ct.ThrowIfCancellationRequested();
+
             var taskMessages = new List<ChatMessage> { new(ChatRole.User, request.Task) };
             if (!await run.TrySendMessageAsync(taskMessages).ConfigureAwait(false)
                 || !await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
@@ -110,8 +114,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
                 _logger.LogError(
                     "Magentic workflow {WorkflowId} refused its task or start signal",
                     workflowId);
-                subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
-                return Result<MagenticWorkflowResult>.Fail("magentic.start_rejected");
+                return Fail(subscriber, "magentic.start_rejected");
             }
 
             await foreach (var evt in run.WatchStreamAsync(ct).ConfigureAwait(false))
@@ -124,25 +127,29 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             }
 
             // MAF's stream reader swallows cancellation and just ends the stream, which would read as a
-            // clean completion with no output. Surface it as the cancellation it is.
-            ct.ThrowIfCancellationRequested();
+            // clean completion with no output. Surface it as the cancellation it is — unless the run had
+            // already produced its answer, which a late cancellation must not discard.
+            if (subscriber.FinalOutput is null) ct.ThrowIfCancellationRequested();
 
             completionReason = DeriveCompletionReason(subscriber, request);
         }
         catch (OperationCanceledException)
         {
-            completionReason = MagenticConventions.CompletionReasonError;
-            subscriber.EndWorkflow(completionReason);
-            return Result<MagenticWorkflowResult>.Fail("magentic.cancelled");
+            return Fail(subscriber, "magentic.cancelled");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Magentic workflow {WorkflowId} failed with unhandled exception",
                 workflowId);
-            completionReason = MagenticConventions.CompletionReasonError;
-            subscriber.EndWorkflow(completionReason);
-            return Result<MagenticWorkflowResult>.Fail("magentic.unhandled_exception");
+            return Fail(subscriber, "magentic.unhandled_exception");
+        }
+
+        if (completionReason == MagenticConventions.CompletionReasonSatisfied && subscriber.FinalOutput is null)
+        {
+            _logger.LogWarning(
+                "Magentic workflow {WorkflowId} ended as satisfied without producing a final answer",
+                workflowId);
         }
 
         subscriber.EndWorkflow(completionReason);
@@ -162,6 +169,14 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         return completionReason == MagenticConventions.CompletionReasonError
             ? Result<MagenticWorkflowResult>.Fail(subscriber.ErrorMessage ?? "magentic.error")
             : Result<MagenticWorkflowResult>.Success(result);
+    }
+
+    // Every early exit closes the workflow span as an error and returns a stable code; one helper so
+    // the exits cannot drift apart.
+    private static Result<MagenticWorkflowResult> Fail(MagenticEventSubscriber subscriber, string code)
+    {
+        subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
+        return Result<MagenticWorkflowResult>.Fail(code);
     }
 
     private static string DeriveCompletionReason(MagenticEventSubscriber subscriber, MagenticWorkflowRequest request)

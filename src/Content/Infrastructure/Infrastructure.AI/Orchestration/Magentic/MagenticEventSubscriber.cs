@@ -177,7 +177,19 @@ public sealed class MagenticEventSubscriber : IDisposable
             _ => null
         };
 
-        if (text is not null) _finalOutput = text;
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            _finalOutput = text;
+            return;
+        }
+
+        // ChatMessage.Text is "" (not null) for a message with only tool-call or data content, so a
+        // blank tail must not replace a real answer — and an unrecognised payload type is the shape a
+        // MAF upgrade would produce, which should be visible rather than a silent null answer.
+        _logger.LogWarning(
+            "Magentic workflow={WorkflowId} emitted terminal output with no usable text (payload {PayloadType})",
+            _workflowId,
+            output.Data?.GetType().FullName ?? "<null>");
     }
 
     private void HandlePlanCreated(MagenticPlanCreatedEvent evt)

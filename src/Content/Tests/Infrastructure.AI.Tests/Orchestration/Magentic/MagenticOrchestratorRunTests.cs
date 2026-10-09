@@ -1,6 +1,8 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Infrastructure.AI.Orchestration.Magentic;
 using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
@@ -64,6 +66,25 @@ public sealed class MagenticOrchestratorRunTests
             + "satisfied completion hands the caller an empty answer as if it were a real one");
     }
 
+    [Fact]
+    public async Task RunAsync_AmbientAdmissionPipeline_ReachesTheAgentsRunningInsideTheWorkflow()
+    {
+        // GovernedAIFunction fails open when no admission pipeline is on the current async flow, and
+        // MAF runs the workflow on a task it starts itself. Governance of every Magentic tool call
+        // therefore depends on that task inheriting the caller's execution context; this pins it.
+        var manager = new ScriptedAgent("manager", ScriptedBehavior.RecordThenFail);
+        var request = BuildRequest(manager);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using (ToolAdmissionAccessor.Begin(Mock.Of<IToolCallAdmissionPipeline>()))
+        {
+            await BuildOrchestrator().RunAsync(request, cts.Token);
+        }
+
+        manager.SawAdmissionPipeline.Should().BeTrue(
+            "a tool call made by the manager or a participant must still be admitted by the caller's pipeline");
+    }
+
     private static MagenticWorkflowRequest BuildRequest(AIAgent manager) => new()
     {
         Manager = manager,
@@ -112,6 +133,9 @@ public sealed class MagenticOrchestratorRunTests
             get { lock (_received) return [.. _received]; }
         }
 
+        /// <summary>True when the caller's admission pipeline was visible on the thread the workflow ran this agent on.</summary>
+        public bool SawAdmissionPipeline { get; private set; }
+
         protected override string IdCore => _id;
         public override string? Name => _id;
         public override string? Description => _id;
@@ -144,6 +168,8 @@ public sealed class MagenticOrchestratorRunTests
 
         private async Task RecordAndMisbehaveAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
         {
+            if (ToolAdmissionAccessor.Current is not null) SawAdmissionPipeline = true;
+
             lock (_received)
                 _received.AddRange(messages.Select(m => m.Text));
 

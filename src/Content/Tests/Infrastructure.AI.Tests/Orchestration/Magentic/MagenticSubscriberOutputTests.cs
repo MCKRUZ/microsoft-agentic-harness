@@ -52,6 +52,24 @@ public sealed class MagenticSubscriberOutputTests
     }
 
     [Fact]
+    public async Task ProcessEvent_TranscriptEndingInATextlessMessage_KeepsTheEarlierAnswer()
+    {
+        var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);
+
+        await subscriber.ProcessEventAsync(
+            new WorkflowOutputEvent(new List<ChatMessage> { new(ChatRole.Assistant, "the finished report") }, "manager"),
+            default);
+        // ChatMessage.Text is "" rather than null when a message has only tool-call content.
+        await subscriber.ProcessEventAsync(
+            new WorkflowOutputEvent(
+                new List<ChatMessage> { new(ChatRole.Assistant, [new FunctionCallContent("c1", "lookup")]) },
+                "manager"),
+            default);
+
+        subscriber.FinalOutput.Should().Be("the finished report");
+    }
+
+    [Fact]
     public async Task ProcessEvent_ParticipantResponseOnly_LeavesFinalOutputUnset()
     {
         var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);
