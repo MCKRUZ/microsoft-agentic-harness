@@ -96,24 +96,21 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         string completionReason;
         try
         {
+            // MAF's Magentic orchestrator does not start itself: it needs the input messages AND a
+            // TurnToken (Microsoft's own sample sends both). OpenStreamingAsync sends neither, so the
+            // run would wait forever for input.
+            ct.ThrowIfCancellationRequested();
             await using var run = await InProcessExecution
-                .OpenStreamingAsync(workflow, workflowId.ToString(), ct)
+                .RunStreamingAsync(
+                    workflow,
+                    new List<ChatMessage> { new(ChatRole.User, request.Task) },
+                    workflowId.ToString(),
+                    ct)
                 .ConfigureAwait(false);
 
-            // MAF's Magentic orchestrator does not start itself: it needs the input messages AND a
-            // TurnToken, and OpenStreamingAsync sends neither (only RunStreamingAsync does). Without
-            // both the run just waits for input that never comes.
-            // TrySendMessageAsync takes no token, so honour an already-cancelled caller before it starts
-            // the manager's model calls.
-            ct.ThrowIfCancellationRequested();
-
-            var taskMessages = new List<ChatMessage> { new(ChatRole.User, request.Task) };
-            if (!await run.TrySendMessageAsync(taskMessages).ConfigureAwait(false)
-                || !await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
+            if (!await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
             {
-                _logger.LogError(
-                    "Magentic workflow {WorkflowId} refused its task or start signal",
-                    workflowId);
+                _logger.LogError("Magentic workflow {WorkflowId} refused its start signal", workflowId);
                 return FailAndEndSpan(subscriber, "magentic.start_rejected");
             }
 
@@ -146,11 +143,16 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             return FailAndEndSpan(subscriber, "magentic.unhandled_exception");
         }
 
+        // "Satisfied" must mean an answer was captured. A run that simply stops (an unanswered request,
+        // an unrecognised output shape) is not a success, and reporting it as one is how an empty
+        // answer reaches a caller as if it were real. The round/reset limits stay successes without
+        // output: those are known, bounded endings the turn runner already handles.
         if (completionReason == MagenticConventions.CompletionReasonSatisfied && subscriber.FinalOutput is null)
         {
             _logger.LogWarning(
-                "Magentic workflow {WorkflowId} ended as satisfied without producing a final answer",
+                "Magentic workflow {WorkflowId} ended without producing a final answer",
                 workflowId);
+            return FailAndEndSpan(subscriber, "magentic.no_final_output");
         }
 
         subscriber.EndWorkflow(completionReason);

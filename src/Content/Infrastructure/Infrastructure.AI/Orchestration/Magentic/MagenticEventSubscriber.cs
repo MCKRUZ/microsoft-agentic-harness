@@ -158,48 +158,41 @@ public sealed class MagenticEventSubscriber : IDisposable
     }
 
     /// <summary>
-    /// Captures the manager's terminal answer: the last message of the <c>List&lt;ChatMessage&gt;</c>
-    /// transcript MAF emits when the run completes. Participants' replies also arrive as
+    /// Captures the manager's terminal answer: the last assistant message with text in the
+    /// <c>List&lt;ChatMessage&gt;</c> transcript MAF emits when the run completes (measured against the
+    /// real framework in <c>MagenticOrchestratorRunTests</c>). Participants' replies also arrive as
     /// <see cref="WorkflowOutputEvent"/> subclasses (<see cref="AgentResponseUpdateEvent"/>,
-    /// <see cref="AgentResponseEvent"/>) and a participant output may be tagged
-    /// <see cref="OutputTag.Intermediate"/>; none of those are the answer, and an unrecognised
-    /// payload is left unset rather than stringified into a type name.
+    /// <see cref="AgentResponseEvent"/>) and may be tagged <see cref="OutputTag.Intermediate"/>; neither
+    /// is the answer. An unrecognised payload is logged and left unset rather than stringified into a
+    /// type name.
     /// </summary>
     private void RecordFinalOutput(WorkflowOutputEvent output)
     {
         if (output is AgentResponseUpdateEvent or AgentResponseEvent) return;
         if (output.Tags.Contains(OutputTag.Intermediate)) return;
 
+        // ChatMessage.Text is "" (not null) for a message with only tool-call content, and the user's
+        // own task is in the transcript too: take the last assistant message that has text.
         var text = output.Data switch
         {
-            string s => s,
-            // ChatMessage.Text is "" (not null) for a message with only tool-call or data content, so
-            // take the last message that actually has text rather than a blank tail.
-            IEnumerable<ChatMessage> transcript =>
-                transcript.Select(m => m.Text).LastOrDefault(t => !string.IsNullOrWhiteSpace(t)),
-            _ => null
+            IEnumerable<ChatMessage> transcript => transcript
+                .Where(m => m.Role == ChatRole.Assistant)
+                .Select(m => m.Text)
+                .LastOrDefault(t => !string.IsNullOrWhiteSpace(t)),
+            _ => LogUnrecognisedPayload(output)
         };
 
-        if (!string.IsNullOrWhiteSpace(text))
-        {
-            _finalOutput = text;
-            return;
-        }
+        if (!string.IsNullOrWhiteSpace(text)) _finalOutput = text;
+    }
 
-        // An unrecognised payload type is the shape a MAF upgrade would produce, and it must be
-        // visible rather than a silent null answer. A recognised payload with no text is routine
-        // (a tool-call-only transcript) and only worth a debug line.
-        if (output.Data is string or IEnumerable<ChatMessage>)
-        {
-            _logger.LogDebug(
-                "Magentic workflow={WorkflowId} emitted terminal output with no text", _workflowId);
-            return;
-        }
-
+    private string? LogUnrecognisedPayload(WorkflowOutputEvent output)
+    {
+        // The shape a MAF upgrade would produce; it must be visible rather than a silent null answer.
         _logger.LogWarning(
             "Magentic workflow={WorkflowId} emitted terminal output of unrecognised payload type {PayloadType}",
             _workflowId,
             output.Data?.GetType().FullName ?? "<null>");
+        return null;
     }
 
     private void HandlePlanCreated(MagenticPlanCreatedEvent evt)

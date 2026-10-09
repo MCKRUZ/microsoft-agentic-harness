@@ -86,6 +86,31 @@ public sealed class MagenticSubscriberOutputTests
     }
 
     [Fact]
+    public async Task ProcessEvent_UntaggedParticipantUpdate_LeavesFinalOutputUnset()
+    {
+        var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);
+
+        await subscriber.ProcessEventAsync(
+            new AgentResponseUpdateEvent("researcher", new AgentResponseUpdate(ChatRole.Assistant, "partial research")),
+            default);
+
+        subscriber.FinalOutput.Should().BeNull(
+            "a participant's streaming delta is never the answer, whether or not MAF remembers to tag it intermediate");
+    }
+
+    [Fact]
+    public async Task ProcessEvent_TranscriptWithOnlyTheUsersTask_LeavesFinalOutputUnset()
+    {
+        var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);
+
+        await subscriber.ProcessEventAsync(
+            new WorkflowOutputEvent(new List<ChatMessage> { new(ChatRole.User, "write the report") }, "manager"),
+            default);
+
+        subscriber.FinalOutput.Should().BeNull("the user's own task is not the manager's answer");
+    }
+
+    [Fact]
     public async Task ProcessEvent_ParticipantResponseOnly_LeavesFinalOutputUnset()
     {
         var subscriber = MagenticTestHelpers.BuildSubscriber(out _, out _);

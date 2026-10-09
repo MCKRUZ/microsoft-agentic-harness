@@ -37,6 +37,15 @@ public sealed class MagenticOrchestratorRunTests
 {
     private const string TaskText = "write the quarterly report";
 
+    // A manager reply that says the request is satisfied; the scripted manager returns it for every prompt.
+    private const string SatisfiedLedger = """
+        {"is_request_satisfied":{"reason":"done","answer":true},
+         "is_in_loop":{"reason":"no","answer":false},
+         "is_progress_being_made":{"reason":"yes","answer":true},
+         "next_speaker":{"reason":"only one","answer":"researcher"},
+         "instruction_or_question":{"reason":"go","answer":"research it"}}
+        """;
+
     [Fact]
     public async Task RunAsync_OpensRun_SendsTheRequestTaskToTheManager()
     {
@@ -56,10 +65,12 @@ public sealed class MagenticOrchestratorRunTests
     {
         var manager = new ScriptedAgent("manager", ScriptedBehavior.BlockUntilCancelled);
         var request = BuildRequest(manager);
-        using var cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromSeconds(3));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var result = await BuildOrchestrator().RunAsync(request, cts.Token);
+        var run = BuildOrchestrator().RunAsync(request, cts.Token);
+        await manager.Started.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+        var result = await run;
 
         result.IsSuccess.Should().BeFalse(
             "MAF's stream reader swallows cancellation, so the run ends quietly; reporting that as a "
@@ -83,6 +94,41 @@ public sealed class MagenticOrchestratorRunTests
 
         manager.SawAdmissionPipeline.Should().BeTrue(
             "a tool call made by the manager or a participant must still be admitted by the caller's pipeline");
+    }
+
+    [Fact]
+    public async Task RunAsync_ManagerEndsWithoutAnAnswer_FailsRatherThanReportingSatisfied()
+    {
+        // The manager's last reply (its final answer) is blank, so the run completes with nothing to
+        // report. Calling that "satisfied" would hand the caller an empty answer as a real one.
+        var manager = new ScriptedAgent("manager", ScriptedBehavior.Reply, SatisfiedLedger, SatisfiedLedger, SatisfiedLedger, "");
+        var participant = new ScriptedAgent("researcher", ScriptedBehavior.Reply, "researched");
+        var request = BuildRequest(manager) with { Participants = [participant] };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await BuildOrchestrator().RunAsync(request, cts.Token);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain("magentic.no_final_output");
+    }
+
+    [Fact]
+    public async Task RunAsync_ManagerSatisfiedOnFirstRound_ReturnsTheManagersFinalAnswer()
+    {
+        // Drives a real Magentic workflow to its terminal output with a manager that answers every
+        // prompt with a "request satisfied" ledger, so the shape of the terminal output is measured
+        // against the framework rather than assumed from hand-built events.
+        var manager = new ScriptedAgent("manager", ScriptedBehavior.Reply, SatisfiedLedger);
+        var participant = new ScriptedAgent("researcher", ScriptedBehavior.Reply, "researched");
+        var request = BuildRequest(manager) with { Participants = [participant] };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await BuildOrchestrator().RunAsync(request, cts.Token);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.FinalOutput.Should().Contain(
+            "is_request_satisfied",
+            "the answer is the manager's own final message, not a type name or a participant's reply");
     }
 
     private static MagenticWorkflowRequest BuildRequest(AIAgent manager) => new()
@@ -113,7 +159,7 @@ public sealed class MagenticOrchestratorRunTests
             NullLoggerFactory.Instance);
     }
 
-    private enum ScriptedBehavior { RecordThenFail, BlockUntilCancelled }
+    private enum ScriptedBehavior { RecordThenFail, BlockUntilCancelled, Reply }
 
     /// <summary>An agent that records what it is asked, then fails fast or blocks, so a test never needs a model.</summary>
     private sealed class ScriptedAgent : AIAgent
@@ -122,16 +168,28 @@ public sealed class MagenticOrchestratorRunTests
         private readonly ScriptedBehavior _behavior;
         private readonly List<string> _received = [];
 
-        public ScriptedAgent(string id, ScriptedBehavior behavior)
+        private readonly string[] _replies;
+        private int _calls;
+
+        /// <param name="replies">Replies in call order for <see cref="ScriptedBehavior.Reply"/>; the last repeats.</param>
+        public ScriptedAgent(string id, ScriptedBehavior behavior, params string[] replies)
         {
             _id = id;
             _behavior = behavior;
+            _replies = replies.Length == 0 ? [""] : replies;
         }
+
+        private string NextReply() => _replies[Math.Min(Interlocked.Increment(ref _calls) - 1, _replies.Length - 1)];
 
         public IReadOnlyList<string> ReceivedText
         {
             get { lock (_received) return [.. _received]; }
         }
+
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Completes when the workflow first invokes this agent, so a test can act on a run that is demonstrably under way.</summary>
+        public Task Started => _started.Task;
 
         /// <summary>True when the caller's admission pipeline was visible on the thread the workflow ran this agent on.</summary>
         public bool SawAdmissionPipeline { get; private set; }
@@ -155,7 +213,7 @@ public sealed class MagenticOrchestratorRunTests
             IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options, CancellationToken cancellationToken)
         {
             await RecordAndMisbehaveAsync(messages, cancellationToken).ConfigureAwait(false);
-            return new AgentResponse(new ChatMessage(ChatRole.Assistant, "unreachable"));
+            return new AgentResponse(new ChatMessage(ChatRole.Assistant, NextReply()));
         }
 
         protected override async IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
@@ -163,7 +221,7 @@ public sealed class MagenticOrchestratorRunTests
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await RecordAndMisbehaveAsync(messages, cancellationToken).ConfigureAwait(false);
-            yield break;
+            yield return new AgentResponseUpdate(ChatRole.Assistant, NextReply());
         }
 
         private async Task RecordAndMisbehaveAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
@@ -173,10 +231,13 @@ public sealed class MagenticOrchestratorRunTests
             lock (_received)
                 _received.AddRange(messages.Select(m => m.Text));
 
+            _started.TrySetResult();
+
             if (_behavior == ScriptedBehavior.BlockUntilCancelled)
                 await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
 
-            throw new InvalidOperationException("scripted agent stops the run after recording");
+            if (_behavior == ScriptedBehavior.RecordThenFail)
+                throw new InvalidOperationException("scripted agent stops the run after recording");
         }
     }
 }
