@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.StructuredOutput;
 using Application.Core.CQRS.Agents.RunConversation;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
 using Application.Core.Tests.Helpers;
@@ -16,7 +17,7 @@ namespace Application.Core.Tests.CQRS;
 
 /// <summary>
 /// Tests for edge cases in <see cref="RunOrchestratedTaskCommandHandler"/>,
-/// covering parsing edge cases, subtask limits, and progress callback behavior.
+/// covering plan validation, subtask limits, and progress callback behavior.
 /// </summary>
 public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
 {
@@ -43,8 +44,16 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
             new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
                 p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
+            new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance),
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
+
+    /// <summary>The orchestrator's reply for a plan: the typed JSON the planning call asks for.</summary>
+    private static string Plan(params (string Agent, string Description)[] subtasks) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            subtasks = subtasks.Select(t => new { agent = t.Agent, description = t.Description }),
+        });
 
     private TestableAIAgent CreateOrchestratorAgent(string planResponse, string? synthesisResponse = null)
     {
@@ -77,11 +86,11 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
     }
 
     [Fact]
-    public async Task Handle_SubtaskWithoutDash_SkipsLine()
+    public async Task Handle_SubtaskMissingItsDescriptionField_IsAnInvalidPlan()
     {
-        // Arrange - SUBTASK: line without " - " separator
-        var planText = "SUBTASK: AgentAnoSeparator\nSUBTASK: AgentA - Valid task";
-        var agent = CreateOrchestratorAgent(planText);
+        // Required members are enforced by the schema, so a subtask without a description fails the
+        // parse (and the one repair attempt) instead of being skipped.
+        var agent = CreateOrchestratorAgent("{\"subtasks\":[{\"agent\":\"AgentA\"}]}");
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
                 It.IsAny<string>(),
@@ -90,27 +99,23 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
             .ReturnsAsync(agent);
         SetupMediatorForConversation();
 
-        var command = new RunOrchestratedTaskCommand
+        var result = await _handler.Handle(new RunOrchestratedTaskCommand
         {
             OrchestratorName = "Orchestrator",
             TaskDescription = "Test",
             AvailableAgents = ["AgentA"]
-        };
+        }, CancellationToken.None);
 
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
-
-        // Assert - only the valid line should be parsed
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].Subtask.Should().Be("Valid task");
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanInvalid);
     }
 
     [Fact]
-    public async Task Handle_SubtaskWithEmptyDescription_SkipsLine()
+    public async Task Handle_SubtaskWithABlankDescription_IsAnInvalidPlan()
     {
-        // Arrange - SUBTASK: AgentA - (empty description after trim)
-        var planText = "SUBTASK: AgentA -    ";
-        var agent = CreateOrchestratorAgent(planText);
+        // A subtask with nothing to do is not a plan the agent could act on; it was silently skipped
+        // (and the whole task handed to the first agent) before plans were typed.
+        var agent = CreateOrchestratorAgent(Plan(("AgentA", "   ")));
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
                 It.IsAny<string>(),
@@ -119,26 +124,23 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
             .ReturnsAsync(agent);
         SetupMediatorForConversation();
 
-        var command = new RunOrchestratedTaskCommand
+        var result = await _handler.Handle(new RunOrchestratedTaskCommand
         {
             OrchestratorName = "Orchestrator",
             TaskDescription = "Test",
             AvailableAgents = ["AgentA"]
-        };
+        }, CancellationToken.None);
 
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
-
-        // Assert - falls back to first agent since no valid subtask parsed
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].AgentName.Should().Be("AgentA");
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanInvalid);
+        result.SubAgentResults.Should().BeEmpty();
     }
 
     [Fact]
     public async Task Handle_WithoutProgressCallback_DoesNotThrow()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Work";
+        var planText = Plan(("AgentA", "Work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -167,7 +169,7 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
     public async Task Handle_MaxTotalTurnsOne_OnlyPlanningTurnExecutes()
     {
         // Arrange - maxTotalTurns=1 means planning turn fills the budget
-        var planText = "SUBTASK: AgentA - Work";
+        var planText = Plan(("AgentA", "Work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -194,69 +196,10 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
     }
 
     [Fact]
-    public async Task Handle_SubtaskCaseInsensitivePrefix_ParsesCorrectly()
-    {
-        // Arrange - "subtask:" in lowercase
-        var planText = "subtask: AgentA - Work to do";
-        var agent = CreateOrchestratorAgent(planText);
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
-                It.IsAny<string>(),
-                It.IsAny<SkillAgentOptions>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(agent);
-        SetupMediatorForConversation();
-
-        var command = new RunOrchestratedTaskCommand
-        {
-            OrchestratorName = "Orchestrator",
-            TaskDescription = "Test",
-            AvailableAgents = ["AgentA"]
-        };
-
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
-
-        // Assert
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].Subtask.Should().Be("Work to do");
-    }
-
-    [Fact]
-    public async Task Handle_EmptyAvailableAgentsAtRuntime_FallbackSkipsAllSubtasks()
-    {
-        // Arrange - no available agents matches any SUBTASK
-        var planText = "SUBTASK: UnknownAgent - Work";
-        var agent = CreateOrchestratorAgent(planText);
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
-                It.IsAny<string>(),
-                It.IsAny<SkillAgentOptions>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(agent);
-        SetupMediatorForConversation();
-
-        // Use AgentA but subtask references UnknownAgent
-        var command = new RunOrchestratedTaskCommand
-        {
-            OrchestratorName = "Orchestrator",
-            TaskDescription = "Test",
-            AvailableAgents = ["AgentA"]
-        };
-
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
-
-        // Assert - fallback assigns to first available agent
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].AgentName.Should().Be("AgentA");
-    }
-
-    [Fact]
     public async Task Handle_SubAgentCollectsDistinctTools_AcrossMultipleTurns()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Work";
+        var planText = Plan(("AgentA", "Work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(

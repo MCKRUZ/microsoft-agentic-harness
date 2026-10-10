@@ -1,8 +1,11 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.StructuredOutput;
+using Application.Common.Logging;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
@@ -27,19 +30,27 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
+	private readonly IStructuredOutputInvoker _structuredOutput;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
+
+	// Built once: the schema attached to the planning request and the one the reply is validated against
+	// are the same object, so they cannot drift apart.
+	private static readonly StructuredOutputContract PlanContract = StructuredOutputSchema.Build<OrchestrationPlan>(
+		"orchestration_plan", "The subtasks that decompose a task, each assigned to an available agent");
 
 	public RunOrchestratedTaskCommandHandler(
 		IAgentFactory agentFactory,
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
 		IToolCallAdmissionPipeline admissionPipeline,
+		IStructuredOutputInvoker structuredOutput,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
 		_admissionPipeline = admissionPipeline;
+		_structuredOutput = structuredOutput;
 		_logger = logger;
 	}
 
@@ -96,8 +107,8 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 						{request.TaskDescription}
 
 						Decompose this task into subtasks. For each subtask, specify which agent should handle it.
-						Respond with a plan in this format:
-						SUBTASK: [agent_name] - [subtask description]
+						Respond with the plan as JSON matching the supplied schema: a list of subtasks, each naming
+						one of the available agents exactly as listed and describing what that agent should do.
 						"""
 				},
 				cancellationToken);
@@ -106,16 +117,25 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 
 			var planMessages = new List<ChatMessage>
 			{
-				new(ChatRole.User, $"Decompose and execute this task: {request.TaskDescription}")
+				new(ChatRole.User, $"Decompose this task into subtasks for the available agents: {request.TaskDescription}")
 			};
 
-			var planResponse = await RunOrchestratorGovernedAsync(orchestrator, planMessages, cancellationToken);
-			var planText = ExtractContent(planResponse);
+			var plan = await PlanAsync(orchestrator, planMessages, request.AvailableAgents, cancellationToken);
+			if (plan.Error is not null)
+			{
+				return new OrchestratedTaskResult
+				{
+					Success = false,
+					FinalSynthesis = string.Empty,
+					SubAgentResults = [],
+					Error = plan.Error
+				};
+			}
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Plan created");
 
-			// Phase 2: Parse subtasks and delegate to sub-agents
-			var subtasks = ParseSubtasks(planText, request.AvailableAgents);
+			// Phase 2: Delegate each subtask to its sub-agent
+			var subtasks = plan.Subtasks;
 			var subAgentResults = new List<SubAgentResult>();
 			var totalTurns = 1; // Planning turn
 			var totalToolInvocations = 0;
@@ -185,11 +205,12 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			var synthesisPrompt = BuildSynthesisPrompt(request.TaskDescription, subAgentResults);
 			var synthesisMessages = new List<ChatMessage>(planMessages)
 			{
-				new(ChatRole.Assistant, planText),
+				new(ChatRole.Assistant, plan.RawPlan),
 				new(ChatRole.User, synthesisPrompt)
 			};
 
-			var synthesisResponse = await RunOrchestratorGovernedAsync(orchestrator, synthesisMessages, cancellationToken);
+			var synthesisResponse = await RunOrchestratorGovernedAsync(
+				() => orchestrator.RunAsync(synthesisMessages, cancellationToken: cancellationToken));
 			var finalSynthesis = ExtractContent(synthesisResponse);
 			totalTurns++;
 
@@ -220,12 +241,11 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		}
 	}
 
-	private async Task<object?> RunOrchestratorGovernedAsync(
-		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
+	private async Task<T> RunOrchestratorGovernedAsync<T>(Func<Task<T>> orchestratorCall)
 	{
 		// Expose this scope's admission chain to the governed tool wrappers for the orchestrator's own
-		// RunAsync, scoped tightly around the call so interleaved sub-agent turns (which arm their own
-		// chain in a child scope) are unaffected.
+		// calls, scoped tightly around each so interleaved sub-agent turns (which arm their own chain in
+		// a child scope) are unaffected.
 		//
 		// This used to arm the governor, the classification gate and the observer chain individually —
 		// and never armed the loop guard, so the orchestrator was the one agent that could spin on a
@@ -238,7 +258,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		// the planning phase. The single reset lives at the top of Handle.
 		using (ToolAdmissionAccessor.Begin(_admissionPipeline))
 		{
-			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);
+			return await orchestratorCall();
 		}
 	}
 
@@ -247,40 +267,85 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		return string.Join("\n", agentNames.Select(name => $"- **{name}**: Available for subtask delegation"));
 	}
 
-	private static List<(string AgentName, string Subtask)> ParseSubtasks(
-		string planText, IReadOnlyList<string> availableAgents)
+	/// <summary>
+	/// Asks the orchestrator for its decomposition as a typed <see cref="OrchestrationPlan"/> and checks it
+	/// against the agents actually available. Any failure returns a stable <see cref="OrchestrationErrors"/>
+	/// code; what the model returned is logged, never surfaced.
+	/// </summary>
+	private async Task<ResolvedPlan> PlanAsync(
+		AIAgent orchestrator, IReadOnlyList<ChatMessage> planMessages, IReadOnlyList<string> availableAgents,
+		CancellationToken cancellationToken)
 	{
-		var subtasks = new List<(string, string)>();
-		var lines = planText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+		// The orchestrator itself is the chat client, so its skill instructions, governance middleware and
+		// content safety stay in force, which a bare provider client would bypass. Non-ChatClientAgent
+		// orchestrators are allowed because only the response format is needed, and that is the one option
+		// the adapter always forwards. The orchestrator is tool-capable and the invoker's repair attempt is
+		// a fresh, stateless run, so a planning call that used tools can use them twice; the loop guard and
+		// call-once policy see both runs because the pipeline is published for the whole call.
+		var chatClient = orchestrator.AsIChatClient(allowNonChatClientAgents: true);
 
-		foreach (var line in lines)
+		var parsed = await RunOrchestratorGovernedAsync(() => _structuredOutput.InvokeAsync<OrchestrationPlan>(
+			chatClient, PlanContract, planMessages, chatOptions: null, cancellationToken));
+
+		if (parsed.Outcome == StructuredOutcome.InvocationFailed)
 		{
-			// Match "SUBTASK: agent_name - description" or similar patterns
-			var trimmed = line.Trim();
-			if (!trimmed.StartsWith("SUBTASK:", StringComparison.OrdinalIgnoreCase))
-				continue;
-
-			var content = trimmed["SUBTASK:".Length..].Trim();
-			var dashIndex = content.IndexOf(" - ", StringComparison.Ordinal);
-			if (dashIndex <= 0)
-				continue;
-
-			var agentName = content[..dashIndex].Trim();
-			var subtask = content[(dashIndex + 3)..].Trim();
-
-			// Validate agent is available
-			var matchedAgent = availableAgents.FirstOrDefault(a =>
-				a.Equals(agentName, StringComparison.OrdinalIgnoreCase));
-
-			if (matchedAgent != null && !string.IsNullOrEmpty(subtask))
-				subtasks.Add((matchedAgent, subtask));
+			// The call itself failed (provider, content safety, an unsupported schema request): not a plan
+			// the model got wrong, so it is not reported as one.
+			_logger.LogWarning("Orchestration planning call failed: {Reason}", parsed.ErrorMessage);
+			return ResolvedPlan.Fail(OrchestrationErrors.PlanUnavailable);
 		}
 
-		// Fallback: if no SUBTASK lines found, assign entire task to first available agent
-		if (subtasks.Count == 0 && availableAgents.Count > 0)
-			subtasks.Add((availableAgents[0], planText));
+		// "required" demands the property be present, not non-null, so a null list or element still parses.
+		if (!parsed.IsSuccess || parsed.Value?.Subtasks is not { } plannedSubtasks)
+		{
+			_logger.LogWarning(
+				"Orchestration plan could not be read ({Outcome}): {Reason}", parsed.Outcome, parsed.ErrorMessage);
+			return ResolvedPlan.Fail(OrchestrationErrors.PlanInvalid);
+		}
 
-		return subtasks;
+		if (plannedSubtasks.Count == 0)
+		{
+			_logger.LogWarning("Orchestration plan contained no subtasks");
+			return ResolvedPlan.Fail(OrchestrationErrors.PlanEmpty);
+		}
+
+		var subtasks = new List<(string AgentName, string Subtask)>(plannedSubtasks.Count);
+		foreach (var planned in plannedSubtasks)
+		{
+			if (planned is null || string.IsNullOrWhiteSpace(planned.Description))
+			{
+				_logger.LogWarning("Orchestration plan has a missing subtask or one with a blank description");
+				return ResolvedPlan.Fail(OrchestrationErrors.PlanInvalid);
+			}
+
+			// A plan naming an agent that does not exist is rejected whole: running the rest would
+			// synthesize an answer that silently omits part of the work.
+			var matchedAgent = availableAgents.FirstOrDefault(a =>
+				a.Equals(planned.Agent?.Trim(), StringComparison.OrdinalIgnoreCase));
+			if (matchedAgent is null)
+			{
+				// The name is the model's, so it is bounded and stripped of control characters before it
+				// reaches a log line.
+				_logger.LogWarning(
+					"Orchestration plan assigns a subtask to an agent that is not available: {Agent}",
+					LoggingHelper.SanitizeForLog(planned.Agent));
+				return ResolvedPlan.Fail(OrchestrationErrors.PlanUnknownAgent);
+			}
+
+			subtasks.Add((matchedAgent, planned.Description.Trim()));
+		}
+
+		return ResolvedPlan.Ok(subtasks, parsed.RawOutput ?? string.Empty);
+	}
+
+	/// <summary>A validated plan, or the stable code explaining why there isn't one.</summary>
+	private readonly record struct ResolvedPlan(
+		IReadOnlyList<(string AgentName, string Subtask)> Subtasks, string RawPlan, string? Error)
+	{
+		public static ResolvedPlan Ok(IReadOnlyList<(string AgentName, string Subtask)> subtasks, string rawPlan)
+			=> new(subtasks, rawPlan, null);
+
+		public static ResolvedPlan Fail(string error) => new([], string.Empty, error);
 	}
 
 	private static string BuildSynthesisPrompt(string originalTask, List<SubAgentResult> results)
