@@ -41,10 +41,13 @@ public partial class ExecuteAgentTurnCommandHandler
 			TurnContext = request.TurnContext,
 		};
 
+		// The deadline must stop the supervisor and every participant (see LinkToTurnDeadline).
+		using var turnCts = LinkToTurnDeadline(cancellationToken);
+
 		var turnSw = Stopwatch.StartNew();
 		var result = await _magenticTurnRunner.RunTurnAsync(
 			supervisor, request.ConversationId, request.UserMessage, request.ConversationHistory, overrides,
-			cancellationToken);
+			turnCts.Token);
 		turnSw.Stop();
 
 		if (!result.Success)

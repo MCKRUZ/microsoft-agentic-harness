@@ -1,3 +1,4 @@
+using Application.Common.MediatRBehaviors;
 using Application.AI.Common.Categorization;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
@@ -11,6 +12,8 @@ using FluentAssertions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Domain.Common.Config;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -87,6 +90,53 @@ public class ExecuteAgentTurnCommandHandlerTests
         result.Success.Should().BeTrue();
         result.Response.Should().Be("Agent response text");
         result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_TurnDeadlineElapses_CancelsTheAgentRun_InsteadOfLeavingItRunning()
+    {
+        // TimeoutBehavior tells the caller the turn timed out but cancels only the ambient token it
+        // publishes; a run that watches just the handler's own token keeps calling the model.
+        var runOutcome = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agent = new TestableAIAgent(async (_, ct) =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                runOutcome.TrySetResult("cancelled");
+                throw;
+            }
+
+            runOutcome.TrySetResult("ran to completion");
+            return new AgentResponse(new ChatMessage(ChatRole.Assistant, "late"));
+        });
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        var command = CreateCommand() with { Timeout = TimeSpan.FromMilliseconds(200) };
+        var behavior = new TimeoutBehavior<ExecuteAgentTurnCommand, AgentTurnResult>(
+            Mock.Of<IOptionsMonitor<AgentConfig>>(m => m.CurrentValue == new AgentConfig()),
+            NullLogger<TimeoutBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
+
+        Task<AgentTurnResult>? handlerTask = null;
+        var act = () => behavior.Handle(
+            command, () => handlerTask = _handler.Handle(command, CancellationToken.None), CancellationToken.None);
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        (await runOutcome.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(
+            "cancelled", "the deadline must stop the run, not just stop the caller waiting for it");
+
+        // The handler itself finishes promptly and records the turn as the timeout it was, not as an
+        // unexplained internal error.
+        var result = await handlerTask!.WaitAsync(TimeSpan.FromSeconds(5));
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be("The agent turn exceeded its time limit.");
+        result.ErrorKind.Should().Be(AgentTurnErrorKind.Internal);
     }
 
     [Fact]

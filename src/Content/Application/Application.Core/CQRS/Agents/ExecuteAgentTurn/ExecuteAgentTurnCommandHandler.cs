@@ -12,6 +12,7 @@ using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
+using Application.Common.MediatRBehaviors;
 using Application.Core.Orchestration.Magentic;
 using Domain.AI.Agents;
 using Domain.AI.Context;
@@ -88,6 +89,18 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		_magenticTurnRunner = magenticTurnRunner;
 		_redactor = redactor;
 	}
+
+	/// <summary>The deadline <c>TimeoutBehavior</c> publishes for this turn, or None outside that pipeline.</summary>
+	private static CancellationToken TurnDeadline =>
+		TimeoutBehavior<ExecuteAgentTurnCommand, AgentTurnResult>.AmbientTimeoutToken;
+
+	/// <summary>
+	/// Links <paramref name="cancellationToken"/> with <see cref="TurnDeadline"/>. <c>TimeoutBehavior</c> cancels
+	/// only its ambient token, not this handler's, so every path that runs an agent for the turn must run
+	/// on the linked token or it keeps making model calls after the caller was told the turn timed out.
+	/// </summary>
+	private static CancellationTokenSource LinkToTurnDeadline(CancellationToken cancellationToken) =>
+		CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, TurnDeadline);
 
 	public async Task<AgentTurnResult> Handle(ExecuteAgentTurnCommand request, CancellationToken cancellationToken)
 	{
@@ -200,17 +213,21 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 					// and tool capture still flow through the chat-client middleware, so the
 					// post-turn accounting below is identical to the blocking path. With no
 					// sink (tests, batch callers) fall back to a single blocking call.
+					// The run also watches the turn deadline (see LinkToTurnDeadline); only the run is linked, so
+					// the catch below still classifies caller cancellation by cancellationToken itself.
+					using var runCts = LinkToTurnDeadline(cancellationToken);
+
 					var streamSink = AgentTurnStreamSink.Current;
 					if (streamSink is not null)
 					{
 						var (text, exchanges) = await RunStreamingTurnAsync(
-							agent, messages, streamSink, _redactor, _logger, cancellationToken);
+							agent, messages, streamSink, _redactor, _logger, runCts.Token);
 						response = text;
 						toolExchanges = exchanges;
 					}
 					else
 					{
-						var agentResponse = await agent.RunAsync(messages, cancellationToken: cancellationToken);
+						var agentResponse = await agent.RunAsync(messages, cancellationToken: runCts.Token);
 						response = agentResponse;
 						toolExchanges = ToolCallTranscriptExtractor.Extract(agentResponse, _logger);
 					}
@@ -312,13 +329,26 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			// control flow, not an agent failure: tag it Cancelled so the transport can
 			// abort quietly instead of recording a health error. Deliberately not counted
 			// via RecordTurnError. A per-request timeout cancels a linked token (this
-			// handler's token stays uncancelled), so it never lands here — it surfaces as a
-			// TimeoutException and is classified Internal upstream.
+			// handler's token stays uncancelled), so it never lands here — it is the next catch.
 			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} cancelled by caller",
 				request.AgentName, request.TurnNumber);
 
 			return await FailedTurnAsync(
 				request, skillIds, takenUsage, assistantRowWritten, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
+		}
+		catch (OperationCanceledException) when (TurnDeadline.IsCancellationRequested)
+		{
+			// The run was stopped by the turn deadline (see LinkToTurnDeadline). TimeoutBehavior has
+			// already told the caller; this records the turn as the timeout it was rather than letting it
+			// fall into the generic handler below and read as an unexplained internal error.
+			_logger.LogWarning("Agent {AgentName} turn {TurnNumber} stopped at its deadline",
+				request.AgentName, request.TurnNumber);
+
+			RecordTurnError(request.AgentName);
+
+			return await FailedTurnAsync(
+				request, skillIds, takenUsage, assistantRowWritten, "The agent turn exceeded its time limit.",
+				AgentTurnErrorKind.Internal);
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{

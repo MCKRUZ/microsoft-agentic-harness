@@ -1,14 +1,17 @@
 using Application.AI.Common.Categorization;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Notifications;
+using Application.Common.MediatRBehaviors;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.Orchestration.Magentic;
 using Application.Core.Tests.Fakes;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
+using Domain.Common.Config;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -195,5 +198,55 @@ public sealed class ExecuteAgentTurnCommandHandler_MagenticTests
                 It.IsAny<AgentDefinition>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatMessage>>(),
                 It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_TurnDeadlineElapses_CancelsTheMagenticRun_InsteadOfLeavingItRunning()
+    {
+        // TimeoutBehavior throws to the caller at the deadline, but only a handler that observes its
+        // ambient token actually stops. Without that, the supervisor and every participant keep making
+        // model calls (and spending money) for a turn nobody is waiting on.
+        var supervisor = new AgentDefinition
+        {
+            Id = "supervisor-agent",
+            Name = "Supervisor Agent",
+            OrchestrationMode = AgentOrchestrationMode.Magentic,
+            Participants = ["researcher"],
+        };
+        _agentRegistry.Setup(r => r.TryGet("supervisor-agent")).Returns(supervisor);
+
+        var runnerOutcome = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _magenticTurnRunner
+            .Setup(r => r.RunTurnAsync(
+                It.IsAny<AgentDefinition>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()))
+            .Returns(async (AgentDefinition _, string _, string _, IReadOnlyList<ChatMessage> _,
+                MagenticTurnOverrides _, CancellationToken ct) =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    runnerOutcome.TrySetResult("cancelled");
+                    throw;
+                }
+
+                runnerOutcome.TrySetResult("ran to completion");
+                return new AgentTurnResult { Success = true, Response = "late", UpdatedHistory = [] };
+            });
+
+        var handler = CreateHandler();
+        var command = CreateCommand() with { Timeout = TimeSpan.FromMilliseconds(200) };
+        var behavior = new TimeoutBehavior<ExecuteAgentTurnCommand, AgentTurnResult>(
+            Mock.Of<IOptionsMonitor<AgentConfig>>(m => m.CurrentValue == new AgentConfig()),
+            NullLogger<TimeoutBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
+
+        var act = () => behavior.Handle(command, () => handler.Handle(command, CancellationToken.None), CancellationToken.None);
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        (await runnerOutcome.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(
+            "cancelled", "the deadline must stop the run, not just stop the caller waiting for it");
     }
 }
