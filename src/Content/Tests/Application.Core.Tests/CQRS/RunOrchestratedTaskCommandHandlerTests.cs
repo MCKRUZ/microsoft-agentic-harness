@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.StructuredOutput;
 using Application.Core.CQRS.Agents.RunConversation;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
 using Application.Core.Tests.Helpers;
@@ -19,6 +20,9 @@ public class RunOrchestratedTaskCommandHandlerTests
     private readonly Mock<IAgentFactory> _agentFactory = new();
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IServiceScopeFactory> _scopeFactory = new();
+    private readonly Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline _admissionPipeline =
+        Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+            p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty);
     private readonly RunOrchestratedTaskCommandHandler _handler;
 
     public RunOrchestratedTaskCommandHandlerTests()
@@ -38,8 +42,8 @@ public class RunOrchestratedTaskCommandHandlerTests
             _agentFactory.Object,
             _scopeFactory.Object,
             new Application.AI.Common.Services.Agent.AgentExecutionContext(),
-            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
-                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
+            _admissionPipeline,
+            new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance),
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
 
@@ -54,6 +58,13 @@ public class RunOrchestratedTaskCommandHandlerTests
         AvailableAgents = availableAgents ?? ["AgentA", "AgentB"],
         MaxTotalTurns = maxTotalTurns
     };
+
+    /// <summary>The orchestrator's reply for a plan: the typed JSON the planning call asks for.</summary>
+    private static string Plan(params (string Agent, string Description)[] subtasks) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            subtasks = subtasks.Select(t => new { agent = t.Agent, description = t.Description }),
+        });
 
     private static TestableAIAgent CreateOrchestratorAgent(string planResponse, string? synthesisResponse = null)
     {
@@ -89,7 +100,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_ValidRequest_CreatesOrchestratorAgent()
     {
         // Arrange
-        var agent = CreateOrchestratorAgent("SUBTASK: AgentA - Do thing one");
+        var agent = CreateOrchestratorAgent(Plan(("AgentA", "Do thing one")));
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
                 "Orchestrator",
@@ -114,10 +125,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_OrchestratorDecomposes_DelegatesSubtasks()
     {
         // Arrange
-        var planText = """
-            SUBTASK: AgentA - Analyze the code
-            SUBTASK: AgentB - Write the tests
-            """;
+        var planText = Plan(("AgentA", "Analyze the code"), ("AgentB", "Write the tests"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -145,7 +153,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_OrchestratorDecomposes_DelegatesViaMediator()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Do work";
+        var planText = Plan(("AgentA", "Do work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -196,11 +204,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_MaxTotalTurnsReached_StopsEarly()
     {
         // Arrange -- plan produces 3 subtasks but maxTotalTurns only allows 2 (1 plan + 1 subtask)
-        var planText = """
-            SUBTASK: AgentA - Task 1
-            SUBTASK: AgentB - Task 2
-            SUBTASK: AgentA - Task 3
-            """;
+        var planText = Plan(("AgentA", "Task 1"), ("AgentB", "Task 2"), ("AgentA", "Task 3"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -224,7 +228,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_SubAgentFails_IncludesInResults()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Do failing work";
+        var planText = Plan(("AgentA", "Do failing work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -255,11 +259,18 @@ public class RunOrchestratedTaskCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_NoSubtasksParsed_FallsBackToFirstAgent()
+    public async Task Handle_PlanIsNotValidJsonEvenAfterRepair_FailsWithAStableCode_AndRunsNoSubAgent()
     {
-        // Arrange -- orchestrator returns text without SUBTASK: format
-        var planText = "I think we should analyze the codebase thoroughly.";
-        var agent = CreateOrchestratorAgent(planText);
+        // The old parser fell back to handing the whole task to the first agent when it found no SUBTASK
+        // lines, which turned "the model produced something unusable" into a confident wrong answer. A plan
+        // that cannot be read, after the one repair attempt, is now a failure.
+        var calls = 0;
+        var agent = new TestableAIAgent((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new AgentResponse(new ChatMessage(
+                ChatRole.Assistant, "I think we should analyze the codebase thoroughly.")));
+        });
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
                 It.IsAny<string>(),
@@ -268,26 +279,31 @@ public class RunOrchestratedTaskCommandHandlerTests
             .ReturnsAsync(agent);
         SetupMediatorForConversation();
 
-        var command = CreateCommand();
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
 
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
-
-        // Assert -- falls back to assigning entire plan text to first available agent
-        result.Success.Should().BeTrue();
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].AgentName.Should().Be("AgentA");
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanInvalid);
+        result.SubAgentResults.Should().BeEmpty();
+        calls.Should().Be(2, "the first reply plus the one repair attempt, and nothing after");
+        _mediator.Verify(
+            m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task Handle_SubtaskReferencesUnavailableAgent_SkipsIt()
+    public async Task Handle_FirstPlanIsMalformed_IsRepairedOnce_ThenRuns()
     {
-        // Arrange
-        var planText = """
-            SUBTASK: UnknownAgent - This should be skipped
-            SUBTASK: AgentA - This should run
-            """;
-        var agent = CreateOrchestratorAgent(planText);
+        var calls = 0;
+        var agent = new TestableAIAgent((_, _) =>
+        {
+            calls++;
+            var text = calls switch
+            {
+                1 => "Sure! SUBTASK: AgentA - not the format asked for",
+                2 => Plan(("AgentA", "Do the work")),
+                _ => "Final synthesis",
+            };
+            return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, text)));
+        });
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
                 It.IsAny<string>(),
@@ -296,21 +312,126 @@ public class RunOrchestratedTaskCommandHandlerTests
             .ReturnsAsync(agent);
         SetupMediatorForConversation();
 
-        var command = CreateCommand();
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
 
-        // Act
-        var result = await _handler.Handle(command, CancellationToken.None);
+        result.Success.Should().BeTrue();
+        result.SubAgentResults.Should().ContainSingle().Which.Subtask.Should().Be("Do the work");
+    }
 
-        // Assert -- only AgentA subtask runs
-        result.SubAgentResults.Should().ContainSingle();
-        result.SubAgentResults[0].AgentName.Should().Be("AgentA");
+    [Fact]
+    public async Task Handle_PlanningCall_CarriesThePlanSchema_AndRunsUnderTheHandlersAdmissionPipeline()
+    {
+        // The typed plan only exists if the schema reaches the model, and the planning call is a tool-
+        // capable agent run, so it must be governed like the synthesis call is.
+        var agent = new PlanSpyAgent(Plan(("AgentA", "Do the work")));
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillAsync(
+                It.IsAny<string>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        SetupMediatorForConversation();
+
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        agent.FirstCallResponseFormat.Should().BeOfType<ChatResponseFormatJson>()
+            .Which.SchemaName.Should().Be("orchestration_plan");
+        agent.FirstCallAmbientPipeline.Should().BeSameAs(_admissionPipeline);
+    }
+
+    [Theory]
+    [InlineData("{\"subtasks\":null}")]
+    [InlineData("{\"subtasks\":[null]}")]
+    [InlineData("{\"subtasks\":[{\"agent\":null,\"description\":\"x\"}]}")]
+    public async Task Handle_PlanJsonCarriesNulls_FailsWithAStableCode_NotARawException(string planJson)
+    {
+        // "required" only demands the property be present, so a null list, a null element or a null agent
+        // can still deserialize. Reading one must end in the stable code, not a NullReferenceException that
+        // the handler's catch-all would return as raw exception text.
+        var agent = CreateOrchestratorAgent(planJson);
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillAsync(
+                It.IsAny<string>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        SetupMediatorForConversation();
+
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().StartWith("orchestration.plan_");
+    }
+
+    [Fact]
+    public async Task Handle_PlanningCallFails_ReportsItAsUnavailable_NotAsABadPlan_AndLeaksNoDetail()
+    {
+        // A provider that rejects the schema request, a content-safety block or a network fault is not a
+        // model that wrote a bad plan, and its message can carry endpoints and tokens.
+        var agent = new TestableAIAgent((_, _) =>
+            throw new InvalidOperationException("secret endpoint https://internal.example/token=abc"));
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillAsync(
+                It.IsAny<string>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        SetupMediatorForConversation();
+
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanUnavailable);
+    }
+
+    [Fact]
+    public async Task Handle_PlanHasNoSubtasks_FailsWithAStableCode()
+    {
+        var agent = CreateOrchestratorAgent(Plan());
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillAsync(
+                It.IsAny<string>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        SetupMediatorForConversation();
+
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanEmpty);
+    }
+
+    [Fact]
+    public async Task Handle_PlanNamesAnAgentThatIsNotAvailable_FailsWithAStableCode_AndRunsNothing()
+    {
+        // Skipping the unknown subtask and running the rest would synthesize an answer that silently
+        // omits part of the work, so a plan naming an agent that does not exist is rejected whole.
+        var agent = CreateOrchestratorAgent(
+            Plan(("UnknownAgent", "This cannot run"), ("AgentA", "This could run")));
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillAsync(
+                It.IsAny<string>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        SetupMediatorForConversation();
+
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be(OrchestrationErrors.PlanUnknownAgent);
+        result.SubAgentResults.Should().BeEmpty();
+        _mediator.Verify(
+            m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task Handle_SynthesizesResultsThroughOrchestrator()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Analyze code";
+        var planText = Plan(("AgentA", "Analyze code"));
         var agent = CreateOrchestratorAgent(planText, "Combined analysis complete.");
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -333,7 +454,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_WithProgressCallback_ReportsAllPhases()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Work";
+        var planText = Plan(("AgentA", "Work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -369,7 +490,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_AccumulatesTotalTurnsAndToolInvocations()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Task 1\nSUBTASK: AgentB - Task 2";
+        var planText = Plan(("AgentA", "Task 1"), ("AgentB", "Task 2"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -409,8 +530,8 @@ public class RunOrchestratedTaskCommandHandlerTests
     [Fact]
     public async Task Handle_CaseInsensitiveAgentMatching_MatchesCorrectly()
     {
-        // Arrange -- SUBTASK uses different casing than available agents
-        var planText = "SUBTASK: agenta - Work to do";
+        // Arrange -- the plan uses different casing than the available agents
+        var planText = Plan(("agenta", "Work to do"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -434,7 +555,7 @@ public class RunOrchestratedTaskCommandHandlerTests
     public async Task Handle_PassesConversationIdToSubTasks()
     {
         // Arrange
-        var planText = "SUBTASK: AgentA - Work";
+        var planText = Plan(("AgentA", "Work"));
         var agent = CreateOrchestratorAgent(planText);
         _agentFactory
             .Setup(f => f.CreateAgentFromSkillAsync(
@@ -459,5 +580,54 @@ public class RunOrchestratedTaskCommandHandlerTests
         _mediator.Verify(m => m.Send(
             It.Is<RunConversationCommand>(c => c.ConversationId == "shared-conv-id"),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// An orchestrator that answers the first call with a plan and later calls with a synthesis, recording
+    /// what the planning call was sent with and under.
+    /// </summary>
+    private sealed class PlanSpyAgent(string planJson) : AIAgent
+    {
+        private int _calls;
+
+        public ChatResponseFormat? FirstCallResponseFormat { get; private set; }
+
+        public Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline? FirstCallAmbientPipeline { get; private set; }
+
+        protected override string IdCore => "plan-spy";
+
+        public override string? Name => "plan-spy";
+
+        protected override ValueTask<AgentSession> CreateSessionCoreAsync(CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        protected override ValueTask<System.Text.Json.JsonElement> SerializeSessionCoreAsync(
+            AgentSession session, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        protected override ValueTask<AgentSession> DeserializeSessionCoreAsync(
+            System.Text.Json.JsonElement serializedState, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        protected override Task<AgentResponse> RunCoreAsync(
+            IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
+            CancellationToken cancellationToken)
+        {
+            if (_calls++ == 0)
+            {
+                FirstCallResponseFormat = options?.ResponseFormat;
+                FirstCallAmbientPipeline = Application.AI.Common.Services.Governance.ToolAdmissionAccessor.Current;
+            }
+
+            var text = _calls == 1 ? planJson : "Final synthesis";
+            return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, text)));
+        }
+
+        protected override IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
+            IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }
