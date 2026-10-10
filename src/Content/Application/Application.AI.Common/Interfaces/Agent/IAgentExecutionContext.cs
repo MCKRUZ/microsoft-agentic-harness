@@ -107,6 +107,40 @@ public interface IAgentExecutionContext
     AgentIdentity? AgentIdentity { get; }
 
     /// <summary>
+    /// Re-publishes this context's external governance attribution for the code about to run, and returns
+    /// a scope the caller must dispose when that code ends.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For a flow that cannot hold the attribution <see cref="Initialize"/> published: ambient state set
+    /// inside an async iterator does not survive a <c>yield</c>, so a streamed run armed in its first
+    /// step is unattributed from the second step on. Call this around each step, inside it, and dispose
+    /// it before handing the update on, so the attribution is in force only while the step runs.
+    /// </para>
+    /// <para>
+    /// This is the one safe way to publish attribution again. It is the context's own operation — the
+    /// context is the only permitted publisher — and the scope it returns is the caller's to release in
+    /// reverse order of acquisition. It is separate from the scope <see cref="Initialize"/> holds, which
+    /// the context releases itself. Returns a scope that does nothing before <see cref="Initialize"/> has
+    /// run, after the context is disposed, and when no attribution integration is active.
+    /// </para>
+    /// </remarks>
+    IDisposable ReassertAttribution();
+
+    /// <summary>
+    /// Releases, now, the attribution scope <see cref="Initialize"/> holds for the turn. Idempotent; does
+    /// nothing before <see cref="Initialize"/> has run.
+    /// </summary>
+    /// <remarks>
+    /// For a context that cannot hold attribution across a <c>yield</c> and publishes only through
+    /// <see cref="ReassertAttribution"/> — a streamed participant. Left held, the scope would put the
+    /// participant's identity on whatever shares its baggage (the supervisor's spans) for the rest of the
+    /// turn. Call it from the flow that called <see cref="Initialize"/>, before that flow yields, so the
+    /// release restores what that publish saw.
+    /// </remarks>
+    void ReleaseTurnAttribution();
+
+    /// <summary>
     /// Initializes or updates the execution context with agent identity.
     /// Re-initialization is allowed for subsequent turns within the same agent/conversation
     /// (updates turn number). Throws if called with a different agent, conversation, or

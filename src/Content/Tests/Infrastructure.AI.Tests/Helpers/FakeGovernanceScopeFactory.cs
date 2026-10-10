@@ -17,6 +17,8 @@ internal static class FakeGovernanceScopeFactory
         out Mock<IAgentExecutionContext> context, out Mock<IToolCallAdmissionPipeline> pipeline)
     {
         context = new Mock<IAgentExecutionContext>();
+        context.Setup(c => c.ReassertAttribution())
+            .Returns(Application.AI.Common.Interfaces.Telemetry.NoAgentTelemetryAttributionScope.Instance);
         pipeline = new Mock<IToolCallAdmissionPipeline>();
 
         var provider = new Mock<IServiceProvider>();

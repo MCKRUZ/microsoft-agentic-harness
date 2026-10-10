@@ -216,6 +216,39 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
         }
     }
 
+    /// <inheritdoc />
+    public IDisposable ReassertAttribution()
+    {
+        lock (_gate)
+        {
+            // Nothing to assert before Initialize has supplied the identity, and nothing is published once
+            // disposed: the caller owns the scope returned here, so a disposed context would otherwise hand
+            // out one that outlives everything able to clear its baggage.
+            if (!_initialized || _disposed)
+                return NoAgentTelemetryAttributionScope.Instance;
+
+            // Not stored in _attributionScope: that field is the one scope Initialize holds for the turn
+            // and Dispose releases. This one belongs to the caller, who releases it at the end of its step.
+            return _attribution.BeginTurn(AgentId!, ConversationId!);
+        }
+    }
+
+    /// <inheritdoc />
+    public void ReleaseTurnAttribution()
+    {
+        IDisposable? scope;
+
+        lock (_gate)
+        {
+            // Taken and cleared in one locked step, like Dispose, so it is released once however often this
+            // is called. Unlike Dispose it leaves the context usable: a later Initialize publishes again.
+            scope = _attributionScope;
+            _attributionScope = null;
+        }
+
+        scope?.Dispose();
+    }
+
     /// <summary>
     /// Releases the turn's external governance attribution.
     /// </summary>
