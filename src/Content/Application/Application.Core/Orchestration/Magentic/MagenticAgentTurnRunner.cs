@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Text;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Services;
@@ -13,7 +12,6 @@ using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Orchestration.Magentic;
@@ -50,9 +48,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	private readonly IMagenticOrchestrator _orchestrator;
 	private readonly ILlmUsageCapture _usageCapture;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
-	private readonly IGovernanceTraceRecorder _traceRecorder;
-	private readonly IAgentExecutionContext _executionContext;
-	private readonly IServiceScopeFactory _scopeFactory;
+	private readonly ParticipantGovernance _participantGovernance;
 	private readonly ILogger<MagenticAgentTurnRunner> _logger;
 
 	public MagenticAgentTurnRunner(
@@ -61,9 +57,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		IMagenticOrchestrator orchestrator,
 		ILlmUsageCapture usageCapture,
 		IToolCallAdmissionPipeline admissionPipeline,
-		IGovernanceTraceRecorder traceRecorder,
-		IAgentExecutionContext executionContext,
-		IServiceScopeFactory scopeFactory,
+		ParticipantGovernance participantGovernance,
 		ILogger<MagenticAgentTurnRunner> logger)
 	{
 		ArgumentNullException.ThrowIfNull(agentFactory);
@@ -71,9 +65,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		ArgumentNullException.ThrowIfNull(orchestrator);
 		ArgumentNullException.ThrowIfNull(usageCapture);
 		ArgumentNullException.ThrowIfNull(admissionPipeline);
-		ArgumentNullException.ThrowIfNull(traceRecorder);
-		ArgumentNullException.ThrowIfNull(executionContext);
-		ArgumentNullException.ThrowIfNull(scopeFactory);
+		ArgumentNullException.ThrowIfNull(participantGovernance);
 		ArgumentNullException.ThrowIfNull(logger);
 
 		_agentFactory = agentFactory;
@@ -81,9 +73,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		_orchestrator = orchestrator;
 		_usageCapture = usageCapture;
 		_admissionPipeline = admissionPipeline;
-		_traceRecorder = traceRecorder;
-		_executionContext = executionContext;
-		_scopeFactory = scopeFactory;
+		_participantGovernance = participantGovernance;
 		_logger = logger;
 	}
 
@@ -353,9 +343,8 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		// engine decides when each one runs, so its own RunAsync/RunStreamingAsync is the only place left
 		// to arm it. The manager is deliberately not wrapped: it IS the entry agent this turn is already
 		// governed as, and runs under the turn's own pipeline.
-		var governance = new ParticipantGovernance(_scopeFactory, _executionContext, _traceRecorder, conversationId);
 		var participants = resolvedParticipantDefs
-			.Select((def, i) => governance.Wrap(participantTasks[i].Result, def.Id))
+			.Select((def, i) => _participantGovernance.Wrap(participantTasks[i].Result, def.Id, conversationId))
 			.ToList();
 
 		return (managerTask.Result, participants);

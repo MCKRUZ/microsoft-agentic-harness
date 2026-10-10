@@ -9,7 +9,6 @@ using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using FluentAssertions;
-using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,7 +16,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
-namespace Infrastructure.AI.Tests.Agents;
+namespace Application.AI.Common.Tests.Governance;
 
 /// <summary>
 /// A Magentic participant must be authorized as itself, not as the entry agent (#769). Microsoft's
@@ -58,7 +57,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         _parentContext.Initialize(EntryAgent, ConversationId, 3, ConversationId);
 
         _governance = new ParticipantGovernance(
-            _provider.GetRequiredService<IServiceScopeFactory>(), _parentContext, _parentTrace, ConversationId);
+            _provider.GetRequiredService<IServiceScopeFactory>(), _parentContext, _parentTrace);
     }
 
     public void Dispose()
@@ -71,7 +70,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunAsync_ToolCallsInsideTheRunReachAPipelineArmedAsTheParticipant()
     {
         var probe = new ProbeAgent();
-        var agent = _governance.Wrap(probe, Participant);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
             await agent.RunAsync("go");
@@ -92,7 +91,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         // the top of the stream would govern only the first step; the wrapper has to publish it around
         // every step of the stream.
         var probe = new ProbeAgent(streamedUpdates: 3);
-        var agent = _governance.Wrap(probe, Participant);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
         {
@@ -111,7 +110,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     [Fact]
     public async Task EveryRunGetsAFreshScopeWithAResetPipeline()
     {
-        var agent = _governance.Wrap(new ProbeAgent(), Participant);
+        var agent = _governance.Wrap(new ProbeAgent(), Participant, ConversationId);
 
         await agent.RunAsync("one");
         await agent.RunAsync("two");
@@ -124,7 +123,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunAsync_FoldsTheParticipantsTraceIntoTheTurnsTrace()
     {
         var probe = new ProbeAgent(traceToReport: Trace("participant-call"));
-        var agent = _governance.Wrap(probe, Participant);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
 
         await agent.RunAsync("go");
 
@@ -136,7 +135,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunStreamingAsync_FoldsTheParticipantsTraceIntoTheTurnsTrace()
     {
         var probe = new ProbeAgent(streamedUpdates: 2, traceToReport: Trace("streamed-call"));
-        var agent = _governance.Wrap(probe, Participant);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
 
         await foreach (var _ in agent.RunStreamingAsync("go")) { }
 
@@ -145,10 +144,31 @@ public sealed class ParticipantGovernanceTests : IDisposable
     }
 
     [Fact]
+    public async Task RunStreamingAsync_WhenDisposingTheStreamThrows_StillFoldsTheParticipantsTrace()
+    {
+        // A failing dispose must not strand the trace: the decisions a participant made, including denials,
+        // are what an auditor reads, and an exception on the way out is exactly when they matter most.
+        var probe = new ProbeAgent(traceToReport: Trace("before-the-dispose-failure"), throwOnDispose: true);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
+
+        // The consumer stops after the first update, so the stream is disposed by the wrapper rather than
+        // exhausted: that is the path where the inner enumerator's dispose throws out of the wrapper's own.
+        Func<Task> act = async () =>
+        {
+            await foreach (var _ in agent.RunStreamingAsync("go"))
+                break;
+        };
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("dispose failed");
+        _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle()
+            .Which.Reason.Should().Be("before-the-dispose-failure");
+    }
+
+    [Fact]
     public async Task RunAsync_WhenTheParticipantThrows_StillFoldsItsTraceAndRestoresTheAmbientPipeline()
     {
         var probe = new ProbeAgent(throwAfterRecording: true, traceToReport: Trace("before-the-failure"));
-        var agent = _governance.Wrap(probe, Participant);
+        var agent = _governance.Wrap(probe, Participant, ConversationId);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
         {
@@ -167,7 +187,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     {
         // Magentic addresses participants by name; a wrapper that lost it would break routing.
         var inner = new ProbeAgent();
-        var agent = _governance.Wrap(inner, Participant);
+        var agent = _governance.Wrap(inner, Participant, ConversationId);
 
         agent.Name.Should().Be(inner.Name);
         agent.Id.Should().Be(inner.Id);
@@ -177,7 +197,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     [Fact]
     public void Wrap_RejectsABlankAgentId()
     {
-        var act = () => _governance.Wrap(new ProbeAgent(), " ");
+        var act = () => _governance.Wrap(new ProbeAgent(), " ", ConversationId);
 
         act.Should().Throw<ArgumentException>();
     }
@@ -195,6 +215,10 @@ public sealed class ParticipantGovernanceTests : IDisposable
 
     private ArmedPipeline ArmedFor(IToolCallAdmissionPipeline pipeline) =>
         _armed.Single(a => ReferenceEquals(a.Pipeline.Object, pipeline));
+
+    private sealed class ProbeSession : AgentSession
+    {
+    }
 
     /// <summary>A scope's pipeline mock plus the execution context that scope was armed with.</summary>
     private sealed class ArmedPipeline
@@ -220,13 +244,16 @@ public sealed class ParticipantGovernanceTests : IDisposable
     private sealed class ProbeAgent : AIAgent
     {
         private readonly int _streamedUpdates;
+        private readonly bool _throwOnDispose;
         private readonly bool _throwAfterRecording;
         private readonly GovernanceTrace? _traceToReport;
         private readonly List<IToolCallAdmissionPipeline> _seen = [];
 
         public ProbeAgent(
-            int streamedUpdates = 1, bool throwAfterRecording = false, GovernanceTrace? traceToReport = null)
+            int streamedUpdates = 1, bool throwAfterRecording = false, GovernanceTrace? traceToReport = null,
+            bool throwOnDispose = false)
         {
+            _throwOnDispose = throwOnDispose;
             _streamedUpdates = streamedUpdates;
             _throwAfterRecording = throwAfterRecording;
             _traceToReport = traceToReport;
@@ -246,9 +273,38 @@ public sealed class ParticipantGovernanceTests : IDisposable
             return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, "done")));
         }
 
-        protected override async IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
+        protected override IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
             IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
-            [EnumeratorCancellation] CancellationToken cancellationToken)
+            CancellationToken cancellationToken) =>
+            _throwOnDispose ? new ThrowOnDisposeStream(Record) : Stream(cancellationToken);
+
+        /// <summary>A stream that yields once and then throws when it is disposed.</summary>
+        private sealed class ThrowOnDisposeStream(Action record) : IAsyncEnumerable<AgentResponseUpdate>
+        {
+            public IAsyncEnumerator<AgentResponseUpdate> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+                new Enumerator(record);
+
+            private sealed class Enumerator(Action record) : IAsyncEnumerator<AgentResponseUpdate>
+            {
+                private bool _yielded;
+
+                public AgentResponseUpdate Current { get; private set; } = new(ChatRole.Assistant, "only");
+
+                public ValueTask<bool> MoveNextAsync()
+                {
+                    if (_yielded)
+                        return ValueTask.FromResult(false);
+
+                    _yielded = true;
+                    record();
+                    return ValueTask.FromResult(true);
+                }
+
+                public ValueTask DisposeAsync() => throw new InvalidOperationException("dispose failed");
+            }
+        }
+
+        private async IAsyncEnumerable<AgentResponseUpdate> Stream([EnumeratorCancellation] CancellationToken cancellationToken)
         {
             for (var i = 0; i < _streamedUpdates; i++)
             {
@@ -272,7 +328,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         }
 
         protected override ValueTask<AgentSession> CreateSessionCoreAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult<AgentSession>(new TestableAgentSession());
+            => ValueTask.FromResult<AgentSession>(new ProbeSession());
 
         protected override ValueTask<JsonElement> SerializeSessionCoreAsync(
             AgentSession session, JsonSerializerOptions? jsonSerializerOptions, CancellationToken cancellationToken)
@@ -281,6 +337,6 @@ public sealed class ParticipantGovernanceTests : IDisposable
         protected override ValueTask<AgentSession> DeserializeSessionCoreAsync(
             JsonElement serializedState, JsonSerializerOptions? jsonSerializerOptions,
             CancellationToken cancellationToken)
-            => ValueTask.FromResult<AgentSession>(new TestableAgentSession());
+            => ValueTask.FromResult<AgentSession>(new ProbeSession());
     }
 }

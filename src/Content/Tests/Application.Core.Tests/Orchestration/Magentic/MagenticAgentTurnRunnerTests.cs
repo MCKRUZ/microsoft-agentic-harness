@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Governance;
 using Application.Core.Orchestration.Magentic;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Agents;
@@ -42,9 +43,7 @@ public sealed class MagenticAgentTurnRunnerTests
         _orchestrator.Object,
         _usageCapture.Object,
         _admissionPipeline.Object,
-        _traceRecorder.Object,
-        _executionContext.Object,
-        _scopeFactory.Object,
+        new ParticipantGovernance(_scopeFactory.Object, _executionContext.Object, _traceRecorder.Object),
         NullLogger<MagenticAgentTurnRunner>.Instance);
 
     private static AgentDefinition Supervisor(params string[] participantIds) => new()

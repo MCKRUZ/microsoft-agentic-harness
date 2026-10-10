@@ -126,9 +126,8 @@ public sealed class MagenticOrchestratorRunTests
             Mock.Of<IAgentExecutionContext>(c => c.ConversationId == "conv-1"),
             new GovernanceTraceRecorder(
                 Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
-                Mock.Of<IToolRiskClassifier>()),
-            "conv-1");
-        var request = BuildRequest(manager) with { Participants = [governance.Wrap(researcher, "researcher")] };
+                Mock.Of<IToolRiskClassifier>()));
+        var request = BuildRequest(manager) with { Participants = [governance.Wrap(researcher, "researcher", "conv-1")] };
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         MagenticWorkflowResult? outcome;

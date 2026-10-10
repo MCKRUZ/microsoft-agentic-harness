@@ -42,9 +42,26 @@ namespace Application.AI.Common.Services.Governance;
 /// handed on, which also keeps the participant's pipeline from leaking to the consumer.
 /// </para>
 /// <para>
+/// <strong>Known limit: telemetry attribution on a stream.</strong> Arming publishes the participant's
+/// external governance attribution (through <c>IAgentExecutionContext.Initialize</c>, the only thing
+/// permitted to publish it) in the stream's first step, and that, like any ambient value, is dropped at the
+/// first <c>yield</c>. Spans from later steps of a streamed participant run can therefore carry the
+/// supervisor's attribution. That affects how spans are labelled, never what is authorized. It is not
+/// fixed here by calling <c>BeginTurn</c> again, because a second, nested publication is exactly what
+/// <c>AttributionIsPublishedByTheExecutionContextOnlyTests</c> forbids; a real fix gives the execution
+/// context itself a safe way to re-publish for the current step (#803).
+/// </para>
+/// <para>
 /// <strong>The participant's trace is folded back</strong> into the supervisor turn's trace when each run
 /// ends — including a run that throws — because the child scope's recorder is gone with the scope and the
 /// turn result reports the parent's.
+/// </para>
+/// <para>
+/// <strong>Known property: per-run governance state starts fresh.</strong> Each run is its own scope, so the
+/// loop guard's call history and anything else the pipeline accumulates per run resets between runs of the
+/// same participant. Before this, the whole Magentic turn shared one pipeline and that state accumulated
+/// across rounds (under the wrong agent's identity). Delegation has the same property by the same
+/// construction. The fix is one scope per (turn, participant) reused across its runs (#804).
 /// </para>
 /// </remarks>
 public sealed class ParticipantGovernance
@@ -52,55 +69,55 @@ public sealed class ParticipantGovernance
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAgentExecutionContext _parentContext;
     private readonly IGovernanceTraceRecorder _parentTrace;
-    private readonly string _fallbackScopeId;
 
-    /// <summary>Initializes a new instance of the <see cref="ParticipantGovernance"/> class.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ParticipantGovernance"/> class. Scoped: it binds to the
+    /// supervisor turn's own execution context and trace recorder.
+    /// </summary>
     /// <param name="scopeFactory">Opens the child scope each run is armed in.</param>
     /// <param name="parentContext">The supervisor turn's execution context, which participants inherit from.</param>
     /// <param name="parentTrace">The supervisor turn's trace recorder, which participants' traces fold into.</param>
-    /// <param name="fallbackScopeId">
-    /// Conversation id and call-once scope to use where the parent supplies none; the supervisor's
-    /// conversation id.
-    /// </param>
     public ParticipantGovernance(
         IServiceScopeFactory scopeFactory,
         IAgentExecutionContext parentContext,
-        IGovernanceTraceRecorder parentTrace,
-        string fallbackScopeId)
+        IGovernanceTraceRecorder parentTrace)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(parentContext);
         ArgumentNullException.ThrowIfNull(parentTrace);
-        ArgumentException.ThrowIfNullOrEmpty(fallbackScopeId);
 
         _scopeFactory = scopeFactory;
         _parentContext = parentContext;
         _parentTrace = parentTrace;
-        _fallbackScopeId = fallbackScopeId;
     }
 
     /// <summary>Returns <paramref name="agent"/> wrapped so every run is governed as <paramref name="agentId"/>.</summary>
     /// <param name="agent">The participant.</param>
     /// <param name="agentId">The participant's own agent id: the identity its tool calls are authorized as.</param>
-    public AIAgent Wrap(AIAgent agent, string agentId)
+    /// <param name="fallbackScopeId">
+    /// Conversation id and call-once scope to use where the parent supplies none; the supervisor's
+    /// conversation id.
+    /// </param>
+    public AIAgent Wrap(AIAgent agent, string agentId, string fallbackScopeId)
     {
         ArgumentNullException.ThrowIfNull(agent);
         ArgumentException.ThrowIfNullOrWhiteSpace(agentId);
+        ArgumentException.ThrowIfNullOrEmpty(fallbackScopeId);
 
         return agent.AsBuilder()
             .Use(
                 runFunc: (messages, session, options, inner, ct) =>
-                    RunAsync(agentId, messages, session, options, inner, ct),
+                    RunAsync(agentId, fallbackScopeId, messages, session, options, inner, ct),
                 runStreamingFunc: (messages, session, options, inner, ct) =>
-                    RunStreamingAsync(agentId, messages, session, options, inner, ct))
+                    RunStreamingAsync(agentId, fallbackScopeId, messages, session, options, inner, ct))
             .Build();
     }
 
     private async Task<AgentResponse> RunAsync(
-        string agentId, IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
-        AIAgent inner, CancellationToken cancellationToken)
+        string agentId, string fallbackScopeId, IEnumerable<ChatMessage> messages, AgentSession? session,
+        AgentRunOptions? options, AIAgent inner, CancellationToken cancellationToken)
     {
-        var (scope, pipeline) = Arm(agentId);
+        var (scope, pipeline) = Arm(agentId, fallbackScopeId);
         await using (scope.ConfigureAwait(false))
         {
             try
@@ -116,10 +133,10 @@ public sealed class ParticipantGovernance
     }
 
     private async IAsyncEnumerable<AgentResponseUpdate> RunStreamingAsync(
-        string agentId, IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
-        AIAgent inner, [EnumeratorCancellation] CancellationToken cancellationToken)
+        string agentId, string fallbackScopeId, IEnumerable<ChatMessage> messages, AgentSession? session,
+        AgentRunOptions? options, AIAgent inner, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var (scope, pipeline) = Arm(agentId);
+        var (scope, pipeline) = Arm(agentId, fallbackScopeId);
         await using (scope.ConfigureAwait(false))
         {
             var stream = inner.RunStreamingAsync(messages, session, options, cancellationToken)
@@ -143,15 +160,22 @@ public sealed class ParticipantGovernance
             }
             finally
             {
-                await stream.DisposeAsync().ConfigureAwait(false);
-                _parentTrace.Absorb(pipeline.GetTrace());
+                // Nested so neither can strand the other: a throwing dispose must not drop the trace.
+                try
+                {
+                    _parentTrace.Absorb(pipeline.GetTrace());
+                }
+                finally
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
     }
 
     // Mirrors CapabilityMatchSupervisor.ArmDelegationGovernance: a new scope per run, disposed here if
     // arming throws because nothing else has been handed it yet.
-    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) Arm(string agentId)
+    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) Arm(string agentId, string fallbackScopeId)
     {
         var scope = _scopeFactory.CreateAsyncScope();
         try
@@ -161,7 +185,7 @@ public sealed class ParticipantGovernance
                 agentId,
                 GovernanceArmingPolicy.Delegation,
                 _parentContext,
-                _fallbackScopeId);
+                fallbackScopeId);
 
             return (scope, pipeline);
         }

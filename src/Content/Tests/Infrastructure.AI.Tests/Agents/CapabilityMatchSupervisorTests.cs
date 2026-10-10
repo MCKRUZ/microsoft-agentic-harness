@@ -403,6 +403,41 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     }
 
     /// <summary>
+    /// #771: the delegate runs in its own scope, whose trace recorder is gone when the scope is
+    /// disposed, so without folding it back the parent turn's reported governance trace silently
+    /// loses every decision the delegate made — a tool the delegate was denied would not appear.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_FoldsTheDelegatesGovernanceTraceIntoTheParentTurnsTrace()
+    {
+        ArrangeAmbientParentContext();
+        var parentTrace = new Mock<IGovernanceTraceRecorder>();
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(new Mock<IAgentExecutionContext>().Object);
+        provider.Setup(p => p.GetService(typeof(IGovernanceTraceRecorder))).Returns(parentTrace.Object);
+        _ambientScopeMock.Setup(a => a.Current).Returns(provider.Object);
+
+        var delegatedTrace = new Domain.AI.Governance.GovernanceTrace
+        {
+            EnforcementEnabled = true,
+            ToolDecisions =
+            [
+                new Domain.AI.Governance.ToolDecisionRecord(
+                    "shell_exec", Domain.AI.Governance.ToolDecisionOutcome.Denied, "not permitted",
+                    Domain.AI.Changes.BlastRadius.High, RequiredApproval: false, ApprovalGranted: false, Enforced: true),
+            ],
+        };
+        _delegatedPipelineMock.Setup(p => p.GetTrace()).Returns(delegatedTrace);
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        parentTrace.Verify(
+            r => r.Absorb(delegatedTrace),
+            Times.Once,
+            "the delegate's decisions must reach the trace the turn result reports");
+    }
+
+    /// <summary>
     /// Proves the H1 fix: a call-once tool the parent turn already claimed must stay claimed for
     /// every delegation it spawns. Re-minting the scope from the delegation id (the pre-fix
     /// behavior) would let a delegation call a call-once tool again -- the identical rule
