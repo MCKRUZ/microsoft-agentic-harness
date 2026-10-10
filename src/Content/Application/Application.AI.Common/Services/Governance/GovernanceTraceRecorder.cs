@@ -91,6 +91,23 @@ public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
     }
 
     /// <inheritdoc />
+    public void Absorb(GovernanceTrace trace)
+    {
+        ArgumentNullException.ThrowIfNull(trace);
+
+        if (trace.EnforcementEnabled)
+            MarkEnforced();
+
+        lock (_lock)
+        {
+            _decisions.AddRange(trace.ToolDecisions);
+
+            foreach (var code in trace.EscalationReasonCodes)
+                _escalations.Add(code);
+        }
+    }
+
+    /// <inheritdoc />
     public GovernanceTrace Snapshot()
     {
         var enforced = EnforcementEnabled;

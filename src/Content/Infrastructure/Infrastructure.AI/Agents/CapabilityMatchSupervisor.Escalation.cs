@@ -421,7 +421,7 @@ public sealed partial class CapabilityMatchSupervisor
         {
             LlmUsageCapture.Current = previousUsage;
 
-            // Nested so neither step can strand the other: a throw while accounting must not skip the
+            // Nested so no step can strand another: a throw while accounting must not skip the
             // named delegation's scope cleanup, and a throw in cleanup must not lose the spend.
             try
             {
@@ -430,8 +430,19 @@ public sealed partial class CapabilityMatchSupervisor
             }
             finally
             {
-                if (namedDelegationContext is not null)
-                    await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
+                try
+                {
+                    // #771: the delegate's recorder lives and dies with its scope, so its decisions are
+                    // folded into the parent turn's trace before the scope is disposed — otherwise a tool
+                    // the delegate was denied would not appear in the Governance trace the turn reports.
+                    _ambientScope.Current?.GetService<IGovernanceTraceRecorder>()
+                        ?.Absorb(governance.Pipeline.GetTrace());
+                }
+                finally
+                {
+                    if (namedDelegationContext is not null)
+                        await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
+                }
             }
         }
 

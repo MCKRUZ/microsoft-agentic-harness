@@ -66,6 +66,62 @@ public sealed class GovernanceTraceRecorderTests
     }
 
     [Fact]
+    public void Absorb_AppendsAnotherTurnsDecisionsAfterTheOnesAlreadyRecorded()
+    {
+        // A child scope (a Magentic participant, a delegate) records into its own trail; folding it into
+        // the parent's keeps the order an auditor reads: the parent's earlier decisions, then the child's.
+        var parent = Create();
+        parent.Record(Decision("parent-first"));
+        var child = Create();
+        child.Record(Decision("child-denied", ToolDecisionOutcome.Denied));
+
+        parent.Absorb(child.Snapshot());
+
+        parent.Snapshot().ToolDecisions.Select(d => d.Reason)
+            .Should().Equal("parent-first", "child-denied");
+    }
+
+    [Fact]
+    public void Absorb_CarriesEscalationCodesAcrossWithoutDuplicatingOnes_TheParentHas()
+    {
+        var parent = Create();
+        parent.RecordEscalation("progress.spin_detected");
+        var child = Create();
+        child.RecordEscalation("PROGRESS.SPIN_DETECTED");
+        child.RecordEscalation("governor.rate_limited");
+
+        parent.Absorb(child.Snapshot());
+
+        parent.Snapshot().EscalationReasonCodes.Should().HaveCount(2)
+            .And.Contain("governor.rate_limited");
+    }
+
+    [Fact]
+    public void Absorb_AnEnforcedChild_MakesTheParentReportAsGoverned()
+    {
+        // The child ran under enforcement even if nothing about the parent's own scope says so (an
+        // envelope can have torn down by the time the parent's trace is assembled).
+        var parent = Create();
+        var child = Create();
+        child.MarkEnforced();
+        child.Record(Decision("child"));
+
+        parent.Absorb(child.Snapshot());
+
+        parent.Snapshot().EnforcementEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Absorb_AnEmptyTrace_ChangesNothing()
+    {
+        var parent = Create();
+
+        parent.Absorb(GovernanceTrace.Empty);
+
+        parent.Snapshot().Should().BeSameAs(GovernanceTrace.Empty);
+    }
+
+    [Fact]
     public void RecordEscalation_DeduplicatesCaseInsensitively()
     {
         // GovernanceTrace.EscalationReasonCodes is contractually distinct, and GovernanceTrace.Merge

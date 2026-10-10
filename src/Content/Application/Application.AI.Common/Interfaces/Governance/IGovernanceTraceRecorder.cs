@@ -72,6 +72,18 @@ public interface IGovernanceTraceRecorder
     /// </returns>
     GovernanceTrace Snapshot();
 
+    /// <summary>
+    /// Folds another scope's trace into this one: its decisions are appended after the ones already
+    /// recorded, its escalation codes are unioned in, and enforcement observed there counts here.
+    /// </summary>
+    /// <param name="trace">The child scope's trace — a Magentic participant's, or a delegate's.</param>
+    /// <remarks>
+    /// A child that is authorized as its own agent runs in its own DI scope and records into that
+    /// scope's recorder, which is gone when the scope is disposed. Without this the parent turn's trace
+    /// — the one reported on the turn result — would silently lose every decision the child made.
+    /// </remarks>
+    void Absorb(GovernanceTrace trace);
+
     /// <summary>Clears the trail so the next turn starts clean.</summary>
     void Reset();
 

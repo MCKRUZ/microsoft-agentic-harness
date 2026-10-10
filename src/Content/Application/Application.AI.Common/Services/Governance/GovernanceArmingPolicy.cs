@@ -54,7 +54,8 @@ public sealed record GovernanceArmingPolicy
     /// <summary>
     /// A delegation: a fresh unit of work run as the delegate's own agent, inside the parent's session.
     /// Inherits conversation id and call-once scope (falling back to the delegation id) but starts at
-    /// turn 1.
+    /// turn 1. Also what a Magentic participant's run is armed with (<see cref="ParticipantGovernance"/>):
+    /// the same shape, a fresh unit of work as its own agent inside the supervisor's session.
     /// </summary>
     public static GovernanceArmingPolicy Delegation { get; } = new()
     {

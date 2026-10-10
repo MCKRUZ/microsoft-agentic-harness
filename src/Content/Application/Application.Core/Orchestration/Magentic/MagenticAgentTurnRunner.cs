@@ -48,6 +48,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	private readonly IMagenticOrchestrator _orchestrator;
 	private readonly ILlmUsageCapture _usageCapture;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
+	private readonly ParticipantGovernance _participantGovernance;
 	private readonly ILogger<MagenticAgentTurnRunner> _logger;
 
 	public MagenticAgentTurnRunner(
@@ -56,6 +57,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		IMagenticOrchestrator orchestrator,
 		ILlmUsageCapture usageCapture,
 		IToolCallAdmissionPipeline admissionPipeline,
+		ParticipantGovernance participantGovernance,
 		ILogger<MagenticAgentTurnRunner> logger)
 	{
 		ArgumentNullException.ThrowIfNull(agentFactory);
@@ -63,6 +65,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		ArgumentNullException.ThrowIfNull(orchestrator);
 		ArgumentNullException.ThrowIfNull(usageCapture);
 		ArgumentNullException.ThrowIfNull(admissionPipeline);
+		ArgumentNullException.ThrowIfNull(participantGovernance);
 		ArgumentNullException.ThrowIfNull(logger);
 
 		_agentFactory = agentFactory;
@@ -70,6 +73,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		_orchestrator = orchestrator;
 		_usageCapture = usageCapture;
 		_admissionPipeline = admissionPipeline;
+		_participantGovernance = participantGovernance;
 		_logger = logger;
 	}
 
@@ -335,7 +339,15 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			.ToArray();
 		await Task.WhenAll([managerTask, .. participantTasks]);
 
-		return (managerTask.Result, participantTasks.Select(t => t.Result).ToList());
+		// Each participant is wrapped so every run it makes is authorized as ITSELF (#769). Microsoft's
+		// engine decides when each one runs, so its own RunAsync/RunStreamingAsync is the only place left
+		// to arm it. The manager is deliberately not wrapped: it IS the entry agent this turn is already
+		// governed as, and runs under the turn's own pipeline.
+		var participants = resolvedParticipantDefs
+			.Select((def, i) => _participantGovernance.Wrap(participantTasks[i].Result, def.Id, conversationId))
+			.ToList();
+
+		return (managerTask.Result, participants);
 	}
 
 	/// <summary>

@@ -410,6 +410,8 @@ public static class DependencyInjection
         // The composed chain over the six gates above. Every execution path that can reach a tool
         // calls this and nothing else, so a gate added here reaches all of them at once.
         services.TryAddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
+        // Scoped: binds to the supervisor turn's own execution context and trace recorder.
+        services.TryAddScoped<Services.Governance.ParticipantGovernance>();
 
         // Closes the approval loop (#325): reports what an approved action actually did, and
         // attributes a corrected retry to its failed predecessor. Singleton because the failure
