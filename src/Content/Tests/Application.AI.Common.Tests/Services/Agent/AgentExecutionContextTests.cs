@@ -519,6 +519,103 @@ public class AgentExecutionContextTests
     }
 
     [Fact]
+    public void ReassertAttribution_PublishesTheContextsOwnIdentity_AndTheCallerReleasesIt()
+    {
+        // A streamed run is unattributed after its first step (#803), so it re-publishes around each step.
+        // The scope belongs to the caller: it must be released by disposing it, not by the context.
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+
+        var step = context.ReassertAttribution();
+
+        attribution.Turns.Should().Equal(("planner", "conv-1"), ("planner", "conv-1"));
+        attribution.Released.Should().Be(0);
+
+        step.Dispose();
+
+        attribution.Released.Should().Be(1, "the step's own scope is released, not the one Initialize holds");
+    }
+
+    [Fact]
+    public void ReleaseTurnAttribution_ReleasesTheHeldScopeNow_AndDisposeDoesNotReleaseItAgain()
+    {
+        // For a context that cannot hold attribution across a yield (a streamed participant) and
+        // publishes only through ReassertAttribution: the scope Initialize published is given back
+        // immediately, in the flow that took it, rather than lingering until the scope is disposed.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+
+        context.ReleaseTurnAttribution();
+
+        attribution.Released.Should().Be(1);
+
+        context.ReleaseTurnAttribution();
+        context.Dispose();
+
+        attribution.Released.Should().Be(1, "released once, however many times it is asked for");
+    }
+
+    [Fact]
+    public void ReleaseTurnAttribution_BeforeInitialize_DoesNothing()
+    {
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        context.ReleaseTurnAttribution();
+
+        attribution.Released.Should().Be(0);
+    }
+
+    [Fact]
+    public void ReassertAttribution_LeavesTheTurnsHeldScopeAlone()
+    {
+        // Nesting a second publication is what #737 forbade when it released out of order. The held scope
+        // must stay in force until the context is disposed, however many steps re-assert and release.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+
+        context.ReassertAttribution().Dispose();
+        context.ReassertAttribution().Dispose();
+
+        attribution.Released.Should().Be(2, "only the two step scopes so far");
+
+        context.Dispose();
+
+        attribution.Released.Should().Be(3, "the held scope is released exactly once, by the context");
+    }
+
+    [Fact]
+    public void ReassertAttribution_BeforeInitialize_PublishesNothing()
+    {
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        var step = context.ReassertAttribution();
+
+        step.Should().NotBeNull();
+        step.Dispose();
+        attribution.Turns.Should().BeEmpty("there is no identity to assert yet");
+    }
+
+    [Fact]
+    public void ReassertAttribution_AfterDispose_PublishesNothing()
+    {
+        // The caller owns the scope returned, so a disposed context handing one out would create baggage
+        // that outlives everything able to clear it.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+        context.Dispose();
+
+        context.ReassertAttribution().Dispose();
+
+        attribution.Turns.Should().ContainSingle("only Initialize published");
+    }
+
+    [Fact]
     public void ReInitializeForALaterTurn_RepublishesAndReleasesThePreviousTurn()
     {
         // Republishing looks redundant — the scope-leak guard rejects any change to agent or

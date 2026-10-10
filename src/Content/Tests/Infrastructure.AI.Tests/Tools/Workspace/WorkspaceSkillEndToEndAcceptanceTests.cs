@@ -263,6 +263,13 @@ public sealed class WorkspaceSkillEndToEndAcceptanceTests : IDisposable
         public bool HasRetrievableToolResultScope => CallOnceScopeId is not null;
         public AgentIdentity? AgentIdentity { get; private set; }
         private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");
+        public IDisposable ReassertAttribution() =>
+            Application.AI.Common.Interfaces.Telemetry.NoAgentTelemetryAttributionScope.Instance;
+
+        public void ReleaseTurnAttribution()
+        {
+        }
+
         public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
         {
             AgentId = agentId;

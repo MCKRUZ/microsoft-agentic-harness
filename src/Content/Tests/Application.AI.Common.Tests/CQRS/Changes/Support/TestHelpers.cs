@@ -209,6 +209,13 @@ internal static class TestHelpers
 
         private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");
 
+        public IDisposable ReassertAttribution() =>
+            Application.AI.Common.Interfaces.Telemetry.NoAgentTelemetryAttributionScope.Instance;
+
+        public void ReleaseTurnAttribution()
+        {
+        }
+
         public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
         {
             AgentId = agentId;

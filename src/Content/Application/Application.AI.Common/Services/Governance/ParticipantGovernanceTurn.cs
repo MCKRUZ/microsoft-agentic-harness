@@ -41,8 +41,9 @@ namespace Application.AI.Common.Services.Governance;
 /// awaited inside <see cref="ToolAdmissionAccessor.Begin(IToolCallAdmissionPipeline, string)"/> and released before the update is handed on.
 /// </para>
 /// <para>
-/// <strong>Known limit.</strong> Telemetry attribution on a stream is published once, in the first step, so
-/// later steps can carry the supervisor's (#803).
+/// <strong>Attribution is re-asserted the same way.</strong> The Agent 365 attribution the participant's
+/// context publishes while arming lives only in the first step, so each step also calls
+/// <see cref="IAgentExecutionContext.ReassertAttribution"/> and releases it with the pipeline (#803).
 /// </para>
 /// </remarks>
 public sealed class ParticipantGovernanceTurn : IAsyncDisposable
@@ -128,9 +129,7 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
         ParticipantScope participant, IEnumerable<ChatMessage> messages, AgentSession? session,
         AgentRunOptions? options, AIAgent inner, CancellationToken cancellationToken)
     {
-        var pipeline = participant.GetPipeline();
-
-        using (ToolAdmissionAccessor.Begin(pipeline, participant.AgentId))
+        using (participant.BeginStep())
             return await inner.RunAsync(messages, session, options, cancellationToken).ConfigureAwait(false);
     }
 
@@ -138,7 +137,6 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
         ParticipantScope participant, IEnumerable<ChatMessage> messages, AgentSession? session,
         AgentRunOptions? options, AIAgent inner, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var pipeline = participant.GetPipeline();
         await using var stream = inner.RunStreamingAsync(messages, session, options, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
@@ -147,13 +145,23 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
             // Set and released within one segment of this iterator: in force while the inner agent runs
             // (its tool calls happen inside MoveNextAsync), gone before the update reaches the consumer.
             bool hasNext;
-            using (ToolAdmissionAccessor.Begin(pipeline, participant.AgentId))
+            using (participant.BeginStep())
                 hasNext = await stream.MoveNextAsync().ConfigureAwait(false);
 
             if (!hasNext)
                 yield break;
 
             yield return stream.Current;
+        }
+    }
+
+    /// <summary>Releases a step's admission pipeline, then its attribution — the reverse of how they were taken.</summary>
+    private sealed class StepScope(IDisposable admission, IDisposable attribution) : IDisposable
+    {
+        public void Dispose()
+        {
+            admission.Dispose();
+            attribution.Dispose();
         }
     }
 
@@ -166,17 +174,32 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
         private readonly object _lock = new();
         private AsyncServiceScope _scope;
         private IToolCallAdmissionPipeline? _pipeline;
+        private IAgentExecutionContext? _context;
         private bool _ended;
 
         public string AgentId => agentId;
 
-        public IToolCallAdmissionPipeline GetPipeline()
+        /// <summary>
+        /// Puts this participant's governance in force for the code about to run — its admission pipeline
+        /// (with its agent id) and its Agent 365 attribution — arming the scope on first use. Dispose the
+        /// result when that code ends; both are released in reverse order. Called around every step of a
+        /// stream: ambient state set inside an async iterator does not survive a <c>yield</c>, and the
+        /// attribution <c>Initialize</c> published while arming lives only in the first step (#803).
+        /// </summary>
+        public IDisposable BeginStep()
         {
+            IToolCallAdmissionPipeline pipeline;
+            IAgentExecutionContext context;
             lock (_lock)
             {
                 ObjectDisposedException.ThrowIf(_ended, turn);
-                return _pipeline ??= Arm();
+                _pipeline ??= Arm();
+                pipeline = _pipeline;
+                context = _context!;
             }
+
+            var attribution = context.ReassertAttribution();
+            return new StepScope(ToolAdmissionAccessor.Begin(pipeline, agentId), attribution);
         }
 
         public async ValueTask EndAsync()
@@ -217,6 +240,13 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
                     turn._conversationId);
 
                 _scope = scope;
+                _context = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
+
+                // Arming published the participant's attribution and the context holds it for the turn. This
+                // runs inside an iterator step, so that scope cannot be held across the yield: in a shared
+                // baggage holder it would leave the participant's identity on the supervisor's spans until
+                // the turn ended. Release it here, in the flow that took it; every step re-asserts instead.
+                _context.ReleaseTurnAttribution();
                 return pipeline;
             }
             catch

@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
@@ -31,6 +32,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     private const string ConversationId = "conv-1";
 
     private readonly List<ArmedPipeline> _armed = [];
+    private readonly RecordingAttribution _attribution = new();
     private readonly ServiceProvider _provider;
     private readonly IServiceScope _parentScope;
     private readonly IToolCallAdmissionPipeline _parentPipeline = Mock.Of<IToolCallAdmissionPipeline>();
@@ -44,6 +46,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public ParticipantGovernanceTests()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IAgentTelemetryAttribution>(_attribution);
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<ScopeMarker>();
         services.AddScoped(sp =>
@@ -112,6 +115,27 @@ public sealed class ParticipantGovernanceTests : IDisposable
         probe.PipelinesSeen.Distinct().Should().ContainSingle("one run is one governance scope");
         ArmedFor(probe.PipelinesSeen[0]).Context.AgentId.Should().Be(Participant);
         probe.AgentIdsSeen.Should().HaveCount(3).And.OnlyContain(id => id == Participant, "every step publishes it, not just the first");
+    }
+
+    [Fact]
+    public async Task EachStreamStepReassertsTheParticipantsAttribution_AndReleasesItBeforeTheNextUpdate()
+    {
+        // #803: the attribution Initialize published while arming lives only in the first step of an async
+        // iterator, so each step publishes it again and releases it before the update is handed on. The
+        // release is what keeps it from colouring whatever consumes the stream; the real-SDK tests cannot
+        // see it (an unreleased scope is dropped at the yield anyway), so it is pinned here by count.
+        var agent = _turn.Wrap(new ProbeAgent(streamedUpdates: 3), Participant);
+
+        var releasedAtEachUpdate = new List<int>();
+        await foreach (var _ in agent.RunStreamingAsync("go"))
+            releasedAtEachUpdate.Add(_attribution.Released);
+
+        // One for arming, and one per MoveNextAsync: three updates plus the call that
+        // reports the end of the stream, which also runs inside a step.
+        _attribution.Turns.Count(t => t.AgentId == Participant).Should().Be(5);
+        // The scope Initialize holds is released as soon as the participant is armed (it cannot be held
+        // across a yield), so the first update already sees that one plus the first step's.
+        releasedAtEachUpdate.Should().Equal([2, 3, 4], "each step's scope is released before its update is handed on");
     }
 
     [Fact]
@@ -336,6 +360,27 @@ public sealed class ParticipantGovernanceTests : IDisposable
 
     private sealed class ProbeSession : AgentSession
     {
+    }
+
+    /// <summary>Records every attribution published and every scope released.</summary>
+    private sealed class RecordingAttribution : IAgentTelemetryAttribution
+    {
+        private readonly List<(string AgentId, string ConversationId)> _turns = [];
+
+        public IReadOnlyList<(string AgentId, string ConversationId)> Turns => _turns;
+
+        public int Released { get; private set; }
+
+        public IDisposable BeginTurn(string agentId, string conversationId)
+        {
+            _turns.Add((agentId, conversationId));
+            return new Release(this);
+        }
+
+        private sealed class Release(RecordingAttribution owner) : IDisposable
+        {
+            public void Dispose() => owner.Released++;
+        }
     }
 
     /// <summary>Resolved inside each child scope; reports whether that scope has been disposed.</summary>

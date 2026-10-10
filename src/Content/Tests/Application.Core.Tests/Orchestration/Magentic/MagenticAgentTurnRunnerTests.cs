@@ -46,6 +46,15 @@ public sealed class MagenticAgentTurnRunnerTests
         new ParticipantGovernance(_scopeFactory.Object, _executionContext.Object, _traceRecorder.Object),
         NullLogger<MagenticAgentTurnRunner>.Instance);
 
+    /// <summary>A loose context mock that honours the contract: re-asserting attribution never returns null.</summary>
+    private static Mock<IAgentExecutionContext> ContextMock()
+    {
+        var context = new Mock<IAgentExecutionContext>();
+        context.Setup(c => c.ReassertAttribution())
+            .Returns(Application.AI.Common.Interfaces.Telemetry.NoAgentTelemetryAttributionScope.Instance);
+        return context;
+    }
+
     private static AgentDefinition Supervisor(params string[] participantIds) => new()
     {
         Id = "supervisor-agent",
@@ -206,7 +215,7 @@ public sealed class MagenticAgentTurnRunnerTests
         var supervisor = Supervisor("researcher");
         _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
 
-        var context = new Mock<IAgentExecutionContext>();
+        var context = ContextMock();
         var childPipeline = new Mock<IToolCallAdmissionPipeline>();
         childPipeline.Setup(p => p.GetTrace()).Returns(Domain.AI.Governance.GovernanceTrace.Empty);
         var provider = new Mock<IServiceProvider>();
@@ -255,7 +264,7 @@ public sealed class MagenticAgentTurnRunnerTests
             .Callback(() => order.Add("turn trace read"))
             .Returns(Domain.AI.Governance.GovernanceTrace.Empty);
         var provider = new Mock<IServiceProvider>();
-        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(new Mock<IAgentExecutionContext>().Object);
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(ContextMock().Object);
         provider.Setup(p => p.GetService(typeof(IToolCallAdmissionPipeline))).Returns(childPipeline.Object);
         var scope = new Mock<IServiceScope>();
         scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);

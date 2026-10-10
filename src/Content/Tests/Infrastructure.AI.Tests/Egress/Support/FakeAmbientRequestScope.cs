@@ -36,6 +36,10 @@ internal sealed class FakeAmbientRequestScope : IAmbientRequestScope
         public bool HasRetrievableToolResultScope => false;
         public AgentIdentity? AgentIdentity { get; private set; }
 
+        public IDisposable ReassertAttribution() => throw new NotSupportedException();
+
+        public void ReleaseTurnAttribution() => throw new NotSupportedException();
+
         public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
             => throw new NotSupportedException();
 
