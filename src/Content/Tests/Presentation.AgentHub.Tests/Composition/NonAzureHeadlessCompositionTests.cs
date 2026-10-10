@@ -73,6 +73,18 @@ public sealed class NonAzureHeadlessCompositionTests : IClassFixture<NonAzureHea
     }
 
     [Fact]
+    public void Host_ShowsMagenticProgress_NotTheNoOpDefault()
+    {
+        // The no-op notifier is registered by the shared layer with TryAdd so every host has *something*;
+        // a host that shows progress must replace it. Nothing else fails if that line goes missing - the
+        // workflow runs fine and the live surface just stays silent.
+        var notifier = _factory.Services.GetRequiredService<
+            Application.AI.Common.Interfaces.Orchestration.Magentic.IMagenticProgressNotifier>();
+
+        notifier.Should().BeOfType<Presentation.AgentHub.Magentic.AgUiMagenticProgressNotifier>();
+    }
+
+    [Fact]
     public async Task ConfigurationSources_ContainNoAzureProviders()
     {
         var report = _factory.Services.GetRequiredService<HarnessConfigSourceReport>();

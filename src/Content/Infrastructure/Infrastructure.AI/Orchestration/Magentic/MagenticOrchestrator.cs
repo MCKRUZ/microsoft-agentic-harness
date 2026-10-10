@@ -39,6 +39,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
     private readonly IContentCapturePolicy _contentCapturePolicy;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _contentRedactionFilter;
+    private readonly IMagenticProgressNotifier _progress;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<MagenticOrchestrator> _logger;
 
@@ -50,6 +51,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         IContentCapturePolicy contentCapturePolicy,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
+        IMagenticProgressNotifier progress,
         ILoggerFactory loggerFactory)
     {
         _spanEmitter = spanEmitter;
@@ -58,6 +60,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         _contentCapturePolicy = contentCapturePolicy;
         _sanitizer = sanitizer;
         _contentRedactionFilter = contentRedactionFilter;
+        _progress = progress;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<MagenticOrchestrator>();
     }
@@ -79,6 +82,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             _contentCapturePolicy,
             _sanitizer,
             _contentRedactionFilter,
+            _progress,
             _loggerFactory.CreateLogger<MagenticEventSubscriber>());
 
         subscriber.StartWorkflow(request, workflowName, workflowId);
@@ -100,6 +104,8 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             // TurnToken (Microsoft's own sample sends both). OpenStreamingAsync sends neither, so the
             // run would wait forever for input.
             ct.ThrowIfCancellationRequested();
+            await subscriber.NotifyStartedAsync(ct).ConfigureAwait(false);
+
             await using var run = await InProcessExecution
                 .RunStreamingAsync(
                     workflow,
@@ -111,7 +117,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             if (!await run.TrySendMessageAsync(new TurnToken(emitEvents: true)).ConfigureAwait(false))
             {
                 _logger.LogError("Magentic workflow {WorkflowId} refused its start signal", workflowId);
-                return FailAndEndSpan(subscriber, "magentic.start_rejected");
+                return await FailAndEndSpanAsync(subscriber, "magentic.start_rejected").ConfigureAwait(false);
             }
 
             await foreach (var evt in run.WatchStreamAsync(ct).ConfigureAwait(false))
@@ -133,14 +139,14 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return FailAndEndSpan(subscriber, "magentic.cancelled");
+            return await FailAndEndSpanAsync(subscriber, "magentic.cancelled").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Magentic workflow {WorkflowId} failed with unhandled exception",
                 workflowId);
-            return FailAndEndSpan(subscriber, "magentic.unhandled_exception");
+            return await FailAndEndSpanAsync(subscriber, "magentic.unhandled_exception").ConfigureAwait(false);
         }
 
         // "Satisfied" must mean an answer was captured. A run that simply stops (an unanswered request,
@@ -152,10 +158,16 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             _logger.LogWarning(
                 "Magentic workflow {WorkflowId} ended without producing a final answer",
                 workflowId);
-            return FailAndEndSpan(subscriber, "magentic.no_final_output");
+            return await FailAndEndSpanAsync(subscriber, "magentic.no_final_output").ConfigureAwait(false);
         }
 
         subscriber.EndWorkflow(completionReason);
+
+        // Not the run's token: a completed run reports on a path that cannot be cancelled out from under it.
+        if (completionReason == MagenticConventions.CompletionReasonError)
+            await subscriber.NotifyFailedAsync("magentic.error", CancellationToken.None).ConfigureAwait(false);
+        else
+            await subscriber.NotifyCompletedAsync(completionReason, CancellationToken.None).ConfigureAwait(false);
 
         var result = new MagenticWorkflowResult
         {
@@ -174,11 +186,15 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             : Result<MagenticWorkflowResult>.Success(result);
     }
 
-    // Every early exit closes the workflow span as an error and returns a stable code; one helper so
-    // the exits cannot drift apart.
-    private static Result<MagenticWorkflowResult> FailAndEndSpan(MagenticEventSubscriber subscriber, string code)
+    // Every early exit closes the workflow span as an error, tells the progress surface, and returns a stable
+    // code; one helper so the exits cannot drift apart. Reported on a token that cannot be cancelled: the
+    // common reason to be here is that the run's own token was, and writing the failure with it would throw
+    // before it was sent, leaving the surface showing a run still in progress.
+    private static async Task<Result<MagenticWorkflowResult>> FailAndEndSpanAsync(
+        MagenticEventSubscriber subscriber, string code)
     {
         subscriber.EndWorkflow(MagenticConventions.CompletionReasonError);
+        await subscriber.NotifyFailedAsync(code, CancellationToken.None).ConfigureAwait(false);
         return Result<MagenticWorkflowResult>.Fail(code);
     }
 

@@ -1,3 +1,5 @@
+using Application.AI.Common.Services.Orchestration;
+using Domain.AI.Telemetry.Conventions;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
@@ -146,6 +148,72 @@ public sealed class MagenticOrchestratorRunTests
     }
 
     [Fact]
+    public async Task RunAsync_ReportsItsProgressToTheNotifier_FromStartToCompletion()
+    {
+        // Through the real workflow engine: the manager's plan, the round that picked the researcher, and
+        // the end of the run all reach a live surface, in the order they happened.
+        const string ContinueToResearcher = """
+            {"is_request_satisfied":{"reason":"not yet","answer":false},
+             "is_in_loop":{"reason":"no","answer":false},
+             "is_progress_being_made":{"reason":"yes","answer":true},
+             "next_speaker":{"reason":"needs research","answer":"researcher"},
+             "instruction_or_question":{"reason":"go","answer":"research it"}}
+            """;
+        var manager = new ScriptedAgent(
+            "manager", ScriptedBehavior.Reply, "facts", "the plan", ContinueToResearcher, SatisfiedLedger, "the final answer");
+        var researcher = new ScriptedAgent("researcher", ScriptedBehavior.Reply, "researched");
+        var request = BuildRequest(manager) with { Participants = [researcher] };
+        var notifier = new RecordingMagenticProgressNotifier();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await BuildOrchestrator(notifier).RunAsync(request, cts.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        notifier.Order.First().Should().Be("started");
+        notifier.Order.Last().Should().Be("completed");
+        notifier.Started.Single().Participants.Should().Equal("researcher");
+        notifier.Plans.Should().NotBeEmpty().And.Subject.First().Version.Should().Be(1);
+        notifier.Rounds.Should().Contain(r => r.NextSpeaker == "researcher" && r.Instruction == "research it");
+        notifier.Completed.Single().Reason.Should().Be(MagenticConventions.CompletionReasonSatisfied);
+        notifier.Failed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenCallerCancels_ReportsTheFailureEvenThoughTheTokenIsCancelled()
+    {
+        // The failure is reported on its own bounded token, not the cancelled run's: writing it with the
+        // run's token would throw before it was sent, and the surface would be left showing a run in progress.
+        var manager = new ScriptedAgent("manager", ScriptedBehavior.BlockUntilCancelled);
+        var request = BuildRequest(manager);
+        var notifier = new RecordingMagenticProgressNotifier();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var run = BuildOrchestrator(notifier).RunAsync(request, cts.Token);
+        await manager.Started.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+        await run;
+
+        notifier.Failed.Should().Equal(["magentic.cancelled"]);
+        notifier.Tokens.Last().IsCancellationRequested.Should().BeFalse(
+            "the report was made on a live token even though the run's own was already cancelled");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenTheNotifierThrows_TheRunStillCompletes()
+    {
+        var manager = new ScriptedAgent(
+            "manager", ScriptedBehavior.Reply, "facts", "the plan", SatisfiedLedger, "the final answer");
+        var request = BuildRequest(manager) with { Participants = [new ScriptedAgent("researcher", ScriptedBehavior.Reply, "x")] };
+        var notifier = new RecordingMagenticProgressNotifier { ThrowOnEveryCall = new InvalidOperationException("sink down") };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await BuildOrchestrator(notifier).RunAsync(request, cts.Token);
+
+        result.IsSuccess.Should().BeTrue("a progress sink that is down must not fail the work it only reports on");
+        result.Value!.FinalOutput.Should().Contain("the final answer");
+    }
+
+    [Fact]
     public async Task RunAsync_ManagerEndsWithoutAnAnswer_FailsRatherThanReportingSatisfied()
     {
         // The manager's last reply (its final answer) is blank, so the run completes with nothing to
@@ -191,7 +259,7 @@ public sealed class MagenticOrchestratorRunTests
         RequirePlanSignoff = false
     };
 
-    private static MagenticOrchestrator BuildOrchestrator()
+    private static MagenticOrchestrator BuildOrchestrator(IMagenticProgressNotifier? progress = null)
     {
         var mediator = new Mock<IMediator>();
         var router = new MagenticChangeProposalRouter(
@@ -204,7 +272,8 @@ public sealed class MagenticOrchestratorRunTests
             router,
             Mock.Of<IContentCapturePolicy>(),
             PermissiveAdmission.PermissiveSanitizer(),
-            Mock.Of<IContentRedactionFilter>(),
+            PermissiveAdmission.PermissiveRedactionFilter(),
+            progress ?? NoOpMagenticProgressNotifier.Instance,
             NullLoggerFactory.Instance);
     }
 

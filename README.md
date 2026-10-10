@@ -223,6 +223,8 @@ The harness streams real-time progress to the WebUI through SignalR using the AG
 
 Plan events are the Phase 4 additions. When a plan starts executing, the frontend receives `PLAN_STARTED` with the full DAG structure. As each step runs, `PLAN_STEP_STARTED` and `PLAN_STEP_COMPLETED` fire with status, duration, and error details. `PLAN_STATE_DELTA` streams incremental updates for long-running steps. `SANDBOX_STATUS` reports resource usage and attestation hashes for tool execution steps. `PLAN_COMPLETED` and `PLAN_FAILED` signal terminal states.
 
+Magentic workflows report live progress the same way: `MAGENTIC_WORKFLOW_STARTED`, then `MAGENTIC_PLAN` (the manager's plan, again with an incremented `planVersion` on each replan), one `MAGENTIC_ROUND` per coordination round (who the manager picked, what it asked, and its progress judgements), `MAGENTIC_PLAN_REVIEW_REQUESTED` when a human has to approve the plan, and finally `MAGENTIC_WORKFLOW_COMPLETED` or `MAGENTIC_WORKFLOW_FAILED` (a stable `magentic.*` code). Plan and instruction text is sanitized, redacted and bounded before it is sent. A client that does not know these types ignores them.
+
 ### Governance & Quality Loop
 
 Production agents need guardrails that go beyond content safety filters. The harness implements five interconnected governance subsystems that monitor agent behavior, enforce autonomy boundaries, and feed quality signals back into the system.

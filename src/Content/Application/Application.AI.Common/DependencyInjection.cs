@@ -174,6 +174,13 @@ public static class DependencyInjection
             Interfaces.Telemetry.IAgentTelemetryAttribution,
             Services.Telemetry.NoOpAgentTelemetryAttribution>();
 
+        // Live Magentic workflow progress. TryAdd, so a host that shows it (AgentHub bridges it to AG-UI)
+        // keeps its own regardless of registration order, and every other host gets a no-op rather than a
+        // missing service: the subscriber resolves this for every run.
+        services.TryAddSingleton<
+            Interfaces.Orchestration.Magentic.IMagenticProgressNotifier,
+            Services.Orchestration.NoOpMagenticProgressNotifier>();
+
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 
