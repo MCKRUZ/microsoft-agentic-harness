@@ -183,7 +183,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     }
 
     [Fact]
-    public async Task TheWrappedAgentKeepsTheParticipantsIdentityAndName()
+    public void TheWrappedAgentKeepsTheParticipantsIdentityAndName()
     {
         // Magentic addresses participants by name; a wrapper that lost it would break routing.
         var inner = new ProbeAgent();
@@ -191,7 +191,6 @@ public sealed class ParticipantGovernanceTests : IDisposable
 
         agent.Name.Should().Be(inner.Name);
         agent.Id.Should().Be(inner.Id);
-        await Task.CompletedTask;
     }
 
     [Fact]
@@ -276,31 +275,20 @@ public sealed class ParticipantGovernanceTests : IDisposable
         protected override IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
             IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
             CancellationToken cancellationToken) =>
-            _throwOnDispose ? new ThrowOnDisposeStream(Record) : Stream(cancellationToken);
+            _throwOnDispose ? StreamThenThrowOnDispose() : Stream(cancellationToken);
 
-        /// <summary>A stream that yields once and then throws when it is disposed.</summary>
-        private sealed class ThrowOnDisposeStream(Action record) : IAsyncEnumerable<AgentResponseUpdate>
+        /// <summary>Yields once; an async iterator's finally runs on dispose, so an early stop throws from it.</summary>
+        private async IAsyncEnumerable<AgentResponseUpdate> StreamThenThrowOnDispose()
         {
-            public IAsyncEnumerator<AgentResponseUpdate> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
-                new Enumerator(record);
-
-            private sealed class Enumerator(Action record) : IAsyncEnumerator<AgentResponseUpdate>
+            try
             {
-                private bool _yielded;
-
-                public AgentResponseUpdate Current { get; private set; } = new(ChatRole.Assistant, "only");
-
-                public ValueTask<bool> MoveNextAsync()
-                {
-                    if (_yielded)
-                        return ValueTask.FromResult(false);
-
-                    _yielded = true;
-                    record();
-                    return ValueTask.FromResult(true);
-                }
-
-                public ValueTask DisposeAsync() => throw new InvalidOperationException("dispose failed");
+                await Task.Yield();
+                Record();
+                yield return new AgentResponseUpdate(ChatRole.Assistant, "only");
+            }
+            finally
+            {
+                throw new InvalidOperationException("dispose failed");
             }
         }
 

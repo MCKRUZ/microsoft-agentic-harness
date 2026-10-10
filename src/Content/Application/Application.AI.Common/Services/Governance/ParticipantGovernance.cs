@@ -14,54 +14,35 @@ namespace Application.AI.Common.Services.Governance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Why a wrapper at all.</strong> A delegation has one call site in our code to wrap
+/// <strong>Why a wrapper.</strong> A delegation has one call site of ours to arm around
 /// (<c>CapabilityMatchSupervisor.ExecuteAgent</c>). Magentic hands the whole workflow to Microsoft's
-/// engine, which decides internally when the manager and each participant run, so there is no call site
-/// of ours around any one of them. The only place left to arm a participant is its own
-/// <c>RunAsync</c>/<c>RunStreamingAsync</c>, which this attaches through the framework's own
-/// <see cref="AIAgentBuilder"/> middleware seam (the same one <c>AgentFactory</c> uses), so every member
-/// of the agent keeps passing through to the real one.
+/// engine, which decides when each participant runs, so the only place left is the participant's own
+/// <c>RunAsync</c>/<c>RunStreamingAsync</c>. It is attached through the framework's
+/// <see cref="AIAgentBuilder"/> middleware seam (as <c>AgentFactory</c> does), so every member of the agent
+/// still passes through to the real one. Only <c>MagenticAgentTurnRunner</c> applies it: a caller that
+/// drives the orchestrator directly gets no participant governance.
 /// </para>
 /// <para>
-/// <strong>Armed as the participant, inside the supervisor's session.</strong> The agent id is the
-/// participant's own, so per-agent permission rules and the denial rate-limiter see the participant and
-/// not the entry agent. Conversation id, call-once scope and workload identity are inherited from the
-/// supervisor's turn (<see cref="GovernanceArmingPolicy.Delegation"/>), so a call-once tool the
-/// supervisor claimed stays claimed for every participant it runs, and the participant is authorized as
-/// the real caller. Each run opens a new scope: a participant can run many times in one workflow, and
-/// the pipeline's per-run state (loop guard, trace) must not carry from one to the next.
+/// <strong>Armed as the participant, inside the supervisor's session.</strong> Per-agent permission rules
+/// and the denial rate-limiter see the participant's id. Conversation id, call-once scope and workload
+/// identity come from the supervisor's turn (<see cref="GovernanceArmingPolicy.Delegation"/>), so a
+/// call-once tool the supervisor claimed stays claimed. Each run opens a new scope.
 /// </para>
 /// <para>
-/// <strong>Streaming publishes the pipeline around every step, not once.</strong> Microsoft's engine
-/// drives participants through <c>RunStreamingAsync</c>, and ambient (<c>AsyncLocal</c>) state set inside
-/// an async iterator does not survive a <c>yield</c>: the code consuming the stream resumes the iterator
-/// under its <em>own</em> context. A pipeline published once at the top would therefore govern only the
-/// first step, and every later tool call would run under whatever was ambient outside — the
-/// unauthorized-as-the-wrong-agent defect this exists to close, reintroduced quietly. So each step of the
-/// stream is awaited inside <see cref="ToolAdmissionAccessor.Begin"/> and released before the update is
-/// handed on, which also keeps the participant's pipeline from leaking to the consumer.
+/// <strong>Streaming publishes the pipeline around every step.</strong> Ambient (<c>AsyncLocal</c>)
+/// state set inside an async iterator does not survive a <c>yield</c>: the consumer resumes the iterator
+/// under its own context. A pipeline published once would govern only the first step, so each step is
+/// awaited inside <see cref="ToolAdmissionAccessor.Begin"/> and released before the update is handed on.
 /// </para>
 /// <para>
-/// <strong>Known limit: telemetry attribution on a stream.</strong> Arming publishes the participant's
-/// external governance attribution (through <c>IAgentExecutionContext.Initialize</c>, the only thing
-/// permitted to publish it) in the stream's first step, and that, like any ambient value, is dropped at the
-/// first <c>yield</c>. Spans from later steps of a streamed participant run can therefore carry the
-/// supervisor's attribution. That affects how spans are labelled, never what is authorized. It is not
-/// fixed here by calling <c>BeginTurn</c> again, because a second, nested publication is exactly what
-/// <c>AttributionIsPublishedByTheExecutionContextOnlyTests</c> forbids; a real fix gives the execution
-/// context itself a safe way to re-publish for the current step (#803).
+/// <strong>The participant's trace is folded</strong> into the supervisor turn's trace when each run ends,
+/// including one that throws: the child scope's recorder is gone with the scope, and the turn result
+/// reports the parent's.
 /// </para>
 /// <para>
-/// <strong>The participant's trace is folded back</strong> into the supervisor turn's trace when each run
-/// ends — including a run that throws — because the child scope's recorder is gone with the scope and the
-/// turn result reports the parent's.
-/// </para>
-/// <para>
-/// <strong>Known property: per-run governance state starts fresh.</strong> Each run is its own scope, so the
-/// loop guard's call history and anything else the pipeline accumulates per run resets between runs of the
-/// same participant. Before this, the whole Magentic turn shared one pipeline and that state accumulated
-/// across rounds (under the wrong agent's identity). Delegation has the same property by the same
-/// construction. The fix is one scope per (turn, participant) reused across its runs (#804).
+/// <strong>Known limits.</strong> Telemetry attribution on a stream is published once, in the first step,
+/// so later steps can carry the supervisor's (#803). Per-run state (the loop guard's history, the aggregate
+/// output budget) starts empty every run (#804).
 /// </para>
 /// </remarks>
 public sealed class ParticipantGovernance
@@ -117,65 +98,40 @@ public sealed class ParticipantGovernance
         string agentId, string fallbackScopeId, IEnumerable<ChatMessage> messages, AgentSession? session,
         AgentRunOptions? options, AIAgent inner, CancellationToken cancellationToken)
     {
-        var (scope, pipeline) = Arm(agentId, fallbackScopeId);
-        await using (scope.ConfigureAwait(false))
-        {
-            try
-            {
-                using (ToolAdmissionAccessor.Begin(pipeline))
-                    return await inner.RunAsync(messages, session, options, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                _parentTrace.Absorb(pipeline.GetTrace());
-            }
-        }
+        await using var run = Arm(agentId, fallbackScopeId);
+
+        using (ToolAdmissionAccessor.Begin(run.Pipeline))
+            return await inner.RunAsync(messages, session, options, cancellationToken).ConfigureAwait(false);
     }
 
     private async IAsyncEnumerable<AgentResponseUpdate> RunStreamingAsync(
         string agentId, string fallbackScopeId, IEnumerable<ChatMessage> messages, AgentSession? session,
         AgentRunOptions? options, AIAgent inner, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var (scope, pipeline) = Arm(agentId, fallbackScopeId);
-        await using (scope.ConfigureAwait(false))
+        // Declared in this order so the stream is disposed first and the run folds its trace afterwards: a
+        // throwing dispose cannot strand the trace, and the fold sees everything the stream did.
+        await using var run = Arm(agentId, fallbackScopeId);
+        await using var stream = inner.RunStreamingAsync(messages, session, options, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        while (true)
         {
-            var stream = inner.RunStreamingAsync(messages, session, options, cancellationToken)
-                .GetAsyncEnumerator(cancellationToken);
-            try
-            {
-                while (true)
-                {
-                    // Published for this step only: set and released within one segment of this iterator,
-                    // so it is in force while the inner agent runs (its tool calls happen inside
-                    // MoveNextAsync) and gone before the update reaches the consumer.
-                    bool hasNext;
-                    using (ToolAdmissionAccessor.Begin(pipeline))
-                        hasNext = await stream.MoveNextAsync().ConfigureAwait(false);
+            // Set and released within one segment of this iterator: in force while the inner agent runs
+            // (its tool calls happen inside MoveNextAsync), gone before the update reaches the consumer.
+            bool hasNext;
+            using (ToolAdmissionAccessor.Begin(run.Pipeline))
+                hasNext = await stream.MoveNextAsync().ConfigureAwait(false);
 
-                    if (!hasNext)
-                        yield break;
+            if (!hasNext)
+                yield break;
 
-                    yield return stream.Current;
-                }
-            }
-            finally
-            {
-                // Nested so neither can strand the other: a throwing dispose must not drop the trace.
-                try
-                {
-                    _parentTrace.Absorb(pipeline.GetTrace());
-                }
-                finally
-                {
-                    await stream.DisposeAsync().ConfigureAwait(false);
-                }
-            }
+            yield return stream.Current;
         }
     }
 
-    // Mirrors CapabilityMatchSupervisor.ArmDelegationGovernance: a new scope per run, disposed here if
-    // arming throws because nothing else has been handed it yet.
-    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) Arm(string agentId, string fallbackScopeId)
+    // The same open/arm/dispose-on-throw sequence as CapabilityMatchSupervisor.ArmDelegationGovernance —
+    // keep the two in step until a shared governed-child-scope handle replaces both.
+    private ArmedRun Arm(string agentId, string fallbackScopeId)
     {
         var scope = _scopeFactory.CreateAsyncScope();
         try
@@ -187,12 +143,32 @@ public sealed class ParticipantGovernance
                 _parentContext,
                 fallbackScopeId);
 
-            return (scope, pipeline);
+            return new ArmedRun(scope, pipeline, _parentTrace);
         }
         catch
         {
             scope.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>One run's scope and pipeline; disposing it folds the run's trace into the parent's, then the scope.</summary>
+    private sealed class ArmedRun(
+        AsyncServiceScope scope, IToolCallAdmissionPipeline pipeline, IGovernanceTraceRecorder parentTrace)
+        : IAsyncDisposable
+    {
+        public IToolCallAdmissionPipeline Pipeline => pipeline;
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                parentTrace.Absorb(pipeline.GetTrace());
+            }
+            finally
+            {
+                await scope.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 }

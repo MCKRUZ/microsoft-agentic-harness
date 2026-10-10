@@ -95,11 +95,6 @@ public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
     {
         ArgumentNullException.ThrowIfNull(trace);
 
-        // The shared empty trace is what an ungoverned child that recorded nothing returns; there is
-        // nothing to fold and no enforcement to carry.
-        if (ReferenceEquals(trace, GovernanceTrace.Empty))
-            return;
-
         if (trace.EnforcementEnabled)
             MarkEnforced();
 
