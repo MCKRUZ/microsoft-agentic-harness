@@ -112,4 +112,22 @@ public static class AgUiEventType
 
     /// <summary>Signals that a plan failed due to a step failure.</summary>
     public const string PlanFailed = "PLAN_FAILED";
+
+    /// <summary>Signals that a Magentic workflow has started.</summary>
+    public const string MagenticWorkflowStarted = "MAGENTIC_WORKFLOW_STARTED";
+
+    /// <summary>Signals that the Magentic manager produced a plan, or revised it.</summary>
+    public const string MagenticPlan = "MAGENTIC_PLAN";
+
+    /// <summary>Signals that the Magentic manager completed a coordination round and chose who acts next.</summary>
+    public const string MagenticRound = "MAGENTIC_ROUND";
+
+    /// <summary>Signals that a Magentic workflow is paused waiting for a human to review its plan.</summary>
+    public const string MagenticPlanReviewRequested = "MAGENTIC_PLAN_REVIEW_REQUESTED";
+
+    /// <summary>Signals that a Magentic workflow ended with a result.</summary>
+    public const string MagenticWorkflowCompleted = "MAGENTIC_WORKFLOW_COMPLETED";
+
+    /// <summary>Signals that a Magentic workflow ended without a usable result.</summary>
+    public const string MagenticWorkflowFailed = "MAGENTIC_WORKFLOW_FAILED";
 }

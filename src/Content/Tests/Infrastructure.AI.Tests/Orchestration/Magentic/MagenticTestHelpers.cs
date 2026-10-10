@@ -90,7 +90,9 @@ internal static class MagenticTestHelpers
         MagenticSpanEmitter? emitter = null,
         IContentCapturePolicy? capturePolicy = null,
         ICompositeResponseSanitizer? sanitizer = null,
-        IContentRedactionFilter? redactionFilter = null)
+        IContentRedactionFilter? redactionFilter = null,
+        IMagenticProgressNotifier? progress = null,
+        TimeSpan? terminalReportTimeout = null)
     {
         bridge = new Mock<IMagenticPlanReviewBridge>();
         mediator = new Mock<IMediator>();
@@ -108,7 +110,9 @@ internal static class MagenticTestHelpers
             // asserting on redacted content aren't also silently exercising sanitization findings.
             sanitizer ?? PermissiveAdmission.PermissiveSanitizer(),
             redactionFilter ?? Mock.Of<IContentRedactionFilter>(),
-            NullLogger<MagenticEventSubscriber>.Instance);
+            progress ?? Application.AI.Common.Services.Orchestration.NoOpMagenticProgressNotifier.Instance,
+            NullLogger<MagenticEventSubscriber>.Instance,
+            terminalReportTimeout);
     }
 
     public static ChatMessage AsLedger(string text) => new(ChatRole.Assistant, text);

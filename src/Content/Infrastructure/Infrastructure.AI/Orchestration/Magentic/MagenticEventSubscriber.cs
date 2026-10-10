@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Telemetry.Conventions;
+using Domain.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Agents.AI.Workflows.Specialized.Magentic;
 using Microsoft.Extensions.AI;
@@ -44,6 +46,8 @@ public sealed class MagenticEventSubscriber : IDisposable
     private readonly IContentCapturePolicy _contentCapturePolicy;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _contentRedactionFilter;
+    private readonly IMagenticProgressNotifier _progress;
+    private readonly TimeSpan _terminalReportTimeout;
     private readonly ILogger<MagenticEventSubscriber> _logger;
 
     private Activity? _workflowSpan;
@@ -77,6 +81,23 @@ public sealed class MagenticEventSubscriber : IDisposable
     /// <summary>Terminal error message (set on <see cref="WorkflowErrorEvent"/>).</summary>
     public string? ErrorMessage => _errorMessage;
 
+    /// <summary>
+    /// The longest plan or instruction text reported to the progress notifier, in characters. A plan is a
+    /// model-authored document of unbounded length; a live surface shows a summary, not the whole ledger.
+    /// </summary>
+    public const int MaxProgressTextLength = 4_000;
+
+    /// <summary>
+    /// The longest plan reported for a plan review, in characters. Larger than a progress line because a
+    /// reviewer approves what they were shown; when even this cuts the plan the report says so.
+    /// </summary>
+    public const int MaxReviewTextLength = 32_000;
+
+    /// <summary>The longest speaker name reported, in characters. The manager model writes it; it is a name.</summary>
+    public const int MaxSpeakerLength = 200;
+
+    private static readonly TimeSpan DefaultTerminalReportTimeout = TimeSpan.FromSeconds(5);
+
     /// <summary>Creates a new subscriber.</summary>
     public MagenticEventSubscriber(
         MagenticSpanEmitter emitter,
@@ -85,7 +106,9 @@ public sealed class MagenticEventSubscriber : IDisposable
         IContentCapturePolicy contentCapturePolicy,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
-        ILogger<MagenticEventSubscriber> logger)
+        IMagenticProgressNotifier progress,
+        ILogger<MagenticEventSubscriber> logger,
+        TimeSpan? terminalReportTimeout = null)
     {
         _emitter = emitter;
         _planReviewBridge = planReviewBridge;
@@ -93,6 +116,8 @@ public sealed class MagenticEventSubscriber : IDisposable
         _contentCapturePolicy = contentCapturePolicy;
         _sanitizer = sanitizer;
         _contentRedactionFilter = contentRedactionFilter;
+        _progress = progress;
+        _terminalReportTimeout = terminalReportTimeout ?? DefaultTerminalReportTimeout;
         _logger = logger;
     }
 
@@ -130,7 +155,7 @@ public sealed class MagenticEventSubscriber : IDisposable
         switch (evt)
         {
             case MagenticPlanCreatedEvent planCreated:
-                HandlePlanCreated(planCreated);
+                await HandlePlanCreatedAsync(planCreated, ct).ConfigureAwait(false);
                 return null;
 
             case MagenticReplannedEvent replanned:
@@ -138,7 +163,7 @@ public sealed class MagenticEventSubscriber : IDisposable
                 return null;
 
             case MagenticProgressLedgerUpdatedEvent progress:
-                HandleProgressUpdated(progress);
+                await HandleProgressUpdatedAsync(progress, ct).ConfigureAwait(false);
                 return null;
 
             case RequestInfoEvent requestInfo:
@@ -195,7 +220,7 @@ public sealed class MagenticEventSubscriber : IDisposable
         return null;
     }
 
-    private void HandlePlanCreated(MagenticPlanCreatedEvent evt)
+    private async Task HandlePlanCreatedAsync(MagenticPlanCreatedEvent evt, CancellationToken ct)
     {
         _planVersion = 1;
         MagenticSpanEmitter.RecordPlanCreated(_managerSpan, _planVersion);
@@ -203,6 +228,10 @@ public sealed class MagenticEventSubscriber : IDisposable
             "Magentic plan created: workflow={WorkflowId} version={PlanVersion}",
             _workflowId,
             _planVersion);
+
+        await ReportAsync(
+            "plan", () => _progress.NotifyPlanAsync(
+                _workflowId, _planVersion, Treat(evt.FullTaskLedger?.Text) ?? string.Empty, ct), ct).ConfigureAwait(false);
     }
 
     private async Task HandleReplannedAsync(MagenticReplannedEvent evt, CancellationToken ct)
@@ -221,6 +250,10 @@ public sealed class MagenticEventSubscriber : IDisposable
 
         MagenticSpanEmitter.RecordReplanned(_managerSpan, _planVersion);
 
+        await ReportAsync(
+            "plan", () => _progress.NotifyPlanAsync(
+                _workflowId, _planVersion, Treat(replanText) ?? string.Empty, ct), ct).ConfigureAwait(false);
+
         // Route the replan through the change-proposal pipeline when the new
         // ledger proposes a state-changing action.
         await _changeProposalRouter.TryRouteAsync(
@@ -238,7 +271,7 @@ public sealed class MagenticEventSubscriber : IDisposable
         _stalledOnLastPlanReview = false;
     }
 
-    private void HandleProgressUpdated(MagenticProgressLedgerUpdatedEvent evt)
+    private async Task HandleProgressUpdatedAsync(MagenticProgressLedgerUpdatedEvent evt, CancellationToken ct)
     {
         _roundCount++;
         var ledger = evt.ProgressLedger;
@@ -269,6 +302,21 @@ public sealed class MagenticEventSubscriber : IDisposable
         // current Activity via the MAF/OTel instrumentation already on the
         // chat client.
         roundSpan?.Dispose();
+
+        var round = _roundCount;
+        await ReportAsync(
+            "round", () => _progress.NotifyRoundAsync(
+                _workflowId,
+                new MagenticRoundReport
+                {
+                    Round = round,
+                    NextSpeaker = Treat(nextSpeaker, MaxSpeakerLength),
+                    Instruction = Treat(ledger?.InstructionOrQuestion),
+                    RequestSatisfied = requestSatisfied,
+                    InLoop = inLoop,
+                    Progressing = progressing,
+                },
+                ct), ct).ConfigureAwait(false);
     }
 
     private async Task<ExternalResponse?> HandleRequestInfoAsync(RequestInfoEvent evt, CancellationToken ct)
@@ -293,6 +341,18 @@ public sealed class MagenticEventSubscriber : IDisposable
             _managerSpan,
             review.IsStalled,
             review.CurrentProgress is not null);
+
+        // Before the bridge is asked: the reviewer is a human who can only act on a plan they have been
+        // shown, and the bridge call can block for minutes.
+        // The text is treated inside the guarded call: a sanitizer or redaction fault while preparing a
+        // progress line must not be able to break the plan-review path itself.
+        await ReportAsync(
+            "review", () =>
+            {
+                var (text, truncated) = TreatBounded(review.Plan?.Text, MaxReviewTextLength);
+                return _progress.NotifyPlanReviewRequestedAsync(
+                    _workflowId, text ?? string.Empty, truncated, review.IsStalled, ct);
+            }, ct).ConfigureAwait(false);
 
         var input = new MagenticPlanReviewInput
         {
@@ -345,6 +405,64 @@ public sealed class MagenticEventSubscriber : IDisposable
             ", inLoop=", ledger.IsInLoop,
             ", progressing=", ledger.IsProgressBeingMade,
             ", nextSpeaker=", ledger.NextSpeaker ?? "<null>");
+    }
+
+    /// <summary>Reports that the workflow has started, to the progress notifier.</summary>
+    public Task NotifyStartedAsync(CancellationToken ct)
+    {
+        var participants = _request?.Participants.Select(p => p.Id ?? p.Name ?? string.Empty).ToList() ?? [];
+        return ReportAsync("started", () => _progress.NotifyWorkflowStartedAsync(
+            _workflowId, _workflowName, participants, ct), ct);
+    }
+
+    /// <summary>Reports that the workflow ended with a result, to the progress notifier.</summary>
+    public Task NotifyCompletedAsync(string completionReason, CancellationToken ct)
+        => ReportTerminalAsync("completed", t => _progress.NotifyWorkflowCompletedAsync(
+            _workflowId, completionReason, _roundCount, t), ct);
+
+    /// <summary>Reports that the workflow ended without a usable result, to the progress notifier.</summary>
+    public Task NotifyFailedAsync(string errorCode, CancellationToken ct)
+        => ReportTerminalAsync("failed", t => _progress.NotifyWorkflowFailedAsync(_workflowId, errorCode, t), ct);
+
+    // Sanitize, then redact, then bound: the same order every other trust-boundary exit uses (#470), so an
+    // invisible character cannot split a secret past the redaction patterns. The plan and the manager's
+    // instruction are model-authored, and a live surface is a place a secret must not appear.
+    private string? Treat(string? text, int maxLength = MaxProgressTextLength)
+        => TreatBounded(text, maxLength).Text;
+
+    private (string? Text, bool Truncated) TreatBounded(string? text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text)) return (text, false);
+
+        var treated = SanitizeThenRedact.Apply(text, _sanitizer, _contentRedactionFilter, RedactionCategories.All);
+        return BoundedText.Cap(treated, maxLength, "…");
+    }
+
+    // Terminal reports go out when the run's own token may already be cancelled, so they cannot use it -
+    // writing with a cancelled token throws before anything is sent and the surface would be left showing a
+    // run in progress. They carry their own bound instead: a half-open client must not hold a finished or
+    // cancelled run open forever.
+    private async Task ReportTerminalAsync(string what, Func<CancellationToken, Task> notify, CancellationToken ct)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(_terminalReportTimeout);
+        await ReportAsync(what, () => notify(bounded.Token), ct).ConfigureAwait(false);
+    }
+
+    // A progress sink is not the work it reports on: one that is down, or that times out and raises a
+    // cancellation of its own, must not fail the workflow. Only the run's own cancellation propagates.
+    private async Task ReportAsync(string what, Func<Task> notify, CancellationToken ct)
+    {
+        try
+        {
+            await notify().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            _logger.LogWarning(
+                ex, "Magentic workflow={WorkflowId} progress notification '{Notification}' failed",
+                _workflowId, what);
+        }
     }
 
     /// <summary>

@@ -18,6 +18,7 @@ namespace Presentation.AgentHub.AgUi;
 ///   <item><description><c>AgUiEscalationEvents.cs</c> — Escalation request/resolve/expiry/execution</description></item>
 ///   <item><description><c>AgUiDriftEvents.cs</c> — Quality drift detection and resolution</description></item>
 ///   <item><description><c>AgUiLearningEvents.cs</c> — Learning capture, application, forgetting</description></item>
+///   <item><description><c>AgUiMagenticEvents.cs</c> — Magentic workflow plan, rounds, plan review, outcome</description></item>
 /// </list>
 /// </para>
 /// </summary>
@@ -57,4 +58,11 @@ namespace Presentation.AgentHub.AgUi;
 [JsonDerivedType(typeof(SandboxStatusEvent), AgUiEventType.SandboxStatus)]
 [JsonDerivedType(typeof(PlanCompletedEvent), AgUiEventType.PlanCompleted)]
 [JsonDerivedType(typeof(PlanFailedEvent), AgUiEventType.PlanFailed)]
+// Magentic workflow progress
+[JsonDerivedType(typeof(MagenticWorkflowStartedEvent), AgUiEventType.MagenticWorkflowStarted)]
+[JsonDerivedType(typeof(MagenticPlanEvent), AgUiEventType.MagenticPlan)]
+[JsonDerivedType(typeof(MagenticRoundEvent), AgUiEventType.MagenticRound)]
+[JsonDerivedType(typeof(MagenticPlanReviewRequestedEvent), AgUiEventType.MagenticPlanReviewRequested)]
+[JsonDerivedType(typeof(MagenticWorkflowCompletedEvent), AgUiEventType.MagenticWorkflowCompleted)]
+[JsonDerivedType(typeof(MagenticWorkflowFailedEvent), AgUiEventType.MagenticWorkflowFailed)]
 public abstract record AgUiEvent;

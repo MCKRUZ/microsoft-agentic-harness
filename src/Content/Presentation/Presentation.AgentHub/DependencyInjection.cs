@@ -436,6 +436,11 @@ public static class DependencyInjection
         services.AddSingleton<IDriftNotificationChannel, AgUiDriftNotifier>();
         services.AddSingleton<ILearningNotificationChannel, AgUiLearningNotifier>();
         services.AddSingleton<IPlanProgressNotifier, AgUiPlanProgressNotifier>();
+        // Replaces the no-op default (Application.AI.Common registers it with TryAdd), whichever order the
+        // layers register in: the last registration wins and this host is the one that shows the progress.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Orchestration.Magentic.IMagenticProgressNotifier,
+            Magentic.AgUiMagenticProgressNotifier>();
 
         // Override the no-op IEvalRunNotifier wired by GetServices() with the SignalR-backed
         // implementation. Last-registration-wins: this AddSingleton replaces the prior
