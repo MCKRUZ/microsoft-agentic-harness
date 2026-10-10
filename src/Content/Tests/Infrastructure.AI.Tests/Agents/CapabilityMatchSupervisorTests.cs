@@ -361,11 +361,13 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     public async Task DelegateAsync_InitializesTheDelegatedAgentsOwnGovernanceContextAndArmsItsPipeline()
     {
         IToolCallAdmissionPipeline? observedDuringRun = null;
+        string? observedAgentIdDuringRun = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestableAIAgent(_ =>
             {
                 observedDuringRun = ToolAdmissionAccessor.Current;
+                observedAgentIdDuringRun = ToolAdmissionAccessor.CurrentAgentId;
                 return new AgentResponse(new ChatMessage(ChatRole.Assistant, "stub output"));
             }));
 
@@ -392,6 +394,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             "the delegated agent must run under its OWN admission pipeline while it executes, " +
             "not whatever pipeline the entry turn had already published to the ambient");
         observedDuringRun.Should().NotBe(outerPipeline);
+        observedAgentIdDuringRun.Should().Be(_defaultSelection.SelectedAgent.AgentId,
+            "a delegate that delegates again is identified by its own id, not the parent's (#772)");
 
         ToolAdmissionAccessor.Current.Should().Be(outerPipeline,
             "the ambient must be restored to the entry turn's own pipeline once the delegation returns");

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
@@ -198,14 +199,16 @@ public sealed class DelegateToSubagentTool : ITool
     }
 
     /// <summary>
-    /// Resolves the calling agent's own id for <c>target_agent</c>'s self-exclusion (#518), best
-    /// effort. <see langword="null"/> when no request scope is ambient — a direct invocation, or any
-    /// caller outside a governed turn — in which case <see cref="ISupervisor.DelegateToNamedAgentAsync"/>
-    /// skips self-exclusion rather than refusing the call; see that method's own remarks for why a
-    /// missing identity is not treated as a self-delegation risk.
+    /// Resolves the calling agent's own id for <c>target_agent</c>'s self-exclusion (#518), best effort:
+    /// the id a nested run published with its pipeline (<see cref="ToolAdmissionAccessor.CurrentAgentId"/>,
+    /// #772), else the request scope's. <see langword="null"/> when neither exists (a direct invocation, or
+    /// any caller outside a governed turn), in which case <see cref="ISupervisor.DelegateToNamedAgentAsync"/>
+    /// skips self-exclusion rather than refusing the call; see that method's remarks for why a missing
+    /// identity is not treated as a self-delegation risk.
     /// </summary>
     private string? ResolveCallingAgentId()
-        => _ambientScope.Current?.GetService<IAgentExecutionContext>()?.AgentId;
+        => ToolAdmissionAccessor.CurrentAgentId
+           ?? _ambientScope.Current?.GetService<IAgentExecutionContext>()?.AgentId;
 
     private static string? GetString(IReadOnlyDictionary<string, object?> parameters, string key)
         => parameters.TryGetValue(key, out var value) ? value?.ToString() : null;

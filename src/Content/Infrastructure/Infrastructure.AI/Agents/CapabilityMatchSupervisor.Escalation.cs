@@ -410,7 +410,7 @@ public sealed partial class CapabilityMatchSupervisor
         LlmUsageSnapshot usage;
         try
         {
-            using (ToolAdmissionAccessor.Begin(governance.Pipeline))
+            using (ToolAdmissionAccessor.Begin(governance.Pipeline, selection.SelectedAgent.AgentId))
             {
                 response = await agent.RunAsync(
                     [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],

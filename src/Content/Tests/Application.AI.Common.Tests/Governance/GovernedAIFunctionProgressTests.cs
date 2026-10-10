@@ -19,7 +19,7 @@ namespace Application.AI.Common.Tests.Governance;
 /// that can break.
 /// </para>
 /// <para>
-/// No teardown is needed: <see cref="ToolAdmissionAccessor.Begin"/> restores the previous ambient value
+/// No teardown is needed: <see cref="ToolAdmissionAccessor.Begin(IToolCallAdmissionPipeline)"/> restores the previous ambient value
 /// on dispose, so a test cannot leak its chain into the next one.
 /// </para>
 /// </remarks>
