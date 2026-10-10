@@ -91,6 +91,28 @@ public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
     }
 
     /// <inheritdoc />
+    public void Absorb(GovernanceTrace trace)
+    {
+        ArgumentNullException.ThrowIfNull(trace);
+
+        // The shared empty trace is what an ungoverned child that recorded nothing returns; there is
+        // nothing to fold and no enforcement to carry.
+        if (ReferenceEquals(trace, GovernanceTrace.Empty))
+            return;
+
+        if (trace.EnforcementEnabled)
+            MarkEnforced();
+
+        lock (_lock)
+        {
+            _decisions.AddRange(trace.ToolDecisions);
+
+            foreach (var code in trace.EscalationReasonCodes)
+                _escalations.Add(code);
+        }
+    }
+
+    /// <inheritdoc />
     public GovernanceTrace Snapshot()
     {
         var enforced = EnforcementEnabled;

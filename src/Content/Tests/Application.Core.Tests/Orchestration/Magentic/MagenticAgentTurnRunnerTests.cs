@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Traces;
@@ -12,6 +13,7 @@ using Domain.Common;
 using Domain.Common.MetaHarness;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -30,6 +32,9 @@ public sealed class MagenticAgentTurnRunnerTests
     private readonly Mock<IMagenticOrchestrator> _orchestrator = new();
     private readonly Mock<ILlmUsageCapture> _usageCapture = new();
     private readonly Mock<IToolCallAdmissionPipeline> _admissionPipeline = new();
+    private readonly Mock<IGovernanceTraceRecorder> _traceRecorder = new();
+    private readonly Mock<IAgentExecutionContext> _executionContext = new();
+    private readonly Mock<IServiceScopeFactory> _scopeFactory = new();
 
     private MagenticAgentTurnRunner CreateRunner() => new(
         _agentFactory.Object,
@@ -37,6 +42,9 @@ public sealed class MagenticAgentTurnRunnerTests
         _orchestrator.Object,
         _usageCapture.Object,
         _admissionPipeline.Object,
+        _traceRecorder.Object,
+        _executionContext.Object,
+        _scopeFactory.Object,
         NullLogger<MagenticAgentTurnRunner>.Instance);
 
     private static AgentDefinition Supervisor(params string[] participantIds) => new()
@@ -150,6 +158,80 @@ public sealed class MagenticAgentTurnRunnerTests
         captured!.Participants.Should().HaveCount(2);
         captured.Manager.Should().NotBeNull();
         captured.Task.Should().Be("Do the task");
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_ParticipantsAreWrappedForTheirOwnGovernance_TheManagerIsNot()
+    {
+        // #769: a participant must be authorized as itself. Microsoft's engine decides when each one runs,
+        // so the runner has to hand it participants that arm their own governance when run. The manager is
+        // the entry agent the turn is already governed as, so it stays the agent the factory built.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        var managerAgent = new TestableAIAgent("manager");
+        var participantAgent = new TestableAIAgent("participant");
+        _agentFactory
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(),
+                It.Is<SkillAgentOptions>(o => o.OwningAgentId == "supervisor-agent"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentBuildResult(managerAgent, new AgentExecutionContext()));
+        _agentFactory
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(),
+                It.Is<SkillAgentOptions>(o => o.OwningAgentId == "researcher"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentBuildResult(participantAgent, new AgentExecutionContext()));
+
+        MagenticWorkflowRequest? captured = null;
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+
+        await CreateRunner().RunTurnAsync(
+            supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        captured!.Manager.Should().BeSameAs(managerAgent);
+        captured.Participants.Should().ContainSingle()
+            .Which.Should().NotBeSameAs(participantAgent, "it must be wrapped so its runs arm their own governance");
+        captured.Participants[0].Name.Should().Be(participantAgent.Name, "Magentic addresses participants by name");
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_ARunOfAWrappedParticipant_OpensItsOwnGovernanceScope()
+    {
+        // The behavioural half of the test above: running the participant the runner handed over must
+        // actually open a fresh governance scope, not merely be a different object.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        var context = new Mock<IAgentExecutionContext>();
+        var childPipeline = new Mock<IToolCallAdmissionPipeline>();
+        childPipeline.Setup(p => p.GetTrace()).Returns(Domain.AI.Governance.GovernanceTrace.Empty);
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(context.Object);
+        provider.Setup(p => p.GetService(typeof(IToolCallAdmissionPipeline))).Returns(childPipeline.Object);
+        var scope = new Mock<IServiceScope>();
+        scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+        _scopeFactory.Setup(f => f.CreateScope()).Returns(scope.Object);
+
+        MagenticWorkflowRequest? captured = null;
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+
+        await CreateRunner().RunTurnAsync(
+            supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+        await captured!.Participants[0].RunAsync("work");
+
+        context.Verify(
+            c => c.Initialize("researcher", It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
+            Times.Once,
+            "the participant's own agent id, not the supervisor's, is what its tool calls are authorized as");
+        childPipeline.Verify(p => p.Reset(), Times.Once);
     }
 
     [Fact]

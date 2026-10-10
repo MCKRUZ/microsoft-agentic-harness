@@ -1,9 +1,12 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Infrastructure.AI.Orchestration.Magentic;
+using Domain.Common.Config.AI;
 using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Tests.Support;
@@ -12,7 +15,9 @@ using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -94,6 +99,50 @@ public sealed class MagenticOrchestratorRunTests
 
         manager.SawAdmissionPipeline.Should().BeTrue(
             "a tool call made by the manager or a participant must still be admitted by the caller's pipeline");
+    }
+
+    [Fact]
+    public async Task RunAsync_AParticipantTheManagerSelects_RunsUnderItsOwnPipeline_WhileTheManagerKeepsTheTurns()
+    {
+        // #769 end to end, through the real workflow engine: the participant the manager hands work to is
+        // authorized as itself, and the manager — the entry agent — still runs under the turn's pipeline.
+        // Only a run through the engine can show which pipeline is ambient when IT decides to run an agent.
+        const string ContinueToResearcher = """
+            {"is_request_satisfied":{"reason":"not yet","answer":false},
+             "is_in_loop":{"reason":"no","answer":false},
+             "is_progress_being_made":{"reason":"yes","answer":true},
+             "next_speaker":{"reason":"needs research","answer":"researcher"},
+             "instruction_or_question":{"reason":"go","answer":"research it"}}
+            """;
+        var turnPipeline = new Mock<IToolCallAdmissionPipeline>().Object;
+        var manager = new ScriptedAgent(
+            "manager", ScriptedBehavior.Reply, "facts", "plan", ContinueToResearcher, SatisfiedLedger, "the final answer");
+        var researcher = new ScriptedAgent("researcher", ScriptedBehavior.Reply, "researched");
+
+        var scopeFactory = FakeGovernanceScopeFactory.Create(out _, out var childPipeline);
+        childPipeline.Setup(p => p.GetTrace()).Returns(Domain.AI.Governance.GovernanceTrace.Empty);
+        var governance = new ParticipantGovernance(
+            scopeFactory,
+            Mock.Of<IAgentExecutionContext>(c => c.ConversationId == "conv-1"),
+            new GovernanceTraceRecorder(
+                Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
+                Mock.Of<IToolRiskClassifier>()),
+            "conv-1");
+        var request = BuildRequest(manager) with { Participants = [governance.Wrap(researcher, "researcher")] };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        MagenticWorkflowResult? outcome;
+        using (ToolAdmissionAccessor.Begin(turnPipeline))
+            outcome = (await BuildOrchestrator().RunAsync(request, cts.Token)).Value;
+
+        researcher.PipelinesSeen.Should().NotBeEmpty("the manager selected the researcher, so it ran");
+        researcher.PipelinesSeen.Should().OnlyContain(
+            p => ReferenceEquals(p, childPipeline.Object),
+            "every tool call the participant makes must reach a pipeline armed as the participant");
+        manager.PipelinesSeen.Should().NotBeEmpty().And.OnlyContain(
+            p => ReferenceEquals(p, turnPipeline),
+            "the manager is the entry agent and keeps the turn's own pipeline");
+        outcome!.FinalOutput.Should().Contain("the final answer");
     }
 
     [Fact]
@@ -191,8 +240,16 @@ public sealed class MagenticOrchestratorRunTests
         /// <summary>Completes when the workflow first invokes this agent, so a test can act on a run that is demonstrably under way.</summary>
         public Task Started => _started.Task;
 
-        /// <summary>True when the caller's admission pipeline was visible on the thread the workflow ran this agent on.</summary>
-        public bool SawAdmissionPipeline { get; private set; }
+        private readonly List<IToolCallAdmissionPipeline> _pipelinesSeen = [];
+
+        /// <summary>True when an admission pipeline was visible on the thread the workflow ran this agent on.</summary>
+        public bool SawAdmissionPipeline => PipelinesSeen.Count > 0;
+
+        /// <summary>The admission pipeline that was ambient each time the workflow ran this agent.</summary>
+        public IReadOnlyList<IToolCallAdmissionPipeline> PipelinesSeen
+        {
+            get { lock (_pipelinesSeen) return [.. _pipelinesSeen]; }
+        }
 
         protected override string IdCore => _id;
         public override string? Name => _id;
@@ -226,7 +283,8 @@ public sealed class MagenticOrchestratorRunTests
 
         private async Task RecordAndMisbehaveAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
         {
-            if (ToolAdmissionAccessor.Current is not null) SawAdmissionPipeline = true;
+            if (ToolAdmissionAccessor.Current is { } ambient)
+                lock (_pipelinesSeen) _pipelinesSeen.Add(ambient);
 
             lock (_received)
                 _received.AddRange(messages.Select(m => m.Text));
