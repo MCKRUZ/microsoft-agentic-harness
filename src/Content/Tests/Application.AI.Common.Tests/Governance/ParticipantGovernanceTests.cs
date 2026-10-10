@@ -83,6 +83,8 @@ public sealed class ParticipantGovernanceTests : IDisposable
         seen.Should().NotBeSameAs(_parentPipeline, "the entry agent's pipeline must not authorize the participant");
         var armed = ArmedFor(seen);
         armed.Context.AgentId.Should().Be(Participant);
+        probe.AgentIdsSeen.Should().ContainSingle().Which.Should().Be(
+            Participant, "a participant that delegates is identified by its own id, not the supervisor's (#772)");
         armed.Context.ConversationId.Should().Be(ConversationId, "a participant runs inside the supervisor's session");
         armed.Context.CallOnceScopeId.Should().Be(
             ConversationId, "a call-once tool the supervisor claimed must stay claimed for its participants");
@@ -109,6 +111,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         probe.PipelinesSeen.Should().HaveCount(3);
         probe.PipelinesSeen.Distinct().Should().ContainSingle("one run is one governance scope");
         ArmedFor(probe.PipelinesSeen[0]).Context.AgentId.Should().Be(Participant);
+        probe.AgentIdsSeen.Should().HaveCount(3).And.OnlyContain(id => id == Participant, "every step publishes it, not just the first");
     }
 
     [Fact]
@@ -377,6 +380,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         private readonly bool _throwAfterRecording;
         private readonly GovernanceTrace? _traceToReport;
         private readonly List<IToolCallAdmissionPipeline> _seen = [];
+        private readonly List<string?> _agentIdsSeen = [];
 
         public ProbeAgent(
             int streamedUpdates = 1, bool throwAfterRecording = false, GovernanceTrace? traceToReport = null,
@@ -389,6 +393,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         }
 
         public IReadOnlyList<IToolCallAdmissionPipeline> PipelinesSeen => _seen;
+        public IReadOnlyList<string?> AgentIdsSeen => _agentIdsSeen;
 
         protected override string IdCore => "probe-id";
         public override string? Name => "probe-name";
@@ -436,6 +441,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         {
             var pipeline = ToolAdmissionAccessor.Current!;
             _seen.Add(pipeline);
+            _agentIdsSeen.Add(ToolAdmissionAccessor.CurrentAgentId);
 
             // What a real scope's recorder would hold by now: stand it on the armed pipeline's mock.
             if (_traceToReport is not null)

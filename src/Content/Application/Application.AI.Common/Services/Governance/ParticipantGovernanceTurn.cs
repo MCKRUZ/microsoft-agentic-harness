@@ -38,7 +38,7 @@ namespace Application.AI.Common.Services.Governance;
 /// <strong>Streaming publishes the pipeline around every step.</strong> Ambient (<c>AsyncLocal</c>)
 /// state set inside an async iterator does not survive a <c>yield</c>: the consumer resumes the iterator
 /// under its own context. A pipeline published once would govern only the first step, so each step is
-/// awaited inside <see cref="ToolAdmissionAccessor.Begin"/> and released before the update is handed on.
+/// awaited inside <see cref="ToolAdmissionAccessor.Begin(IToolCallAdmissionPipeline, string)"/> and released before the update is handed on.
 /// </para>
 /// <para>
 /// <strong>Known limit.</strong> Telemetry attribution on a stream is published once, in the first step, so
@@ -130,7 +130,7 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
     {
         var pipeline = participant.GetPipeline();
 
-        using (ToolAdmissionAccessor.Begin(pipeline))
+        using (ToolAdmissionAccessor.Begin(pipeline, participant.AgentId))
             return await inner.RunAsync(messages, session, options, cancellationToken).ConfigureAwait(false);
     }
 
@@ -147,7 +147,7 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
             // Set and released within one segment of this iterator: in force while the inner agent runs
             // (its tool calls happen inside MoveNextAsync), gone before the update reaches the consumer.
             bool hasNext;
-            using (ToolAdmissionAccessor.Begin(pipeline))
+            using (ToolAdmissionAccessor.Begin(pipeline, participant.AgentId))
                 hasNext = await stream.MoveNextAsync().ConfigureAwait(false);
 
             if (!hasNext)
@@ -167,6 +167,8 @@ public sealed class ParticipantGovernanceTurn : IAsyncDisposable
         private AsyncServiceScope _scope;
         private IToolCallAdmissionPipeline? _pipeline;
         private bool _ended;
+
+        public string AgentId => agentId;
 
         public IToolCallAdmissionPipeline GetPipeline()
         {

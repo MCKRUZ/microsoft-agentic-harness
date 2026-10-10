@@ -1,3 +1,5 @@
+using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
@@ -272,6 +274,32 @@ public class DelegateToSubagentToolTests
             "delegate", Params(("task", "do it"), ("target_agent", "peer-agent")));
 
         capturedCallingId.Should().Be("this-agent");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentSupplied_InsideANestedRun_UsesTheNestedAgentsIdNotTheEnclosingTurns()
+    {
+        // #772: a delegate (or Magentic participant) that itself delegates runs under the request scope of
+        // the turn that started it, so the ambient scope still names the PARENT. Its own id is the one its
+        // run published with its admission pipeline, and that is the id self-exclusion must compare.
+        string? capturedCallingId = "not-set";
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, int, IReadOnlyList<string>?, CancellationToken>(
+                (_, _, callingId, _, _, _) => capturedCallingId = callingId)
+            .ReturnsAsync(DelegationResult.Success("ok", 1, 1));
+        var tool = BuildToolWithCallingAgentId("parent-agent");
+
+        using (ToolAdmissionAccessor.Begin(Mock.Of<IToolCallAdmissionPipeline>(), "nested-delegate"))
+            await tool.ExecuteAsync("delegate", Params(("task", "do it"), ("target_agent", "parent-agent")));
+
+        capturedCallingId.Should().Be("nested-delegate");
+
+        await tool.ExecuteAsync("delegate", Params(("task", "do it"), ("target_agent", "peer-agent")));
+
+        capturedCallingId.Should().Be("parent-agent", "outside the nested run the ambient scope's agent is the caller again");
     }
 
     [Fact]
