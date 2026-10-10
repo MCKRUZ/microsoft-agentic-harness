@@ -39,7 +39,7 @@ public sealed record MagenticWorkflowRequest
     /// </summary>
     /// <remarks>
     /// The orchestrator runs these agents exactly as given. To have each participant's tool calls
-    /// authorized as that participant, wrap them with <c>ParticipantGovernance</c> first, as
+    /// authorized as that participant, wrap them through a <c>ParticipantGovernance</c> turn first, as
     /// <c>MagenticAgentTurnRunner</c> does (#769); an unwrapped participant runs under whatever admission
     /// pipeline is ambient, or ungoverned when none is. An architecture test fails when a new production
     /// file starts driving the orchestrator without being listed.
