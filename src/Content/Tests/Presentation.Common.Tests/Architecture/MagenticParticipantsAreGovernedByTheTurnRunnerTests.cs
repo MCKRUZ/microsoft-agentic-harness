@@ -88,8 +88,11 @@ public sealed class MagenticParticipantsAreGovernedByTheTurnRunnerTests
 
         runner.Should().ContainSingle($"{TheRunner} is the governed caller; if it moved, update TheRunner and Exemptions");
         runner[0].Code.Should().Contain(
-            "_participantGovernance.Wrap(",
+            "governanceTurn.Wrap(",
             "without this call every participant is authorized as the entry agent again (#769)");
+        runner[0].Code.Should().Contain(
+            "_participantGovernance.ForTurn(",
+            "the turn the participants are wrapped through is what folds their traces in and releases their scopes (#804)");
     }
 
     [Fact]

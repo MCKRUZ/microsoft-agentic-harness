@@ -143,12 +143,17 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		ConcurrentBag<AgentExecutionContext> builtContexts,
 		CancellationToken cancellationToken)
 	{
+		// Holds the participants' governance scopes for this turn (#804). Nothing is armed until a
+		// participant runs, so the early returns below have nothing to release; it is disposed in the
+		// finally around the orchestrator call.
+		var governanceTurn = _participantGovernance.ForTurn(conversationId);
+
 		IReadOnlyList<AIAgent> participants;
 		AIAgent manager;
 		try
 		{
 			(manager, participants) = await BuildManagerAndParticipantsAsync(
-				supervisor, conversationId, overrides, builtContexts, cancellationToken);
+				supervisor, conversationId, overrides, builtContexts, governanceTurn, cancellationToken);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
@@ -225,6 +230,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		{
 			LlmUsageCapture.Current = null;
 			CallerTurnContextScope.Current = null;
+
+			// Before Governance is read below: each participant's trace is folded into this turn's
+			// only when its scope is released (#804), on every exit including a throwing run.
+			await EndParticipantGovernanceAsync(governanceTurn);
 		}
 
 		var usage = _usageCapture.TakeSnapshot();
@@ -282,6 +291,23 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	}
 
 	/// <summary>
+	/// Ends the participants' governance scopes for this turn. A failure to fold a participant's trace is
+	/// logged, not thrown: it must not replace the workflow's own outcome (or the exception that ended it).
+	/// </summary>
+	private async Task EndParticipantGovernanceAsync(ParticipantGovernanceTurn governanceTurn)
+	{
+		try
+		{
+			await governanceTurn.DisposeAsync();
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex,
+				"Releasing the Magentic participants' governance scopes failed; the turn's governance trace may be incomplete");
+		}
+	}
+
+	/// <summary>
 	/// Resolves every declared participant to a registered <see cref="AgentDefinition"/> (skipping and
 	/// warning about ones that aren't), then builds the manager and every resolved participant
 	/// concurrently — each build is a genuine async round-trip (skill resolution, prerequisite checks,
@@ -296,7 +322,8 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	/// </remarks>
 	private async Task<(AIAgent Manager, IReadOnlyList<AIAgent> Participants)> BuildManagerAndParticipantsAsync(
 		AgentDefinition supervisor, string conversationId, MagenticTurnOverrides overrides,
-		ConcurrentBag<AgentExecutionContext> builtContexts, CancellationToken cancellationToken)
+		ConcurrentBag<AgentExecutionContext> builtContexts, ParticipantGovernanceTurn governanceTurn,
+		CancellationToken cancellationToken)
 	{
 		var seenParticipantIds = new HashSet<string>(StringComparer.Ordinal);
 		var resolvedParticipantDefs = new List<AgentDefinition>(supervisor.Participants.Count);
@@ -344,7 +371,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		// to arm it. The manager is deliberately not wrapped: it IS the entry agent this turn is already
 		// governed as, and runs under the turn's own pipeline.
 		var participants = resolvedParticipantDefs
-			.Select((def, i) => _participantGovernance.Wrap(participantTasks[i].Result, def.Id, conversationId))
+			.Select((def, i) => governanceTurn.Wrap(participantTasks[i].Result, def.Id))
 			.ToList();
 
 		return (managerTask.Result, participants);

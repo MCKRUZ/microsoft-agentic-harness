@@ -216,21 +216,77 @@ public sealed class MagenticAgentTurnRunnerTests
         scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
         _scopeFactory.Setup(f => f.CreateScope()).Returns(scope.Object);
 
-        MagenticWorkflowRequest? captured = null;
+        // The participant runs while the turn is in progress, as the engine would run it; once the runner
+        // returns the turn has ended and further runs are refused.
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+            .Returns(async (MagenticWorkflowRequest req, CancellationToken _) =>
+            {
+                await req.Participants[0].RunAsync("work");
+                return Result<MagenticWorkflowResult>.Success(SuccessResult());
+            });
 
         await CreateRunner().RunTurnAsync(
             supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
-        await captured!.Participants[0].RunAsync("work");
 
         context.Verify(
             c => c.Initialize("researcher", It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
             Times.Once,
             "the participant's own agent id, not the supervisor's, is what its tool calls are authorized as");
         childPipeline.Verify(p => p.Reset(), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunTurnAsync_ReleasesTheParticipantsGovernanceScopesBeforeItReturns(bool orchestratorThrows)
+    {
+        // #804: a participant's scope now lives for the whole turn, so the runner is what ends it. If it
+        // did not, the scope would leak and the participant's trace would never reach the turn's result.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        var order = new List<string>();
+        var childPipeline = new Mock<IToolCallAdmissionPipeline>();
+        childPipeline.Setup(p => p.GetTrace())
+            .Callback(() => order.Add("participant trace folded"))
+            .Returns(Domain.AI.Governance.GovernanceTrace.Empty);
+        _admissionPipeline.Setup(p => p.GetTrace())
+            .Callback(() => order.Add("turn trace read"))
+            .Returns(Domain.AI.Governance.GovernanceTrace.Empty);
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(new Mock<IAgentExecutionContext>().Object);
+        provider.Setup(p => p.GetService(typeof(IToolCallAdmissionPipeline))).Returns(childPipeline.Object);
+        var scope = new Mock<IServiceScope>();
+        scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+        _scopeFactory.Setup(f => f.CreateScope()).Returns(scope.Object);
+
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(async (MagenticWorkflowRequest req, CancellationToken _) =>
+            {
+                await req.Participants[0].RunAsync("work");
+                scope.Verify(s => s.Dispose(), Times.Never, "the scope must outlive the participant's run");
+                return orchestratorThrows
+                    ? throw new InvalidOperationException("engine failed")
+                    : Result<MagenticWorkflowResult>.Success(SuccessResult());
+            });
+
+        var act = () => CreateRunner().RunTurnAsync(
+            supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        if (orchestratorThrows)
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        else
+            await act();
+
+        scope.Verify(s => s.Dispose(), Times.Once, "the turn ends every participant scope, success or not");
+        childPipeline.Verify(p => p.GetTrace(), Times.Once, "the trace is folded once, at release");
+
+        if (!orchestratorThrows)
+            order.Should().Equal(
+                ["participant trace folded", "turn trace read"],
+                "the turn result reports the parent's trace, so participants must be folded into it first");
     }
 
     [Fact]

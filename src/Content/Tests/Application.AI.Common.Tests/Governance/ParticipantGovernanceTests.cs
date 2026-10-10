@@ -39,14 +39,17 @@ public sealed class ParticipantGovernanceTests : IDisposable
         Mock.Of<IToolRiskClassifier>());
     private readonly IAgentExecutionContext _parentContext;
     private readonly ParticipantGovernance _governance;
+    private readonly ParticipantGovernanceTurn _turn;
 
     public ParticipantGovernanceTests()
     {
         var services = new ServiceCollection();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
+        services.AddScoped<ScopeMarker>();
         services.AddScoped(sp =>
         {
-            var armed = new ArmedPipeline(sp.GetRequiredService<IAgentExecutionContext>());
+            var armed = new ArmedPipeline(
+                sp.GetRequiredService<IAgentExecutionContext>(), sp.GetRequiredService<ScopeMarker>());
             lock (_armed) _armed.Add(armed);
             return armed.Pipeline.Object;
         });
@@ -58,6 +61,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
 
         _governance = new ParticipantGovernance(
             _provider.GetRequiredService<IServiceScopeFactory>(), _parentContext, _parentTrace);
+        _turn = _governance.ForTurn(ConversationId);
     }
 
     public void Dispose()
@@ -70,7 +74,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunAsync_ToolCallsInsideTheRunReachAPipelineArmedAsTheParticipant()
     {
         var probe = new ProbeAgent();
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
             await agent.RunAsync("go");
@@ -91,7 +95,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         // the top of the stream would govern only the first step; the wrapper has to publish it around
         // every step of the stream.
         var probe = new ProbeAgent(streamedUpdates: 3);
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
         {
@@ -108,24 +112,133 @@ public sealed class ParticipantGovernanceTests : IDisposable
     }
 
     [Fact]
-    public async Task EveryRunGetsAFreshScopeWithAResetPipeline()
+    public async Task RunsOfOneParticipantShareOneScope_AndANewTurnStartsFresh()
     {
-        var agent = _governance.Wrap(new ProbeAgent(), Participant, ConversationId);
+        // The loop guard's call history and the aggregate output budget live in the scope's pipeline, so
+        // they must span every round of a turn (#804): one scope per participant per turn, not per run.
+        var agent = _turn.Wrap(new ProbeAgent(), Participant);
 
-        await agent.RunAsync("one");
-        await agent.RunAsync("two");
+        await agent.RunAsync("round one");
+        await agent.RunAsync("round two");
 
-        _armed.Where(a => a.Context.AgentId == Participant).Should().HaveCount(2)
-            .And.OnlyContain(a => a.ResetCount == 1);
+        var turnOne = _armed.Where(a => a.Context.AgentId == Participant).Should().ContainSingle(
+            "both rounds must reach the same pipeline").Subject;
+        turnOne.ResetCount.Should().Be(1, "state is cleared when the turn's scope is armed, not between rounds");
+
+        await _turn.DisposeAsync();
+        var nextTurn = _governance.ForTurn(ConversationId).Wrap(new ProbeAgent(), Participant);
+        await nextTurn.RunAsync("next turn");
+
+        _armed.Where(a => a.Context.AgentId == Participant).Should().HaveCount(
+            2, "a new turn starts with fresh guard state");
+    }
+
+    [Fact]
+    public async Task DisposingTheTurn_DisposesEveryParticipantScope_AndNotBefore()
+    {
+        var agent = _turn.Wrap(new ProbeAgent(), Participant);
+        await agent.RunAsync("go");
+        var armed = _armed.Single(a => a.Context.AgentId == Participant);
+
+        armed.Marker.Disposed.Should().BeFalse("the scope must outlive the run so a later round reuses it");
+
+        await _turn.DisposeAsync();
+
+        armed.Marker.Disposed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ARunAfterTheTurnEnded_IsRefused_InsteadOfArmingAScopeNobodyReleases()
+    {
+        // An engine that returns on cancellation without awaiting a participant can start it after the
+        // runner ended the turn. A fresh scope then would never be folded or disposed.
+        var agent = _turn.Wrap(new ProbeAgent(), Participant);
+        await _turn.DisposeAsync();
+
+        Func<Task> act = async () => await agent.RunAsync("too late");
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+        _armed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ARunOfAParticipantWhoseScopeWasReleased_IsRefused()
+    {
+        var agent = _turn.Wrap(new ProbeAgent(), Participant);
+        await agent.RunAsync("in time");
+        await _turn.DisposeAsync();
+
+        Func<Task> act = async () => await agent.RunAsync("too late");
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+        _armed.Should().ContainSingle("the released scope must not be re-armed");
+    }
+
+    [Fact]
+    public async Task Wrap_AfterTheTurnEnded_IsRefused()
+    {
+        await _turn.DisposeAsync();
+
+        var act = () => _turn.Wrap(new ProbeAgent(), Participant);
+
+        act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void ForTurn_RejectsAnEmptyConversationId()
+    {
+        var act = () => _governance.ForTurn("");
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task DisposingTheTurn_FoldsEachTraceOnce_EvenAcrossSeveralRounds()
+    {
+        // The pipeline's trace is cumulative, so folding after every round would double-count.
+        var probe = new ProbeAgent(traceToReport: Trace("only-once"));
+        var agent = _turn.Wrap(probe, Participant);
+
+        await agent.RunAsync("round one");
+        await agent.RunAsync("round two");
+
+        _parentTrace.Snapshot().Should().BeSameAs(GovernanceTrace.Empty, "nothing is folded until the turn ends");
+
+        await _turn.DisposeAsync();
+        await _turn.DisposeAsync();
+
+        _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle(
+            "one fold per turn, and disposing again has nothing left to fold");
+    }
+
+    [Fact]
+    public async Task DisposingTheTurn_WhenOneParticipantsFoldFails_StillReleasesTheOthers()
+    {
+        var failing = _turn.Wrap(new ProbeAgent(), "failing-participant");
+        var healthy = _turn.Wrap(new ProbeAgent(traceToReport: Trace("healthy-call")), "healthy-participant");
+        await failing.RunAsync("go");
+        await healthy.RunAsync("go");
+        _armed.Single(a => a.Context.AgentId == "failing-participant").Pipeline
+            .Setup(p => p.GetTrace()).Throws(new InvalidOperationException("trace unavailable"));
+
+        Func<Task> act = async () => await _turn.DisposeAsync();
+
+        await act.Should().ThrowAsync<AggregateException>();
+        _armed.Single(a => a.Context.AgentId == "failing-participant").Marker.Disposed.Should().BeTrue(
+            "a failed fold must still release that participant's scope");
+        _armed.Single(a => a.Context.AgentId == "healthy-participant").Marker.Disposed.Should().BeTrue();
+        _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle()
+            .Which.Reason.Should().Be("healthy-call");
     }
 
     [Fact]
     public async Task RunAsync_FoldsTheParticipantsTraceIntoTheTurnsTrace()
     {
         var probe = new ProbeAgent(traceToReport: Trace("participant-call"));
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         await agent.RunAsync("go");
+        await _turn.DisposeAsync();
 
         _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle()
             .Which.Reason.Should().Be("participant-call");
@@ -135,9 +248,10 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunStreamingAsync_FoldsTheParticipantsTraceIntoTheTurnsTrace()
     {
         var probe = new ProbeAgent(streamedUpdates: 2, traceToReport: Trace("streamed-call"));
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         await foreach (var _ in agent.RunStreamingAsync("go")) { }
+        await _turn.DisposeAsync();
 
         _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle()
             .Which.Reason.Should().Be("streamed-call");
@@ -149,7 +263,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         // A failing dispose must not strand the trace: the decisions a participant made, including denials,
         // are what an auditor reads, and an exception on the way out is exactly when they matter most.
         var probe = new ProbeAgent(traceToReport: Trace("before-the-dispose-failure"), throwOnDispose: true);
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         // The consumer stops after the first update, so the stream is disposed by the wrapper rather than
         // exhausted: that is the path where the inner enumerator's dispose throws out of the wrapper's own.
@@ -160,6 +274,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
         };
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("dispose failed");
+        await _turn.DisposeAsync();
         _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle()
             .Which.Reason.Should().Be("before-the-dispose-failure");
     }
@@ -168,7 +283,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     public async Task RunAsync_WhenTheParticipantThrows_StillFoldsItsTraceAndRestoresTheAmbientPipeline()
     {
         var probe = new ProbeAgent(throwAfterRecording: true, traceToReport: Trace("before-the-failure"));
-        var agent = _governance.Wrap(probe, Participant, ConversationId);
+        var agent = _turn.Wrap(probe, Participant);
 
         using (ToolAdmissionAccessor.Begin(_parentPipeline))
         {
@@ -178,6 +293,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
             ToolAdmissionAccessor.Current.Should().BeSameAs(_parentPipeline);
         }
 
+        await _turn.DisposeAsync();
         _parentTrace.Snapshot().ToolDecisions.Should().ContainSingle(
             "a denial the participant hit before it failed is exactly what an auditor needs to see");
     }
@@ -187,7 +303,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     {
         // Magentic addresses participants by name; a wrapper that lost it would break routing.
         var inner = new ProbeAgent();
-        var agent = _governance.Wrap(inner, Participant, ConversationId);
+        var agent = _turn.Wrap(inner, Participant);
 
         agent.Name.Should().Be(inner.Name);
         agent.Id.Should().Be(inner.Id);
@@ -196,7 +312,7 @@ public sealed class ParticipantGovernanceTests : IDisposable
     [Fact]
     public void Wrap_RejectsABlankAgentId()
     {
-        var act = () => _governance.Wrap(new ProbeAgent(), " ", ConversationId);
+        var act = () => _turn.Wrap(new ProbeAgent(), " ");
 
         act.Should().Throw<ArgumentException>();
     }
@@ -219,18 +335,32 @@ public sealed class ParticipantGovernanceTests : IDisposable
     {
     }
 
+    /// <summary>Resolved inside each child scope; reports whether that scope has been disposed.</summary>
+    private sealed class ScopeMarker : IAsyncDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
     /// <summary>A scope's pipeline mock plus the execution context that scope was armed with.</summary>
     private sealed class ArmedPipeline
     {
-        public ArmedPipeline(IAgentExecutionContext context)
+        public ArmedPipeline(IAgentExecutionContext context, ScopeMarker marker)
         {
             Context = context;
+            Marker = marker;
             Pipeline = new Mock<IToolCallAdmissionPipeline>();
             Pipeline.Setup(p => p.Reset()).Callback(() => ResetCount++);
             Pipeline.Setup(p => p.GetTrace()).Returns(GovernanceTrace.Empty);
         }
 
         public IAgentExecutionContext Context { get; }
+        public ScopeMarker Marker { get; }
         public Mock<IToolCallAdmissionPipeline> Pipeline { get; }
         public int ResetCount { get; private set; }
     }
