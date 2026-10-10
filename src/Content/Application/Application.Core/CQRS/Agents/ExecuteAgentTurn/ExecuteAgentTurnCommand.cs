@@ -30,8 +30,11 @@ public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentTurnReq
 
 	/// <inheritdoc />
 	public ContentScreeningTarget ScreeningTarget => ContentScreeningTarget.Input;
-	/// <inheritdoc/>
-	public TimeSpan? Timeout => TimeSpan.FromMinutes(5);
+	/// <summary>
+	/// The turn's deadline, enforced by <c>TimeoutBehavior</c> and observed by the run itself. Five
+	/// minutes unless a caller with a tighter budget (or a test) sets it.
+	/// </summary>
+	public TimeSpan? Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
 	/// <summary>
 	/// The agent to execute the turn with. Must match a skill ID
