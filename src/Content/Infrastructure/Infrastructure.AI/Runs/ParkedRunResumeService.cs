@@ -1,7 +1,7 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Runs;
-using Domain.AI.Runs;
 using Application.Common.Helpers;
+using Domain.AI.Runs;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.Hosting;

@@ -53,6 +53,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
     private readonly IEscalationService _escalations;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly LastKnownGoodSetting<TimeSpan> _sweepInterval;
+    private readonly LastKnownGoodSetting<TimeSpan> _parkedRunCeiling;
     private readonly ILogger<RunRecordCleanupService> _logger;
 
     /// <summary>Initializes a new <see cref="RunRecordCleanupService"/>.</summary>
@@ -82,6 +83,11 @@ internal sealed class RunRecordCleanupService : BackgroundService
             new WorkflowSubmissionConfig().RunSweepInterval,
             logger,
             "AppConfig:AI:WorkflowSubmission:RunSweepInterval");
+        _parkedRunCeiling = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.WorkflowSubmission.MaxParkedRunDuration,
+            new WorkflowSubmissionConfig().MaxParkedRunDuration,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:MaxParkedRunDuration");
     }
 
     /// <inheritdoc />
@@ -188,7 +194,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
     /// </remarks>
     private async Task ExpireStaleParkedRunsAsync()
     {
-        var ceiling = _config.CurrentValue.AI.WorkflowSubmission.MaxParkedRunDuration;
+        var ceiling = _parkedRunCeiling.Current;
 
         var expired = _store.ExpireStaleParkedRuns(ceiling);
         if (expired.Count == 0)

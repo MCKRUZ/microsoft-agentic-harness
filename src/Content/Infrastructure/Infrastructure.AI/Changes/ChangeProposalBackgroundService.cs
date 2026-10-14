@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Changes;
-using Domain.Common.Helpers;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
+using Domain.Common.Helpers;
 using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -45,7 +46,7 @@ public sealed class ChangeProposalBackgroundService : BackgroundService
 {
     private readonly IChangeProposalDispatchQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<OrchestratorMode> _mode;
     private readonly ILogger<ChangeProposalBackgroundService> _logger;
 
     /// <summary>Initializes a new <see cref="ChangeProposalBackgroundService"/>.</summary>
@@ -62,8 +63,17 @@ public sealed class ChangeProposalBackgroundService : BackgroundService
 
         _queue = queue;
         _scopeFactory = scopeFactory;
-        _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        // Seeded Shadow, not the shipped default: anything that is not exactly Shadow performs a real
+        // apply, so the value used when nothing has ever been read must be the one that cannot.
+        _mode = new LastKnownGoodSetting<OrchestratorMode>(
+            () => ParseMode(config.CurrentValue.AI.Changes.DefaultMode),
+            OrchestratorMode.Shadow,
+            logger,
+            "AppConfig:AI:Changes:DefaultMode");
     }
 
     /// <inheritdoc />
@@ -82,7 +92,7 @@ public sealed class ChangeProposalBackgroundService : BackgroundService
 
     private async Task DispatchOneAsync(string proposalId, CancellationToken stoppingToken)
     {
-        var mode = ParseMode(_config.CurrentValue.AI.Changes.DefaultMode);
+        var mode = _mode.Current;
 
         try
         {

@@ -56,7 +56,6 @@ internal abstract class PeriodicSweepService : BackgroundService
         new(Enabled: false, TimeSpan.FromHours(1), TimeSpan.Zero);
 
     private readonly TimeSpan _minInterval;
-    private readonly LastKnownGoodSetting<SweepRetentionSnapshot> _retention;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
 
@@ -79,11 +78,6 @@ internal abstract class PeriodicSweepService : BackgroundService
         _minInterval = minInterval;
         _timeProvider = timeProvider;
         _logger = logger;
-
-        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
-        // last-known-good guard so that cannot escape the loop and stop the host (#821).
-        _retention = new LastKnownGoodSetting<SweepRetentionSnapshot>(
-            ReadRetention, SafeRetention, logger, "retention settings");
     }
 
     /// <summary>Reads the live retention configuration. Called once per use, never cached.</summary>
@@ -105,17 +99,24 @@ internal abstract class PeriodicSweepService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Created here, not in the constructor: ReadRetention is implemented by the subclass, whose
+        // fields are not set until after this class's constructor has run. A hot-reloaded value that
+        // fails validation makes CurrentValue throw, so the read goes through a last-known-good guard
+        // that cannot escape the loop and stop the host (#821).
+        var retentionSetting = new LastKnownGoodSetting<SweepRetentionSnapshot>(
+            ReadRetention, SafeRetention, _logger, "retention settings");
+
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = _retention.Current.SweepInterval;
+                var interval = retentionSetting.Current.SweepInterval;
                 if (interval < _minInterval)
                     interval = _minInterval;
 
                 await Task.Delay(interval, _timeProvider, stoppingToken).ConfigureAwait(false);
 
-                var retention = _retention.Current;
+                var retention = retentionSetting.Current;
                 if (!retention.Enabled)
                     continue;
 

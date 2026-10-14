@@ -19,14 +19,19 @@ namespace Application.Common.Helpers;
 /// the wait it controls, so a failed read has to produce a value; the last good one is the least surprising.
 /// </para>
 /// <para>
-/// <b>Seed.</b> Used only when the setting has never been read successfully. Pass the shipped default
-/// (for example <c>new LearningsConfig().PruneIntervalHours</c>) rather than a literal, so it cannot drift
-/// from the documented default, and choose the safe direction for a flag: a sweep that deletes should seed
-/// to "disabled".
+/// <b>Primed at construction.</b> The constructor reads the setting once, so "last good" is the value the
+/// host actually started with and not the shipped default. That matters when the fallback is acted on: a
+/// retention window of 365 days must not silently become 90 because the file was edited badly before the
+/// first tick. The seed is used only if that first read also fails. Pass the shipped
+/// default (for example <c>new LearningsConfig().PruneIntervalHours</c>) rather than a literal, and choose
+/// the safe direction for a flag: a sweep that deletes should seed to "disabled". A caller whose read
+/// depends on state that is not yet set up at construction must create the setting later, not in its
+/// constructor.
 /// </para>
 /// <para>
-/// <b>Cancellation is not a configuration failure</b> and is never absorbed. Every other exception is,
-/// and is logged at error level on each failed read so the bad edit stays visible for as long as it lasts.
+/// <b>Logging.</b> The first failed read of a streak is logged at error level; further failures while it
+/// lasts are logged at debug, so a loop with a short tick does not flood the log; the recovery is logged
+/// at information level. <b>Cancellation is not a configuration failure</b> and is never absorbed.
 /// </para>
 /// </remarks>
 public sealed class LastKnownGoodSetting<T>
@@ -36,12 +41,13 @@ public sealed class LastKnownGoodSetting<T>
     private readonly string _name;
     private readonly Lock _gate = new();
     private T _lastGood;
+    private bool _failing;
 
-    /// <summary>Initializes a new <see cref="LastKnownGoodSetting{T}"/>.</summary>
+    /// <summary>Initializes a new <see cref="LastKnownGoodSetting{T}"/> and primes it with one read.</summary>
     /// <param name="read">Reads the live value; typically a lambda over <c>IOptionsMonitor.CurrentValue</c>.</param>
     /// <param name="seed">The value to use until a read first succeeds.</param>
-    /// <param name="logger">Receives an error for each failed read.</param>
-    /// <param name="name">A short description of the setting, for the log message.</param>
+    /// <param name="logger">Receives the failure and recovery messages.</param>
+    /// <param name="name">A short description of the setting, for the log messages.</param>
     public LastKnownGoodSetting(Func<T> read, T seed, ILogger logger, string name)
     {
         ArgumentNullException.ThrowIfNull(read);
@@ -52,6 +58,8 @@ public sealed class LastKnownGoodSetting<T>
         _lastGood = seed;
         _logger = logger;
         _name = name;
+
+        _ = Current;
     }
 
     /// <summary>
@@ -61,32 +69,59 @@ public sealed class LastKnownGoodSetting<T>
     {
         get
         {
+            T value;
             try
             {
-                var value = _read();
-                lock (_gate)
-                {
-                    _lastGood = value;
-                }
-
-                return value;
+                value = _read();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                T fallback;
-                lock (_gate)
-                {
-                    fallback = _lastGood;
-                }
-
-                _logger.LogError(
-                    ex,
-                    "Configuration for {Setting} could not be read; continuing with the last known good value {Value}.",
-                    _name,
-                    fallback);
-
-                return fallback;
+                return FallBack(ex);
             }
+
+            Remember(value);
+            return value;
         }
+    }
+
+    private void Remember(T value)
+    {
+        bool recovered;
+        lock (_gate)
+        {
+            _lastGood = value;
+            recovered = _failing;
+            _failing = false;
+        }
+
+        if (recovered)
+            _logger.LogInformation("Configuration for {Setting} is readable again: {Value}.", _name, value);
+    }
+
+    private T FallBack(Exception ex)
+    {
+        T fallback;
+        bool firstOfStreak;
+        lock (_gate)
+        {
+            fallback = _lastGood;
+            firstOfStreak = !_failing;
+            _failing = true;
+        }
+
+        if (firstOfStreak)
+        {
+            _logger.LogError(
+                ex,
+                "Configuration for {Setting} could not be read; continuing with the last known good value {Value}.",
+                _name,
+                fallback);
+        }
+        else
+        {
+            _logger.LogDebug(ex, "Configuration for {Setting} is still unreadable; using {Value}.", _name, fallback);
+        }
+
+        return fallback;
     }
 }

@@ -20,6 +20,21 @@ public sealed class LastKnownGoodSettingTests
     }
 
     [Fact]
+    public void Constructor_ReadsTheLiveValueOnce_SoLastGoodIsWhatTheHostStartedWith()
+    {
+        // The fallback is acted on (a retention window, a prune threshold). If a bad edit landed before the
+        // first read, falling back to the shipped default instead of the operator's value would act on a
+        // number nobody chose.
+        var fail = false;
+        var sut = new LastKnownGoodSetting<int>(
+            () => fail ? throw new InvalidOperationException("bad") : 365, seed: 90, new RecordingLogger(), "retention");
+
+        fail = true;
+
+        sut.Current.Should().Be(365, "the value read at construction, not the seed");
+    }
+
+    [Fact]
     public void Current_ReadThrowsAfterASuccess_ReturnsTheLastGoodValueAndLogsTheFailure()
     {
         var logger = new RecordingLogger();
@@ -58,10 +73,49 @@ public sealed class LastKnownGoodSettingTests
     }
 
     [Fact]
+    public void Current_FailureLastsAcrossManyReads_LogsAtErrorOnlyOnceThenLogsTheRecovery()
+    {
+        var logger = new RecordingLogger();
+        var fail = false;
+        var sut = new LastKnownGoodSetting<int>(
+            () => fail ? throw new InvalidOperationException("bad") : 7, seed: 1, logger, "interval");
+
+        fail = true;
+        for (var i = 0; i < 5; i++)
+            _ = sut.Current;
+
+        logger.Errors.Should().ContainSingle("a short-tick loop must not flood the log with one error per read");
+
+        fail = false;
+        _ = sut.Current;
+
+        logger.Informations.Should().Be(1, "the recovery is worth one line");
+    }
+
+    [Fact]
+    public void Current_ASecondFailureAfterRecovery_LogsAtErrorAgain()
+    {
+        var logger = new RecordingLogger();
+        var fail = false;
+        var sut = new LastKnownGoodSetting<int>(
+            () => fail ? throw new InvalidOperationException("bad") : 7, seed: 1, logger, "interval");
+
+        fail = true;
+        _ = sut.Current;
+        fail = false;
+        _ = sut.Current;
+        fail = true;
+        _ = sut.Current;
+
+        logger.Errors.Should().HaveCount(2, "each separate outage must be visible");
+    }
+
+    [Fact]
     public void Current_ReadIsCancelled_PropagatesRatherThanBeingMistakenForABadConfig()
     {
+        var calls = 0;
         var sut = new LastKnownGoodSetting<int>(
-            () => throw new OperationCanceledException(), seed: 1, new RecordingLogger(), "interval");
+            () => calls++ == 0 ? 1 : throw new OperationCanceledException(), seed: 1, new RecordingLogger(), "interval");
 
         var act = () => sut.Current;
 
@@ -71,6 +125,8 @@ public sealed class LastKnownGoodSettingTests
     private sealed class RecordingLogger : ILogger
     {
         public List<Exception> Errors { get; } = [];
+
+        public int Informations { get; private set; }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -82,6 +138,8 @@ public sealed class LastKnownGoodSettingTests
         {
             if (logLevel == LogLevel.Error && exception is not null)
                 Errors.Add(exception);
+            else if (logLevel == LogLevel.Information)
+                Informations++;
         }
     }
 }

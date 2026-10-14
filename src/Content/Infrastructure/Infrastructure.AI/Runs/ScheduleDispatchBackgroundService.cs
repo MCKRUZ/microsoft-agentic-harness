@@ -1,9 +1,10 @@
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Runs;
-using Domain.AI.Runs;
 using Application.Common.Helpers;
+using Domain.AI.Runs;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Schedules;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -68,6 +69,7 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly LastKnownGoodSetting<TimeSpan> _tickInterval;
     private readonly LastKnownGoodSetting<bool> _enabled;
+    private readonly LastKnownGoodSetting<int> _maxConcurrentRunsPerOwner;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ScheduleDispatchBackgroundService> _logger;
 
@@ -102,6 +104,11 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
         _enabled = new LastKnownGoodSetting<bool>(
             () => config.CurrentValue.AI.Schedules.Enabled, shipped.Enabled, logger,
             "AppConfig:AI:Schedules:Enabled");
+        _maxConcurrentRunsPerOwner = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner,
+            new WorkflowSubmissionConfig().MaxConcurrentRunsPerOwner,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:MaxConcurrentRunsPerOwner");
     }
 
     /// <inheritdoc />
@@ -317,7 +324,7 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
     /// </summary>
     private bool TryAdmitRun(ScheduleRecord schedule, RunRecord record)
     {
-        var maxConcurrentRuns = _config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner;
+        var maxConcurrentRuns = _maxConcurrentRunsPerOwner.Current;
         var admission = _runStore.TryCreate(record, maxConcurrentRuns);
         if (admission == RunAdmission.Accepted)
             return true;

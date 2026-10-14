@@ -1,14 +1,17 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
+using Application.AI.Common.Interfaces.Changes;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.Runs;
+using Domain.AI.Changes;
 using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Learnings;
 using FluentAssertions;
 using Infrastructure.AI.BackgroundServices;
 using Infrastructure.AI.Bundles;
+using Infrastructure.AI.Changes;
 using Infrastructure.AI.Escalation;
 using Infrastructure.AI.Learnings;
 using Infrastructure.AI.Runs;
@@ -183,6 +186,53 @@ public sealed class BackgroundServiceConfigResilienceTests
         await sut.StopAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task RunRecordCleanup_CeilingBecomesUnreadable_StillReclaimsExpiredRuns()
+    {
+        var config = new AppConfig();
+        config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.FromSeconds(1);
+        var monitor = new SwitchableMonitor<AppConfig>(config);
+        var store = new Mock<IRunJobStore>();
+        store.Setup(s => s.ExpireStaleParkedRuns(It.IsAny<TimeSpan>())).Returns([]);
+        store.Setup(s => s.SweepExpired()).Returns([]);
+        var sut = new RunRecordCleanupService(
+            store.Object, [], Mock.Of<IEscalationService>(), monitor, NullLogger<RunRecordCleanupService>.Instance);
+        await sut.StartAsync(CancellationToken.None);
+
+        // The ceiling is read first in each sweep. If an unreadable value aborted the tick there, run records
+        // would stop being reclaimed for as long as the bad edit lasted.
+        monitor.Throwing = true;
+        await WaitForAsync(
+            () => store.Invocations.Any(i => i.Method.Name == nameof(IRunJobStore.SweepExpired)), () => { });
+
+        sut.ExecuteTask!.IsCompleted.Should().BeFalse();
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ChangeProposal_ModeBecomesUnreadable_StillDispatchesTheProposal()
+    {
+        var monitor = new SwitchableMonitor<AppConfig>(new AppConfig());
+        var orchestrator = new Mock<IChangeProposalOrchestrator>();
+        orchestrator
+            .Setup(o => o.ProcessAsync(It.IsAny<string>(), It.IsAny<OrchestratorMode>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ChangeProposal?)null);
+        var services = new ServiceCollection().AddSingleton(orchestrator.Object).BuildServiceProvider();
+        var queue = new SingleItemQueue();
+        var sut = new ChangeProposalBackgroundService(
+            queue, services.GetRequiredService<IServiceScopeFactory>(), monitor,
+            NullLogger<ChangeProposalBackgroundService>.Instance);
+        await sut.StartAsync(CancellationToken.None);
+
+        // The mode is read once per dequeued proposal, outside the dispatch try, inside the drain loop.
+        monitor.Throwing = true;
+        queue.Add("p1");
+        await WaitForAsync(() => orchestrator.Invocations.Count >= 1, () => { });
+
+        sut.ExecuteTask!.IsCompleted.Should().BeFalse("an unreadable mode must not end the drain loop");
+        await sut.StopAsync(CancellationToken.None);
+    }
+
     private static ScheduleDispatchBackgroundService CreateScheduleDispatch(
         IOptionsMonitor<AppConfig> monitor, TimeProvider time) =>
         new(
@@ -214,6 +264,21 @@ public sealed class BackgroundServiceConfigResilienceTests
         }
 
         condition().Should().BeTrue("the loop should have reached this point within five seconds");
+    }
+
+    /// <summary>A dispatch queue the test can push one id into, after the service is already draining.</summary>
+    private sealed class SingleItemQueue : IChangeProposalDispatchQueue
+    {
+        private readonly System.Threading.Channels.Channel<string> _channel =
+            System.Threading.Channels.Channel.CreateUnbounded<string>();
+
+        public void Add(string id) => _channel.Writer.TryWrite(id);
+
+        public ValueTask EnqueueAsync(string proposalId, CancellationToken cancellationToken) =>
+            _channel.Writer.WriteAsync(proposalId, cancellationToken);
+
+        public IAsyncEnumerable<string> DequeueAllAsync(CancellationToken cancellationToken) =>
+            _channel.Reader.ReadAllAsync(cancellationToken);
     }
 
     /// <summary>A minimal sweep service whose only job is to read its retention settings.</summary>
