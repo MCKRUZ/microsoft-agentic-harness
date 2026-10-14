@@ -1,13 +1,13 @@
 # Agent Lightning: fit assessment for the harness
 
-Status: assessment for [#832](https://github.com/MCKRUZ/microsoft-agentic-harness/issues/832). Written 14 Oct 2026 against Agent Lightning v1.0.2 (released 29 Sep 2026).
+Status: assessment for [#832](https://github.com/MCKRUZ/microsoft-agentic-harness/issues/832), with the results of its Phase 1 wiring spike. Written 14 Oct 2026 against Agent Lightning v1.0.2 (released 29 Sep 2026).
 
 ## Verdict
 
 **Conditional go, for an optional integration, not a default.** The wire path is viable with no change to the harness's chat-client layer. What does not exist yet is a rollout executor, a reward reporter and a governance stance for training runs. Three conditions apply:
 
 1. Train only on curated or synthetic datasets, never on production conversations (see [Data](#3-data-handling-what-is-trained-on)).
-2. Use a provider that speaks Chat Completions. The Foundry Responses providers cannot take part.
+2. Use a provider that speaks **non-streaming** Chat Completions. The gateway rejects streaming and the Responses API, so the Foundry Responses providers cannot take part (both confirmed live in [Phase 1](#phase-1-results-14-oct-2026)).
 3. Treat it as value for teams running an open-weight model. It does nothing for hosted models.
 
 ## How each claim was checked
@@ -38,7 +38,7 @@ The agent keeps its own tools, context and control flow. Training changes the mo
 - **Verified:** in this repository the `OpenAI` and `AzureOpenAI` providers use the OpenAI SDK `GetChatClient(...).AsIChatClient()`, which is Chat Completions (`ChatClientFactory.Providers.cs`). `FoundryResponses` and `FoundryDirectResponses` use the Responses API and cannot be trained through the gateway.
 - **Verified:** `ClientType=OpenAI` with `AppConfig:AI:AgentFramework:Endpoint` set already targets "an OpenAI-compatible gateway" (`DependencyInjection.Tools.cs`, the `OpenAI` case; `AgentFrameworkHelper.GetOpenAIClientOptions`). No factory change is needed.
 - **Inferred:** the per-rollout URL arrives as an environment variable, so a Job template can map `AGL_OPENAI_BASE_URL` to `AppConfig__AI__AgentFramework__Endpoint` and `AGL_KEY` to the API key through standard .NET environment-variable configuration.
-- **Unverified:** streaming and tool-calling behaviour through the gateway; the `AzureOpenAI` type additionally requires HTTPS unless the host is loopback (`AzureOpenAIV1Endpoint`), so use the `OpenAI` type for an in-cluster HTTP gateway.
+- **Verified in Phase 1:** streaming is rejected (`400 Streaming responses are not supported`), declared tools pass through, and the harness agent calls the model non-streaming. The `AzureOpenAI` type additionally requires HTTPS unless the host is loopback (`AzureOpenAIV1Endpoint`), so use the `OpenAI` type for an in-cluster HTTP gateway.
 
 ### 2. Governance
 
@@ -48,7 +48,7 @@ The agent keeps its own tools, context and control flow. Training changes the mo
   - An empty gateway `key` disables authentication and only logs a warning.
   - The proxy **forces** the sampling temperature (train 1.0 by default). It overrides harness settings, including the `--deterministic` flag.
   - Rollouts execute real tools. They need the sandbox's closed-by-default capability model and no production credentials.
-- **Unverified:** whether the gateway store persists beyond process lifetime.
+- **Verified in Phase 1:** the store does not persist. Rollouts, events and models are module-level dictionaries in the gateway process (`store.py`), so a restart loses every rollout and the captured prompts.
 
 ### 3. Data handling: what is trained on
 
@@ -92,15 +92,50 @@ One harness agent, one dataset scored by a deterministic metric, the local Docke
 2. Content safety and the tool-call chokepoint still fire on every rollout.
 3. No production data or credentials are reachable from a rollout.
 
-If the Responses API is required for the target agents, or the governance controls cannot be kept, record a no-go instead.
+If the Responses API or streaming is required for the target agents, or the governance controls cannot be kept, record a no-go instead.
 
-## Unverified, to settle in the spike
+## Phase 1 results (14 Oct 2026)
 
-- Streaming and tool-calling through the gateway.
-- Whether the gateway store persists, and where.
-- Whether 32 GB fits the chosen model.
-- The exact `EventCreate` body beyond `event_type` and `data`.
-- The environment-variable mapping (inferred, not run).
+Run without a GPU or any training stack: the vendor's gateway (base install, 36 MB) on localhost, a throwaway stand-in
+model server, and this repository's `EvalRunner` with the `OpenAI` provider pointed at the gateway. The harness process
+ran with its user-secrets hidden (`APPDATA` pointed at an empty folder), so it could not reach any real service.
+
+**Confirmed live**
+
+| Check | Result |
+|---|---|
+| Auth | `401` without a key; a bearer token or `x-api-key` is accepted. |
+| Routes | Management routes are under `/api` (`/api/models`, `/api/rollouts`, `/api/rollouts/{id}/attempt/{a}/events`); the proxy is at the root. |
+| Chat Completions, non-streaming | `200`, forwarded to the registered model. |
+| Streaming | `400 Streaming responses are not supported`. |
+| Responses API | `404 Unsupported upstream path: responses`. |
+| Declared tools | Forwarded unchanged. |
+| What the model server receives | The model name is **replaced** with the registered one, the temperature is **forced** (1.0 for training, even when the agent sent 0.0), `logprobs` and `return_token_ids` are requested, and the agent's `Authorization` header is **not** passed upstream. |
+| Capture | A `model_request` event per call, holding the full request and response bodies, plus the `reward` event. |
+| Reward | `POST /api/rollouts/{id}/attempt/{a}/events` with `{"event_type": "reward", "data": {"value": 1.0}}` returns `200`. |
+| Event listing | Lists the rollout's `last_attempt_id` only; events posted under another attempt are stored but not listed until the rollout's status names that attempt. |
+| Harness wiring | `AppConfig__AI__AgentFramework__ClientType`, `__Endpoint`, `__ApiKey` and `__DefaultDeployment` environment variables were enough. The request arrived at the model server through the gateway with no harness code change. |
+
+**Found along the way**
+
+- `Presentation.EvalRunner` could not run at all: it resolved the mediator from the root provider under scope
+  validation ([#834](https://github.com/MCKRUZ/microsoft-agentic-harness/issues/834), fixed on its own branch).
+- `uv` on this machine needs `UV_NATIVE_TLS=1`: the antivirus re-signs HTTPS traffic with a root only Windows trusts.
+- The vendor's local runner needs Linux process groups; the gateway itself runs on native Windows.
+
+**Not resolved.** The eval case recorded an **empty output** although the model server answered `4`. The same empty
+output appears when the harness is pointed straight at the model server with a strictly standard reply and the
+gateway out of the path, so the gateway is not the cause. The cause is somewhere in how the harness's agent turn
+turns the reply into its output text and was not found within the time-box. It must be understood before the
+EvalRunner can be trusted as the rollout executor.
+
+## Still unverified
+
+- Why the eval case output is empty (see above). Blocks using the EvalRunner as the rollout executor.
+- Whether 32 GB of GPU memory fits the chosen model, with ComfyUI currently holding 13 GB of it.
+- Whether the `AgentFramework` environment-variable mapping works unchanged inside a Kubernetes Job.
+- The training stack on this hardware: `verl` 0.8.0, vLLM 0.20.2 and a `flash-attn` source build against CUDA 13 on
+  an RTX 5090 (Blackwell) under WSL2.
 
 ## Sources
 
