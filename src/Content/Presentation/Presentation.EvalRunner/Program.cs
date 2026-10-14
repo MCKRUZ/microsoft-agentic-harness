@@ -4,7 +4,6 @@ using Application.AI.Common.Evaluation.Models;
 using Application.Core.CQRS.Evaluation.RunEvalSuite;
 using Domain.AI.Evaluation;
 using Infrastructure.AI.Evaluation;
-using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Presentation.Common.Extensions;
@@ -148,8 +147,6 @@ public static class Program
                 startedHostedServices.Add(hostedService);
             }
 
-            var mediator = provider.GetRequiredService<IMediator>();
-
             var command = new RunEvalSuiteCommand
             {
                 DatasetPaths = parsed.DatasetPaths,
@@ -163,7 +160,7 @@ public static class Program
                 }
             };
 
-            var result = await mediator.Send(command, cts.Token);
+            var result = await EvalSuiteDispatcher.DispatchAsync(provider, command, cts.Token);
             if (!result.IsSuccess)
             {
                 Console.Error.WriteLine("Eval run failed:");
