@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Governance;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -60,6 +62,7 @@ public sealed class EscalationReconciliationService : BackgroundService
     private readonly IEscalationReconciler _reconciler;
     private readonly Func<IGovernanceStatePruner> _prunerFactory;
     private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<int> _retentionDays;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EscalationReconciliationService> _logger;
 
@@ -112,6 +115,14 @@ public sealed class EscalationReconciliationService : BackgroundService
         _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        _retentionDays = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.Governance.DurableState.RetentionDays,
+            new GovernanceDurableStateConfig().RetentionDays,
+            logger,
+            "AppConfig:AI:Governance:DurableState:RetentionDays");
 
         // CallOnceEnforcementEnabled is deliberately NOT part of this check: PruneAsync never
         // touches tool_call_ledger (see GovernanceStatePruner's remarks — a ledger row is the
@@ -206,7 +217,7 @@ public sealed class EscalationReconciliationService : BackgroundService
         if (!_durableStateEnabled)
             return;
 
-        var retentionDays = _config.CurrentValue.AI.Governance.DurableState.RetentionDays;
+        var retentionDays = _retentionDays.Current;
         if (retentionDays <= 0)
             return;
 

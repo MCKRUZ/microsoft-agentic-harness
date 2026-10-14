@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.WorkMemory;
+using Application.Common.Helpers;
 using Application.Core.CQRS.Learnings;
 using Domain.AI.Governance;
 using Domain.AI.Learnings;
@@ -8,6 +9,7 @@ using Domain.AI.WorkMemory;
 using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.WorkMemory;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -63,6 +65,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAmbientRequestScope _ambientScope;
     private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _synthesisInterval;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<WorkMemorySynthesisBackgroundService> _logger;
 
@@ -85,6 +88,14 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
         _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        _synthesisInterval = new LastKnownGoodSetting<TimeSpan>(
+            () => TimeSpan.FromHours(config.CurrentValue.AI.WorkMemory.SynthesisIntervalHours),
+            TimeSpan.FromHours(new WorkMemoryConfig().SynthesisIntervalHours),
+            logger,
+            "AppConfig:AI:WorkMemory:SynthesisIntervalHours");
     }
 
     /// <inheritdoc />
@@ -92,8 +103,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var interval = TimeSpan.FromHours(_config.CurrentValue.AI.WorkMemory.SynthesisIntervalHours);
-            await Task.Delay(interval, stoppingToken);
+            await Task.Delay(_synthesisInterval.Current, stoppingToken);
 
             try
             {

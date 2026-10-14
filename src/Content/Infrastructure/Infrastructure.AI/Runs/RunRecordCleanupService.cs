@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Runs;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -50,6 +52,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
     private readonly IReadOnlyList<IRunReclaimListener> _reclaimListeners;
     private readonly IEscalationService _escalations;
     private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _sweepInterval;
     private readonly ILogger<RunRecordCleanupService> _logger;
 
     /// <summary>Initializes a new <see cref="RunRecordCleanupService"/>.</summary>
@@ -71,6 +74,14 @@ internal sealed class RunRecordCleanupService : BackgroundService
         _escalations = escalations;
         _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape ExecuteAsync and stop the host (#821).
+        _sweepInterval = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.WorkflowSubmission.RunSweepInterval,
+            new WorkflowSubmissionConfig().RunSweepInterval,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:RunSweepInterval");
     }
 
     /// <inheritdoc />
@@ -80,7 +91,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = _config.CurrentValue.AI.WorkflowSubmission.RunSweepInterval;
+                var interval = _sweepInterval.Current;
                 if (interval < MinInterval)
                     interval = MinInterval;
 

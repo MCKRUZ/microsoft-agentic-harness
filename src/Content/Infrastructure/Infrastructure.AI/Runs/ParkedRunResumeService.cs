@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Runs;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -51,7 +53,7 @@ internal sealed class ParkedRunResumeService : BackgroundService
     private readonly IRunJobStore _store;
     private readonly IRunDispatchQueue _queue;
     private readonly IEscalationService _escalations;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _resumeInterval;
     private readonly ILogger<ParkedRunResumeService> _logger;
 
     /// <summary>Initializes a new <see cref="ParkedRunResumeService"/>.</summary>
@@ -71,8 +73,15 @@ internal sealed class ParkedRunResumeService : BackgroundService
         _store = store;
         _queue = queue;
         _escalations = escalations;
-        _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape ExecuteAsync and stop the host (#821).
+        _resumeInterval = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.WorkflowSubmission.ParkedRunResumeInterval,
+            new WorkflowSubmissionConfig().ParkedRunResumeInterval,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:ParkedRunResumeInterval");
     }
 
     /// <inheritdoc />
@@ -82,7 +91,7 @@ internal sealed class ParkedRunResumeService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = _config.CurrentValue.AI.WorkflowSubmission.ParkedRunResumeInterval;
+                var interval = _resumeInterval.Current;
                 if (interval < MinInterval)
                     interval = MinInterval;
 

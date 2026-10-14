@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.Bundles;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.BundleExecution;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,7 +21,7 @@ internal sealed class BundleWorkspaceCleanupService : BackgroundService
 
     private readonly IBundleHandleStore _handleStore;
     private readonly IBundleRunJobStore _jobStore;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _cleanupInterval;
     private readonly ILogger<BundleWorkspaceCleanupService> _logger;
 
     /// <summary>Initializes a new <see cref="BundleWorkspaceCleanupService"/>.</summary>
@@ -36,8 +38,15 @@ internal sealed class BundleWorkspaceCleanupService : BackgroundService
 
         _handleStore = handleStore;
         _jobStore = jobStore;
-        _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape ExecuteAsync and stop the host (#821).
+        _cleanupInterval = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.BundleExecution.CleanupInterval,
+            new BundleExecutionConfig().CleanupInterval,
+            logger,
+            "AppConfig:AI:BundleExecution:CleanupInterval");
     }
 
     /// <inheritdoc />
@@ -47,7 +56,7 @@ internal sealed class BundleWorkspaceCleanupService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = _config.CurrentValue.AI.BundleExecution.CleanupInterval;
+                var interval = _cleanupInterval.Current;
                 if (interval < MinInterval)
                     interval = MinInterval;
 

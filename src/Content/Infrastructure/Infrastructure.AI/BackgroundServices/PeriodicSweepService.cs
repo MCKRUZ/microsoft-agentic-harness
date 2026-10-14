@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -46,7 +47,16 @@ internal readonly record struct SweepRetentionSnapshot(bool Enabled, TimeSpan Sw
 /// </remarks>
 internal abstract class PeriodicSweepService : BackgroundService
 {
+    /// <summary>
+    /// Wait used until the retention settings have been read successfully once. The sweep is seeded
+    /// disabled, so an unreadable configuration can only ever mean "do nothing", never "sweep with
+    /// settings nobody chose".
+    /// </summary>
+    private static readonly SweepRetentionSnapshot SafeRetention =
+        new(Enabled: false, TimeSpan.FromHours(1), TimeSpan.Zero);
+
     private readonly TimeSpan _minInterval;
+    private readonly LastKnownGoodSetting<SweepRetentionSnapshot> _retention;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
 
@@ -69,6 +79,11 @@ internal abstract class PeriodicSweepService : BackgroundService
         _minInterval = minInterval;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        _retention = new LastKnownGoodSetting<SweepRetentionSnapshot>(
+            ReadRetention, SafeRetention, logger, "retention settings");
     }
 
     /// <summary>Reads the live retention configuration. Called once per use, never cached.</summary>
@@ -94,13 +109,13 @@ internal abstract class PeriodicSweepService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = ReadRetention().SweepInterval;
+                var interval = _retention.Current.SweepInterval;
                 if (interval < _minInterval)
                     interval = _minInterval;
 
                 await Task.Delay(interval, _timeProvider, stoppingToken).ConfigureAwait(false);
 
-                var retention = ReadRetention();
+                var retention = _retention.Current;
                 if (!retention.Enabled)
                     continue;
 

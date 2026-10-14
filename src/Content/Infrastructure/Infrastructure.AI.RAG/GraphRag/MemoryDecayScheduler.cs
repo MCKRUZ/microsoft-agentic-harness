@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.RAG;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -49,6 +51,7 @@ public sealed class MemoryDecayScheduler : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<double> _pruneThreshold;
     private readonly ILogger<MemoryDecayScheduler> _logger;
 
     /// <summary>Initializes a new <see cref="MemoryDecayScheduler"/>.</summary>
@@ -67,6 +70,14 @@ public sealed class MemoryDecayScheduler : BackgroundService
         _scopeFactory = scopeFactory;
         _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        _pruneThreshold = new LastKnownGoodSetting<double>(
+            () => config.CurrentValue.AI.Rag.CrossSessionMemory.PruneThreshold,
+            new CrossSessionMemoryConfig().PruneThreshold,
+            logger,
+            "AppConfig:AI:Rag:CrossSessionMemory:PruneThreshold");
     }
 
     /// <inheritdoc />
@@ -93,7 +104,7 @@ public sealed class MemoryDecayScheduler : BackgroundService
 
     private async Task RunPassAsync(CancellationToken stoppingToken)
     {
-        var pruneThreshold = _config.CurrentValue.AI.Rag.CrossSessionMemory.PruneThreshold;
+        var pruneThreshold = _pruneThreshold.Current;
 
         try
         {
