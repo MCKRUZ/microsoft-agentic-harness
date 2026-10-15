@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.RAG;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -48,7 +50,8 @@ public sealed class MemoryDecayScheduler : BackgroundService
     private static readonly TimeSpan _fallbackInterval = TimeSpan.FromHours(6);
 
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _interval;
+    private readonly LastKnownGoodSetting<double> _pruneThreshold;
     private readonly ILogger<MemoryDecayScheduler> _logger;
 
     /// <summary>Initializes a new <see cref="MemoryDecayScheduler"/>.</summary>
@@ -65,8 +68,23 @@ public sealed class MemoryDecayScheduler : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
-        _config = config;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        _interval = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.Rag.CrossSessionMemory.DecayScheduler.Interval,
+            _fallbackInterval,
+            logger,
+            "AppConfig:AI:Rag:CrossSessionMemory:DecayScheduler:Interval");
+
+        // Seeded negative infinity: PruneAsync deletes memories weighing strictly less than the threshold,
+        // so a threshold that was never successfully read must prune nothing, not fall back to the default.
+        _pruneThreshold = new LastKnownGoodSetting<double>(
+            () => config.CurrentValue.AI.Rag.CrossSessionMemory.PruneThreshold,
+            double.NegativeInfinity,
+            logger,
+            "AppConfig:AI:Rag:CrossSessionMemory:PruneThreshold");
     }
 
     /// <inheritdoc />
@@ -93,7 +111,7 @@ public sealed class MemoryDecayScheduler : BackgroundService
 
     private async Task RunPassAsync(CancellationToken stoppingToken)
     {
-        var pruneThreshold = _config.CurrentValue.AI.Rag.CrossSessionMemory.PruneThreshold;
+        var pruneThreshold = _pruneThreshold.Current;
 
         try
         {
@@ -116,7 +134,7 @@ public sealed class MemoryDecayScheduler : BackgroundService
 
     private TimeSpan ResolveInterval()
     {
-        var configured = _config.CurrentValue.AI.Rag.CrossSessionMemory.DecayScheduler.Interval;
+        var configured = _interval.Current;
         return configured > TimeSpan.Zero ? configured : _fallbackInterval;
     }
 }

@@ -1,7 +1,10 @@
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Runs;
+using Application.Common.Helpers;
 using Domain.AI.Runs;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Schedules;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -63,7 +66,9 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
     private readonly IScheduleStore _scheduleStore;
     private readonly IRunJobStore _runStore;
     private readonly IRunDispatchQueue _queue;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _tickInterval;
+    private readonly LastKnownGoodSetting<bool> _enabled;
+    private readonly LastKnownGoodSetting<int> _maxConcurrentRunsPerOwner;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ScheduleDispatchBackgroundService> _logger;
 
@@ -85,9 +90,23 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
         _scheduleStore = scheduleStore;
         _runStore = runStore;
         _queue = queue;
-        _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        var shipped = new ScheduleConfig();
+        _tickInterval = new LastKnownGoodSetting<TimeSpan>(
+            () => config.CurrentValue.AI.Schedules.TickInterval, shipped.TickInterval, logger,
+            "AppConfig:AI:Schedules:TickInterval");
+        _enabled = new LastKnownGoodSetting<bool>(
+            () => config.CurrentValue.AI.Schedules.Enabled, shipped.Enabled, logger,
+            "AppConfig:AI:Schedules:Enabled");
+        _maxConcurrentRunsPerOwner = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner,
+            new WorkflowSubmissionConfig().MaxConcurrentRunsPerOwner,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:MaxConcurrentRunsPerOwner");
     }
 
     /// <inheritdoc />
@@ -97,13 +116,13 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var interval = _config.CurrentValue.AI.Schedules.TickInterval;
+                var interval = _tickInterval.Current;
                 if (interval < MinInterval)
                     interval = MinInterval;
 
                 await Task.Delay(interval, _timeProvider, stoppingToken).ConfigureAwait(false);
 
-                if (!_config.CurrentValue.AI.Schedules.Enabled)
+                if (!_enabled.Current)
                     continue;
 
                 await RunTickAsync(stoppingToken).ConfigureAwait(false);
@@ -303,7 +322,7 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
     /// </summary>
     private bool TryAdmitRun(ScheduleRecord schedule, RunRecord record)
     {
-        var maxConcurrentRuns = _config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner;
+        var maxConcurrentRuns = _maxConcurrentRunsPerOwner.Current;
         var admission = _runStore.TryCreate(record, maxConcurrentRuns);
         if (admission == RunAdmission.Accepted)
             return true;

@@ -53,7 +53,11 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
         _config.AI.Schedules.Enabled = true;
         _config.AI.Schedules.TickInterval = TimeSpan.FromMinutes(1);
 
-        _runStore = new InMemoryRunJobStore(Options(), _clock);
+        // The store reads the same config, but it is not what is under test: it keeps a monitor that never
+        // turns unreadable, so only the dispatch service sees the bad edit.
+        var stable = new Mock<IOptionsMonitor<AppConfig>>();
+        stable.Setup(m => m.CurrentValue).Returns(() => _config);
+        _runStore = new InMemoryRunJobStore(stable.Object, _clock);
     }
 
     public void Dispose() => _connection.Dispose();
@@ -208,6 +212,21 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
             "it must back off well past the tick cadence, not stay due and get re-selected every tick forever");
     }
 
+    [Fact]
+    public async Task ADueSchedule_AdmissionCeilingBecomesUnreadable_StillFiresTheRun()
+    {
+        // The per-owner ceiling is read at admission, AFTER the schedule has already been claimed (its
+        // NextFireAt advanced). An unreadable value there would throw and lose the run for good: the
+        // schedule has moved on and nothing was queued.
+        await CreateSchedule("s-bad-config", nextFireAt: Origin);
+
+        await StartAndWaitForFirstTimer();
+        _configUnreadable = true;
+        await AdvanceAndSettle(TimeSpan.FromMinutes(1));
+
+        _queue.Enqueued.Should().HaveCount(1, "the run is admitted against the last good ceiling");
+    }
+
     private async Task CreateSchedule(
         string scheduleId, DateTimeOffset nextFireAt, bool enabled = true,
         MissedRunPolicy missedRunPolicy = MissedRunPolicy.Skip)
@@ -235,9 +254,13 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
     private IOptionsMonitor<AppConfig> Options()
     {
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
-        monitor.Setup(m => m.CurrentValue).Returns(() => _config);
+        monitor.Setup(m => m.CurrentValue).Returns(() => _configUnreadable
+            ? throw new OptionsValidationException("AppConfig", typeof(AppConfig), ["a mistyped live edit"])
+            : _config);
         return monitor.Object;
     }
+
+    private volatile bool _configUnreadable;
 
     private ScheduleDispatchBackgroundService? _service;
 

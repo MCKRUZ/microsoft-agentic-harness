@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Learnings;
+using Application.Common.Helpers;
 using Domain.Common;
 using Domain.Common.Config.AI.Learnings;
 using Microsoft.Extensions.Hosting;
@@ -14,7 +15,7 @@ namespace Infrastructure.AI.Learnings;
 public sealed class LearningsPruningBackgroundService : BackgroundService
 {
     private readonly ILearningDecayService _decayService;
-    private readonly IOptionsMonitor<LearningsConfig> _config;
+    private readonly LastKnownGoodSetting<TimeSpan> _interval;
     private readonly ILogger<LearningsPruningBackgroundService> _logger;
 
     public LearningsPruningBackgroundService(
@@ -27,16 +28,22 @@ public sealed class LearningsPruningBackgroundService : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
 
         _decayService = decayService;
-        _config = config;
         _logger = logger;
+
+        // Read through a last-known-good guard: a hot-reloaded value that fails validation makes
+        // CurrentValue throw, and an uncontained throw here would stop the host (#821).
+        _interval = new LastKnownGoodSetting<TimeSpan>(
+            () => TimeSpan.FromHours(config.CurrentValue.PruneIntervalHours),
+            TimeSpan.FromHours(new LearningsConfig().PruneIntervalHours),
+            logger,
+            "AppConfig:AI:Learnings:PruneIntervalHours");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var interval = TimeSpan.FromHours(_config.CurrentValue.PruneIntervalHours);
-            await Task.Delay(interval, stoppingToken);
+            await Task.Delay(_interval.Current, stoppingToken);
 
             try
             {

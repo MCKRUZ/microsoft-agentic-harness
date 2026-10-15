@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Governance;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -59,7 +61,8 @@ public sealed class EscalationReconciliationService : BackgroundService
 
     private readonly IEscalationReconciler _reconciler;
     private readonly Func<IGovernanceStatePruner> _prunerFactory;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<int> _reconcileSeconds;
+    private readonly LastKnownGoodSetting<int> _retentionDays;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EscalationReconciliationService> _logger;
 
@@ -109,17 +112,41 @@ public sealed class EscalationReconciliationService : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
         _reconciler = reconciler;
         _prunerFactory = prunerFactory;
-        _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
+        // last-known-good guard so that cannot escape the loop and stop the host (#821).
+        // Seeded 0, which RunPruneAsync treats as "retention off": this sweep deletes, so a value that
+        // was never successfully read must not fall back to the shipped window and shorten an
+        // operator's longer one.
+        _retentionDays = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.Governance.DurableState.RetentionDays,
+            0,
+            logger,
+            "AppConfig:AI:Governance:DurableState:RetentionDays");
+        _reconcileSeconds = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.Governance.DurableState.ReconcileIntervalSeconds,
+            new GovernanceDurableStateConfig().ReconcileIntervalSeconds,
+            logger,
+            "AppConfig:AI:Governance:DurableState:ReconcileIntervalSeconds");
 
         // CallOnceEnforcementEnabled is deliberately NOT part of this check: PruneAsync never
         // touches tool_call_ledger (see GovernanceStatePruner's remarks — a ledger row is the
         // enforcement token, not an audit record, so age-based pruning would re-arm the control).
         // A host with only that toggle on has nothing for this pass to do, so it must not resolve
         // the pruner factory either — see the factory's own remarks on the filesystem side effect.
-        var durable = config.CurrentValue.AI.Governance.DurableState;
-        _durableStateEnabled = durable.EscalationsEnabled || durable.ChangeProposalsEnabled;
+        // Read once and frozen, as before, but through the guard so an unreadable value at construction
+        // seeds "off" instead of throwing out of the constructor.
+        _durableStateEnabled = new LastKnownGoodSetting<bool>(
+            () =>
+            {
+                var durable = config.CurrentValue.AI.Governance.DurableState;
+                return durable.EscalationsEnabled || durable.ChangeProposalsEnabled;
+            },
+            false,
+            logger,
+            "AppConfig:AI:Governance:DurableState:EscalationsEnabled/ChangeProposalsEnabled").Current;
     }
 
     /// <inheritdoc />
@@ -128,8 +155,7 @@ public sealed class EscalationReconciliationService : BackgroundService
         // Deliberately unconditional (see the class remarks): the in-memory stuck shape this
         // recovers is produced by an audit-store failure and exists with durability off. The
         // per-sub-step flag checks live in RunPassAsync.
-        var interval = ResolveInterval(
-            _config.CurrentValue.AI.Governance.DurableState.ReconcileIntervalSeconds);
+        var interval = ResolveInterval(_reconcileSeconds.Current);
         _logger.LogInformation(
             "Escalation reconciliation active: first pass in {InitialDelay}, then every {Interval}",
             InitialDelay, interval);
@@ -206,7 +232,7 @@ public sealed class EscalationReconciliationService : BackgroundService
         if (!_durableStateEnabled)
             return;
 
-        var retentionDays = _config.CurrentValue.AI.Governance.DurableState.RetentionDays;
+        var retentionDays = _retentionDays.Current;
         if (retentionDays <= 0)
             return;
 
