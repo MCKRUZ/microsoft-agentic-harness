@@ -1,5 +1,6 @@
 using System.Threading;
 using Application.AI.Common.Interfaces;
+using Application.Common.Helpers;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Agents;
@@ -49,6 +50,7 @@ namespace Infrastructure.AI.BackgroundServices;
 public sealed class AgentManifestWatcherService : BackgroundService
 {
     private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly LastKnownGoodSetting<AgentsConfig?> _agents;
     private readonly IAgentRegistryRefresher _refresher;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AgentManifestWatcherService> _logger;
@@ -89,6 +91,12 @@ public sealed class AgentManifestWatcherService : BackgroundService
         _refresher = refresher;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // The filesystem callbacks below run on thread-pool threads, where a throw from a hot-reloaded
+        // value that failed validation escapes to the process, not just this service (#821). Seeded null,
+        // which RetargetWatchers treats as "watching off": the safe state when nothing was ever read.
+        _agents = new LastKnownGoodSetting<AgentsConfig?>(
+            () => appConfig.CurrentValue.AI?.Agents, null, logger, "AppConfig:AI:Agents");
     }
 
     /// <summary>The paths currently being watched. Empty when disabled or no paths resolved.</summary>
@@ -113,7 +121,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
         // flip: watching stayed off until a restart, asymmetric with the reverse (true→false), which
         // DID work because the subscription was already active in that case (code review on #705).
         _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Agents));
-        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents);
+        RetargetWatchers(_agents.Current);
 
         try
         {
@@ -249,7 +257,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
             "Agent manifest watcher error (buffer overflow or watch failure) — invalidating and rebuilding watchers");
 
         _refresher.Invalidate();
-        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents, forceRebuild: true);
+        RetargetWatchers(_agents.Current, forceRebuild: true);
     }
 
     /// <summary>
@@ -258,7 +266,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
     /// </summary>
     internal void ScheduleInvalidate()
     {
-        var configuredMs = _appConfig.CurrentValue.AI?.Agents?.ChangeDebounceMilliseconds ?? 500;
+        var configuredMs = _agents.Current?.ChangeDebounceMilliseconds ?? 500;
         var clampedMs = Math.Clamp(configuredMs, 50, 30_000);
         if (clampedMs != configuredMs)
         {

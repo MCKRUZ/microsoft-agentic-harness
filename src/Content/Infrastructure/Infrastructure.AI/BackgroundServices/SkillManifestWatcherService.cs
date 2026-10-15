@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.Common.Helpers;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -58,6 +59,7 @@ namespace Infrastructure.AI.BackgroundServices;
 public sealed class SkillManifestWatcherService : BackgroundService
 {
     private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly LastKnownGoodSetting<SkillsConfig?> _skills;
     private readonly ISkillRegistryRefresher _refresher;
     private readonly ISkillFileReader _fileReader;
     private readonly TimeProvider _timeProvider;
@@ -106,6 +108,12 @@ public sealed class SkillManifestWatcherService : BackgroundService
         _fileReader = fileReader;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // The filesystem callbacks below run on thread-pool threads, where a throw from a hot-reloaded
+        // value that failed validation escapes to the process, not just this service (#821). Seeded null,
+        // which RetargetWatchers treats as "watching off": the safe state when nothing was ever read.
+        _skills = new LastKnownGoodSetting<SkillsConfig?>(
+            () => appConfig.CurrentValue.AI?.Skills, null, logger, "AppConfig:AI:Skills");
     }
 
     /// <summary>The paths currently being watched. Empty when disabled or no paths resolved.</summary>
@@ -127,7 +135,7 @@ public sealed class SkillManifestWatcherService : BackgroundService
         // AI:Skills:WatchForChanges to true via a hot-reloadable config source still activates,
         // rather than requiring a restart (mirrors the fix already shipped for the agent watcher).
         _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Skills));
-        RetargetWatchers(_appConfig.CurrentValue.AI?.Skills);
+        RetargetWatchers(_skills.Current);
 
         try
         {
@@ -253,7 +261,7 @@ public sealed class SkillManifestWatcherService : BackgroundService
             "Skill manifest watcher error (buffer overflow or watch failure) — invalidating and rebuilding watchers");
 
         _refresher.Invalidate();
-        RetargetWatchers(_appConfig.CurrentValue.AI?.Skills, forceRebuild: true);
+        RetargetWatchers(_skills.Current, forceRebuild: true);
     }
 
     /// <summary>
@@ -262,7 +270,7 @@ public sealed class SkillManifestWatcherService : BackgroundService
     /// </summary>
     internal void ScheduleInvalidate()
     {
-        var configuredMs = _appConfig.CurrentValue.AI?.Skills?.ChangeDebounceMilliseconds ?? 500;
+        var configuredMs = _skills.Current?.ChangeDebounceMilliseconds ?? 500;
         var clampedMs = Math.Clamp(configuredMs, 50, 30_000);
         if (clampedMs != configuredMs)
         {

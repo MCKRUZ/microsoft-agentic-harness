@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces.Bundles;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.BundleExecution;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -39,7 +41,7 @@ public sealed class BundleRunBackgroundService : BackgroundService
 {
     private readonly IBundleRunDispatchQueue _queue;
     private readonly IBundleRunExecutor _executor;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<int> _maxConcurrentRuns;
     private readonly ILogger<BundleRunBackgroundService> _logger;
 
     /// <summary>Initializes a new <see cref="BundleRunBackgroundService"/>.</summary>
@@ -56,8 +58,15 @@ public sealed class BundleRunBackgroundService : BackgroundService
 
         _queue = queue;
         _executor = executor;
-        _config = config;
         _logger = logger;
+
+        // Read once at start, so an unguarded read faults StartAsync itself (#821). Seeded with the shipped
+        // default: a dispatch degree is not a destructive setting.
+        _maxConcurrentRuns = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.BundleExecution.MaxConcurrentDispatchedBundleRuns,
+            new BundleExecutionConfig().MaxConcurrentDispatchedBundleRuns,
+            logger,
+            "AppConfig:AI:BundleExecution:MaxConcurrentDispatchedBundleRuns");
     }
 
     /// <inheritdoc />
@@ -66,7 +75,7 @@ public sealed class BundleRunBackgroundService : BackgroundService
         // The degree is read once, at start. A host that changes it takes effect on restart, which is the
         // honest bound — reshaping a running drain loop mid-flight buys nothing and would make the number
         // of in-flight runs unpredictable. Mirrors RunDispatchBackgroundService.ExecuteAsync exactly.
-        var degree = Math.Max(1, _config.CurrentValue.AI.BundleExecution.MaxConcurrentDispatchedBundleRuns);
+        var degree = Math.Max(1, _maxConcurrentRuns.Current);
 
         try
         {

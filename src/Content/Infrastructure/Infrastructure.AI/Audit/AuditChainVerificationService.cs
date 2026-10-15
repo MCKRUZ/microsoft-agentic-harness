@@ -3,7 +3,9 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Telemetry.Conventions;
+using Application.Common.Helpers;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Audit;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,7 +30,7 @@ public sealed class AuditChainVerificationService : BackgroundService
     };
 
     private readonly IReadOnlyList<IVerifiableAuditChain> _chains;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<AuditConfig> _audit;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditChainVerificationService> _logger;
 
@@ -45,9 +47,14 @@ public sealed class AuditChainVerificationService : BackgroundService
     {
         ArgumentNullException.ThrowIfNull(chains);
         _chains = chains.ToList();
-        _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // Read at the start of ExecuteAsync and again per pass; a throw from a hot-reloaded value that failed
+        // validation must not stop the host (#821). Seeded with the shipped defaults: verification only reads
+        // the chains and writes a receipt, so the default schedule is the safe fallback.
+        _audit = new LastKnownGoodSetting<AuditConfig>(
+            () => config.CurrentValue.AI.Audit, new AuditConfig(), logger, "AppConfig:AI:Audit");
     }
 
     /// <summary>The smallest interval allowed between passes, to prevent a misconfigured hot loop.</summary>
@@ -56,7 +63,7 @@ public sealed class AuditChainVerificationService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var settings = _config.CurrentValue.AI.Audit;
+        var settings = _audit.Current;
         var initialDelay = settings.InitialDelay > TimeSpan.Zero ? settings.InitialDelay : TimeSpan.Zero;
         var interval = settings.VerificationInterval >= MinimumInterval
             ? settings.VerificationInterval
@@ -112,7 +119,7 @@ public sealed class AuditChainVerificationService : BackgroundService
     /// <param name="cancellationToken">Cancellation token.</param>
     internal async Task VerifyAllChainsAsync(CancellationToken cancellationToken)
     {
-        var receiptPath = _config.CurrentValue.AI.Audit.ReceiptPath;
+        var receiptPath = _audit.Current.ReceiptPath;
 
         foreach (var chain in _chains)
         {

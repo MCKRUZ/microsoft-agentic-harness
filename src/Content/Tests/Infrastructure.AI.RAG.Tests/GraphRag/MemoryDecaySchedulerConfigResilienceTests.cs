@@ -77,6 +77,49 @@ public sealed class MemoryDecaySchedulerConfigResilienceTests
         await sut.StopAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Scheduler_ThresholdNeverRead_PrunesNothingOnTheFirstPass()
+    {
+        // Read order: 1 interval prime, 2 threshold prime, 3 interval at ExecuteAsync start, 4 threshold at the
+        // first pass. Failing 2 and 4 leaves the threshold with no good value when the first prune asks for it,
+        // while the interval (read 3) stays readable so passes run on the test's 20ms cadence.
+        var thresholds = new List<double>();
+        var spy = new Mock<IMemoryDecayService>();
+        spy.Setup(s => s.ApplyDecayAsync(It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        spy.Setup(s => s.PruneAsync(It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .Callback<double, CancellationToken>((threshold, _) => thresholds.Add(threshold))
+            .Returns(Task.CompletedTask);
+        var config = new AppConfig();
+        config.AI.Rag.CrossSessionMemory.PruneThreshold = 0.05;
+        config.AI.Rag.CrossSessionMemory.DecayScheduler.Interval = TimeSpan.FromMilliseconds(20);
+        var services = new ServiceCollection().AddSingleton(spy.Object).BuildServiceProvider();
+        var sut = new MemoryDecayScheduler(
+            services.GetRequiredService<IServiceScopeFactory>(), new ScriptedMonitor(config, 2, 4),
+            NullLogger<MemoryDecayScheduler>.Instance);
+
+        await sut.StartAsync(CancellationToken.None);
+        await Task.Delay(300);
+        await sut.StopAsync(CancellationToken.None);
+
+        thresholds.Should().NotBeEmpty();
+        thresholds[0].Should().Be(double.NegativeInfinity,
+            "a threshold that was never read must prune nothing, not fall back to the shipped default");
+    }
+
+    private sealed class ScriptedMonitor(AppConfig value, params int[] failOnReads) : IOptionsMonitor<AppConfig>
+    {
+        private int _reads;
+
+        public AppConfig CurrentValue =>
+            failOnReads.Contains(Interlocked.Increment(ref _reads))
+                ? throw new OptionsValidationException("AppConfig", typeof(AppConfig), ["a mistyped live edit"])
+                : value;
+
+        public AppConfig Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<AppConfig, string?> listener) => null;
+    }
+
     private sealed class SwitchableMonitor(AppConfig value) : IOptionsMonitor<AppConfig>
     {
         public volatile bool Throwing;

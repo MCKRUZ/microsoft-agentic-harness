@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Runs;
+using Application.Common.Helpers;
 using Domain.AI.Runs;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -57,7 +59,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     private readonly IRunJobStore _store;
     private readonly IRunProgressBroker _progress;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<int> _maxConcurrentRuns;
     private readonly TimeProvider _time;
     private readonly ILogger<RunDispatchBackgroundService> _logger;
 
@@ -83,9 +85,16 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         _store = store;
         _progress = progress;
         _scopeFactory = scopeFactory;
-        _config = config;
         _time = time;
         _logger = logger;
+
+        // Read once at start, so an unguarded read faults StartAsync itself (#821). Seeded with the shipped
+        // default: a dispatch degree is not a destructive setting.
+        _maxConcurrentRuns = new LastKnownGoodSetting<int>(
+            () => config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns,
+            new WorkflowSubmissionConfig().MaxConcurrentDispatchedRuns,
+            logger,
+            "AppConfig:AI:WorkflowSubmission:MaxConcurrentDispatchedRuns");
     }
 
     /// <inheritdoc />
@@ -103,7 +112,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         // The degree is read once, at start. A host that changes it takes effect on restart, which is
         // the honest bound — reshaping a running drain loop mid-flight buys nothing and would make
         // the number of in-flight runs unpredictable.
-        var degree = Math.Max(1, _config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns);
+        var degree = Math.Max(1, _maxConcurrentRuns.Current);
 
         try
         {
