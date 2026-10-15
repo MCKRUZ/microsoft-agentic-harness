@@ -22,11 +22,20 @@ namespace Application.Common.Helpers;
 /// <b>Primed at construction.</b> The constructor reads the setting once, so "last good" is the value the
 /// host actually started with and not the shipped default. That matters when the fallback is acted on: a
 /// retention window of 365 days must not silently become 90 because the file was edited badly before the
-/// first tick. The seed is used only if that first read also fails. Pass the shipped
-/// default (for example <c>new LearningsConfig().PruneIntervalHours</c>) rather than a literal, and choose
-/// the safe direction for a flag: a sweep that deletes should seed to "disabled". A caller whose read
-/// depends on state that is not yet set up at construction must create the setting later, not in its
-/// constructor.
+/// first tick. The seed is used only if that first read also fails. For a setting that is not destructive,
+/// pass the shipped default (for example <c>new LearningsConfig().PruneIntervalHours</c>) rather than a
+/// literal. For a setting that makes a sweep delete or expire things, seed the value that switches the
+/// sweep off (a retention of <c>0</c>, a ceiling of <see cref="TimeSpan.Zero"/>, a prune threshold of
+/// negative infinity) and say in a comment which check treats it as off. A caller whose read depends on
+/// state that is not yet set up at construction must create the setting later, not in its constructor.
+/// </para>
+/// <para>
+/// <b>Why per setting, and not once on the options monitor.</b> One decorator that kept the last validated
+/// <c>AppConfig</c> would cover every consumer at once, but it would also make request-path and governance
+/// code serve a stale snapshot after a bad edit instead of failing loudly. An invalid change to a deny-list
+/// or an autonomy tier would then be silently ignored with the previous, possibly more permissive, value
+/// still in force. Background loops opt in here because for them the alternative is not "fail loudly", it
+/// is "stop the host"; code that should refuse to run on a bad value keeps reading the monitor directly.
 /// </para>
 /// <para>
 /// <b>Logging.</b> The first failed read of a streak is logged at error level; further failures while it

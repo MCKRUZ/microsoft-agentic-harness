@@ -2,8 +2,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.Common.Helpers;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Audit;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,7 +30,7 @@ public sealed class AuditChainVerificationService : BackgroundService
     };
 
     private readonly IReadOnlyList<IVerifiableAuditChain> _chains;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly LastKnownGoodSetting<AuditConfig> _audit;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditChainVerificationService> _logger;
 
@@ -45,9 +47,14 @@ public sealed class AuditChainVerificationService : BackgroundService
     {
         ArgumentNullException.ThrowIfNull(chains);
         _chains = chains.ToList();
-        _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        // Read at the start of ExecuteAsync and again per pass; a throw from a hot-reloaded value that failed
+        // validation must not stop the host (#821). Seeded with the shipped defaults: verification only reads
+        // the chains and writes a receipt, so the default schedule is the safe fallback.
+        _audit = new LastKnownGoodSetting<AuditConfig>(
+            () => config.CurrentValue.AI.Audit, new AuditConfig(), logger, "AppConfig:AI:Audit");
     }
 
     /// <summary>The smallest interval allowed between passes, to prevent a misconfigured hot loop.</summary>
@@ -56,16 +63,8 @@ public sealed class AuditChainVerificationService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var settings = _config.CurrentValue.AI.Audit;
-        var initialDelay = settings.InitialDelay > TimeSpan.Zero ? settings.InitialDelay : TimeSpan.Zero;
-        var interval = settings.VerificationInterval >= MinimumInterval
-            ? settings.VerificationInterval
-            : MinimumInterval;
-
-        if (settings.VerificationInterval < MinimumInterval)
-            _logger.LogWarning(
-                "Audit verification interval {Configured} is below the {Minimum} floor; using the floor.",
-                settings.VerificationInterval, MinimumInterval);
+        var initialDelay = _audit.Current.InitialDelay > TimeSpan.Zero ? _audit.Current.InitialDelay : TimeSpan.Zero;
+        TimeSpan? warnedBelowFloor = null;
 
         try
         {
@@ -78,6 +77,18 @@ public sealed class AuditChainVerificationService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Re-read each pass, so a value that could not be read at start (and fell back to the shipped
+            // schedule) is picked up once the configuration is readable again.
+            var configured = _audit.Current.VerificationInterval;
+            var interval = configured >= MinimumInterval ? configured : MinimumInterval;
+            if (configured < MinimumInterval && warnedBelowFloor != configured)
+            {
+                warnedBelowFloor = configured;
+                _logger.LogWarning(
+                    "Audit verification interval {Configured} is below the {Minimum} floor; using the floor.",
+                    configured, MinimumInterval);
+            }
+
             // Survive any non-cancellation fault: an audit-integrity verifier must not take the
             // host down (the default BackgroundService behavior is StopHost) on a transient error.
             try
@@ -112,7 +123,7 @@ public sealed class AuditChainVerificationService : BackgroundService
     /// <param name="cancellationToken">Cancellation token.</param>
     internal async Task VerifyAllChainsAsync(CancellationToken cancellationToken)
     {
-        var receiptPath = _config.CurrentValue.AI.Audit.ReceiptPath;
+        var receiptPath = _audit.Current.ReceiptPath;
 
         foreach (var chain in _chains)
         {
