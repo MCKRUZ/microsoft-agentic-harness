@@ -60,8 +60,8 @@ public sealed class BundleRunBackgroundService : BackgroundService
         _executor = executor;
         _logger = logger;
 
-        // Read once at start, so an unguarded read faults StartAsync itself (#821). Seeded with the shipped
-        // default: a dispatch degree is not a destructive setting.
+        // An unguarded read here faults StartAsync itself (#821). Seeded with the shipped default: a
+        // dispatch degree is not a destructive setting.
         _maxConcurrentRuns = new LastKnownGoodSetting<int>(
             () => config.CurrentValue.AI.BundleExecution.MaxConcurrentDispatchedBundleRuns,
             new BundleExecutionConfig().MaxConcurrentDispatchedBundleRuns,

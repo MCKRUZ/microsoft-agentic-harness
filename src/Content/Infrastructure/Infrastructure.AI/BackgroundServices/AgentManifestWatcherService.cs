@@ -120,7 +120,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
         // appsettings reload, Azure App Configuration) had no live subscription to react to that
         // flip: watching stayed off until a restart, asymmetric with the reverse (true→false), which
         // DID work because the subscription was already active in that case (code review on #705).
-        _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Agents));
+        _optionsChangeSubscription = _appConfig.OnChange((_, _) => RetargetWatchers(_agents.Current));
         RetargetWatchers(_agents.Current);
 
         try

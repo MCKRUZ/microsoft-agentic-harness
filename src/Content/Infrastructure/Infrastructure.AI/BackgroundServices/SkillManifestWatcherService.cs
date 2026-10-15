@@ -1,6 +1,6 @@
 using Application.AI.Common.Interfaces;
-using Application.Common.Helpers;
 using Application.AI.Common.Interfaces.Skills;
+using Application.Common.Helpers;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Skills;
@@ -134,7 +134,7 @@ public sealed class SkillManifestWatcherService : BackgroundService
         // WatchForChanges setting — so a host that starts with watching off and later flips
         // AI:Skills:WatchForChanges to true via a hot-reloadable config source still activates,
         // rather than requiring a restart (mirrors the fix already shipped for the agent watcher).
-        _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Skills));
+        _optionsChangeSubscription = _appConfig.OnChange((_, _) => RetargetWatchers(_skills.Current));
         RetargetWatchers(_skills.Current);
 
         try

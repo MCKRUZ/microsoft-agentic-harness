@@ -1,7 +1,7 @@
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
 
-namespace Infrastructure.AI.Tests.BackgroundServices;
+namespace Tests.Common;
 
 /// <summary>
 /// An <see cref="IOptionsMonitor{TOptions}"/> that throws the validation failure on chosen reads, counted
@@ -10,7 +10,7 @@ namespace Infrastructure.AI.Tests.BackgroundServices;
 /// cannot arrange for one setting while the others stay readable. The read numbers a test passes in
 /// follow the order the service under test reads its settings, so each test names that order beside them.
 /// </summary>
-internal sealed class ScriptedOptionsMonitor(AppConfig value, params int[] failOnReads) : IOptionsMonitor<AppConfig>
+public sealed class ScriptedOptionsMonitor(AppConfig value, params int[] failOnReads) : IOptionsMonitor<AppConfig>
 {
     private int _reads;
 

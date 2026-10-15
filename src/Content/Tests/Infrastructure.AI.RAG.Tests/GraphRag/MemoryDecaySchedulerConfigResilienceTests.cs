@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;
@@ -94,7 +95,7 @@ public sealed class MemoryDecaySchedulerConfigResilienceTests
         config.AI.Rag.CrossSessionMemory.DecayScheduler.Interval = TimeSpan.FromMilliseconds(20);
         var services = new ServiceCollection().AddSingleton(spy.Object).BuildServiceProvider();
         var sut = new MemoryDecayScheduler(
-            services.GetRequiredService<IServiceScopeFactory>(), new ScriptedMonitor(config, 2, 4),
+            services.GetRequiredService<IServiceScopeFactory>(), new ScriptedOptionsMonitor(config, 2, 4),
             NullLogger<MemoryDecayScheduler>.Instance);
 
         await sut.StartAsync(CancellationToken.None);
@@ -104,20 +105,6 @@ public sealed class MemoryDecaySchedulerConfigResilienceTests
         thresholds.Should().NotBeEmpty();
         thresholds[0].Should().Be(double.NegativeInfinity,
             "a threshold that was never read must prune nothing, not fall back to the shipped default");
-    }
-
-    private sealed class ScriptedMonitor(AppConfig value, params int[] failOnReads) : IOptionsMonitor<AppConfig>
-    {
-        private int _reads;
-
-        public AppConfig CurrentValue =>
-            failOnReads.Contains(Interlocked.Increment(ref _reads))
-                ? throw new OptionsValidationException("AppConfig", typeof(AppConfig), ["a mistyped live edit"])
-                : value;
-
-        public AppConfig Get(string? name) => CurrentValue;
-
-        public IDisposable? OnChange(Action<AppConfig, string?> listener) => null;
     }
 
     private sealed class SwitchableMonitor(AppConfig value) : IOptionsMonitor<AppConfig>

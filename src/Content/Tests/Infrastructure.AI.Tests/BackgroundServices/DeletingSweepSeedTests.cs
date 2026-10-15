@@ -7,6 +7,7 @@ using Infrastructure.AI.Runs;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.BackgroundServices;

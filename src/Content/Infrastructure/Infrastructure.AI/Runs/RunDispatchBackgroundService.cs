@@ -88,8 +88,8 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         _time = time;
         _logger = logger;
 
-        // Read once at start, so an unguarded read faults StartAsync itself (#821). Seeded with the shipped
-        // default: a dispatch degree is not a destructive setting.
+        // An unguarded read here faults StartAsync itself (#821). Seeded with the shipped default: a
+        // dispatch degree is not a destructive setting.
         _maxConcurrentRuns = new LastKnownGoodSetting<int>(
             () => config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns,
             new WorkflowSubmissionConfig().MaxConcurrentDispatchedRuns,

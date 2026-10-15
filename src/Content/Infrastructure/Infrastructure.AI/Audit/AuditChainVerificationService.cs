@@ -2,8 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
-using Domain.AI.Telemetry.Conventions;
 using Application.Common.Helpers;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Audit;
 using Infrastructure.AI.Helpers;
@@ -63,16 +63,8 @@ public sealed class AuditChainVerificationService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var settings = _audit.Current;
-        var initialDelay = settings.InitialDelay > TimeSpan.Zero ? settings.InitialDelay : TimeSpan.Zero;
-        var interval = settings.VerificationInterval >= MinimumInterval
-            ? settings.VerificationInterval
-            : MinimumInterval;
-
-        if (settings.VerificationInterval < MinimumInterval)
-            _logger.LogWarning(
-                "Audit verification interval {Configured} is below the {Minimum} floor; using the floor.",
-                settings.VerificationInterval, MinimumInterval);
+        var initialDelay = _audit.Current.InitialDelay > TimeSpan.Zero ? _audit.Current.InitialDelay : TimeSpan.Zero;
+        TimeSpan? warnedBelowFloor = null;
 
         try
         {
@@ -85,6 +77,18 @@ public sealed class AuditChainVerificationService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Re-read each pass, so a value that could not be read at start (and fell back to the shipped
+            // schedule) is picked up once the configuration is readable again.
+            var configured = _audit.Current.VerificationInterval;
+            var interval = configured >= MinimumInterval ? configured : MinimumInterval;
+            if (configured < MinimumInterval && warnedBelowFloor != configured)
+            {
+                warnedBelowFloor = configured;
+                _logger.LogWarning(
+                    "Audit verification interval {Configured} is below the {Minimum} floor; using the floor.",
+                    configured, MinimumInterval);
+            }
+
             // Survive any non-cancellation fault: an audit-integrity verifier must not take the
             // host down (the default BackgroundService behavior is StopHost) on a transient error.
             try
