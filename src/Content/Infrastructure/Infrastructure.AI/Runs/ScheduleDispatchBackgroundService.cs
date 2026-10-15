@@ -66,7 +66,6 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
     private readonly IScheduleStore _scheduleStore;
     private readonly IRunJobStore _runStore;
     private readonly IRunDispatchQueue _queue;
-    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly LastKnownGoodSetting<TimeSpan> _tickInterval;
     private readonly LastKnownGoodSetting<bool> _enabled;
     private readonly LastKnownGoodSetting<int> _maxConcurrentRunsPerOwner;
@@ -91,7 +90,6 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
         _scheduleStore = scheduleStore;
         _runStore = runStore;
         _queue = queue;
-        _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
 

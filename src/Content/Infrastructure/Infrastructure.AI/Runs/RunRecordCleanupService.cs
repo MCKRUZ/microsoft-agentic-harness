@@ -51,7 +51,6 @@ internal sealed class RunRecordCleanupService : BackgroundService
     private readonly IRunJobStore _store;
     private readonly IReadOnlyList<IRunReclaimListener> _reclaimListeners;
     private readonly IEscalationService _escalations;
-    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly LastKnownGoodSetting<TimeSpan> _sweepInterval;
     private readonly LastKnownGoodSetting<TimeSpan> _parkedRunCeiling;
     private readonly ILogger<RunRecordCleanupService> _logger;
@@ -73,7 +72,6 @@ internal sealed class RunRecordCleanupService : BackgroundService
         _store = store;
         _reclaimListeners = [.. reclaimListeners];
         _escalations = escalations;
-        _config = config;
         _logger = logger;
 
         // A hot-reloaded value that fails validation makes CurrentValue throw; read it through a
