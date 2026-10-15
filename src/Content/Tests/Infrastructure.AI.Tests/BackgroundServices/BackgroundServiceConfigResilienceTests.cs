@@ -187,6 +187,22 @@ public sealed class BackgroundServiceConfigResilienceTests
     }
 
     [Fact]
+    public async Task EscalationReconciliation_ConfigUnreadableFromConstruction_ConstructsAndKeepsRunning()
+    {
+        var monitor = new SwitchableMonitor<AppConfig>(new AppConfig()) { Throwing = true };
+        EscalationReconciliationService? sut = null;
+
+        // The constructor itself reads the durable-state toggles, and ExecuteAsync reads the reconcile
+        // interval before its first await: both ran unguarded until the review of #821.
+        var construction = Record.Exception(() => sut = new EscalationReconciliationService(
+            Mock.Of<IEscalationReconciler>(), () => Mock.Of<IGovernanceStatePruner>(), monitor,
+            new FakeTimeProvider(DateTimeOffset.UtcNow), NullLogger<EscalationReconciliationService>.Instance));
+
+        construction.Should().BeNull("an unreadable value must not fault host construction");
+        await AssertKeepsRunningAsync(sut!);
+    }
+
+    [Fact]
     public async Task RunRecordCleanup_CeilingBecomesUnreadable_StillReclaimsExpiredRuns()
     {
         var config = new AppConfig();

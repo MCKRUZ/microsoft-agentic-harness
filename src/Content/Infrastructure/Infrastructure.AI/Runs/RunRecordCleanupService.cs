@@ -83,7 +83,9 @@ internal sealed class RunRecordCleanupService : BackgroundService
             "AppConfig:AI:WorkflowSubmission:RunSweepInterval");
         _parkedRunCeiling = new LastKnownGoodSetting<TimeSpan>(
             () => config.CurrentValue.AI.WorkflowSubmission.MaxParkedRunDuration,
-            new WorkflowSubmissionConfig().MaxParkedRunDuration,
+            // Zero switches the expiry off (ExpireStaleParkedRuns ignores a non-positive ceiling): expiry
+            // fails live runs, so a ceiling that was never read must not fall back to the shipped one.
+            TimeSpan.Zero,
             logger,
             "AppConfig:AI:WorkflowSubmission:MaxParkedRunDuration");
     }

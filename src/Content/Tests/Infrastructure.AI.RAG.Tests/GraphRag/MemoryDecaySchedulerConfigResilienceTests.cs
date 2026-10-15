@@ -60,6 +60,23 @@ public sealed class MemoryDecaySchedulerConfigResilienceTests
         await sut.StopAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Scheduler_ConfigUnreadableWhenItStarts_KeepsRunning()
+    {
+        var services = new ServiceCollection().AddSingleton(Mock.Of<IMemoryDecayService>()).BuildServiceProvider();
+        var monitor = new SwitchableMonitor(new AppConfig()) { Throwing = true };
+        var sut = new MemoryDecayScheduler(
+            services.GetRequiredService<IServiceScopeFactory>(), monitor, NullLogger<MemoryDecayScheduler>.Instance);
+
+        // The interval is read once, before ExecuteAsync's first await, so an unguarded read there
+        // faults StartAsync itself.
+        await sut.StartAsync(CancellationToken.None);
+        await Task.Delay(150);
+
+        sut.ExecuteTask!.IsCompleted.Should().BeFalse("an unreadable interval must not end the scheduler");
+        await sut.StopAsync(CancellationToken.None);
+    }
+
     private sealed class SwitchableMonitor(AppConfig value) : IOptionsMonitor<AppConfig>
     {
         public volatile bool Throwing;
