@@ -59,7 +59,7 @@ public sealed class HumanGateStepExecutor : IPlanStepExecutor
             EscalationId = Guid.NewGuid(),
             AgentId = "planner",
             ToolName = step.Name,
-            Arguments = BuildArgumentsSummary(upstreamOutputs),
+            Arguments = BuildArgumentsSummary(step, upstreamOutputs),
             Description = config.EscalationMessage,
             RiskLevel = config.RiskLevel,
             Priority = EscalationPriority.Blocking,
@@ -88,15 +88,44 @@ public sealed class HumanGateStepExecutor : IPlanStepExecutor
         };
     }
 
+    private const int MaxOutputSummaryLength = 200;
+
+    /// <summary>
+    /// What the approver is shown of the gate: each upstream output cut to a short summary, a digest of
+    /// the full, uncut outputs, and a note when any was cut (#784). Approving a summary is approving a
+    /// rendering; the digest is what lets the approval be matched to the whole data the gate released.
+    /// </summary>
     private static IReadOnlyDictionary<string, string> BuildArgumentsSummary(
-        IReadOnlyDictionary<PlanStepId, string> upstreamOutputs)
+        PlanStep step, IReadOnlyDictionary<PlanStepId, string> upstreamOutputs)
     {
         var args = new Dictionary<string, string>();
+        var full = new Dictionary<string, string>();
+        var shortened = 0;
+
         foreach (var (stepId, output) in upstreamOutputs)
         {
-            var summary = output.Length > 200 ? output[..200] + "..." : output;
-            args[stepId.Value.ToString()] = summary;
+            var key = stepId.Value.ToString();
+            full[key] = output;
+
+            if (output.Length > MaxOutputSummaryLength)
+            {
+                shortened++;
+                args[key] = output[..MaxOutputSummaryLength] + "...";
+            }
+            else
+            {
+                args[key] = output;
+            }
         }
+
+        if (shortened > 0)
+        {
+            args[EscalationCallDigest.TruncatedKey] =
+                $"{shortened} upstream output(s) shortened; the call digest covers the full outputs";
+        }
+
+        // Upstream step ids are Guids, so none can collide with the reserved entries.
+        args[EscalationCallDigest.DigestKey] = EscalationCallDigest.Compute(step.Name, full);
         return args;
     }
 

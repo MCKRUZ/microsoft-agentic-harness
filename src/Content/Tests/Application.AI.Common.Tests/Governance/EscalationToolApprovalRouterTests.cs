@@ -250,9 +250,58 @@ public sealed class EscalationToolApprovalRouterTests
         Assert.NotNull(captured);
         Assert.Equal(Tool, captured.ToolName);
         Assert.Equal(Agent, captured.AgentId);
-        Assert.Equal(2, captured.Arguments.Count);
+        // The two arguments plus the digest of the whole call (#784); nothing was cut, so no truncation note.
+        Assert.Equal(3, captured.Arguments.Count);
         Assert.Contains("path", captured.Arguments.Keys);
         Assert.Contains("mode", captured.Arguments.Keys);
+        Assert.Equal(
+            EscalationCallDigest.Compute(Tool, new Dictionary<string, string> { ["path"] = "/etc/passwd", ["mode"] = "delete" }),
+            captured.Arguments[EscalationCallDigest.DigestKey]);
+        Assert.DoesNotContain(EscalationCallDigest.TruncatedKey, captured.Arguments.Keys);
+    }
+
+    private async Task<EscalationRequest> CaptureRequest(Dictionary<string, object?> arguments)
+    {
+        EscalationRequest? captured = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(Config(), arguments: arguments);
+
+        return captured!;
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ValuesCutBeyondTheLimit_DigestCoversWhatTheApproverCannotSee()
+    {
+        // Two calls an approver sees identically (same first 512 characters) but that are not the same
+        // call. The digest is what tells them apart, and the truncation note says the rendering is partial.
+        var head = new string('a', 512);
+        var first = await CaptureRequest(new() { ["body"] = head + "-ship-it" });
+        var second = await CaptureRequest(new() { ["body"] = head + "-drop-everything" });
+
+        Assert.Equal(first.Arguments["body"], second.Arguments["body"]);
+        Assert.NotEqual(first.Arguments[EscalationCallDigest.DigestKey], second.Arguments[EscalationCallDigest.DigestKey]);
+        Assert.Contains("1 value(s) shortened", first.Arguments[EscalationCallDigest.TruncatedKey]);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ArgumentNamedLikeAReservedEntry_CannotForgeOrHideTheDigest()
+    {
+        var request = await CaptureRequest(new()
+        {
+            [EscalationCallDigest.DigestKey] = "sha256:forged",
+            [EscalationCallDigest.TruncatedKey] = "nothing was cut"
+        });
+
+        Assert.StartsWith("sha256:", request.Arguments[EscalationCallDigest.DigestKey]);
+        Assert.NotEqual("sha256:forged", request.Arguments[EscalationCallDigest.DigestKey]);
+        // The model's own arguments are still shown, under an escaped name, and are still part of the digest.
+        Assert.Contains(EscalationCallDigest.EscapedPrefix + EscalationCallDigest.DigestKey, request.Arguments.Keys);
+        Assert.Contains(EscalationCallDigest.EscapedPrefix + EscalationCallDigest.TruncatedKey, request.Arguments.Keys);
+        Assert.DoesNotContain(EscalationCallDigest.TruncatedKey, request.Arguments.Keys);
     }
 
     [Fact]
@@ -289,9 +338,13 @@ public sealed class EscalationToolApprovalRouterTests
         await Route(Config(), arguments: many);
 
         Assert.NotNull(captured);
-        // 32 capped arguments plus the one marker row explaining what was dropped.
-        Assert.Equal(33, captured.Arguments.Count);
+        // 32 capped arguments, the truncation note explaining what was dropped, and the digest of all 100.
+        Assert.Equal(34, captured.Arguments.Count);
         Assert.Contains("(truncated)", captured.Arguments.Keys);
+        Assert.Contains("68 further argument(s) omitted", captured.Arguments["(truncated)"]);
+        Assert.Equal(
+            EscalationCallDigest.Compute(Tool, many.ToDictionary(a => a.Key, a => a.Value!.ToString()!)),
+            captured.Arguments[EscalationCallDigest.DigestKey]);
     }
 
     [Theory]
