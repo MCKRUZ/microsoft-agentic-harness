@@ -159,6 +159,14 @@
       System.Security.Cryptography.Xml to explain. Do not lower this below 4.14.2.
     -->
     <PackageVersion Include="Microsoft.Identity.Web" Version="4.14.2" />
+    <!--
+      Pinned directly because 4.14.2 (latest Microsoft.Identity.Web) still resolves these two to 10.0.10,
+      which carries the advisories fixed in 10.0.13 (CVE-2026-84008 for Pkcs; CVE-2026-96958, -96959 and
+      -96960 for Xml). Presentation.Common references them so every host that uses it gets 10.0.13. Remove
+      the pins, and the matching PackageReference lines, once Microsoft.Identity.Web depends on 10.0.13 or later.
+    -->
+    <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.13" />
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
