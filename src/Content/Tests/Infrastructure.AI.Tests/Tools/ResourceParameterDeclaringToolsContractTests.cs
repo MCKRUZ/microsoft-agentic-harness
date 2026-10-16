@@ -29,7 +29,7 @@ public sealed class ResourceParameterDeclaringToolsContractTests
     private static readonly string[] AssemblyPrefixes = ["Infrastructure.", "Application."];
 
     [Fact]
-    public void OnlyTheFileSystemToolDeclaresResourceParameters_UntilItsContractTestExists()
+    public void OnlyToolsWithAMissingParameterContractTestDeclareResourceParameters()
     {
         var declaring = ConcreteToolTypes()
             .Where(DeclaresResourceParameters)
@@ -38,12 +38,12 @@ public sealed class ResourceParameterDeclaringToolsContractTests
             .ToArray();
 
         declaring.Should().BeEquivalentTo(
-            [nameof(FileSystemTool)],
+            [nameof(EvidenceReaderTool), nameof(FileSystemTool)],
             "a tool that declares ITool.ResourceParametersByOperation must fail when a declared path/host " +
             "parameter is missing, null, blank or the wrong type, because the extractor treats an omitted value " +
             "as 'not requested' and path/host scoping passes it. Add a test like " +
             "FileSystemToolTests.ExecuteAsync_DeclaredResourceParameterMissingOrUnusable_FailsAndTouchesNothing " +
-            "for the new tool, then add it to this expected set.");
+            "(or EvidenceReaderToolTests' equivalent) for the new tool, then add it to this expected set.");
     }
 
     [Fact]

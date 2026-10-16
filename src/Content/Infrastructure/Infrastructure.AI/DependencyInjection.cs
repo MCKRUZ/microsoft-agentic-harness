@@ -202,6 +202,9 @@ public static partial class DependencyInjection
 
         RegisterToolServices(services, appConfig, allowedBasePaths);
 
+        // Governed skill-training proposer and its read-only evidence tool (#843).
+        RegisterSkillTrainingServices(services, appConfig);
+
         // Workspace skill pack — read_file, write_file (submits ChangeProposal), list_files,
         // run_tests, run_lint. Ambient IWorkspaceContextAccessor flows the sandbox-injected
         // working-copy path. Registered unconditionally so any consumer that enables the
