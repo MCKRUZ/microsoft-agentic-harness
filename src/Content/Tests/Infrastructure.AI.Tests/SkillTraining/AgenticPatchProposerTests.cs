@@ -32,7 +32,7 @@ public sealed partial class AgenticPatchProposerTests : IDisposable
             Directory.Delete(_root, recursive: true);
     }
 
-    [GeneratedRegex(@"(?<dir>[A-Za-z]:?[^\s]*?)/skill/SKILL\.md")]
+    [GeneratedRegex(@"(?<dir>\S+?)/skill/SKILL\.md")]
     private static partial Regex SkillPath();
 
     private AgenticPatchProposer NewSut(ScriptedSession session, SkillTrainingConfig? config = null) => new(

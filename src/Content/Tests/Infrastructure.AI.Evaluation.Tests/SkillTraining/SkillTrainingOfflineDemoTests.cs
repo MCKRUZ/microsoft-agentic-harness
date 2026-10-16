@@ -137,7 +137,7 @@ public sealed partial class SkillTrainingOfflineDemoTests : IDisposable
     /// <summary>What the scripted agent session can do: read the evidence the way a model would, through the real tool.</summary>
     private sealed class Session(string mission, IServiceProvider services)
     {
-        private static readonly Regex Folder = new(@"(?<dir>[A-Za-z]:?[^\s]*?)/skill/SKILL\.md", RegexOptions.Compiled);
+        private static readonly Regex Folder = new(@"(?<dir>\S+?)/skill/SKILL\.md", RegexOptions.Compiled);
 
         public string Mission => mission;
 
