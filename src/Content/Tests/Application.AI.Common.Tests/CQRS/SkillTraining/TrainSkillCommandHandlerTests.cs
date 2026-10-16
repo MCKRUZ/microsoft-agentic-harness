@@ -16,6 +16,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Tests.AI.Fakes;
 using Xunit;
+using StubProposer = Tests.Common.SkillTraining.ScriptedPatchProposer;
+using StubRolloutRunner = Tests.Common.SkillTraining.ScriptedRolloutRunner;
 
 namespace Application.AI.Common.Tests.CQRS.SkillTraining;
 
@@ -1319,22 +1321,6 @@ public partial class TrainSkillCommandHandlerTests
         public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task Publish(object notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification => Task.CompletedTask;
-    }
-
-    private sealed class StubRolloutRunner : IRolloutRunner
-    {
-        private readonly Func<string, RolloutBatch, IReadOnlyList<RolloutResult>> _fn;
-        public StubRolloutRunner(Func<string, RolloutBatch, IReadOnlyList<RolloutResult>> fn) => _fn = fn;
-        public Task<IReadOnlyList<RolloutResult>> RunAsync(string skillContent, RolloutBatch batch, CancellationToken ct)
-            => Task.FromResult(_fn(skillContent, batch));
-    }
-
-    private sealed class StubProposer : IPatchProposer
-    {
-        private readonly Func<ReflectionInput, Patch> _fn;
-        public StubProposer(Func<ReflectionInput, Patch> fn) => _fn = fn;
-        public Task<Patch> ProposeAsync(ReflectionInput input, CancellationToken cancellationToken)
-            => Task.FromResult(_fn(input));
     }
 
     private sealed class StubSuggester : IHarnessChangeSuggester
