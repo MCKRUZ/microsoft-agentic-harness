@@ -11,7 +11,10 @@ namespace Domain.Common.Config.AI.SkillTraining;
 /// ├── EvidenceRoot        — Where each step's evidence tree is written for the proposer to read
 /// ├── ProposerAgentName   — The agent (AGENT.md) that runs the proposer session
 /// ├── MaxProposerTurns    — Turn budget for one proposer session
-/// └── WorkDescription     — What the skill's work is, for the proposer's mission
+/// ├── WorkDescription     — What the skill's work is, for the proposer's mission
+/// ├── DatasetPath         — The eval dataset the rollout runner draws items from
+/// ├── RolloutAgentName    — The agent whose system prompt is replaced by the candidate skill
+/// └── MaxRolloutConcurrency — Rollouts run at once within a batch
 /// </code>
 /// </remarks>
 public class SkillTrainingConfig
@@ -41,4 +44,26 @@ public class SkillTrainingConfig
     /// </summary>
     /// <value>Default: empty (the proposer is told only the skill and the evidence).</value>
     public string WorkDescription { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Path to the eval dataset (YAML or JSON, by extension) the rollout runner draws its items from.
+    /// Each case selects its split with a <c>split:&lt;name&gt;</c> tag (<c>split:train</c>,
+    /// <c>split:val</c>); a case without one is never rolled out. Empty means no runner is configured.
+    /// </summary>
+    /// <value>Default: empty.</value>
+    public string DatasetPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Name of the agent (an <c>AGENT.md</c> definition) every rollout runs as, with the candidate skill
+    /// document in place of its system prompt. Required when <see cref="DatasetPath"/> is set.
+    /// </summary>
+    /// <value>Default: empty.</value>
+    public string RolloutAgentName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How many rollouts of one batch run at the same time. Each is a full agent turn with tool calls,
+    /// so the default is deliberately low.
+    /// </summary>
+    /// <value>Default: 2.</value>
+    public int MaxRolloutConcurrency { get; set; } = 2;
 }

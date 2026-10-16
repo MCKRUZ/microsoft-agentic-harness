@@ -34,6 +34,13 @@ public sealed record AgentInvocationResult
     public IReadOnlyList<string> ToolsInvoked { get; init; } = [];
 
     /// <summary>
+    /// Every tool call of the turn with its arguments and result, in call order, treated for durable
+    /// replay (the same redaction and bounding as persisted conversations). Empty when the invoker does
+    /// not capture them. Lets a consumer reconstruct what the agent did, not just which tools it named.
+    /// </summary>
+    public IReadOnlyList<Application.AI.Common.Models.Conversations.ToolCallRecord> ToolCalls { get; init; } = [];
+
+    /// <summary>
     /// Diagnostic message when <see cref="Success"/> is false. Contains the handler's
     /// error string when one is provided; when the underlying handler returned an
     /// unsuccessful response with a body (e.g. a content-safety refusal text), that

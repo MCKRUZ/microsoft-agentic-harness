@@ -110,6 +110,7 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
                 Output = output,
                 Error = error,
                 ToolsInvoked = turn.ToolsInvoked,
+                ToolCalls = turn.ToolCalls,
                 InputTokens = turn.InputTokens,
                 OutputTokens = turn.OutputTokens,
                 CostUsd = turn.CostUsd,
