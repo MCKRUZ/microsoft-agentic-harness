@@ -1,3 +1,5 @@
+using StubProposer = Tests.Common.SkillTraining.ScriptedPatchProposer;
+using StubRolloutRunner = Tests.Common.SkillTraining.ScriptedRolloutRunner;
 using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.KnowledgeGraph.Models;
