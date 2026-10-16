@@ -118,4 +118,12 @@ public sealed record EscalationRequest
     /// <c>Escalate</c>/<c>DenyAndEscalate</c> is unaffected by this field.
     /// </summary>
     public AutonomyLevel? EscalationTierTarget { get; init; }
+
+    /// <summary>
+    /// The plan step this escalation blocks, when it was queued by the plan executor or a human gate.
+    /// Null for every other source. The service copies it onto the resolved
+    /// <see cref="EscalationOutcome.Binding"/>, which is what lets the plan executor refuse a verdict
+    /// that was never about the step it is about to release.
+    /// </summary>
+    public EscalationBinding? Binding { get; init; }
 }

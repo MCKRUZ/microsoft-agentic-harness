@@ -21,6 +21,19 @@ namespace Domain.AI.Planner;
 /// </remarks>
 public static class PlanStepErrors
 {
+    /// <summary>
+    /// A human gate was run without the plan it belongs to, so it had nothing to bind its escalation
+    /// to; an unbound escalation could be released by any approval, so the gate refuses to queue one.
+    /// </summary>
+    public const string HumanGateUnbound = "step.human_gate_unbound";
+
+    /// <summary>
+    /// A blocked step's stored escalation reference led to a verdict that is not bound to this plan and
+    /// step (it names another step, or none). The step is failed rather than released: a verdict nobody
+    /// made about this step must not decide it.
+    /// </summary>
+    public const string EscalationBindingMismatch = "step.escalation_binding_mismatch";
+
     /// <summary>An unhandled exception escaped the step executor.</summary>
     public const string ExecutionFailed = "step.execution_failed";
 
