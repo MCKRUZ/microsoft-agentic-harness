@@ -13,6 +13,7 @@ using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.HarmonicMemory;
 using Domain.Common.Config.AI.Iac;
+using Domain.Common.Config.AI.SkillTraining;
 using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Telemetry;
 using Domain.Common.Config.AI.WorkMemory;
@@ -190,6 +191,11 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<
                 Domain.Common.Config.AI.Learnings.LearningsConfig,
                 LearningsConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<SkillTrainingConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:SkillTraining"))
+            .ValidateFluentValidation<SkillTrainingConfig, SkillTrainingConfigValidator>()
             .ValidateOnStart();
 
         services.AddOptions<WorkMemoryConfig>()

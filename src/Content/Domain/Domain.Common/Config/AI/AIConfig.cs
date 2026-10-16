@@ -12,6 +12,7 @@ using Domain.Common.Config.AI.Iac;
 using Domain.Common.Config.AI.Identity;
 using Domain.Common.Config.AI.IncidentResponse;
 using Domain.Common.Config.AI.Learnings;
+using Domain.Common.Config.AI.SkillTraining;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
 using Domain.Common.Config.AI.Permissions;
@@ -56,6 +57,7 @@ namespace Domain.Common.Config.AI;
 /// ├── DriftDetection    — EWMA-based drift detection for quality regressions
 /// ├── Learnings         — Cross-session learnings: feedback blending, decay, pruning
 /// ├── WorkMemory        — Self-improving work memory: per-turn episode capture for synthesis
+/// ├── SkillTraining     — Governed skill-training proposer and rollout runner: evidence root, agent, budget
 /// ├── Planner           — Plan execution: concurrency, timeouts, persistence
 /// ├── Sandbox           — Sandbox execution: resource limits, isolation, containers
 /// ├── ToolOutputCompression — Tool output compression: thresholds, LLM fallback, strategies
@@ -213,6 +215,13 @@ public class AIConfig
     /// before the model runs.
     /// </summary>
     public LearningsRecallConfig LearningsRecall { get; set; } = new();
+
+    /// <summary>
+    /// Configuration for the governed implementations behind the skill-training loop's proposer and
+    /// rollout runner: where the proposer's evidence is written, which agent runs the session, and its
+    /// turn budget.
+    /// </summary>
+    public SkillTrainingConfig SkillTraining { get; set; } = new();
 
     /// <summary>
     /// Bundle-execution subsystem configuration. Off by default — when enabled, the host can accept a

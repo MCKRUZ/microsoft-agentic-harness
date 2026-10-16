@@ -165,6 +165,44 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public async Task AddInfrastructureAIDependencies_RegistersTheGovernedProposerAndAConfinedEvidenceReader()
+    {
+        // #843: the proposer is registered over the fail-fast default, and the tool it reads evidence with
+        // resolves from keyed DI, is the read-only one, and is confined to the configured evidence root.
+        var root = Path.Combine(Path.GetTempPath(), $"evidence-di-{Guid.NewGuid():N}", "evidence");
+        var outside = Path.Combine(Path.GetDirectoryName(root)!, "outside.txt");
+        try
+        {
+            var appConfig = IsolatedAppConfig.Create();
+            appConfig.AI.SkillTraining.EvidenceRoot = root;
+            var services = CreateBaseServices(appConfig);
+            services.AddInfrastructureAIDependencies(appConfig);
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<Application.AI.Common.Services.SkillTraining.SkillTrainingEvidenceRoot>()
+                .Path.Should().Be(Path.GetFullPath(root));
+            services.Last(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.IPatchProposer))
+                .ImplementationType.Should().Be<Infrastructure.AI.SkillTraining.AgenticPatchProposer>();
+
+            var tool = provider.GetRequiredKeyedService<Application.AI.Common.Interfaces.Tools.ITool>("evidence_reader");
+            tool.Should().BeOfType<Infrastructure.AI.Tools.EvidenceReaderTool>();
+            tool.IsReadOnly.Should().BeTrue();
+
+            var inside = Path.Combine(root, "note.md");
+            await File.WriteAllTextAsync(inside, "evidence");
+            await File.WriteAllTextAsync(outside, "private");
+            (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = inside })).Success.Should().BeTrue();
+            (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = outside })).Success.Should().BeFalse();
+        }
+        finally
+        {
+            var parent = Path.GetDirectoryName(root)!;
+            if (Directory.Exists(parent))
+                Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_LogsBasePathCollidesWithAnAllowedBasePath_StillEndsUpOwnerOnly()
     {
         // /code-review finding (#671/#672/#673): if a misconfiguration makes LogsBasePath resolve to
