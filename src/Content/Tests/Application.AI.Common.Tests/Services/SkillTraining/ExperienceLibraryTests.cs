@@ -127,6 +127,27 @@ public sealed class ExperienceLibraryTests
     }
 
     [Fact]
+    public async Task Recall_AnEntryFiledUnderThisSkillsKeyButNamingAnotherSkillOrDomain_IsNotTrusted()
+    {
+        // The key is a label; the entry says what it is about. A node whose two disagree (a copy under the
+        // wrong key, or a tampered store) must not be served as this skill's lesson.
+        var key = ExperienceLibrary.BuildKey("finance", "skill-X", "run-B", 1);
+        var memory = new FakeMemory
+        {
+            Recalled =
+            [
+                Node(Entry(runId: "run-B", skillId: "skill-Y", lesson: "says another skill"), name: key),
+                Node(Entry(runId: "run-B", domain: "legal", lesson: "says another domain"), name: key),
+                Node(Entry(runId: "run-B", lesson: "agrees"), name: key)
+            ]
+        };
+
+        var recalled = await Sut(memory).RecallAsync("finance", "skill-X", "run-A", 1, 5, CancellationToken.None);
+
+        recalled.Select(e => e.Lesson).Should().Equal("agrees");
+    }
+
+    [Fact]
     public async Task Recall_NeverReturnsThisRunsEntriesFromTheAskedEpochOnwards()
     {
         var memory = new FakeMemory
