@@ -56,6 +56,8 @@ public sealed class PluginLoader : IPluginLoader
     {
         try
         {
+            RefuseDeclaredHooks(declaration, manifest);
+
             var skillPaths = string.IsNullOrEmpty(manifest.Skills)
                 ? []
                 : ResolveSkillPaths(pluginPath, declaration, manifest.Skills);
@@ -93,6 +95,23 @@ public sealed class PluginLoader : IPluginLoader
                 [],
                 [],
                 declaration);
+        }
+    }
+
+    /// <summary>
+    /// Refuses a manifest that declares hook scripts (#840). This loader reads a manifest's skills and
+    /// MCP servers and nothing else, so <see cref="PluginManifest.Hooks"/> is parsed and then ignored:
+    /// a plugin that relies on a hook for a guarantee (blocking a call, verifying a write) would load
+    /// with that guarantee silently absent. Failing the plugin makes the author find out, which is the
+    /// same outcome a malformed skills path already gets.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The manifest lists one or more hook paths.</exception>
+    private static void RefuseDeclaredHooks(PluginDeclaration declaration, PluginManifest manifest)
+    {
+        if (manifest.Hooks is { Paths.Count: > 0 })
+        {
+            throw new InvalidOperationException(
+                $"Plugin '{declaration.Name}' declares {manifest.Hooks.Paths.Count} hook path(s), but this harness does not load plugin hooks, so they would never fire. Remove the `hooks` entry from plugin.json.");
         }
     }
 

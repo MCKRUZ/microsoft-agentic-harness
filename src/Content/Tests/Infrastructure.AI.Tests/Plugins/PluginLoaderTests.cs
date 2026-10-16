@@ -61,6 +61,47 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
+    public void Load_ManifestDeclaresHookPaths_FailsAndCommitsNothing()
+    {
+        // This loader reads a manifest's skills and MCP servers and nothing else, so declared hooks
+        // would be parsed and then never fire. The plugin must fail instead (#840), and the skills it
+        // also declared must not be left registered by a half-finished load (#614).
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+        var manifest = new PluginManifest
+        {
+            Name = "test-plugin",
+            Version = "1.0.0",
+            Skills = "./skills/",
+            Hooks = new PluginHooksManifest { Paths = ["./hooks/guard.sh"] }
+        };
+
+        var result = _sut.Load(_tempDir, MakeDeclaration(), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Failed);
+        _skillsConfig.AdditionalPaths.Should().NotContain(skillsDir);
+    }
+
+    [Fact]
+    public void Load_ManifestWithAnEmptyHooksBlock_StillLoads()
+    {
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+        var manifest = new PluginManifest
+        {
+            Name = "test-plugin",
+            Version = "1.0.0",
+            Skills = "./skills/",
+            Hooks = new PluginHooksManifest { Paths = [], Exclusive = true }
+        };
+
+        var result = _sut.Load(_tempDir, MakeDeclaration(), manifest);
+
+        result!.Status.Should().Be(PluginLoadStatus.Loaded, "a hooks block that lists no hook has nothing to ignore");
+    }
+
+    [Fact]
     public void Load_WithMcpJson_MergesNamespacedServers()
     {
         var mcpConfig = new

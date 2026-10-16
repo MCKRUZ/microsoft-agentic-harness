@@ -933,7 +933,14 @@ public partial class ToolChainBuilder : IToolChainBuilder
     {
         var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
         if (tool == null)
+        {
+            // A name no registration answers to is dropped from the chain. Said out loud (#840): the
+            // alternative is a skill that declares a tool, runs without it, and leaves no trace of why.
+            _logger.LogWarning(
+                "Tool '{ToolName}' is not registered under that key in keyed DI, so it is not part of this agent's tool set",
+                toolName);
             return null;
+        }
 
         if (_toolConverter != null)
         {

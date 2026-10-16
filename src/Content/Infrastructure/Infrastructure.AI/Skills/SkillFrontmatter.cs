@@ -50,6 +50,12 @@ internal sealed class SkillFrontmatter
     private SkillFrontmatter(YamlMappingNode? root) => _root = root;
 
     /// <summary>
+    /// True when the manifest has a frontmatter block that parsed to a mapping, so it declared fields
+    /// (even if only one). False for a SKILL.md with no frontmatter, which is a legitimate shape.
+    /// </summary>
+    internal bool DeclaresFields => _root is not null;
+
+    /// <summary>
     /// Parses raw frontmatter text.
     /// </summary>
     /// <param name="frontmatter">The text between the opening and closing <c>---</c> markers.</param>
