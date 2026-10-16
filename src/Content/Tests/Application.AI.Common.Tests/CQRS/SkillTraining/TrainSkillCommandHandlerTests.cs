@@ -48,13 +48,14 @@ public class TrainSkillCommandHandlerTests
         IGovernanceAuditService? audit = null,
         HarnessPatchValidator? fence = null,
         IHarnessChangeSuggester? suggester = null,
-        ClaimVerificationRunner? claimVerification = null)
+        ClaimVerificationRunner? claimVerification = null,
+        IMediator? mediator = null)
     {
         return new TrainSkillCommandHandler(
             runner, proposer, Aggregator, Selector, Applier, Gate, fence ?? Fence,
             suggester ?? new NoHarnessChangeSuggester(), SuggestionValidator, SurfaceConstraint,
             claimVerification ?? ClaimVerification,
-            store, new NoOpMediator(), TimeProvider.System,
+            store, mediator ?? new NoOpMediator(), TimeProvider.System,
             NullLogger<TrainSkillCommandHandler>.Instance, audit);
     }
 
@@ -922,6 +923,395 @@ public class TrainSkillCommandHandlerTests
         seen!.Rollouts.Should().Equal(
             new ProposerRolloutView("t1", false, "tried and failed", "rag"),
             new ProposerRolloutView("t2", true, "worked", string.Empty));
+    }
+
+    // ── Resume (#842) ──────────────────────────────────────────────────────
+
+    private static readonly TrainSkillConfig ThreeStepConfig = new()
+    {
+        Epochs = 1, StepsPerEpoch = 3, LrStart = 4, LrMin = 1, LrScheduler = "constant", Patience = 6
+    };
+
+    /// <summary>Train fails (so the proposer has a reason to propose) and val passes (so the gate accepts).</summary>
+    private static IReadOnlyList<RolloutResult> AcceptingRollouts(string split) => split switch
+    {
+        "train" => [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.2 }],
+        "val" => [new RolloutResult { ItemId = "v1", Hard = 1.0, Soft = 1.0 }],
+        _ => []
+    };
+
+    private static StubProposer AppendingProposer() =>
+        new(_ => new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] });
+
+    /// <summary>Proposes normally, then is cancelled on its <paramref name="step"/>th call: an attempt interrupted during that step.</summary>
+    private static StubProposer InterruptedDuringStep(int step)
+    {
+        var calls = 0;
+        return new StubProposer(_ =>
+        {
+            if (++calls == step)
+                throw new OperationCanceledException();
+            return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] };
+        });
+    }
+
+    private static StubProposer InterruptedDuringStepTwo() => InterruptedDuringStep(2);
+
+    [Fact]
+    public async Task Handle_AnEarlierAttemptWasInterrupted_ContinuesFromItsLastCheckpoint()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var first = () => NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+        await first.Should().ThrowAsync<OperationCanceledException>();
+        (await store.ListAsync("run-1", CancellationToken.None)).Should().ContainSingle("only step 1 finished");
+
+        var proposerCalls = 0;
+        var resumedProposer = new StubProposer(_ =>
+        {
+            proposerCalls++;
+            return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] };
+        });
+        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), resumedProposer, store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        proposerCalls.Should().Be(2, "steps 2 and 3 are all that is left; step 1 is not run again");
+        result.Value!.StepsExecuted.Should().Be(3);
+        result.Value.Steps.Select(st => st.Step).Should().Equal(1, 2, 3);
+    }
+
+    [Fact]
+    public async Task Handle_Resuming_StartsFromTheSkillTheLastCheckpointHolds()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store)
+            .Invoking(s => s.Handle(NewCommand(ThreeStepConfig), CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+
+        string? firstSkillOfTheResumedRun = null;
+        var resumedRunner = new StubRolloutRunner((skill, batch) =>
+        {
+            if (batch.Split == "train") firstSkillOfTheResumedRun ??= skill;
+            return AcceptingRollouts(batch.Split);
+        });
+        await NewSut(resumedRunner, AppendingProposer(), store).Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        firstSkillOfTheResumedRun.Should().Contain("- a rule", "step 1 accepted an edit, and the resume starts from that skill, not from the initial one");
+    }
+
+    [Fact]
+    public async Task Handle_TheRunAlreadyFinished_ReturnsItsResultWithoutRunningAnything()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        var rollouts = 0;
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        rollouts.Should().Be(0);
+        result.Value!.StepsExecuted.Should().Be(3);
+        result.Value.BestSkill.Should().Contain("- a rule");
+        result.Value.HasAcceptedAny.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_PatienceWasAlreadyExhausted_DoesNotRunAnotherStep()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var config = ThreeStepConfig with { Patience = 1 };
+        var rejecting = new StubRolloutRunner((s, b) => b.Split switch
+        {
+            "train" => [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.2 }],
+            _ => [new RolloutResult { ItemId = "v1", Hard = 0.0, Soft = 0.0 }]
+        });
+        await NewSut(rejecting, AppendingProposer(), store).Handle(NewCommand(config), CancellationToken.None);
+
+        var rollouts = 0;
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => { rollouts++; return []; }), AppendingProposer(), store)
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        rollouts.Should().Be(0, "the earlier attempt stopped on patience; resuming must not start it up again");
+    }
+
+    [Fact]
+    public async Task Handle_TheRunIdHoldsCheckpointsFromADifferentConfiguration_RefusesRatherThanSplicing()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        var rollouts = 0;
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig with { StepsPerEpoch = 5 }), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.Contains("different skill, starting text or configuration"));
+        rollouts.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Handle_Resuming_ReceivesTheMemoryTheLastCheckpointHolds()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var config = new TrainSkillConfig
+        {
+            Epochs = 2, StepsPerEpoch = 1, LrStart = 4, LrMin = 1, LrScheduler = "constant", Patience = 6,
+            UseSlowUpdate = false, UseMetaSkill = true
+        };
+        await NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store,
+                mediator: new MetaMemoryMediator("memory after epoch 1"))
+            .Invoking(s => s.Handle(NewCommand(config), CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+
+        // The boundary rewrote step 1's checkpoint with the memory it produced.
+        (await store.GetAsync("run-1", 1, CancellationToken.None))!.MetaSkillMemory.Should().Be("memory after epoch 1");
+
+        string? seenMemory = null;
+        var proposer = new StubProposer(input =>
+        {
+            seenMemory = input.MetaSkillMemory;
+            return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- again" }] };
+        });
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store,
+                mediator: new MetaMemoryMediator("memory after epoch 1"))
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        seenMemory.Should().Be("memory after epoch 1");
+    }
+
+    [Fact]
+    public async Task Handle_ResumedRun_ReportsTheSameBestAndTheSameStepsAsAnUninterruptedOne()
+    {
+        // Step 1 is promoted; steps 2 to 5 are rejects that repeat the same score. Picking the best
+        // checkpoint by highest score, latest step would report a later step and skill (#842 review).
+        // The interrupted attempt dies in step 4, so the rejects of steps 2 and 3 are already stored.
+        var config = ThreeStepConfig with { StepsPerEpoch = 5 };
+        var uninterrupted = await NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(),
+                new InMemorySkillTrainingCheckpointStore())
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStep(4), store)
+            .Invoking(x => x.Handle(NewCommand(config), CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+        (await store.ListAsync("run-1", CancellationToken.None)).Should().HaveCount(3);
+        var resumed = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        uninterrupted.Value!.Steps.Select(st => st.Action).Should().Equal(
+            GateAction.AcceptNewBest, GateAction.Reject, GateAction.Reject, GateAction.Reject, GateAction.Reject);
+        resumed.Value!.BestStep.Should().Be(uninterrupted.Value.BestStep).And.Be(1);
+        resumed.Value.BestSkill.Should().Be(uninterrupted.Value.BestSkill);
+        resumed.Value.BestScore.Should().Be(uninterrupted.Value.BestScore);
+        resumed.Value.Steps.Should().BeEquivalentTo(uninterrupted.Value.Steps, o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public async Task Handle_AttemptStoppedInsideTheEpochBoundary_FinishesTheBoundaryBeforeContinuing()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var config = new TrainSkillConfig
+        {
+            Epochs = 2, StepsPerEpoch = 1, LrStart = 4, LrMin = 1, LrScheduler = "constant", Patience = 6,
+            UseSlowUpdate = false, UseMetaSkill = true
+        };
+        var crashing = new MetaMemoryMediator("memory after epoch 1", cancelTheFirstUpdate: true);
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, mediator: crashing)
+            .Invoking(x => x.Handle(NewCommand(config), CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+        (await store.GetAsync("run-1", 1, CancellationToken.None))!.EpochBoundaryDone
+            .Should().BeFalse("the boundary never finished");
+
+        string? seenMemory = null;
+        var proposer = new StubProposer(input =>
+        {
+            seenMemory = input.MetaSkillMemory;
+            return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- again" }] };
+        });
+        var healthy = new MetaMemoryMediator("memory after epoch 1");
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store, mediator: healthy)
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        healthy.Updates.Should().Be(1, "the unfinished boundary is done once, on resume");
+        seenMemory.Should().Be("memory after epoch 1");
+        (await store.GetAsync("run-1", 1, CancellationToken.None))!.EpochBoundaryDone.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_ResumingWithMoreEpochsOrMorePatience_ContinuesInsteadOfRefusing()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var original = ThreeStepConfig with { UseMetaSkill = false, UseSlowUpdate = false };
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(original), CancellationToken.None);
+
+        var proposerCalls = 0;
+        var extended = original with { Epochs = 2, Patience = 9 };
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)),
+                new StubProposer(_ => { proposerCalls++; return new Patch(); }), store)
+            .Handle(NewCommand(extended), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        proposerCalls.Should().Be(3, "the second epoch's three steps run; the first epoch is not repeated");
+        result.Value!.StepsExecuted.Should().Be(6);
+    }
+
+    [Fact]
+    public async Task Handle_StoredCheckpointCarriesAVerdict_RefusesToResume()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+        var last = (await store.GetAsync("run-1", 3, CancellationToken.None))!;
+        await store.SaveAsync(last with { SkillContent = "# skill {\"PassedCount\": 3}" }, CancellationToken.None);
+
+        var rollouts = 0;
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(GraderMarkerScanner.EvidenceLeakCode);
+        rollouts.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Handle_StoredCheckpointPredatesResume_SaysSoInsteadOfBlamingTheInputs()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+        var last = (await store.GetAsync("run-1", 3, CancellationToken.None))!;
+        await store.SaveAsync(last with { RunFingerprint = string.Empty }, CancellationToken.None);
+
+        var result = await NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.Contains("before resume was supported"));
+    }
+
+    [Fact]
+    public async Task Handle_TheSameRunIdIsAlreadyRunning_RefusesTheSecondCaller()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var firstIsInTheProposer = new TaskCompletionSource();
+        var releaseFirst = new TaskCompletionSource();
+        var blocking = new BlockingProposer(firstIsInTheProposer, releaseFirst.Task);
+        var first = NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), blocking, store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+        await firstIsInTheProposer.Task;
+
+        var second = await NewSut(
+                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+            .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
+        releaseFirst.SetResult();
+        var firstResult = await first;
+
+        second.IsSuccess.Should().BeFalse();
+        second.Errors.Should().ContainSingle(e => e.Contains("already has a run in flight"));
+        firstResult.IsSuccess.Should().BeTrue("the first run is unaffected");
+    }
+
+    [Fact]
+    public async Task Handle_TheRunAlreadyFinished_DoesNotAskTheSuggesterAgain()
+    {
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var suggester = new CountingSuggester();
+        var config = ThreeStepConfig with { EmitHarnessChangeSuggestions = true };
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, suggester: suggester)
+            .Handle(NewCommand(config), CancellationToken.None);
+        suggester.Calls.Should().Be(1);
+
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, suggester: suggester)
+            .Handle(NewCommand(config), CancellationToken.None);
+
+        suggester.Calls.Should().Be(1, "a resume that runs no step has no evidence for the suggester and must not repeat its audit rows");
+    }
+
+    [Fact]
+    public async Task Handle_StepRejectedBeforeTheGate_StillWritesItsCheckpoint()
+    {
+        // The fence rejects a patch that targets a frozen surface and skips the gate. That step still
+        // counts toward patience and still appears in the result, so a resume has to see it.
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits = [new Edit { Op = EditOp.Append, Content = "x", Surface = HarnessSurface.SystemPrompt }]
+        });
+
+        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store)
+            .Handle(NewCommand(OneStepConfig), CancellationToken.None);
+
+        result.Value!.Steps.Should().ContainSingle(st => st.Action == GateAction.Reject);
+        var stored = await store.ListAsync("run-1", CancellationToken.None);
+        stored.Should().ContainSingle(c => c.Step == 1 && c.Action == GateAction.Reject);
+    }
+
+    private sealed class CountingSuggester : IHarnessChangeSuggester
+    {
+        public int Calls { get; private set; }
+
+        public Task<IReadOnlyList<HarnessChangeSuggestion>> SuggestAsync(
+            HarnessSuggestionInput input, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult<IReadOnlyList<HarnessChangeSuggestion>>([]);
+        }
+    }
+
+    private sealed class BlockingProposer(TaskCompletionSource entered, Task release) : IPatchProposer
+    {
+        public async Task<Patch> ProposeAsync(ReflectionInput input, CancellationToken cancellationToken)
+        {
+            entered.TrySetResult();
+            await release.ConfigureAwait(false);
+            return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] };
+        }
+    }
+
+    /// <summary>Answers a meta-skill update with a fixed memory and ignores everything else.</summary>
+    private sealed class MetaMemoryMediator(string memory, bool cancelTheFirstUpdate = false) : IMediator
+    {
+        private bool _cancelled;
+        public int Updates { get; private set; }
+
+        public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
+        {
+            if (request is not Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate.MetaSkillUpdateCommand)
+                return Task.FromResult(default(TResponse)!);
+
+            if (cancelTheFirstUpdate && !_cancelled)
+            {
+                _cancelled = true;
+                throw new OperationCanceledException();
+            }
+
+            Updates++;
+            return Task.FromResult((TResponse)(object)Result<string>.Success(memory));
+        }
+        public Task<object?> Send(object request, CancellationToken cancellationToken = default) => Task.FromResult<object?>(null);
+        public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest => Task.CompletedTask;
+        public IAsyncEnumerable<TResponse> CreateStream<TResponse>(IStreamRequest<TResponse> request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task Publish(object notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification => Task.CompletedTask;
     }
 
     private sealed class StubRolloutRunner : IRolloutRunner
