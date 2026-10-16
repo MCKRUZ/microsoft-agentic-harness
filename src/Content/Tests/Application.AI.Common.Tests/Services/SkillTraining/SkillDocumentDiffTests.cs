@@ -102,10 +102,10 @@ public sealed class SkillDocumentDiffTests
     [Fact]
     public void Between_OneChangeInALongDocument_IsDiffedWithoutBuildingATableForTheWholeDocument()
     {
-        // 5000 x 5000 lines is 25 million pairs: ~100 MB if the table were built over the whole document.
-        // The lines shared at the start and the end are set aside first, so the table is over one line.
-        var old = string.Concat(Enumerable.Range(0, 5000).Select(i => $"line {i}\n"));
-        var changed = old.Replace("line 2500\n", "line 2500 reworded\n", StringComparison.Ordinal);
+        // 1900 x 1900 lines is 3.6 million pairs, under the cap, so a table over the whole document would be
+        // built (~14 MB). The lines shared at the start and the end are set aside first, so it is over one line.
+        var old = string.Concat(Enumerable.Range(0, 1900).Select(i => $"line {i}\n"));
+        var changed = old.Replace("line 950\n", "line 950 reworded\n", StringComparison.Ordinal);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         var edits = SkillDocumentDiff.Between(old, changed);
@@ -113,7 +113,7 @@ public sealed class SkillDocumentDiffTests
 
         edits.Should().ContainSingle();
         Applied(old, edits).Should().Be(changed);
-        allocated.Should().BeLessThan(20_000_000, "the diff table is built only over what changed");
+        allocated.Should().BeLessThan(5_000_000,"the diff table is built only over what changed");
     }
 
     [Fact]
