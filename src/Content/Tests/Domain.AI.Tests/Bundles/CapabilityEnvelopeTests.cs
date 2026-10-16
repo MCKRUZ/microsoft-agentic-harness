@@ -91,4 +91,36 @@ public sealed class CapabilityEnvelopeTests
 
         envelope.IsBundleOwnedMcpServer("bundle-1:server").Should().BeTrue();
     }
+
+    // #549: a server listed twice let the per-request tool-list cache turn a transient empty fetch of the
+    // first occurrence into a guaranteed miss for the second. The list is normalised where it is set.
+
+    [Fact]
+    public void AllowedMcpServers_DuplicateNames_AreCollapsedKeepingFirstSpellingAndOrder()
+    {
+        var envelope = new CapabilityEnvelope { AllowedMcpServers = ["docs", "search", "docs", "Search", "DOCS", "git"] };
+
+        envelope.AllowedMcpServers.Should().Equal("docs", "search", "git");
+    }
+
+    [Fact]
+    public void AllowedMcpServers_UnionBuiltWithAWithExpression_IsAlsoCollapsed()
+    {
+        // The bundle run builds its envelope as `envelope with { AllowedMcpServers = [.. granted, .. staged] }`,
+        // where an operator-granted server and a bundle-staged one can overlap.
+        var granted = new CapabilityEnvelope { AllowedMcpServers = ["shared", "host-only"] };
+
+        var merged = granted with { AllowedMcpServers = [.. granted.AllowedMcpServers, "shared", "bundle-only"] };
+
+        merged.AllowedMcpServers.Should().Equal("shared", "host-only", "bundle-only");
+    }
+
+    [Fact]
+    public void AllowedMcpServers_NoDuplicates_AreUntouched()
+    {
+        var envelope = new CapabilityEnvelope { AllowedMcpServers = ["a", "b", "c"] };
+
+        envelope.AllowedMcpServers.Should().Equal("a", "b", "c");
+        envelope.GrantsMcpServer("B").Should().BeTrue();
+    }
 }
