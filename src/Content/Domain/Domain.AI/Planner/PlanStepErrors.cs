@@ -28,11 +28,18 @@ public static class PlanStepErrors
     public const string HumanGateUnbound = "step.human_gate_unbound";
 
     /// <summary>
-    /// A blocked step's stored escalation reference led to a verdict that is not bound to this plan and
-    /// step (it names another step, or none). The step is failed rather than released: a verdict nobody
-    /// made about this step must not decide it.
+    /// A blocked step's stored escalation reference led to a verdict bound to a different plan or step.
+    /// The step is failed rather than released: a verdict nobody made about this step must not decide it.
     /// </summary>
     public const string EscalationBindingMismatch = "step.escalation_binding_mismatch";
+
+    /// <summary>
+    /// A blocked step's stored escalation reference led to a verdict bound to no plan step at all: an
+    /// escalation queued before bindings existed, or one never queued for a plan step (a tool approval).
+    /// Kept apart from <see cref="EscalationBindingMismatch"/> because after an upgrade this is the
+    /// expected cause, not a sign of tampering. Retrying the step queues a bound escalation.
+    /// </summary>
+    public const string EscalationUnbound = "step.escalation_unbound";
 
     /// <summary>An unhandled exception escaped the step executor.</summary>
     public const string ExecutionFailed = "step.execution_failed";

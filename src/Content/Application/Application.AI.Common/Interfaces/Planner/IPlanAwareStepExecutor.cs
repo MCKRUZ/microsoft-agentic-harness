@@ -15,7 +15,14 @@ namespace Application.AI.Common.Interfaces.Planner;
 /// </para>
 /// <para>
 /// Today this is the human gate, which stamps the plan and step on the escalation it queues so that
-/// only that escalation's verdict can release that step (see <c>EscalationBinding</c>).
+/// only a verdict bound to that plan and step can release it (see <c>EscalationBinding</c>). The binding
+/// names the step, not the individual escalation, so it guards against a verdict made about something
+/// else; it does not distinguish two escalations queued for the same step.
+/// </para>
+/// <para>
+/// <b>A decorator around such an executor must implement this interface too.</b> The plan executor picks
+/// the overload by type test, so a wrapper that only implements <see cref="IPlanStepExecutor"/> would make
+/// every gate it wraps refuse to queue. <c>PlanAwareExecutorRegistrationTests</c> pins the registered one.
 /// </para>
 /// </remarks>
 public interface IPlanAwareStepExecutor : IPlanStepExecutor

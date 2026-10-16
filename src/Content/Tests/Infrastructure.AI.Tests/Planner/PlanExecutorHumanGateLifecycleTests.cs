@@ -301,7 +301,10 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Empty(workInvocations);
         var states = await _store.LoadStepStatesAsync(plan.Id, CancellationToken.None);
         Assert.Equal(StepExecutionStatus.Failed, states.Value![gateId].Status);
-        Assert.Equal(PlanStepErrors.EscalationBindingMismatch, states.Value![gateId].ErrorMessage);
+        // A verdict bound elsewhere is a mismatch; one bound to nothing (queued before bindings existed,
+        // or never queued for a plan step) is reported apart, since after an upgrade it is the expected cause.
+        var expectedCode = binding is null ? PlanStepErrors.EscalationUnbound : PlanStepErrors.EscalationBindingMismatch;
+        Assert.Equal(expectedCode, states.Value![gateId].ErrorMessage);
         Assert.Equal(StepExecutionStatus.Skipped, states.Value![workId].Status);
     }
 

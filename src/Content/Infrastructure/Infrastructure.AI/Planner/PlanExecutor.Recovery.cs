@@ -271,13 +271,29 @@ public sealed partial class PlanExecutor
     private async Task FailMisboundBlockAsync(
         PlanStep step, Guid escalationId, EscalationOutcome outcome, PlanExecutionRuntime ctx, CancellationToken ct)
     {
-        _logger.LogError(
-            "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to " +
-            "plan {BoundPlanId} step {BoundStepId} rather than this step; failing the step instead of releasing it",
-            step.Id, ctx.PlanId, escalationId, outcome.Binding?.PlanId, outcome.Binding?.StepId);
+        string errorCode;
+        if (outcome.Binding is null)
+        {
+            // Expected right after an upgrade: an escalation queued before bindings existed has none, and
+            // so does any escalation that was never queued for a plan step (a tool approval). Both are
+            // refused; only the first is benign, and the log cannot tell them apart.
+            errorCode = PlanStepErrors.EscalationUnbound;
+            _logger.LogWarning(
+                "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to no plan step " +
+                "(queued before bindings existed, or not queued for a plan step); failing the step instead of releasing it",
+                step.Id, ctx.PlanId, escalationId);
+        }
+        else
+        {
+            errorCode = PlanStepErrors.EscalationBindingMismatch;
+            _logger.LogError(
+                "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to " +
+                "plan {BoundPlanId} step {BoundStepId} rather than this step; failing the step instead of releasing it",
+                step.Id, ctx.PlanId, escalationId, outcome.Binding.PlanId, outcome.Binding.StepId);
+        }
 
         await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct,
-            errorMessage: PlanStepErrors.EscalationBindingMismatch);
+            errorMessage: errorCode);
         await SkipDownstreamSubgraphAsync(step.Id, ctx);
     }
 
