@@ -6,5 +6,54 @@
     "passes, so an exception cannot quietly become permanent. The gate also fails on entries that no",
     "longer match a finding, so a fixed package cannot leave its exception behind."
   ],
-  "accepted": []
+  "accepted": [
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "reason": "braces <= 3.0.3 has a stack-exhaustion denial of service on a pathological brace pattern, and no patched release exists (first_patched_version is none). It is reached only through the shadcn component-scaffolding CLI (shadcn -> fast-glob -> micromatch -> braces), a devDependency in both frontends that runs on a developer machine against local paths. It is not in either production bundle: Presentation.WebUI imports only shadcn/tailwind.css (a stylesheet), Presentation.Dashboard imports nothing from it. No untrusted input reaches the pattern matcher. Re-assess when a patched braces ships or shadcn drops the dependency.",
+      "reviewBy": "2027-01-16"
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "micromatch",
+      "reason": "Same advisory as the braces entry above; micromatch is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "fast-glob",
+      "reason": "Same advisory as the braces entry above; fast-glob is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "shadcn",
+      "reason": "Same advisory as the braces entry above; shadcn is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "@shadcn/registry",
+      "reason": "Same advisory as the braces entry above; @shadcn/registry is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "ts-morph",
+      "reason": "Same advisory as the braces entry above; ts-morph is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    },
+    {
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "package": "@ts-morph/common",
+      "reason": "Same advisory as the braces entry above; @ts-morph/common is flagged only because it depends on the affected package. Identical reasoning and review date.",
+      "reviewBy": "2027-01-16",
+      "coversFindingsWithoutAdvisoryUrl": true
+    }
+  ]
 }

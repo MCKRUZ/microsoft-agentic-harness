@@ -21,9 +21,11 @@ using FluentAssertions;
 using Infrastructure.AI.Evaluation.Metrics;
 using Infrastructure.AI.Evaluation.Loaders;
 using Infrastructure.AI.Evaluation.SkillTraining;
+using Infrastructure.AI.Persistence;
 using Infrastructure.AI.SkillTraining;
 using Infrastructure.AI.Tools;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -70,6 +72,7 @@ public sealed partial class SkillTrainingOfflineDemoTests : IDisposable
 
     public void Dispose()
     {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         if (Directory.Exists(_root))
             Directory.Delete(_root, recursive: true);
     }
@@ -128,10 +131,10 @@ public sealed partial class SkillTrainingOfflineDemoTests : IDisposable
         Config = config
     };
 
-    private Rig NewRig(Func<Session, Task<string>> agentSession, Func<string, string>? agentOutput = null)
+    private Rig NewRig(Func<Session, Task<string>> agentSession, Func<string, string>? agentOutput = null, string? checkpointDatabase = null)
     {
         File.WriteAllText(_datasetPath, Dataset());
-        return new Rig(_evidenceRoot, _datasetPath, agentSession, agentOutput);
+        return new Rig(_evidenceRoot, _datasetPath, agentSession, agentOutput, checkpointDatabase);
     }
 
     /// <summary>What the scripted agent session can do: read the evidence the way a model would, through the real tool.</summary>
@@ -170,7 +173,7 @@ public sealed partial class SkillTrainingOfflineDemoTests : IDisposable
     {
         private readonly ServiceProvider _provider;
 
-        public Rig(string evidenceRoot, string datasetPath, Func<Session, Task<string>> agentSession, Func<string, string>? agentOutput)
+        public Rig(string evidenceRoot, string datasetPath, Func<Session, Task<string>> agentSession, Func<string, string>? agentOutput, string? checkpointDatabase = null)
         {
             Memory = new FakeMemory();
             Handler = new AgentSessionHandler(agentSession, () => _provider!);
@@ -219,6 +222,13 @@ public sealed partial class SkillTrainingOfflineDemoTests : IDisposable
             services.AddSingleton<IEvalDatasetLoader, YamlEvalDatasetLoader>();
             services.AddSingleton<IAgentInvoker>(Invoker);
             services.ReplacePlaceholder<IRolloutRunner, NotConfiguredRolloutRunner, GovernedRolloutRunner>(ServiceLifetime.Scoped);
+            if (checkpointDatabase is not null)
+            {
+                // A durable store in place of the in-memory default, over a file that outlives this rig.
+                services.AddDbContextFactory<SkillTrainingDbContext>(o => o.UseSqlite($"DataSource={checkpointDatabase}"));
+                services.AddSingleton<SchemaInitializer<SkillTrainingDbContext>>();
+                services.ReplacePlaceholder<ISkillTrainingCheckpointStore, InMemorySkillTrainingCheckpointStore, EfSkillTrainingCheckpointStore>(ServiceLifetime.Singleton);
+            }
 
             _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         }

@@ -9,7 +9,7 @@ namespace Application.AI.Common.Interfaces.SkillTraining;
 /// <remarks>
 /// Mirrors the plan-state-store pattern: short-lived store calls, all operations addressable
 /// by (RunId, Step). Implementations may be in-memory (default for tests / dev) or backed
-/// by a durable store (Phase 4+ follow-up: EF Core SQLite migration).
+/// by a durable store (<c>EfSkillTrainingCheckpointStore</c>, SQLite).
 /// </remarks>
 public interface ISkillTrainingCheckpointStore
 {
@@ -27,4 +27,17 @@ public interface ISkillTrainingCheckpointStore
 
     /// <summary>Returns every checkpoint for the run, ordered by step ascending.</summary>
     Task<IReadOnlyList<SkillTrainingCheckpoint>> ListAsync(string runId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Claims the right to work on <paramref name="runId"/>, so two callers cannot train the same run at once
+    /// and write to the same checkpoints. Returns <see langword="null"/> when someone else holds it.
+    /// </summary>
+    /// <remarks>
+    /// Dispose the result to release the claim. How far the claim reaches is the store's: an in-memory store
+    /// claims within its process; a durable store claims across every process that shares it, and lets a
+    /// claim lapse if its holder stops (a crash), so a dead process does not block the run for good.
+    /// </remarks>
+    /// <param name="runId">The run to claim.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IAsyncDisposable?> TryBeginRunAsync(string runId, CancellationToken cancellationToken);
 }

@@ -6,7 +6,7 @@ namespace Application.AI.Common.Services.SkillTraining;
 
 /// <summary>
 /// Thread-safe in-memory <see cref="ISkillTrainingCheckpointStore"/>. Default registration
-/// for development and tests; production deployments swap in a durable EF Core impl.
+/// for development and tests; <c>EfSkillTrainingCheckpointStore</c> replaces it where checkpoints must survive a restart.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,6 +26,7 @@ public sealed class InMemorySkillTrainingCheckpointStore : ISkillTrainingCheckpo
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, SkillTrainingCheckpoint>> _byRun = new();
     private readonly object _evictionLock = new();
+    private readonly ConcurrentDictionary<string, byte> _activeRuns = new();
 
     /// <inheritdoc />
     public Task SaveAsync(SkillTrainingCheckpoint checkpoint, CancellationToken cancellationToken)
@@ -111,6 +112,17 @@ public sealed class InMemorySkillTrainingCheckpointStore : ISkillTrainingCheckpo
     }
 
     /// <inheritdoc />
+    /// <remarks>Within this store instance only: a claim here is not visible to another process.</remarks>
+    public Task<IAsyncDisposable?> TryBeginRunAsync(string runId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(runId);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult<IAsyncDisposable?>(
+            _activeRuns.TryAdd(runId, 0) ? new Claim(_activeRuns, runId) : null);
+    }
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<SkillTrainingCheckpoint>> ListAsync(string runId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(runId);
@@ -123,5 +135,14 @@ public sealed class InMemorySkillTrainingCheckpointStore : ISkillTrainingCheckpo
 
         var ordered = byStep.Values.OrderBy(c => c.Step).ToList();
         return Task.FromResult<IReadOnlyList<SkillTrainingCheckpoint>>(ordered);
+    }
+
+    private sealed class Claim(ConcurrentDictionary<string, byte> active, string runId) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            active.TryRemove(runId, out _);
+            return ValueTask.CompletedTask;
+        }
     }
 }

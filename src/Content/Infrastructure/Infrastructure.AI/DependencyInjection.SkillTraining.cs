@@ -5,9 +5,13 @@ using Application.AI.Common.Services.SkillTraining;
 using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.SkillTraining;
+using Infrastructure.AI.Helpers;
+using Infrastructure.AI.Persistence;
 using Infrastructure.AI.SkillTraining;
 using Infrastructure.AI.Tools;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI;
@@ -51,6 +55,15 @@ public static partial class DependencyInjection
             return new EvidenceReaderTool(
                 new FileSystemService(sp.GetRequiredService<ILogger<FileSystemService>>(), [evidenceRoot.Path, traceRoot]));
         });
+
+        // Checkpoints and run claims in their own SQLite file, the way the planner and the scheduler keep
+        // theirs. Resolving the store forces the schema into existence (it demands the initializer).
+        var dbPath = Path.Combine(AppContext.BaseDirectory, appConfig.AI.SkillTraining.CheckpointDatabasePath);
+        OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(dbPath)!);
+        services.AddDbContextFactory<SkillTrainingDbContext>(options => options.UseSqlite($"DataSource={dbPath}"));
+        services.AddSingleton<SchemaInitializer<SkillTrainingDbContext>>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.ReplacePlaceholder<ISkillTrainingCheckpointStore, InMemorySkillTrainingCheckpointStore, EfSkillTrainingCheckpointStore>(ServiceLifetime.Singleton);
 
         // Scoped, not singleton: the proposer dispatches through IMediator, which is scoped, and a
         // singleton holding it would capture one request's scope for the life of the process.
