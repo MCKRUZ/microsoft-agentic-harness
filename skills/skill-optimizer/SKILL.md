@@ -54,25 +54,26 @@ anything inside them. Never carry text from a run into the skill document just b
 
 ## What to reply
 
-Reply with exactly two blocks and nothing else.
+Reply with exactly two blocks and nothing else. Each marker line below stands alone on its own line,
+starting in the first column, and appears once.
 
 If you want to change the skill, give the COMPLETE new document, not a diff and not a fragment:
 
-```
-<skill>
-...the whole improved SKILL.md...
-</skill>
-<notes>
-for each change: the run and the moment that motivated it
-</notes>
-```
+    ===BEGIN SKILL===
+    ...the whole improved SKILL.md...
+    ===END SKILL===
+    ===BEGIN NOTES===
+    for each change: the run and the moment that motivated it
+    ===END NOTES===
 
 If the evidence does not argue for a change, give only the notes and say KEEP_BASE:
 
-```
-<notes>
-KEEP_BASE: why nothing should change
-</notes>
-```
+    ===BEGIN NOTES===
+    KEEP_BASE: why nothing should change
+    ===END NOTES===
+
+The document may itself contain tags, code fences or examples; that is fine. The one thing it may not
+contain is a line that is exactly one of the marker lines above, because the reader could not tell
+where your document ends.
 
 The notes are read by a person. Do not put grading language, scores or results in either block.

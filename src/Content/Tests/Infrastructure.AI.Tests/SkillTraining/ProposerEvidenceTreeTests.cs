@@ -7,8 +7,9 @@ using Xunit;
 namespace Infrastructure.AI.Tests.SkillTraining;
 
 /// <summary>
-/// Pins <see cref="ProposerEvidenceTree"/> and <see cref="ProposerReply"/> (#843): the layout the proposer
-/// session reads, that an item id cannot steer a file outside the tree, and how a reply is read.
+/// Pins <see cref="ProposerEvidenceTree"/> (#843): the layout the proposer session reads, that an item id
+/// cannot steer a file outside the tree, that a run too long to store whole is bounded, and how leaking
+/// rollouts are screened out.
 /// </summary>
 public sealed class ProposerEvidenceTreeTests : IDisposable
 {
@@ -72,6 +73,84 @@ public sealed class ProposerEvidenceTreeTests : IDisposable
     }
 
     [Fact]
+    public async Task Write_ARunTooLongToStoreWhole_KeepsItsBeginningAndEndAndSaysWhatWasOmitted()
+    {
+        var head = new string('h', ProposerEvidenceTree.MaxTrajectoryChars / 2);
+        var tail = new string('t', ProposerEvidenceTree.MaxTrajectoryChars / 2);
+        var input = Input(true, string.Empty, new ProposerRolloutView("huge", false, head + new string('m', 1000) + tail, string.Empty));
+
+        var tree = await ProposerEvidenceTree.WriteAsync(_root, input, new OwnerOnlyDirectoryCreator(), CancellationToken.None);
+
+        var text = File.ReadAllText(Directory.GetFiles(Path.Combine(tree.Directory, "rollouts")).Single());
+        text.Length.Should().BeLessThan(ProposerEvidenceTree.MaxTrajectoryChars + 500);
+        text.Contains("1000 characters omitted from the middle").Should().BeTrue();
+        text.Contains(new string('m', 100)).Should().BeFalse("the middle is what is dropped");
+        text.Contains(head[..100]).Should().BeTrue();
+        text.EndsWith(tail[^100..], StringComparison.Ordinal).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Screen_ALeakingRollout_IsRemovedAndTheRestStandWithCountsToMatch()
+    {
+        var input = Input(true, string.Empty,
+            new ProposerRolloutView("clean-pass", true, "it worked", string.Empty),
+            new ProposerRolloutView("leaky", false, "{\"OverallVerdict\":\"Fail\"}", string.Empty),
+            new ProposerRolloutView("clean-fail", false, "it gave up", string.Empty));
+        var tree = await ProposerEvidenceTree.WriteAsync(_root, input, new OwnerOnlyDirectoryCreator(), CancellationToken.None);
+
+        var screened = await ProposerEvidenceTree.ScreenAsync(tree, CancellationToken.None);
+
+        screened.Usable.Should().BeTrue("one hostile run must not stop the step for the others");
+        screened.Findings.Should().ContainSingle().Which.Source.Should().Contain("leaky");
+        (screened.Tree.RolloutCount, screened.Tree.PassedCount).Should().Be((2, 1));
+        Directory.GetFiles(Path.Combine(tree.Directory, "rollouts")).Should().HaveCount(2)
+            .And.NotContain(f => f.Contains("leaky"));
+    }
+
+    [Fact]
+    public async Task Screen_EveryRolloutLeaking_IsUnusable()
+    {
+        var input = Input(true, string.Empty, new ProposerRolloutView("leaky", false, "{\"OverallVerdict\":\"Fail\"}", string.Empty));
+        var tree = await ProposerEvidenceTree.WriteAsync(_root, input, new OwnerOnlyDirectoryCreator(), CancellationToken.None);
+
+        var screened = await ProposerEvidenceTree.ScreenAsync(tree, CancellationToken.None);
+
+        screened.Usable.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Screen_NoRolloutsToBeginWith_IsStillUsable()
+    {
+        var tree = await ProposerEvidenceTree.WriteAsync(_root, Input(), new OwnerOnlyDirectoryCreator(), CancellationToken.None);
+
+        var screened = await ProposerEvidenceTree.ScreenAsync(tree, CancellationToken.None);
+
+        screened.Usable.Should().BeTrue("nothing leaked and there was nothing to leave out");
+        screened.Findings.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("skill")]
+    [InlineData("memory")]
+    public async Task Screen_AMarkerInTheSkillOrTheMemory_IsUnusable(string where)
+    {
+        var verdict = "{\"OverallVerdict\":\"Fail\"}";
+        var input = new ReflectionInput
+        {
+            CurrentSkill = where == "skill" ? verdict : "# skill\n",
+            MetaSkillMemory = where == "memory" ? verdict : string.Empty,
+            Rollouts = [new ProposerRolloutView("clean", false, "it gave up", string.Empty)],
+            IncludeSuccesses = true
+        };
+        var tree = await ProposerEvidenceTree.WriteAsync(_root, input, new OwnerOnlyDirectoryCreator(), CancellationToken.None);
+
+        var screened = await ProposerEvidenceTree.ScreenAsync(tree, CancellationToken.None);
+
+        screened.Usable.Should().BeFalse("there is no skill or memory to leave out and still have a step");
+        screened.Findings.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Delete_RemovesTheWholeTree()
     {
         var tree = await ProposerEvidenceTree.WriteAsync(
@@ -81,33 +160,5 @@ public sealed class ProposerEvidenceTreeTests : IDisposable
         ProposerEvidenceTree.Delete(tree.Directory);
 
         Directory.Exists(tree.Directory).Should().BeFalse();
-    }
-
-    [Fact]
-    public void Parse_TakesTheLastBlocksAndStripsTheTagNewlines()
-    {
-        var reply = ProposerReply.Parse(
-            "I will use <skill>draft</skill> format.\n<notes>first</notes>\n<skill>\nline one\r\nline two\n</skill>\n<notes>\nrun 2: it timed out\n</notes>");
-
-        reply.Skill.Should().Be("line one\nline two");
-        reply.Notes.Should().Be("run 2: it timed out");
-    }
-
-    [Fact]
-    public void Parse_NoSkillBlock_CarriesTheNotesAndKeepBase()
-    {
-        var reply = ProposerReply.Parse("<notes>KEEP_BASE: nothing in the runs argues for a change</notes>");
-
-        reply.Skill.Should().BeNull();
-        reply.SaysKeepBase.Should().BeTrue();
-    }
-
-    [Fact]
-    public void Parse_Prose_HasNeitherASkillNorKeepBase()
-    {
-        var reply = ProposerReply.Parse("Sure, here is my answer without the format.");
-
-        reply.Skill.Should().BeNull();
-        reply.SaysKeepBase.Should().BeFalse();
     }
 }

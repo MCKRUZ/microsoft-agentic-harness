@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
@@ -19,9 +20,13 @@ namespace Infrastructure.AI.Tools;
 /// read-only. The only dependable way to withhold a write is to hand over a tool that has none.
 /// </para>
 /// <para>
-/// <b>Confined by construction.</b> The tool is built over a <see cref="IFileSystemService"/> whose only
-/// allowed base path is the configured evidence root, so a path outside it (including a symlink or a
-/// <c>..</c> out of it) is refused by the same hardened guard the general file tool uses.
+/// <b>Confined twice.</b> The tool is built over a <see cref="IFileSystemService"/> whose only allowed
+/// base path is the configured evidence root, so a path outside it (including a symlink or a <c>..</c> out
+/// of it) is refused by the same hardened guard the general file tool uses. Inside the root it is narrowed
+/// again to the one step's folder published by <see cref="SkillTrainingEvidenceScope"/>: the root holds a
+/// folder per step, and concurrent runs and trees left by a crash share it, so root-level confinement alone
+/// would let a session steered by text in a trajectory read another run's evidence. With no folder
+/// published the tool refuses everything.
 /// </para>
 /// <para>
 /// <b>Reads are paged, not clipped.</b> A <c>read</c> returns at most <c>max_chars</c> characters
@@ -105,6 +110,10 @@ public sealed class EvidenceReaderTool : ITool
     {
         try
         {
+            var requested = parameters.TryGetValue("path", out var raw) && raw is string text ? text : null;
+            if (requested is not null && !SkillTrainingEvidenceScope.Allows(requested))
+                return ToolResult.Fail("Access denied: path is outside this step's evidence.");
+
             return operation.ToLowerInvariant() switch
             {
                 "read" => await ReadAsync(parameters, cancellationToken),

@@ -35,7 +35,12 @@ namespace Infrastructure.AI.SkillTraining;
 /// <para>
 /// <b>What it is never shown.</b> No score and no judge text: <see cref="ProposerRolloutView"/> carries a
 /// pass/fail flag and the trajectory, the evidence is scanned for grader output once more where it is
-/// written to disk, and the configured work description may not name its measurement.
+/// written to disk (a leaking rollout is left out, a leaking skill or memory file ends the step), and the
+/// configured work description may not name its measurement.
+/// </para>
+/// <para>
+/// <b>What it can read.</b> Only this step's folder: <see cref="SkillTrainingEvidenceScope"/> is published
+/// around the session, and the evidence tool refuses any other path, including a sibling step's.
 /// </para>
 /// </remarks>
 public sealed class AgenticPatchProposer : IPatchProposer
@@ -88,17 +93,22 @@ public sealed class AgenticPatchProposer : IPatchProposer
         {
             // The loop screened this evidence before calling; this is the boundary where it reaches disk
             // and then a model, so it is checked again rather than trusted (a different caller, such as
-            // the standalone reflect command, would not have the same history).
-            var leaks = await ScanTreeAsync(tree.Directory, cancellationToken).ConfigureAwait(false);
-            if (leaks.Count > 0)
+            // the standalone reflect command, would not have the same history). A rollout that leaks is
+            // left out and the rest go ahead, as in the loop: aborting on any marker would hand the
+            // writer of one hostile trajectory a switch that stops the whole step.
+            var screened = await ProposerEvidenceTree.ScreenAsync(tree, cancellationToken).ConfigureAwait(false);
+            if (screened.Findings.Count > 0)
             {
-                _logger.LogError(
-                    "Skill-training proposer refused to start: grader-verdict marker(s) in its evidence [{Findings}]",
-                    GraderMarkerScanner.Describe(leaks));
-                return Empty("Evidence carried grader-verdict marker(s); no proposal was requested.");
+                _logger.LogWarning(
+                    "Skill-training proposer evidence carried grader-verdict marker(s) [{Findings}]; usable: {Usable}",
+                    GraderMarkerScanner.Describe(screened.Findings),
+                    screened.Usable);
             }
 
-            return await ProposeFromEvidenceAsync(input, tree, cancellationToken).ConfigureAwait(false);
+            if (!screened.Usable)
+                return Empty("Evidence carried grader-verdict marker(s); no proposal was requested.");
+
+            return await ProposeFromEvidenceAsync(input, screened.Tree, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -114,7 +124,7 @@ public sealed class AgenticPatchProposer : IPatchProposer
 
         for (var attempt = 1; attempt <= Attempts; attempt++)
         {
-            var response = await RunSessionAsync(mission + rejection, cancellationToken).ConfigureAwait(false);
+            var response = await RunSessionAsync(mission + rejection, tree.Directory, cancellationToken).ConfigureAwait(false);
             var reply = ProposerReply.Parse(response);
 
             if (reply.Skill is null)
@@ -122,11 +132,19 @@ public sealed class AgenticPatchProposer : IPatchProposer
                 if (reply.SaysKeepBase)
                     return Empty(reply.Notes);
 
-                rejection = Rejected("the reply had no <skill> block and did not say KEEP_BASE");
+                rejection = Rejected($"the reply had no {ProposerReply.BeginSkill} block and did not say KEEP_BASE");
                 continue;
             }
 
-            var proposed = AlignFinalNewline(input.CurrentSkill, reply.Skill);
+            if (reply.IsAmbiguous)
+            {
+                rejection = Rejected(
+                    $"the document contains, or is followed by, a line that is itself {ProposerReply.BeginSkill} or {ProposerReply.EndSkill}, " +
+                    "so where it ends cannot be told. Reply with one block only");
+                continue;
+            }
+
+            var proposed = AlignToCurrent(input.CurrentSkill, reply.Skill);
             if (string.IsNullOrWhiteSpace(proposed))
             {
                 rejection = Rejected("the proposed document is empty; to leave the skill alone reply KEEP_BASE");
@@ -162,9 +180,12 @@ public sealed class AgenticPatchProposer : IPatchProposer
         return verdict.IsAllowed ? null : "the proposal touches a surface the loop may not edit";
     }
 
-    private async Task<string> RunSessionAsync(string mission, CancellationToken cancellationToken)
+    private async Task<string> RunSessionAsync(string mission, string evidenceDirectory, CancellationToken cancellationToken)
     {
         var config = _config.CurrentValue;
+
+        // The evidence tool serves only this step's folder, for the length of this one awaited call.
+        using var readable = SkillTrainingEvidenceScope.Begin(evidenceDirectory);
         var result = await _mediator.Send(
             new RunConversationCommand
             {
@@ -186,28 +207,26 @@ public sealed class AgenticPatchProposer : IPatchProposer
         return result.FinalResponse;
     }
 
-    private async Task<IReadOnlyList<GraderLeakFinding>> ScanTreeAsync(string directory, CancellationToken cancellationToken)
-    {
-        var items = new List<(string Source, string? Text)>();
-        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-        {
-            var text = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
-            items.Add((Path.GetRelativePath(directory, file).Replace('\\', '/'), text));
-        }
-
-        return GraderMarkerScanner.Scan(items);
-    }
-
     /// <summary>
-    /// The document the proposer returned, with its final newline made to match the current skill's. The
-    /// reply format cannot tell whether a trailing newline is intended, and a difference there alone would
-    /// otherwise show up as a change.
+    /// The document the proposer returned, written the way the current skill is: its trailing whitespace
+    /// copied verbatim (the reply format cannot say whether a final newline is intended) and, when the
+    /// current skill uses Windows line endings throughout, its line endings. Without this a skill saved
+    /// with CRLF would come back as a rewrite of every line, and one difference at the end alone would
+    /// show up as a change.
     /// </summary>
-    private static string AlignFinalNewline(string current, string proposed)
+    private static string AlignToCurrent(string current, string proposed)
     {
-        var body = proposed.TrimEnd('\n');
-        return current.EndsWith('\n') ? body + "\n" : body;
+        var trailing = current[current.TrimEnd().Length..];
+        var body = proposed.TrimEnd();
+        if (UsesCrLfThroughout(current))
+            body = body.Replace("\n", "\r\n", StringComparison.Ordinal);
+
+        return body + trailing;
     }
+
+    private static bool UsesCrLfThroughout(string text) =>
+        text.Contains("\r\n", StringComparison.Ordinal)
+        && !text.Replace("\r\n", string.Empty, StringComparison.Ordinal).Contains('\n');
 
     private static string BuildMission(ProposerEvidenceTree.Written tree, string workDescription)
     {

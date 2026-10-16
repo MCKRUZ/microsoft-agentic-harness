@@ -181,16 +181,19 @@ public sealed class DependencyInjectionTests
 
             provider.GetRequiredService<Application.AI.Common.Services.SkillTraining.SkillTrainingEvidenceRoot>()
                 .Path.Should().Be(Path.GetFullPath(root));
-            services.Last(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.IPatchProposer))
-                .ImplementationType.Should().Be<Infrastructure.AI.SkillTraining.AgenticPatchProposer>();
+            var proposer = services.Last(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.IPatchProposer));
+            proposer.ImplementationType.Should().Be<Infrastructure.AI.SkillTraining.AgenticPatchProposer>();
+            proposer.Lifetime.Should().Be(ServiceLifetime.Scoped, "it dispatches through the scoped IMediator, so a singleton would capture one request's scope");
 
             var tool = provider.GetRequiredKeyedService<Application.AI.Common.Interfaces.Tools.ITool>("evidence_reader");
             tool.Should().BeOfType<Infrastructure.AI.Tools.EvidenceReaderTool>();
             tool.IsReadOnly.Should().BeTrue();
 
-            var inside = Path.Combine(root, "note.md");
+            var inside = Path.Combine(root, "step", "note.md");
+            Directory.CreateDirectory(Path.GetDirectoryName(inside)!);
             await File.WriteAllTextAsync(inside, "evidence");
             await File.WriteAllTextAsync(outside, "private");
+            using var step = Application.AI.Common.Services.SkillTraining.SkillTrainingEvidenceScope.Begin(Path.GetDirectoryName(inside)!);
             (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = inside })).Success.Should().BeTrue();
             (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = outside })).Success.Should().BeFalse();
         }
@@ -200,6 +203,38 @@ public sealed class DependencyInjectionTests
             if (Directory.Exists(parent))
                 Directory.Delete(parent, recursive: true);
         }
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_ReplacesTheFailFastPatchProposerDefault()
+    {
+        var services = CreateBaseServices();
+        services.AddSingleton<Application.AI.Common.Interfaces.SkillTraining.IPatchProposer,
+            Application.AI.Common.Services.SkillTraining.NotConfiguredPatchProposer>();
+
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+
+        services.Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.IPatchProposer))
+            .Should().ContainSingle().Which.ImplementationType.Should().Be<Infrastructure.AI.SkillTraining.AgenticPatchProposer>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_LeavesAPatchProposerTheConsumerRegisteredThemselves()
+    {
+        var services = CreateBaseServices();
+        services.AddSingleton<Application.AI.Common.Interfaces.SkillTraining.IPatchProposer, ConsumerPatchProposer>();
+
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+
+        services.Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.IPatchProposer))
+            .Should().ContainSingle().Which.ImplementationType.Should().Be<ConsumerPatchProposer>();
+    }
+
+    private sealed class ConsumerPatchProposer : Application.AI.Common.Interfaces.SkillTraining.IPatchProposer
+    {
+        public Task<Domain.AI.SkillTraining.Patch> ProposeAsync(
+            Domain.AI.SkillTraining.ReflectionInput input, CancellationToken cancellationToken) =>
+            Task.FromResult(new Domain.AI.SkillTraining.Patch { Edits = [] });
     }
 
     [Fact]

@@ -27,8 +27,9 @@ public static partial class DependencyInjection
     /// </para>
     /// <para>
     /// The application layer registers a fail-fast <c>NotConfiguredPatchProposer</c> with
-    /// <c>TryAddSingleton</c>; this plain registration wins over it whichever layer is composed first.
-    /// The rollout runner stays on its fail-fast default until a real one is registered.
+    /// <c>TryAddSingleton</c>. If this runs after it, the default is replaced; if this runs first, the
+    /// application layer's <c>TryAdd</c> leaves it alone. A proposer a consumer registered themselves is
+    /// never replaced. The rollout runner stays on its fail-fast default until a real one is registered.
     /// </para>
     /// </remarks>
     private static void RegisterSkillTrainingServices(IServiceCollection services, AppConfig appConfig)
@@ -46,6 +47,23 @@ public static partial class DependencyInjection
                 new FileSystemService(sp.GetRequiredService<ILogger<FileSystemService>>(), [evidenceRoot.Path]));
         });
 
-        services.AddSingleton<IPatchProposer, AgenticPatchProposer>();
+        ReplaceFailFastPatchProposer(services);
+    }
+
+    /// <summary>
+    /// Makes <see cref="AgenticPatchProposer"/> the <see cref="IPatchProposer"/> unless a consumer has
+    /// already registered their own. Scoped, not singleton: it dispatches through <c>IMediator</c>, which
+    /// is scoped, and a singleton holding it would capture one request's scope for the life of the process.
+    /// </summary>
+    private static void ReplaceFailFastPatchProposer(IServiceCollection services)
+    {
+        var existing = services.Where(d => d.ServiceType == typeof(IPatchProposer)).ToList();
+        if (existing.Any(d => d.ImplementationType != typeof(NotConfiguredPatchProposer)))
+            return;
+
+        foreach (var descriptor in existing)
+            services.Remove(descriptor);
+
+        services.AddScoped<IPatchProposer, AgenticPatchProposer>();
     }
 }

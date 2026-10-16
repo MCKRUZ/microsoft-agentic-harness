@@ -22,14 +22,18 @@ namespace Application.AI.Common.Services.SkillTraining;
 /// <para>
 /// One edit per changed hunk (a run of changed lines), from a line-level longest-common-subsequence
 /// diff, so the edit budget the loop spends per step means what it did before: a proposer that changes
-/// three separate places proposes three edits, not one edit spanning the whole document. Very large
-/// documents fall back to a single hunk between the common prefix and suffix.
+/// three separate places proposes three edits, not one edit spanning the whole document. The lines shared
+/// at the start and end are set aside before the diff, and a change too large for the diff table falls
+/// back to a single hunk between the common prefix and suffix.
 /// </para>
 /// </remarks>
 public static class SkillDocumentDiff
 {
-    /// <summary>Above this many line pairs the quadratic diff is skipped for the single-hunk fallback.</summary>
-    private const long MaxLinePairs = 25_000_000;
+    /// <summary>
+    /// Above this many line pairs (in what is left after the shared start and end are removed) the
+    /// quadratic diff is skipped for a single hunk. The table is four bytes a pair, so this is 16 MB.
+    /// </summary>
+    private const long MaxLinePairs = 4_000_000;
 
     /// <summary>Computes the edits that turn <paramref name="oldText"/> into <paramref name="newText"/>.</summary>
     /// <param name="oldText">The current skill document.</param>
@@ -48,9 +52,7 @@ public static class SkillDocumentDiff
 
         var oldLines = SplitKeepingNewlines(oldText);
         var newLines = SplitKeepingNewlines(newText);
-        var hunks = (long)oldLines.Count * newLines.Count <= MaxLinePairs
-            ? LineHunks(oldLines, newLines)
-            : [SingleHunk(oldLines, newLines)];
+        var hunks = Hunks(oldLines, newLines);
 
         var working = oldText;
         var edits = new List<Edit>(hunks.Count);
@@ -177,7 +179,13 @@ public static class SkillDocumentDiff
 
     private readonly record struct Hunk(int OldStart, int OldCount, int NewStart, int NewCount);
 
-    private static Hunk SingleHunk(List<string> oldLines, List<string> newLines)
+    /// <summary>
+    /// The changed hunks between two line lists. The lines the two share at the start and at the end are
+    /// peeled off first, so the quadratic table is built only over what actually moved: a skill edited in
+    /// one place costs almost nothing however long it is. If what is left is still too large for the
+    /// table, it becomes one hunk.
+    /// </summary>
+    private static List<Hunk> Hunks(List<string> oldLines, List<string> newLines)
     {
         var prefix = 0;
         while (prefix < oldLines.Count && prefix < newLines.Count && oldLines[prefix] == newLines[prefix])
@@ -188,7 +196,13 @@ public static class SkillDocumentDiff
                && oldLines[^(suffix + 1)] == newLines[^(suffix + 1)])
             suffix++;
 
-        return new Hunk(prefix, oldLines.Count - prefix - suffix, prefix, newLines.Count - prefix - suffix);
+        var oldMiddle = oldLines.GetRange(prefix, oldLines.Count - prefix - suffix);
+        var newMiddle = newLines.GetRange(prefix, newLines.Count - prefix - suffix);
+
+        if ((long)oldMiddle.Count * newMiddle.Count > MaxLinePairs)
+            return [new Hunk(prefix, oldMiddle.Count, prefix, newMiddle.Count)];
+
+        return [.. LineHunks(oldMiddle, newMiddle).Select(h => h with { OldStart = h.OldStart + prefix, NewStart = h.NewStart + prefix })];
     }
 
     /// <summary>Runs of changed lines between two line lists, from a longest-common-subsequence table.</summary>

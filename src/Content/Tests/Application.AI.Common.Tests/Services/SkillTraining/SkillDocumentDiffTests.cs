@@ -83,14 +83,49 @@ public sealed class SkillDocumentDiffTests
     }
 
     [Fact]
-    public void Between_DocumentTooLargeForTheLineDiff_FallsBackToOneHunkAndStillReproduces()
+    public void Between_ChangesTooFarApartForTheLineDiff_FallBackToOneHunkAndStillReproduce()
     {
-        var old = string.Concat(Enumerable.Range(0, 6000).Select(i => $"line {i % 50}\n"));
-        var changed = old.Replace("line 7\nline 8\n", "line 7\nCHANGED\nline 8\n", StringComparison.Ordinal);
+        // Changed at both ends, so nothing at the start or end is shared and the whole document is left to diff.
+        var lines = Enumerable.Range(0, 3000).Select(i => $"line {i % 50}\n").ToArray();
+        var old = string.Concat(lines);
+        var changedLines = (string[])lines.Clone();
+        changedLines[0] = "FIRST\n";
+        changedLines[^1] = "LAST\n";
+        var changed = string.Concat(changedLines);
 
         var edits = SkillDocumentDiff.Between(old, changed);
 
-        edits.Should().HaveCountLessThanOrEqualTo(1);
+        edits.Should().ContainSingle("the change is too large to diff line by line");
+        Applied(old, edits).Should().Be(changed);
+    }
+
+    [Fact]
+    public void Between_OneChangeInALongDocument_IsDiffedWithoutBuildingATableForTheWholeDocument()
+    {
+        // 5000 x 5000 lines is 25 million pairs: ~100 MB if the table were built over the whole document.
+        // The lines shared at the start and the end are set aside first, so the table is over one line.
+        var old = string.Concat(Enumerable.Range(0, 5000).Select(i => $"line {i}\n"));
+        var changed = old.Replace("line 2500\n", "line 2500 reworded\n", StringComparison.Ordinal);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var edits = SkillDocumentDiff.Between(old, changed);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        edits.Should().ContainSingle();
+        Applied(old, edits).Should().Be(changed);
+        allocated.Should().BeLessThan(20_000_000, "the diff table is built only over what changed");
+    }
+
+    [Fact]
+    public void Between_TwoDistantChangesInALongDocument_StayTwoEditsAndLandOnTheRightOccurrence()
+    {
+        var shared = string.Concat(Enumerable.Range(0, 400).Select(i => $"keep {i}\n"));
+        var old = shared + "alpha\n" + shared + "omega\n" + shared;
+        var changed = shared + "ALPHA\n" + shared + "OMEGA\n" + shared;
+
+        var edits = SkillDocumentDiff.Between(old, changed);
+
+        edits.Should().HaveCount(2);
         Applied(old, edits).Should().Be(changed);
     }
 

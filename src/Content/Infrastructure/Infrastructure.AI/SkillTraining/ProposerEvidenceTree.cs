@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Services.SkillTraining;
 using Application.Common.Interfaces.Common;
 using Domain.AI.SkillTraining;
 
@@ -27,6 +28,13 @@ internal static partial class ProposerEvidenceTree
 {
     [GeneratedRegex(@"[^A-Za-z0-9._-]+")]
     private static partial Regex UnsafeFileNameChars();
+
+    /// <summary>
+    /// The most characters of one trajectory written to disk. The reader's file service refuses files over
+    /// 10 MB, and a trajectory past that would be unreadable rather than long; at three bytes a character
+    /// this stays under it.
+    /// </summary>
+    public const int MaxTrajectoryChars = 3_000_000;
 
     /// <summary>A written tree: where it is and what it holds.</summary>
     /// <param name="Directory">Absolute directory of this step's tree.</param>
@@ -60,7 +68,7 @@ internal static partial class ProposerEvidenceTree
         {
             var rollout = shown[i];
             var name = $"{i + 1:D3}-{SafeName(rollout.ItemId)}.md";
-            var body = $"passed: {(rollout.Passed ? "true" : "false")}\nitem: {rollout.ItemId}\n\n{rollout.Trajectory}";
+            var body = $"passed: {(rollout.Passed ? "true" : "false")}\nitem: {rollout.ItemId}\n\n{Bounded(rollout.Trajectory)}";
             await File.WriteAllTextAsync(Path.Combine(rolloutDir, name), body, cancellationToken).ConfigureAwait(false);
         }
 
@@ -74,6 +82,59 @@ internal static partial class ProposerEvidenceTree
         }
 
         return new Written(directory, shown.Count, shown.Count(r => r.Passed), hasMemory);
+    }
+
+    /// <summary>The outcome of <see cref="ScreenAsync"/>.</summary>
+    /// <param name="Tree">The tree as it stands after leaking rollouts were removed.</param>
+    /// <param name="Findings">Every grader-verdict marker found, with where.</param>
+    /// <param name="Usable">Whether a proposer session should go ahead on what is left.</param>
+    public sealed record Screened(Written Tree, IReadOnlyList<GraderLeakFinding> Findings, bool Usable);
+
+    /// <summary>
+    /// Scans what was written, file by file, for grader-verdict markers. A rollout that carries one is
+    /// deleted and the rest stand; a marker in the skill or the memory file makes the step unusable, as it
+    /// does in the loop. A tree that had rollouts and has none left is unusable too.
+    /// </summary>
+    /// <param name="tree">The tree to screen.</param>
+    /// <param name="cancellationToken">Cancels the scan.</param>
+    public static async Task<Screened> ScreenAsync(Written tree, CancellationToken cancellationToken)
+    {
+        var findings = new List<GraderLeakFinding>();
+        var fixedFiles = new[]
+        {
+            Path.Combine(tree.Directory, "skill", "SKILL.md"),
+            Path.Combine(tree.Directory, "memory", "EXPERIENCE.md"),
+        };
+
+        var fatal = false;
+        foreach (var file in fixedFiles.Where(File.Exists))
+        {
+            var text = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
+            var found = GraderMarkerScanner.Scan([(RelativeName(tree.Directory, file), text)]);
+            findings.AddRange(found);
+            fatal |= found.Count > 0;
+        }
+
+        var kept = 0;
+        var passed = 0;
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(tree.Directory, "rollouts")).Order(StringComparer.Ordinal))
+        {
+            var text = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
+            var found = GraderMarkerScanner.Scan([(RelativeName(tree.Directory, file), text)]);
+            if (found.Count > 0)
+            {
+                findings.AddRange(found);
+                File.Delete(file);
+                continue;
+            }
+
+            kept++;
+            if (text.StartsWith("passed: true", StringComparison.Ordinal))
+                passed++;
+        }
+
+        var usable = !fatal && (tree.RolloutCount == 0 || kept > 0);
+        return new Screened(tree with { RolloutCount = kept, PassedCount = passed }, findings, usable);
     }
 
     /// <summary>Removes a tree written by <see cref="WriteAsync"/>; never throws.</summary>
@@ -93,6 +154,25 @@ internal static partial class ProposerEvidenceTree
         {
         }
     }
+
+    /// <summary>
+    /// A trajectory over <see cref="MaxTrajectoryChars"/> keeps its beginning and its end, with a line
+    /// saying how much was left out of the middle, rather than being unreadable whole.
+    /// </summary>
+    private static string Bounded(string trajectory)
+    {
+        if (trajectory.Length <= MaxTrajectoryChars)
+            return trajectory;
+
+        var half = MaxTrajectoryChars / 2;
+        var omitted = trajectory.Length - 2 * half;
+        return trajectory[..half]
+            + $"\n\n[... {omitted} characters omitted from the middle of this run: it was too long to store whole ...]\n\n"
+            + trajectory[^half..];
+    }
+
+    private static string RelativeName(string directory, string file) =>
+        Path.GetRelativePath(directory, file).Replace('\\', '/');
 
     private static string SafeName(string itemId)
     {

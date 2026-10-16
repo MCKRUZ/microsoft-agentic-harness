@@ -1,4 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.SkillTraining;
+using Domain.AI.Models;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,6 +38,48 @@ public sealed class EvidenceReaderToolTests : IDisposable
     private static Dictionary<string, object?> Args(params (string Key, object? Value)[] pairs) =>
         pairs.ToDictionary(p => p.Key, p => p.Value);
 
+    /// <summary>Calls the tool as a proposer session would: with this step's folder (the root here) published.</summary>
+    private async Task<ToolResult> Run(string operation, Dictionary<string, object?> args)
+    {
+        using var _ = SkillTrainingEvidenceScope.Begin(_root);
+        return await _sut.ExecuteAsync(operation, args);
+    }
+
+    [Fact]
+    public async Task Execute_WithNoStepFolderPublished_RefusesEvenAPathInsideTheRoot()
+    {
+        var path = Path.Combine(_root, "rollouts", "001-a.md");
+        await File.WriteAllTextAsync(path, "private trajectory");
+
+        var result = await _sut.ExecuteAsync("read", Args(("path", path)));
+
+        result.Success.Should().BeFalse();
+        result.Output.Should().NotContain("private trajectory");
+    }
+
+    [Fact]
+    public async Task Execute_AnotherStepsFolderInTheSameRoot_IsRefused()
+    {
+        var mine = Path.Combine(_root, "step-1");
+        var theirs = Path.Combine(_root, "step-10");
+        Directory.CreateDirectory(mine);
+        Directory.CreateDirectory(theirs);
+        await File.WriteAllTextAsync(Path.Combine(mine, "a.md"), "mine");
+        await File.WriteAllTextAsync(Path.Combine(theirs, "a.md"), "another run's trajectory");
+        using var _ = SkillTrainingEvidenceScope.Begin(mine);
+
+        var own = await _sut.ExecuteAsync("read", Args(("path", Path.Combine(mine, "a.md"))));
+        var sibling = await _sut.ExecuteAsync("read", Args(("path", Path.Combine(theirs, "a.md"))));
+        var listing = await _sut.ExecuteAsync("list", Args(("path", _root)));
+        var search = await _sut.ExecuteAsync("search", Args(("path", _root), ("search_term", "trajectory")));
+
+        own.Output.Should().Be("mine");
+        sibling.Success.Should().BeFalse();
+        listing.Success.Should().BeFalse("the root lists every step");
+        search.Success.Should().BeFalse("a search from the root would reach every step");
+        sibling.Output.Should().NotContain("another run's trajectory");
+    }
+
     [Fact]
     public void Shape_IsReadOnlyAndHasNoWritingOperation()
     {
@@ -50,7 +94,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
     {
         var path = Path.Combine(_root, "planted.md");
 
-        var result = await _sut.ExecuteAsync("write", Args(("path", path), ("content", "x")));
+        var result = await Run("write", Args(("path", path), ("content", "x")));
 
         result.Success.Should().BeFalse();
         File.Exists(path).Should().BeFalse();
@@ -62,7 +106,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
         var path = Path.Combine(_root, "rollouts", "001-a.md");
         await File.WriteAllTextAsync(path, "passed: false\nthe agent timed out");
 
-        var result = await _sut.ExecuteAsync("read", Args(("path", path)));
+        var result = await Run("read", Args(("path", path)));
 
         result.Success.Should().BeTrue();
         result.Output.Should().Be("passed: false\nthe agent timed out");
@@ -75,9 +119,9 @@ public sealed class EvidenceReaderToolTests : IDisposable
         var text = new string('a', 100) + new string('b', 100) + new string('c', 50);
         await File.WriteAllTextAsync(path, text);
 
-        var first = await _sut.ExecuteAsync("read", Args(("path", path), ("max_chars", 100)));
-        var second = await _sut.ExecuteAsync("read", Args(("path", path), ("offset", 100), ("max_chars", 100)));
-        var last = await _sut.ExecuteAsync("read", Args(("path", path), ("offset", 200), ("max_chars", 100)));
+        var first = await Run("read", Args(("path", path), ("max_chars", 100)));
+        var second = await Run("read", Args(("path", path), ("offset", 100), ("max_chars", 100)));
+        var last = await Run("read", Args(("path", path), ("offset", 200), ("max_chars", 100)));
 
         first.Output.Should().StartWith(new string('a', 100)).And.Contain("150 more characters").And.Contain("offset=100");
         second.Output.Should().StartWith(new string('b', 100)).And.Contain("50 more characters").And.Contain("offset=200");
@@ -87,7 +131,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
     [Fact]
     public async Task Execute_ReadOutsideTheTree_IsRefused()
     {
-        var result = await _sut.ExecuteAsync("read", Args(("path", Path.Combine(_outside, "token.txt"))));
+        var result = await Run("read", Args(("path", Path.Combine(_outside, "token.txt"))));
 
         result.Success.Should().BeFalse();
         result.Output.Should().NotContain("do-not-read-me");
@@ -98,7 +142,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
     {
         var sneaky = Path.Combine(_root, "..", "secrets", "token.txt");
 
-        var result = await _sut.ExecuteAsync("read", Args(("path", sneaky)));
+        var result = await Run("read", Args(("path", sneaky)));
 
         result.Success.Should().BeFalse();
         result.Output.Should().NotContain("do-not-read-me");
@@ -109,8 +153,8 @@ public sealed class EvidenceReaderToolTests : IDisposable
     {
         await File.WriteAllTextAsync(Path.Combine(_root, "rollouts", "001-a.md"), "alpha\nneedle here\nomega");
 
-        var list = await _sut.ExecuteAsync("list", Args(("path", Path.Combine(_root, "rollouts"))));
-        var search = await _sut.ExecuteAsync("search", Args(("path", _root), ("search_term", "needle")));
+        var list = await Run("list", Args(("path", Path.Combine(_root, "rollouts"))));
+        var search = await Run("search", Args(("path", _root), ("search_term", "needle")));
 
         list.Output.Should().Contain("001-a.md");
         search.Output.Should().Contain("001-a.md").And.Contain("needle here");
@@ -163,7 +207,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
     [Fact]
     public async Task Execute_MissingPath_FailsWithoutThrowing()
     {
-        var result = await _sut.ExecuteAsync("read", Args());
+        var result = await Run("read", Args());
 
         result.Success.Should().BeFalse();
     }
