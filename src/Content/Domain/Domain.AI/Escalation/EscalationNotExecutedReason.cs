@@ -14,5 +14,30 @@ public enum EscalationNotExecutedReason
     /// because none of those are distinguishable from the one place this is reported —
     /// see <c>ToolUseStepExecutor</c>.
     /// </summary>
-    RunCancelled
+    RunCancelled,
+
+    /// <summary>
+    /// A human approved the call, then the data-classification gate blocked it. Approval only ever
+    /// loosens the governor stage; the stages after it still apply, so an approved call can be refused.
+    /// Reported by <c>ToolCallAdmissionPipeline</c>.
+    /// </summary>
+    RefusedByClassification,
+
+    /// <summary>
+    /// A human approved the call, then a host-registered tool-call observer refused it. Reported by
+    /// <c>ToolCallAdmissionPipeline</c>.
+    /// </summary>
+    RefusedByHostRule,
+
+    /// <summary>
+    /// A human approved the call, then the loop guard halted it as a repeat with no progress. Reported by
+    /// <c>ToolCallAdmissionPipeline</c>.
+    /// </summary>
+    RefusedByLoopGuard,
+
+    /// <summary>
+    /// A human approved the call, then call-once enforcement refused it because the same call had already
+    /// happened in this conversation. Reported by <c>ToolCallAdmissionPipeline</c>.
+    /// </summary>
+    RefusedByCallOnce
 }
