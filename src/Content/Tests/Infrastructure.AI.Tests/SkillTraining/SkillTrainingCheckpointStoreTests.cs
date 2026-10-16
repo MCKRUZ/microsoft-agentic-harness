@@ -254,11 +254,31 @@ public sealed class EfSkillTrainingCheckpointStoreTests : SkillTrainingCheckpoin
         {
             clock.Advance(step);
             contender.Advance(step);
-            await Task.Delay(150);   // let the timer callback's database write finish
+            await WaitForLeaseExpiryAtLeastAsync("run-1", clock.GetUtcNow() + EfSkillTrainingCheckpointStore.LeaseDuration);
         }
 
         (await Open(contender).TryBeginRunAsync("run-1", CancellationToken.None))
             .Should().BeNull("the holder renewed, so its claim outlived the original lease");
+    }
+
+    /// <summary>Waits for the holder's timer to have written a renewal, instead of guessing how long that takes.</summary>
+    private async Task WaitForLeaseExpiryAtLeastAsync(string runId, DateTimeOffset expected)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContextFactory<SkillTrainingDbContext>(o => o.UseSqlite($"DataSource={DbPath}"));
+        var factory = services.BuildServiceProvider().GetRequiredService<IDbContextFactory<SkillTrainingDbContext>>();
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            await using var ctx = await factory.CreateDbContextAsync();
+            var lease = await ctx.RunLeases.AsNoTracking().FirstOrDefaultAsync(l => l.RunId == runId);
+            if (lease is not null && lease.ExpiresAtUnixMs >= expected.ToUnixTimeMilliseconds())
+                return;
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("The holder never renewed its lease.");
     }
 
     [Fact]
