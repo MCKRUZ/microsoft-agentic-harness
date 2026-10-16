@@ -1,6 +1,8 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Extensions;
+using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.SkillTraining;
 using Infrastructure.AI.Evaluation.Invokers;
 using Infrastructure.AI.Evaluation.Judges;
 using Infrastructure.AI.Evaluation.Loaders;
@@ -8,6 +10,7 @@ using Infrastructure.AI.Evaluation.Metrics;
 using Infrastructure.AI.Evaluation.Metrics.Rag;
 using Infrastructure.AI.Evaluation.Reporters;
 using Infrastructure.AI.Evaluation.Runners;
+using Infrastructure.AI.Evaluation.SkillTraining;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Evaluation;
@@ -65,6 +68,10 @@ public static class DependencyInjection
         services.AddEvalMetric<ContextRecallMetric>("context_recall");
         services.AddEvalMetric<AnswerRelevanceMetric>("answer_relevance");
         services.AddEvalMetric<AnswerCorrectnessMetric>("answer_correctness");
+
+        // The skill-training rollout runner: replaces the fail-fast NotConfiguredRolloutRunner unless a
+        // consumer registered their own. Scoped, so one training run reads its dataset once.
+        services.ReplacePlaceholder<IRolloutRunner, NotConfiguredRolloutRunner, GovernedRolloutRunner>(ServiceLifetime.Scoped);
 
         // Reporters
         services.AddSingleton<IEvalReporter, JsonEvalReporter>();

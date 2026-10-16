@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.SkillTraining;
@@ -47,23 +48,8 @@ public static partial class DependencyInjection
                 new FileSystemService(sp.GetRequiredService<ILogger<FileSystemService>>(), [evidenceRoot.Path]));
         });
 
-        ReplaceFailFastPatchProposer(services);
-    }
-
-    /// <summary>
-    /// Makes <see cref="AgenticPatchProposer"/> the <see cref="IPatchProposer"/> unless a consumer has
-    /// already registered their own. Scoped, not singleton: it dispatches through <c>IMediator</c>, which
-    /// is scoped, and a singleton holding it would capture one request's scope for the life of the process.
-    /// </summary>
-    private static void ReplaceFailFastPatchProposer(IServiceCollection services)
-    {
-        var existing = services.Where(d => d.ServiceType == typeof(IPatchProposer)).ToList();
-        if (existing.Any(d => d.ImplementationType != typeof(NotConfiguredPatchProposer)))
-            return;
-
-        foreach (var descriptor in existing)
-            services.Remove(descriptor);
-
-        services.AddScoped<IPatchProposer, AgenticPatchProposer>();
+        // Scoped, not singleton: the proposer dispatches through IMediator, which is scoped, and a
+        // singleton holding it would capture one request's scope for the life of the process.
+        services.ReplacePlaceholder<IPatchProposer, NotConfiguredPatchProposer, AgenticPatchProposer>(ServiceLifetime.Scoped);
     }
 }

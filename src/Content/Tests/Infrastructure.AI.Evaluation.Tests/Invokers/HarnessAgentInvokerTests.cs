@@ -313,6 +313,11 @@ public sealed class HarnessAgentInvokerTests
     [Fact]
     public async Task Captures_tokens_cost_and_tools_invoked()
     {
+        var calls = new[]
+        {
+            new Application.AI.Common.Models.Conversations.ToolCallRecord("read", "{\"p\":1}", "contents", 4),
+            new Application.AI.Common.Models.Conversations.ToolCallRecord("write", "{\"p\":2}", "ok", 6)
+        };
         var mediator = new Mock<IMediator>();
         mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -322,6 +327,7 @@ public sealed class HarnessAgentInvokerTests
                 Response = "done",
                 UpdatedHistory = [],
                 ToolsInvoked = new[] { "read", "write" },
+                ToolCalls = calls,
                 InputTokens = 120,
                 OutputTokens = 30,
                 CostUsd = 0.001m,
@@ -334,6 +340,7 @@ public sealed class HarnessAgentInvokerTests
             null, forceDeterministic: false, CancellationToken.None);
 
         result.ToolsInvoked.Should().Equal("read", "write");
+        result.ToolCalls.Should().Equal(calls);
         result.InputTokens.Should().Be(120);
         result.OutputTokens.Should().Be(30);
         result.CostUsd.Should().Be(0.001m);
