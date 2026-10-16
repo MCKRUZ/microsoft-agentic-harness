@@ -1,5 +1,7 @@
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Services.Tools;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
+using FluentAssertions;
 using Xunit;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
@@ -141,5 +143,39 @@ public class OrchestratedHarnessProposerTests
         var result = await BuildSut().ProposeAsync(BuildContext(), CancellationToken.None);
 
         Assert.Equal(reasoning, result.Reasoning);
+    }
+
+    /// <summary>
+    /// The session reads the run directory through the evidence tool, which serves only the folder published
+    /// for it (#847). The folder must be this run's directory for the length of the dispatch, and nothing
+    /// afterwards, or the tool would refuse the proposer its own traces, or serve them to the next caller.
+    /// </summary>
+    [Fact]
+    public async Task ProposeAsync_PublishesTheRunDirectoryToTheEvidenceToolOnlyWhileTheSessionRuns()
+    {
+        string? publishedDuring = null;
+        _mediatorMock
+            .Setup(m => m.Send(It.IsAny<RunOrchestratedTaskCommand>(), It.IsAny<CancellationToken>()))
+            .Callback(() => publishedDuring = EvidenceReadScope.Current)
+            .ReturnsAsync(new OrchestratedTaskResult { Success = true, FinalSynthesis = """{"reasoning": "r"}""", SubAgentResults = [] });
+        var context = BuildContext();
+
+        await BuildSut().ProposeAsync(context, CancellationToken.None);
+
+        publishedDuring.Should().Be(Path.GetFullPath(context.OptimizationRunDirectoryPath));
+        EvidenceReadScope.Current.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ProposeAsync_ASessionThatFails_StillReleasesTheScope()
+    {
+        _mediatorMock
+            .Setup(m => m.Send(It.IsAny<RunOrchestratedTaskCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("boom"));
+
+        var act = () => BuildSut().ProposeAsync(BuildContext(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        EvidenceReadScope.Current.Should().BeNull();
     }
 }

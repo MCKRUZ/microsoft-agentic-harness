@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.AI.Common.Services.Tools;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
@@ -19,6 +20,13 @@ namespace Infrastructure.AI.MetaHarness;
 /// skill, then extracts the JSON proposal block from the agent's final synthesis string.
 /// Throws <see cref="HarnessProposalParsingException"/> on malformed output so the outer
 /// loop can mark the candidate as failed and continue.
+/// <para>
+/// <b>Read-only by construction (#847).</b> The skill is granted <c>evidence_reader</c>, a tool with no write
+/// operation, confined to the run directory. It used to be granted <c>file_system</c>: a session that reads
+/// agent traces (text other runs produced) with a tool that can also write, where the skill's declared
+/// operations are not enforced when a tool is called, could change files in the workspace instead of
+/// returning a proposal.
+/// </para>
 /// </remarks>
 public sealed class OrchestratedHarnessProposer : IHarnessProposer
 {
@@ -51,6 +59,9 @@ public sealed class OrchestratedHarnessProposer : IHarnessProposer
             AvailableAgents = BuildAgentList(_config.CurrentValue)
         };
 
+        // The session reads this run's directory through the read-only evidence tool and nothing else.
+        // The scope narrows the tool to that one directory for the length of the awaited dispatch.
+        using var readable = EvidenceReadScope.Begin(context.OptimizationRunDirectoryPath);
         var result = await _mediator.Send(command, cancellationToken);
         var proposal = ParseProposal(result.FinalSynthesis);
 

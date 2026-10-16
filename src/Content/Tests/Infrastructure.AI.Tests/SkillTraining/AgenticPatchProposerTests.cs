@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Services.SkillTraining;
+using Application.AI.Common.Services.Tools;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.SkillTraining;
 using Domain.Common.Config.AI.SkillTraining;
@@ -264,14 +265,14 @@ public sealed partial class AgenticPatchProposerTests : IDisposable
             OnSend = mission =>
             {
                 folder = SkillPath().Match(mission).Groups["dir"].Value;
-                published = SkillTrainingEvidenceScope.Current;
+                published = EvidenceReadScope.Current;
             }
         };
 
         await NewSut(session).ProposeAsync(Input(), CancellationToken.None);
 
         published.Should().Be(Path.GetFullPath(folder!), "the evidence tool serves this step's folder and no other");
-        SkillTrainingEvidenceScope.Current.Should().BeNull("nothing stays readable after the step");
+        EvidenceReadScope.Current.Should().BeNull("nothing stays readable after the step");
     }
 
     [Fact]

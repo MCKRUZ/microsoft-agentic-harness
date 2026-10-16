@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.SkillTraining;
+using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Common;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.SkillTraining;
@@ -39,7 +40,7 @@ namespace Infrastructure.AI.SkillTraining;
 /// configured work description may not name its measurement.
 /// </para>
 /// <para>
-/// <b>What it can read.</b> Only this step's folder: <see cref="SkillTrainingEvidenceScope"/> is published
+/// <b>What it can read.</b> Only this step's folder: <see cref="EvidenceReadScope"/> is published
 /// around the session, and the evidence tool refuses any other path, including a sibling step's.
 /// </para>
 /// </remarks>
@@ -185,7 +186,7 @@ public sealed class AgenticPatchProposer : IPatchProposer
         var config = _config.CurrentValue;
 
         // The evidence tool serves only this step's folder, for the length of this one awaited call.
-        using var readable = SkillTrainingEvidenceScope.Begin(evidenceDirectory);
+        using var readable = EvidenceReadScope.Begin(evidenceDirectory);
         var result = await _mediator.Send(
             new RunConversationCommand
             {

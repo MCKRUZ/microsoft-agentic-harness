@@ -45,11 +45,15 @@ public static partial class DependencyInjection
 
         services.AddSingleton(evidenceRoot);
 
+        // The MetaHarness proposer reads its optimization run's traces through the same tool (#847), so the
+        // trace root is the second place the file service may reach. Each session is still narrowed to its
+        // own folder by EvidenceReadScope.
+        var traceRoot = Path.GetFullPath(appConfig.MetaHarness.TraceDirectoryRoot);
         services.AddKeyedSingleton<ITool>(EvidenceReaderTool.ToolName, (sp, _) =>
         {
             sp.GetRequiredService<IOwnerOnlyDirectoryCreator>().Create(evidenceRoot.Path);
             return new EvidenceReaderTool(
-                new FileSystemService(sp.GetRequiredService<ILogger<FileSystemService>>(), [evidenceRoot.Path]));
+                new FileSystemService(sp.GetRequiredService<ILogger<FileSystemService>>(), [evidenceRoot.Path, traceRoot]));
         });
 
         // Checkpoints and run claims in their own SQLite file, the way the planner and the scheduler keep
