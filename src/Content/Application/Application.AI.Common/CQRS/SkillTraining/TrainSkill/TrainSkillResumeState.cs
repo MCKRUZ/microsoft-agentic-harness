@@ -22,7 +22,7 @@ namespace Application.AI.Common.CQRS.SkillTraining.TrainSkill;
 /// <param name="ConsecutiveRejects">Trailing Reject decisions, which is what patience counts.</param>
 /// <param name="GlobalStep">The last step already run; the next step is one more.</param>
 /// <param name="HasAcceptedAny">Whether any earlier step was accepted.</param>
-/// <param name="MetaMemory">The cross-epoch memory as of the last checkpoint.</param>
+/// <param name="Experience">The run's lessons as of the last checkpoint.</param>
 /// <param name="NeedsEpochBoundary">True when the last step ended an epoch whose boundary work never finished.</param>
 /// <param name="Steps">Step records rebuilt from the checkpoints, oldest first.</param>
 internal sealed record TrainSkillResumeState(
@@ -34,6 +34,6 @@ internal sealed record TrainSkillResumeState(
     int ConsecutiveRejects,
     int GlobalStep,
     bool HasAcceptedAny,
-    string MetaMemory,
+    IReadOnlyList<ExperienceEntry> Experience,
     bool NeedsEpochBoundary,
     IReadOnlyList<SkillTrainingStepRecord> Steps);

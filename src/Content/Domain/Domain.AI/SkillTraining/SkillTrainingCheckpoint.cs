@@ -12,8 +12,8 @@ namespace Domain.AI.SkillTraining;
 /// hands to <c>ISkillTrainingCheckpointStore</c>.
 /// </para>
 /// <para>
-/// <see cref="MetaSkillMemory"/> accumulates cross-epoch optimizer guidance and is
-/// re-injected as additional context on subsequent reflection steps.
+/// <see cref="Experience"/> accumulates the lessons drawn at epoch boundaries and is
+/// re-injected, rendered as text, as context on subsequent reflection steps.
 /// </para>
 /// </remarks>
 public sealed record SkillTrainingCheckpoint
@@ -50,8 +50,11 @@ public sealed record SkillTrainingCheckpoint
     /// <summary>The gate decision that produced this checkpoint.</summary>
     public required GateAction Action { get; init; }
 
-    /// <summary>Cross-epoch optimizer strategy memory, if any.</summary>
-    public string MetaSkillMemory { get; init; } = string.Empty;
+    /// <summary>The lessons drawn so far in this run (and any recalled from earlier runs when it began).</summary>
+    public IReadOnlyList<ExperienceEntry> Experience { get; init; } = [];
+
+    /// <summary>The edits that were put through the gate in this step, with the gate's verdict on each.</summary>
+    public IReadOnlyList<EditTrial> EditTrials { get; init; } = [];
 
     /// <summary>
     /// A digest of the skill id, starting text and configuration the run was started with. A run resumes

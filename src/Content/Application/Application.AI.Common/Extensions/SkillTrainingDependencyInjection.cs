@@ -27,6 +27,8 @@ namespace Application.AI.Common.Extensions;
 /// <item><see cref="ISkillTrainingCheckpointStore"/> → <see cref="InMemorySkillTrainingCheckpointStore"/>.</item>
 /// <item><see cref="IPatchProposer"/> → <see cref="NotConfiguredPatchProposer"/> (fail-fast default).</item>
 /// <item><see cref="IRolloutRunner"/> → <see cref="NotConfiguredRolloutRunner"/> (fail-fast default).</item>
+/// <item><see cref="IExperienceDistiller"/> → <see cref="EditHistoryDistiller"/> (draws each epoch's lesson from the gate's verdicts; no model call).</item>
+/// <item><see cref="IExperienceLibrary"/> → <see cref="ExperienceLibrary"/> (lessons in the knowledge memory, scanned before they are written).</item>
 /// </list>
 /// </para>
 /// <para>
@@ -87,6 +89,11 @@ public static class SkillTrainingDependencyInjection
         services.TryAddSingleton<ISkillTrainingCheckpointStore, InMemorySkillTrainingCheckpointStore>();
         services.TryAddSingleton<IPatchProposer, NotConfiguredPatchProposer>();
         services.TryAddSingleton<IRolloutRunner, NotConfiguredRolloutRunner>();
+
+        // Experience (#845). The distiller is pure, so a singleton. The library wraps IKnowledgeMemory,
+        // which is scoped to the caller's user and tenant, so it is transient and never outlives a request.
+        services.TryAddSingleton<IExperienceDistiller, EditHistoryDistiller>();
+        services.TryAddTransient<IExperienceLibrary, ExperienceLibrary>();
 
         return services;
     }
