@@ -19,7 +19,7 @@ using Xunit;
 
 namespace Application.AI.Common.Tests.CQRS.SkillTraining;
 
-public class TrainSkillCommandHandlerTests
+public partial class TrainSkillCommandHandlerTests
 {
     private static readonly PatchApplier Applier = new();
     private static readonly PatchAggregator Aggregator = new();
@@ -49,13 +49,14 @@ public class TrainSkillCommandHandlerTests
         HarnessPatchValidator? fence = null,
         IHarnessChangeSuggester? suggester = null,
         ClaimVerificationRunner? claimVerification = null,
-        IMediator? mediator = null)
+        IMediator? mediator = null,
+        IExperienceLibrary? library = null)
     {
         return new TrainSkillCommandHandler(
             runner, proposer, Aggregator, Selector, Applier, Gate, fence ?? Fence,
             suggester ?? new NoHarnessChangeSuggester(), SuggestionValidator, SurfaceConstraint,
             claimVerification ?? ClaimVerification,
-            store, mediator ?? new NoOpMediator(), TimeProvider.System,
+            store, library ?? new FakeExperienceLibrary(), mediator ?? new NoOpMediator(), TimeProvider.System,
             NullLogger<TrainSkillCommandHandler>.Instance, audit);
     }
 
@@ -1076,7 +1077,8 @@ public class TrainSkillCommandHandlerTests
             .Should().ThrowAsync<OperationCanceledException>();
 
         // The boundary rewrote step 1's checkpoint with the memory it produced.
-        (await store.GetAsync("run-1", 1, CancellationToken.None))!.MetaSkillMemory.Should().Be("memory after epoch 1");
+        (await store.GetAsync("run-1", 1, CancellationToken.None))!.Experience
+            .Should().ContainSingle().Which.Lesson.Should().Be("memory after epoch 1");
 
         string? seenMemory = null;
         var proposer = new StubProposer(input =>
@@ -1088,7 +1090,7 @@ public class TrainSkillCommandHandlerTests
                 mediator: new MetaMemoryMediator("memory after epoch 1"))
             .Handle(NewCommand(config), CancellationToken.None);
 
-        seenMemory.Should().Be("memory after epoch 1");
+        seenMemory.Should().Contain("memory after epoch 1");
     }
 
     [Fact]
@@ -1146,7 +1148,7 @@ public class TrainSkillCommandHandlerTests
             .Handle(NewCommand(config), CancellationToken.None);
 
         healthy.Updates.Should().Be(1, "the unfinished boundary is done once, on resume");
-        seenMemory.Should().Be("memory after epoch 1");
+        seenMemory.Should().Contain("memory after epoch 1");
         (await store.GetAsync("run-1", 1, CancellationToken.None))!.EpochBoundaryDone.Should().BeTrue();
     }
 
@@ -1286,11 +1288,12 @@ public class TrainSkillCommandHandlerTests
         }
     }
 
-    /// <summary>Answers a meta-skill update with a fixed memory and ignores everything else.</summary>
+    /// <summary>Answers a meta-skill update with a fixed lesson added to the prior ones, and ignores everything else.</summary>
     private sealed class MetaMemoryMediator(string memory, bool cancelTheFirstUpdate = false) : IMediator
     {
         private bool _cancelled;
         public int Updates { get; private set; }
+        public List<Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate.MetaSkillUpdateCommand> Commands { get; } = [];
 
         public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
         {
@@ -1304,7 +1307,11 @@ public class TrainSkillCommandHandlerTests
             }
 
             Updates++;
-            return Task.FromResult((TResponse)(object)Result<string>.Success(memory));
+            var update = (Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate.MetaSkillUpdateCommand)(object)request;
+            Commands.Add(update);
+            var lesson = Lesson(memory, update.RunId, update.SkillId, update.Domain, update.Epoch);
+            return Task.FromResult((TResponse)(object)Result<Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate.MetaSkillUpdateResult>.Success(
+                new Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate.MetaSkillUpdateResult([.. update.PriorEntries, lesson], Stored: true)));
         }
         public Task<object?> Send(object request, CancellationToken cancellationToken = default) => Task.FromResult<object?>(null);
         public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest => Task.CompletedTask;

@@ -19,6 +19,9 @@ public sealed class TrainSkillCommandValidator : AbstractValidator<TrainSkillCom
         RuleFor(x => x.SkillId).NotEmpty();
         RuleFor(x => x.InitialSkill).NotNull();
         RuleFor(x => x.Config).NotNull();
+        RuleFor(x => x.Domain)
+            .Matches("^[a-z0-9][a-z0-9_-]{0,63}$")
+            .WithMessage("Domain must be lower-case letters, digits, '_' or '-', starting with a letter or digit, at most 64 characters.");
 
         When(x => x.Config is not null, () =>
         {

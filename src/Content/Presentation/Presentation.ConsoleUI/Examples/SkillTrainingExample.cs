@@ -155,7 +155,7 @@ public sealed class SkillTrainingExample
         return new TrainSkillCommandHandler(
             runner, proposer, aggregator, selector, applier, gate, fence,
             suggester, suggestionValidator, configSurfaceConstraint, claimVerificationRunner, store,
-            new NoOpMediator(), TimeProvider.System, logger);
+            new NoExperienceLibrary(), new NoOpMediator(), TimeProvider.System, logger);
     }
 
     /// <summary>
@@ -203,6 +203,23 @@ public sealed class SkillTrainingExample
                 Reasoning = $"demo proposal {_calls}"
             });
         }
+    }
+
+    /// <summary>
+    /// Stand-in for the experience library: this demo has no knowledge memory, so a fresh run recalls
+    /// nothing and nothing is stored. (The demo's configuration leaves the meta-skill update off.)
+    /// </summary>
+    private sealed class NoExperienceLibrary : IExperienceLibrary
+    {
+        public Task<Result<Domain.AI.KnowledgeGraph.Models.MemoryWriteOutcome>> PersistAsync(ExperienceEntry entry, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<Domain.AI.KnowledgeGraph.Models.MemoryWriteOutcome>.Success(Domain.AI.KnowledgeGraph.Models.MemoryWriteOutcome.Rejected));
+
+        public Task<IReadOnlyList<ExperienceEntry>> RecallAsync(
+            string domain, string skillId, string runId, int beforeEpoch, int maxResults, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ExperienceEntry>>([]);
+
+        public Task ForgetAsync(string domain, string skillId, string runId, int epoch, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
     }
 
     private sealed class NoOpMediator : IMediator

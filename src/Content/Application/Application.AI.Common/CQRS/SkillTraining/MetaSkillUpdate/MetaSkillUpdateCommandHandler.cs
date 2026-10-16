@@ -1,4 +1,7 @@
-using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.SkillTraining;
+using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.SkillTraining;
 using Domain.Common;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -6,85 +9,94 @@ using Microsoft.Extensions.Logging;
 namespace Application.AI.Common.CQRS.SkillTraining.MetaSkillUpdate;
 
 /// <summary>
-/// Handles <see cref="MetaSkillUpdateCommand"/> by persisting the epoch's strategy memory
-/// into <see cref="IKnowledgeMemory"/> under a stable key derived from
-/// (<see cref="MetaSkillUpdateCommand.SkillId"/>, <see cref="MetaSkillUpdateCommand.RunId"/>).
+/// Handles <see cref="MetaSkillUpdateCommand"/> (#845): asks the <see cref="IExperienceDistiller"/> for the
+/// epoch's lesson, stores it through the <see cref="IExperienceLibrary"/>, and returns the run's experience
+/// with it added.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The memory text is a compact summary the optimizer can consume on subsequent reflections.
-/// In Phase 4 this handler stores the previous epoch's memory verbatim with the new
-/// epoch's score appended; richer summarization (e.g. asking the optimizer to compress) is a
-/// post-MVP improvement and lives in a separate strategy implementation.
+/// <b>Refused, not stored, when it leaks.</b> The library scans the entry for grader-verdict markers before
+/// writing. When it finds any the handler fails with <see cref="GraderMarkerScanner.EvidenceLeakCode"/>, and
+/// the lesson is in neither the memory nor the run's experience: it would otherwise reach every later step.
 /// </para>
 /// <para>
-/// Returns the combined memory text (success) or surfaces persistence failures as
-/// <see cref="Result{T}"/> failures so the orchestrator can decide whether to continue
-/// without updated memory.
+/// <b>Only earlier positions come back.</b> The experience returned holds this run's entries from before
+/// <see cref="MetaSkillUpdateCommand.Epoch"/> and any entries from other runs, plus the new one, so a
+/// lesson from a later epoch cannot reach an earlier step.
+/// </para>
+/// <para>
+/// <b>The memory is not the run's record.</b> If the memory is down, quarantines or rejects the write, the
+/// lesson is still returned; the checkpoint carries it. <see cref="MetaSkillUpdateResult.Stored"/> says
+/// whether it also reached the memory.
 /// </para>
 /// </remarks>
 public sealed class MetaSkillUpdateCommandHandler
-    : IRequestHandler<MetaSkillUpdateCommand, Result<string>>
+    : IRequestHandler<MetaSkillUpdateCommand, Result<MetaSkillUpdateResult>>
 {
-    /// <summary>Entity type used when persisting via <see cref="IKnowledgeMemory.RememberAsync"/>.</summary>
-    public const string EntityType = "SkillTrainingMetaMemory";
-
-    /// <summary>Stable failure code emitted when the knowledge memory persist call threw.</summary>
-    public const string PersistFailedCode = "skill_training.meta.persist_failed";
-
-    private readonly IKnowledgeMemory _memory;
+    private readonly IExperienceDistiller _distiller;
+    private readonly IExperienceLibrary _library;
     private readonly ILogger<MetaSkillUpdateCommandHandler> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="MetaSkillUpdateCommandHandler"/> class.</summary>
     public MetaSkillUpdateCommandHandler(
-        IKnowledgeMemory memory,
+        IExperienceDistiller distiller,
+        IExperienceLibrary library,
         ILogger<MetaSkillUpdateCommandHandler> logger)
     {
-        ArgumentNullException.ThrowIfNull(memory);
+        ArgumentNullException.ThrowIfNull(distiller);
+        ArgumentNullException.ThrowIfNull(library);
         ArgumentNullException.ThrowIfNull(logger);
-        _memory = memory;
+        _distiller = distiller;
+        _library = library;
         _logger = logger;
     }
 
     /// <inheritdoc />
-    public async Task<Result<string>> Handle(
+    public async Task<Result<MetaSkillUpdateResult>> Handle(
         MetaSkillUpdateCommand request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Compose: prior memory + this epoch's summary line.
-        var prior = string.IsNullOrEmpty(request.PriorMemory)
-            ? string.Empty
-            : request.PriorMemory.TrimEnd() + "\n\n";
-        var newEntry =
-            $"## Epoch {request.Epoch}\n" +
-            $"Skill length: {request.CurrentSkill.Length} chars.";
-        var combined = prior + newEntry;
+        var earlier = request.PriorEntries
+            .Where(e => e.RunId != request.RunId || e.Epoch < request.Epoch)
+            .ToList();
 
-        var key = BuildKey(request.SkillId, request.RunId);
-        try
+        var outcome = await _distiller.DistillAsync(
+            new DistillationInput
+            {
+                RunId = request.RunId,
+                SkillId = request.SkillId,
+                Domain = request.Domain,
+                Epoch = request.Epoch,
+                CurrentSkill = request.CurrentSkill,
+                Trials = request.Trials,
+                PairedGuidance = request.PairedGuidance
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (outcome is not EntryWritten written)
         {
-            await _memory.RememberAsync(key, combined, EntityType, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Failed to persist meta-skill memory for run {RunId} epoch {Epoch}; orchestrator will continue without update.",
-                request.RunId, request.Epoch);
-            return Result<string>.Fail(PersistFailedCode);
+            _logger.LogInformation(
+                "No experience drawn for run {RunId} epoch {Epoch}: {Reason}",
+                request.RunId, request.Epoch, (outcome as NoEntry)?.Reason);
+            return Result<MetaSkillUpdateResult>.Success(new MetaSkillUpdateResult(earlier, Stored: false));
         }
 
-        return Result<string>.Success(combined);
+        var entry = written.Entry;
+        var persisted = await _library.PersistAsync(entry, cancellationToken).ConfigureAwait(false);
+        if (!persisted.IsSuccess && persisted.Errors.Contains(ExperienceLibrary.EvidenceLeakCode))
+            return Result<MetaSkillUpdateResult>.Fail(ExperienceLibrary.EvidenceLeakCode);
+
+        var stored = persisted.IsSuccess && persisted.Value == MemoryWriteOutcome.Persisted;
+        if (!stored)
+        {
+            _logger.LogWarning(
+                "Experience for run {RunId} epoch {Epoch} is kept in the checkpoint only (memory outcome: {Outcome}).",
+                request.RunId, request.Epoch, persisted.IsSuccess ? (object?)persisted.Value : "failed");
+        }
+
+        return Result<MetaSkillUpdateResult>.Success(new MetaSkillUpdateResult([.. earlier, entry], stored));
     }
-
-    /// <summary>Stable namespaced key for the meta-memory entry of a (skill, run) pair.</summary>
-    public static string BuildKey(string skillId, string runId) =>
-        $"skill-training/meta/{skillId}/{runId}";
 }

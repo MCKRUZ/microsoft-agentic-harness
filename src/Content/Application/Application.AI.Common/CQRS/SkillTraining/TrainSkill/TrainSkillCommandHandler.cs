@@ -49,6 +49,7 @@ public sealed class TrainSkillCommandHandler
     private readonly ConfigSurfaceConstraint _configSurfaceConstraint;
     private readonly ClaimVerificationRunner _claimVerificationRunner;
     private readonly ISkillTrainingCheckpointStore _checkpointStore;
+    private readonly IExperienceLibrary _experienceLibrary;
     private readonly IMediator _mediator;
     private readonly TimeProvider _time;
     private readonly ILogger<TrainSkillCommandHandler> _logger;
@@ -75,6 +76,7 @@ public sealed class TrainSkillCommandHandler
         ConfigSurfaceConstraint configSurfaceConstraint,
         ClaimVerificationRunner claimVerificationRunner,
         ISkillTrainingCheckpointStore checkpointStore,
+        IExperienceLibrary experienceLibrary,
         IMediator mediator,
         TimeProvider time,
         ILogger<TrainSkillCommandHandler> logger,
@@ -92,6 +94,7 @@ public sealed class TrainSkillCommandHandler
         ArgumentNullException.ThrowIfNull(configSurfaceConstraint);
         ArgumentNullException.ThrowIfNull(claimVerificationRunner);
         ArgumentNullException.ThrowIfNull(checkpointStore);
+        ArgumentNullException.ThrowIfNull(experienceLibrary);
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
@@ -108,6 +111,7 @@ public sealed class TrainSkillCommandHandler
         _configSurfaceConstraint = configSurfaceConstraint;
         _claimVerificationRunner = claimVerificationRunner;
         _checkpointStore = checkpointStore;
+        _experienceLibrary = experienceLibrary;
         _mediator = mediator;
         _time = time;
         _logger = logger;
@@ -119,6 +123,9 @@ public sealed class TrainSkillCommandHandler
     /// same checkpoint and overwrite each other's steps, splicing two outcomes under one id.
     /// </summary>
     private static readonly ConditionalWeakTable<ISkillTrainingCheckpointStore, ConcurrentDictionary<string, byte>> ActiveRuns = new();
+
+    /// <summary>The most lessons from earlier runs a fresh run starts with.</summary>
+    private const int SeedLimit = 5;
 
     /// <inheritdoc />
     public async Task<Result<SkillTrainingRunResult>> Handle(
@@ -205,7 +212,7 @@ public sealed class TrainSkillCommandHandler
         var globalStep = resume?.GlobalStep ?? 0;
         var steps = new List<SkillTrainingStepRecord>(totalSteps);
         steps.AddRange(resume?.Steps ?? []);
-        var metaMemory = resume?.MetaMemory ?? string.Empty;
+        var experience = resume?.Experience ?? await SeedExperienceAsync(request, cfg, cancellationToken).ConfigureAwait(false);
         var hasAcceptedAny = resume?.HasAcceptedAny ?? false;
         IReadOnlyList<RolloutResult> lastValRollouts = [];
         IReadOnlyList<RolloutResult> priorEpochValRollouts = [];
@@ -220,11 +227,11 @@ public sealed class TrainSkillCommandHandler
             {
                 // The earlier attempt stopped between an epoch's last step and its boundary work. Do that
                 // work now (without the slow update, whose validation rollouts are gone) and record it.
-                metaMemory = await RunEpochBoundaryAsync(
-                    request, cfg, steps[^1].Epoch, currentSkill, currentScore, metaMemory, [], [],
+                experience = await RunEpochBoundaryAsync(
+                    request, cfg, steps[^1].Epoch, currentSkill, experience, [], [], steps,
                     cancellationToken).ConfigureAwait(false);
                 await SaveCheckpointAsync(
-                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: true,
+                    request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: true,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -261,7 +268,8 @@ public sealed class TrainSkillCommandHandler
                 // its own rollout from the proposer's view but cannot abort the run. If nothing clean
                 // is left, or the cross-epoch memory carries one, the read path is wrong: refuse.
                 var screened = GraderMarkerScanner.Screen(trainRollouts.Select(ProposerRolloutView.From).ToList());
-                var memoryLeaks = GraderMarkerScanner.Scan([("meta-skill-memory", metaMemory)]);
+                var memoryText = ExperienceRenderer.Render(experience);
+                var memoryLeaks = GraderMarkerScanner.Scan([("meta-skill-memory", memoryText)]);
                 if (screened.AnyExcluded)
                 {
                     _logger.LogError(
@@ -285,7 +293,7 @@ public sealed class TrainSkillCommandHandler
                 {
                     CurrentSkill = currentSkill,
                     Rollouts = screened.Clean,
-                    MetaSkillMemory = metaMemory,
+                    MetaSkillMemory = memoryText,
                     IncludeSuccesses = true
                 };
 
@@ -306,7 +314,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed: 0, applied: 0));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -329,7 +337,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -361,7 +369,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -386,7 +394,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -404,7 +412,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, 0));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -418,7 +426,7 @@ public sealed class TrainSkillCommandHandler
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applyReport.AppliedEdits.Count));
                     await SaveCheckpointAsync(
-                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                         cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -503,7 +511,8 @@ public sealed class TrainSkillCommandHandler
 
                 steps.Add(NewStepRecord(globalStep, epoch, gateResult.Action,
                     candidateScore: gateResult.CandidateScore,
-                    proposed: proposed.Edits.Count, applied: applyReport.AppliedEdits.Count));
+                    proposed: proposed.Edits.Count, applied: applyReport.AppliedEdits.Count,
+                    trials: BuildTrials(globalStep, applyReport.AppliedEdits, gateResult.Action, gateResult.CandidateScore, currentScore)));
 
                 // ── State + checkpoint ───────────────────────────────────────
                 switch (gateResult.Action)
@@ -542,7 +551,7 @@ public sealed class TrainSkillCommandHandler
                 }
 
                 await SaveCheckpointAsync(
-                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                    request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: false,
                     cancellationToken).ConfigureAwait(false);
 
                 if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -551,16 +560,16 @@ public sealed class TrainSkillCommandHandler
             // ── Epoch boundary mechanisms ─────────────────────────────────────
             if (epoch < cfg.Epochs)
             {
-                metaMemory = await RunEpochBoundaryAsync(
-                    request, cfg, epoch, currentSkill, currentScore, metaMemory,
-                    priorEpochValRollouts, lastValRollouts, cancellationToken).ConfigureAwait(false);
+                experience = await RunEpochBoundaryAsync(
+                    request, cfg, epoch, currentSkill, experience,
+                    priorEpochValRollouts, lastValRollouts, steps, cancellationToken).ConfigureAwait(false);
                 priorEpochValRollouts = lastValRollouts;
 
                 // The memory just changed, after the epoch's last checkpoint was written. Write that
                 // checkpoint again, marked done, so a resume from here starts with the updated memory and
                 // does not repeat the work.
                 await SaveCheckpointAsync(
-                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: true,
+                    request, fingerprint, steps[^1], currentSkill, currentScore, experience, epochBoundaryDone: true,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -789,27 +798,6 @@ public sealed class TrainSkillCommandHandler
             "unknown LR scheduler; validator should have caught this.")
     };
 
-    private async Task<string> UpdateMetaMemoryAsync(
-        TrainSkillCommand request,
-        string currentSkill,
-        double currentScore,
-        int epoch,
-        string priorMemory,
-        CancellationToken ct)
-    {
-        var cmd = new MetaSkillUpdate.MetaSkillUpdateCommand
-        {
-            RunId = request.RunId,
-            SkillId = request.SkillId,
-            Epoch = epoch,
-            CurrentSkill = currentSkill,
-            CurrentScore = currentScore,
-            PriorMemory = priorMemory
-        };
-        var result = await _mediator.Send(cmd, ct).ConfigureAwait(false);
-        return result.IsSuccess ? result.Value! : priorMemory;
-    }
-
     /// <summary>
     /// Writes a governance-audit entry best-effort. The audit is the record, not the control: a failed
     /// write is logged and swallowed so it can never unwind an already-enforced reject or an
@@ -830,19 +818,57 @@ public sealed class TrainSkillCommandHandler
     }
 
     private static SkillTrainingStepRecord NewStepRecord(
-        int step, int epoch, GateAction action, double candidateScore, int proposed, int applied) => new()
+        int step, int epoch, GateAction action, double candidateScore, int proposed, int applied,
+        IReadOnlyList<EditTrial>? trials = null) => new()
     {
         Step = step,
         Epoch = epoch,
         Action = action,
         CandidateScore = candidateScore,
         ProposedEditCount = proposed,
-        AppliedEditCount = applied
+        AppliedEditCount = applied,
+        Trials = trials ?? []
     };
+
+    /// <summary>
+    /// What the gate showed about each edit that reached it. An edit that went in alongside others is
+    /// <see cref="EditVerdict.Confounded"/>: the result cannot be attributed to it. A lone edit is
+    /// <see cref="EditVerdict.Helped"/> when accepted, <see cref="EditVerdict.Hurt"/> when the result scored
+    /// below the skill it started from, and <see cref="EditVerdict.NoObservedEffect"/> otherwise. Derived
+    /// here from the gate's decision, never from a model.
+    /// </summary>
+    private static IReadOnlyList<EditTrial> BuildTrials(
+        int step, IReadOnlyList<Edit> applied, GateAction action, double candidateScore, double scoreBefore)
+    {
+        if (applied.Count == 0)
+            return [];
+
+        var verdict = applied.Count > 1 ? EditVerdict.Confounded
+            : action is GateAction.Accept or GateAction.AcceptNewBest ? EditVerdict.Helped
+            : candidateScore < scoreBefore - 1e-9 ? EditVerdict.Hurt
+            : EditVerdict.NoObservedEffect;
+
+        return [.. applied.Select(e => new EditTrial(step, DescribeEdit(e), verdict))];
+    }
+
+    private static string DescribeEdit(Edit edit) => edit.Op switch
+    {
+        EditOp.Append => $"Append \"{Excerpt(edit.Content)}\"",
+        EditOp.InsertAfter => $"Insert after \"{Excerpt(edit.Target)}\": \"{Excerpt(edit.Content)}\"",
+        EditOp.Replace => $"Replace \"{Excerpt(edit.Target)}\" with \"{Excerpt(edit.Content)}\"",
+        EditOp.Delete => $"Delete \"{Excerpt(edit.Target)}\"",
+        _ => edit.Op.ToString()
+    };
+
+    private static string Excerpt(string text)
+    {
+        var collapsed = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return collapsed.Length <= 120 ? collapsed : collapsed[..120] + "...";
+    }
 
     private Task SaveCheckpointAsync(
         TrainSkillCommand request, string fingerprint, SkillTrainingStepRecord record,
-        string skill, double score, string metaMemory, bool epochBoundaryDone, CancellationToken cancellationToken) =>
+        string skill, double score, IReadOnlyList<ExperienceEntry> experience, bool epochBoundaryDone, CancellationToken cancellationToken) =>
         _checkpointStore.SaveAsync(
             new SkillTrainingCheckpoint
             {
@@ -851,10 +877,11 @@ public sealed class TrainSkillCommandHandler
                 Step = record.Step,
                 Epoch = record.Epoch,
                 SkillContent = skill,
-                SkillHash = ComputeHash(skill),
+                SkillHash = SkillContentHash.Of(skill),
                 Score = score,
                 Action = record.Action,
-                MetaSkillMemory = metaMemory,
+                Experience = experience,
+                EditTrials = record.Trials,
                 RunFingerprint = fingerprint,
                 CandidateScore = record.CandidateScore,
                 ProposedEditCount = record.ProposedEditCount,
@@ -866,19 +893,20 @@ public sealed class TrainSkillCommandHandler
 
     /// <summary>
     /// What happens between two epochs: the paired slow update over the validation rollouts, then the
-    /// meta-skill memory update. Returns the cross-epoch memory after both.
+    /// meta-skill update that draws the epoch's lesson. Returns the run's experience after both.
     /// </summary>
-    private async Task<string> RunEpochBoundaryAsync(
+    private async Task<IReadOnlyList<ExperienceEntry>> RunEpochBoundaryAsync(
         TrainSkillCommand request,
         TrainSkillConfig cfg,
         int epoch,
         string currentSkill,
-        double currentScore,
-        string metaMemory,
+        IReadOnlyList<ExperienceEntry> experience,
         IReadOnlyList<RolloutResult> priorEpochValRollouts,
         IReadOnlyList<RolloutResult> lastValRollouts,
+        IReadOnlyList<SkillTrainingStepRecord> steps,
         CancellationToken cancellationToken)
     {
+        var guidance = string.Empty;
         if (cfg.UseSlowUpdate && priorEpochValRollouts.Count > 0 && lastValRollouts.Count > 0)
         {
             // Paired comparison uses already-computed val rollouts — no extra LLM cost.
@@ -893,20 +921,77 @@ public sealed class TrainSkillCommandHandler
             {
                 _logger.LogInformation("Slow update at epoch {Epoch}: {Guidance}",
                     epoch, slowResult.Value.Guidance);
-                metaMemory = string.IsNullOrEmpty(metaMemory)
-                    ? slowResult.Value.Guidance
-                    : metaMemory + "\n\n" + slowResult.Value.Guidance;
+                guidance = slowResult.Value.Guidance;
             }
         }
 
+        var trials = steps.Where(s => s.Epoch == epoch).SelectMany(s => s.Trials).ToList();
+
         if (cfg.UseMetaSkill)
         {
-            metaMemory = await UpdateMetaMemoryAsync(
-                request, currentSkill, currentScore, epoch, metaMemory,
+            var result = await _mediator.Send(
+                new MetaSkillUpdate.MetaSkillUpdateCommand
+                {
+                    RunId = request.RunId,
+                    SkillId = request.SkillId,
+                    Domain = request.Domain,
+                    Epoch = epoch,
+                    CurrentSkill = currentSkill,
+                    Trials = trials,
+                    PairedGuidance = guidance,
+                    PriorEntries = experience
+                },
                 cancellationToken).ConfigureAwait(false);
+
+            // A refused lesson (it carried grader output) is left out and the run goes on without it.
+            return result.IsSuccess ? result.Value!.Entries : experience;
         }
 
-        return metaMemory;
+        return guidance.Length == 0 ? experience : [.. experience, GuidanceEntry(request, currentSkill, epoch, guidance)];
+    }
+
+    /// <summary>
+    /// The lesson for a run that keeps the paired comparison but not the meta-skill update: the comparison's
+    /// own note, kept in the run and not stored.
+    /// </summary>
+    private static ExperienceEntry GuidanceEntry(TrainSkillCommand request, string currentSkill, int epoch, string guidance) => new()
+    {
+        Cue = $"Changing the '{request.SkillId}' skill ({request.Domain})",
+        Lesson = guidance.Trim(),
+        Evidence = $"Epoch {epoch}: paired re-run of the validation items.",
+        Confidence = 0.5,
+        SkillHash = SkillContentHash.Of(currentSkill),
+        SkillContent = currentSkill,
+        Domain = request.Domain,
+        SkillId = request.SkillId,
+        RunId = request.RunId,
+        Epoch = epoch
+    };
+
+    /// <summary>
+    /// A fresh run starts with the lessons earlier runs of this skill left behind, when the meta-skill
+    /// update is on. Best-effort: a memory that cannot be reached gives an empty start, not a failed run.
+    /// </summary>
+    private async Task<IReadOnlyList<ExperienceEntry>> SeedExperienceAsync(
+        TrainSkillCommand request, TrainSkillConfig cfg, CancellationToken cancellationToken)
+    {
+        if (!cfg.UseMetaSkill)
+            return [];
+
+        try
+        {
+            return await _experienceLibrary.RecallAsync(
+                request.Domain, request.SkillId, request.RunId, beforeEpoch: 1, SeedLimit, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not recall earlier lessons for {SkillId}; starting without them.", request.SkillId);
+            return [];
+        }
     }
 
     /// <summary>
@@ -951,8 +1036,9 @@ public sealed class TrainSkillCommandHandler
         [
             ("checkpoint:skill", last.SkillContent),
             ("checkpoint:best-skill", best?.SkillContent),
-            ("checkpoint:meta-skill-memory", last.MetaSkillMemory)
+            ("checkpoint:meta-skill-memory", ExperienceRenderer.Render(last.Experience))
         ]);
+        leaks = [.. leaks, .. last.Experience.SelectMany(ExperienceLibrary.Scan)];
         if (leaks.Count > 0)
         {
             _logger.LogError(
@@ -974,13 +1060,13 @@ public sealed class TrainSkillCommandHandler
             ConsecutiveRejects: trailingRejects,
             GlobalStep: last.Step,
             HasAcceptedAny: hasAcceptedAny,
-            MetaMemory: last.MetaSkillMemory,
+            Experience: last.Experience,
             NeedsEpochBoundary: last.Step % cfg.StepsPerEpoch == 0
                 && last.Epoch < cfg.Epochs
                 && !last.EpochBoundaryDone
                 && trailingRejects < cfg.Patience,
             Steps: ordered.Select(c => NewStepRecord(
-                c.Step, c.Epoch, c.Action, c.CandidateScore, c.ProposedEditCount, c.AppliedEditCount)).ToList()), null);
+                c.Step, c.Epoch, c.Action, c.CandidateScore, c.ProposedEditCount, c.AppliedEditCount, c.EditTrials)).ToList()), null);
     }
 
     /// <summary>
@@ -990,14 +1076,9 @@ public sealed class TrainSkillCommandHandler
     /// stop, is the natural reason to resume and changes nothing about the steps already run.
     /// </summary>
     private static string ComputeRunFingerprint(TrainSkillCommand request) =>
-        ComputeHash(string.Join('\n',
+        SkillContentHash.Of(string.Join('\n',
             request.SkillId,
-            ComputeHash(request.InitialSkill),
+            request.Domain,
+            SkillContentHash.Of(request.InitialSkill),
             JsonSerializer.Serialize(request.Config with { Epochs = 0, Patience = 0 })));
-
-    private static string ComputeHash(string content)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
-        return Convert.ToHexStringLower(bytes);
-    }
 }

@@ -22,4 +22,10 @@ public sealed record TrainSkillCommand : IRequest<Result<SkillTrainingRunResult>
 
     /// <summary>Training configuration (epochs, LR schedule, gate metric, patience, ...).</summary>
     public required TrainSkillConfig Config { get; init; }
+
+    /// <summary>
+    /// The domain the skill works in, which groups the lessons drawn from its training (#845). Lower-case
+    /// letters, digits, '_' and '-'; becomes part of the memory key.
+    /// </summary>
+    public string Domain { get; init; } = "general";
 }

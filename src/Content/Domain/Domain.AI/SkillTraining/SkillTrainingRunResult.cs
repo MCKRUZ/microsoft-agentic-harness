@@ -66,4 +66,12 @@ public sealed record SkillTrainingStepRecord
 
     /// <summary>Number of edits actually applied (after selection + apply).</summary>
     public required int AppliedEditCount { get; init; }
+
+    /// <summary>
+    /// The edits that were applied and put through the gate this step, with what the gate showed about
+    /// each (#845). Empty for a step that ended before the gate (a fence rejection, a proposal with no
+    /// edits). The epoch's lesson is drawn from these, so they are kept in the checkpoint: a run resumed
+    /// mid-epoch still has the epoch's earlier trials.
+    /// </summary>
+    public IReadOnlyList<EditTrial> Trials { get; init; } = [];
 }

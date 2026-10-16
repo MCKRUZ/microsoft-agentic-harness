@@ -10,8 +10,8 @@ public sealed class MetaSkillUpdateCommandValidator : AbstractValidator<MetaSkil
     {
         RuleFor(x => x.RunId).NotEmpty();
         RuleFor(x => x.SkillId).NotEmpty();
+        RuleFor(x => x.Domain).NotEmpty();
         RuleFor(x => x.Epoch).GreaterThanOrEqualTo(1);
         RuleFor(x => x.CurrentSkill).NotEmpty();
-        RuleFor(x => x.CurrentScore).InclusiveBetween(0.0, 1.0);
     }
 }
