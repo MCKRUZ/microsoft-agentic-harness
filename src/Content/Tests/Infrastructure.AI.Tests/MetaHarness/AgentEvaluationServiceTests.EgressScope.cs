@@ -7,32 +7,10 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.MetaHarness;
-
-/// <summary>
-/// An <see cref="ILogger{TCategoryName}"/> that keeps what was written — used sparingly, only where
-/// a decision has no other observable effect. #618 /code-review finding: when
-/// <c>DisclosableSkillFactory.Create</c> silently drops a candidate skill, the resulting fallback to
-/// the harness-wide default egress policy is otherwise indistinguishable from "no candidate skill at
-/// all" from outside this class, so the warning log IS the behavior under test.
-/// </summary>
-internal sealed class CapturingLogger<T> : ILogger<T>
-{
-    private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
-
-    public bool Logged(LogLevel level, string fragment) =>
-        _entries.Any(e => e.Level == level && e.Message.Contains(fragment, StringComparison.Ordinal));
-
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-    public bool IsEnabled(LogLevel logLevel) => true;
-
-    public void Log<TState>(
-        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        => _entries.Enqueue((logLevel, formatter(state, exception)));
-}
 
 /// <summary>
 /// Tests for #618's remaining gap: an eval candidate's own <c>egress:</c> allowlist must actually

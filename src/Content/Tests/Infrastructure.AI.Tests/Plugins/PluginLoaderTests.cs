@@ -7,6 +7,7 @@ using FluentAssertions;
 using Infrastructure.AI.Plugins;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Plugins;
@@ -61,11 +62,13 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
-    public void Load_ManifestDeclaresHookPaths_FailsAndCommitsNothing()
+    public void Load_ManifestDeclaresHookPaths_StillLoadsButWarnsTheyWillNeverFire()
     {
-        // This loader reads a manifest's skills and MCP servers and nothing else, so declared hooks
-        // would be parsed and then never fire. The plugin must fail instead (#840), and the skills it
-        // also declared must not be left registered by a half-finished load (#614).
+        // This loader reads a manifest's skills and MCP servers and nothing else, so declared hooks are
+        // parsed and then ignored. The plugin still loads (its skills and servers are unaffected), but
+        // the author is told (#840).
+        var logger = new CapturingLogger<PluginLoader>();
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, logger);
         var skillsDir = Path.Combine(_tempDir, "skills");
         Directory.CreateDirectory(skillsDir);
         var manifest = new PluginManifest
@@ -76,29 +79,30 @@ public sealed class PluginLoaderTests : IDisposable
             Hooks = new PluginHooksManifest { Paths = ["./hooks/guard.sh"] }
         };
 
-        var result = _sut.Load(_tempDir, MakeDeclaration(), manifest);
+        var result = sut.Load(_tempDir, MakeDeclaration(), manifest);
 
-        result.Should().NotBeNull();
-        result!.Status.Should().Be(PluginLoadStatus.Failed);
-        _skillsConfig.AdditionalPaths.Should().NotContain(skillsDir);
+        result!.Status.Should().Be(PluginLoadStatus.Loaded);
+        _skillsConfig.AdditionalPaths.Should().Contain(skillsDir);
+        logger.Logged(LogLevel.Warning, "will never fire").Should().BeTrue();
     }
 
     [Fact]
-    public void Load_ManifestWithAnEmptyHooksBlock_StillLoads()
+    public void Load_ManifestWithAnEmptyHooksBlock_LoadsWithoutWarning()
     {
-        var skillsDir = Path.Combine(_tempDir, "skills");
-        Directory.CreateDirectory(skillsDir);
+        var logger = new CapturingLogger<PluginLoader>();
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, logger);
         var manifest = new PluginManifest
         {
             Name = "test-plugin",
             Version = "1.0.0",
-            Skills = "./skills/",
             Hooks = new PluginHooksManifest { Paths = [], Exclusive = true }
         };
 
-        var result = _sut.Load(_tempDir, MakeDeclaration(), manifest);
+        var result = sut.Load(_tempDir, MakeDeclaration(), manifest);
 
-        result!.Status.Should().Be(PluginLoadStatus.Loaded, "a hooks block that lists no hook has nothing to ignore");
+        result!.Status.Should().Be(PluginLoadStatus.Loaded);
+        logger.Logged(LogLevel.Warning, "will never fire").Should().BeFalse(
+            "a hooks block that lists no hook has nothing to ignore");
     }
 
     [Fact]

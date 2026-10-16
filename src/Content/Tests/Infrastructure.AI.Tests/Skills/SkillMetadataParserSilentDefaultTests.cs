@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Infrastructure.AI.Skills;
-using Infrastructure.AI.Tests.MetaHarness;
 using Microsoft.Extensions.Logging;
 using Tests.Common;
 using Xunit;
@@ -8,12 +7,12 @@ using Xunit;
 namespace Infrastructure.AI.Tests.Skills;
 
 /// <summary>
-/// Pins #840: a file-loaded skill that falls back to a value its author never wrote leaves a trace.
-/// A frontmatter block with no <c>description</c> loads with an empty one (advertised to the model as
-/// an empty line), and a frontmatter <c>name</c> that differs from the directory becomes the skill's
-/// id while everything that refers to the directory names something else. Both stay loadable, because
-/// a SKILL.md with no frontmatter at all is a pinned legitimate shape; what was missing was any log.
-/// The warning IS the behaviour under test: nothing else about the loaded skill changes.
+/// Pins #840: a file-loaded skill whose frontmatter block has no usable <c>description</c> leaves a
+/// trace. It still loads, because a SKILL.md with no frontmatter at all is a pinned legitimate shape;
+/// what was missing was any log. The warning IS the behaviour under test: nothing else about the
+/// loaded skill changes. A frontmatter <c>name</c> that differs from the directory is deliberately
+/// NOT warned about (see the last test): the frontmatter name is the skill's id, and the eval harness
+/// builds the directory from the candidate, so the difference is not an authoring mistake there.
 /// </summary>
 public sealed class SkillMetadataParserSilentDefaultTests : IDisposable
 {
@@ -47,14 +46,14 @@ public sealed class SkillMetadataParserSilentDefaultTests : IDisposable
     }
 
     [Fact]
-    public void ParseFromFile_FrontmatterWithoutDescription_WarnsTheSkillIsAdvertisedEmpty()
+    public void ParseFromFile_FrontmatterWithoutDescription_WarnsTheModelHasNothingToSelectItBy()
     {
         var (file, dir) = WriteSkill("no-description", "---\nname: no-description\n---\nBody.\n");
 
         var skill = _sut.ParseFromFile(file, dir);
 
         skill.Description.Should().BeEmpty("the skill still loads, as it always did");
-        _logger.Logged(LogLevel.Warning, "no `description:`").Should().BeTrue();
+        _logger.Logged(LogLevel.Warning, "no usable `description:`").Should().BeTrue();
     }
 
     [Fact]
@@ -64,19 +63,29 @@ public sealed class SkillMetadataParserSilentDefaultTests : IDisposable
 
         _sut.ParseFromFile(file, dir);
 
-        _logger.Logged(LogLevel.Warning, "no `description:`").Should().BeFalse(
+        _logger.Logged(LogLevel.Warning, "no usable `description:`").Should().BeFalse(
             "a pure-markdown SKILL.md is a legitimate manifest that declares nothing");
     }
 
     [Fact]
-    public void ParseFromFile_NameDiffersFromDirectory_WarnsAndKeepsTheFrontmatterNameAsId()
+    public void ParseFromFile_WhitespaceOnlyDescription_Warns()
+    {
+        var (file, dir) = WriteSkill("blank-description", "---\nname: blank-description\ndescription: \"   \"\n---\nBody.\n");
+
+        _sut.ParseFromFile(file, dir);
+
+        _logger.Logged(LogLevel.Warning, "no usable `description:`").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ParseFromFile_NameDiffersFromDirectory_KeepsTheFrontmatterNameAsIdWithoutWarning()
     {
         var (file, dir) = WriteSkill("the-directory", "---\nname: the-declared-name\ndescription: A skill.\n---\nBody.\n");
 
         var skill = _sut.ParseFromFile(file, dir);
 
         skill.Id.Should().Be("the-declared-name");
-        _logger.Logged(LogLevel.Warning, "lives in a directory named the-directory").Should().BeTrue();
+        _logger.Logged(LogLevel.Warning, "Skill ").Should().BeFalse();
     }
 
     [Fact]

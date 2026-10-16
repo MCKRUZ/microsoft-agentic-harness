@@ -56,7 +56,7 @@ public sealed class PluginLoader : IPluginLoader
     {
         try
         {
-            RefuseDeclaredHooks(declaration, manifest);
+            WarnOnDeclaredHooks(declaration, manifest);
 
             var skillPaths = string.IsNullOrEmpty(manifest.Skills)
                 ? []
@@ -99,19 +99,20 @@ public sealed class PluginLoader : IPluginLoader
     }
 
     /// <summary>
-    /// Refuses a manifest that declares hook scripts (#840). This loader reads a manifest's skills and
-    /// MCP servers and nothing else, so <see cref="PluginManifest.Hooks"/> is parsed and then ignored:
-    /// a plugin that relies on a hook for a guarantee (blocking a call, verifying a write) would load
-    /// with that guarantee silently absent. Failing the plugin makes the author find out, which is the
-    /// same outcome a malformed skills path already gets.
+    /// Says out loud when a manifest declares hook scripts (#840). This loader reads a manifest's
+    /// skills and MCP servers and nothing else, so <see cref="PluginManifest.Hooks"/> is parsed and then
+    /// ignored: a plugin that relies on a hook for a guarantee (blocking a call, verifying a write)
+    /// loads with that guarantee absent. The plugin still loads: its skills and MCP servers are
+    /// unaffected, and failing all of them would punish a plugin written for a host that does honour
+    /// hooks. The warning is what was missing.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The manifest lists one or more hook paths.</exception>
-    private static void RefuseDeclaredHooks(PluginDeclaration declaration, PluginManifest manifest)
+    private void WarnOnDeclaredHooks(PluginDeclaration declaration, PluginManifest manifest)
     {
         if (manifest.Hooks is { Paths.Count: > 0 })
         {
-            throw new InvalidOperationException(
-                $"Plugin '{declaration.Name}' declares {manifest.Hooks.Paths.Count} hook path(s), but this harness does not load plugin hooks, so they would never fire. Remove the `hooks` entry from plugin.json.");
+            _logger.LogWarning(
+                "Plugin {Name} declares {Count} hook path(s), but this harness does not load plugin hooks, so they will never fire",
+                declaration.Name, manifest.Hooks.Paths.Count);
         }
     }
 

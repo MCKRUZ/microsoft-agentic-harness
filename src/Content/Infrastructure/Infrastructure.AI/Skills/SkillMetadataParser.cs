@@ -179,7 +179,7 @@ public sealed partial class SkillMetadataParser
         var toolDeclarations = frontmatter.ToolDeclarations();
 
         if (explicitDescription is null)
-            WarnOnSilentDefaults(frontmatter, fallbackName, skillFilePath);
+            WarnOnMissingDescription(frontmatter, skillFilePath);
 
         ScanOrRefuse(name, description, body, toolDeclarations, skillFilePath);
 
@@ -218,21 +218,20 @@ public sealed partial class SkillMetadataParser
     }
 
     /// <summary>
-    /// Says out loud when a file-loaded skill falls back to a value its author never wrote (#840): a
-    /// frontmatter block with no <c>description</c>, or a <c>name</c> that differs from the directory.
+    /// Says out loud when a file-loaded skill has a frontmatter block but no usable
+    /// <c>description</c> (#840).
     /// </summary>
     /// <remarks>
     /// Deliberately a warning, not a refusal. A SKILL.md with no frontmatter at all is a pinned,
-    /// legitimate shape (<c>ParseFromFile_NoFrontmatterAtAll_LoadsWithDefaults</c>), and the frontmatter
-    /// name has always been the skill's id here, so nothing is dropped: the skill loads either way. What
-    /// was missing was any trace of it. A frontmatter block that declares fields but no description is
-    /// advertised to the model as an empty line, and a name that differs from the directory means every
-    /// trigger line, agent skill list and operator that refers to the skill by directory is naming
-    /// something else. A file with no frontmatter is not warned about. Only the file path is checked:
-    /// the pre-parsed <c>Parse</c> overload takes its name and description from a loader that has
-    /// already decided them.
+    /// legitimate shape (<c>ParseFromFile_NoFrontmatterAtAll_LoadsWithDefaults</c>), so the skill loads
+    /// either way; what was missing was any trace of it. A frontmatter block that declares fields but
+    /// no description gives the model nothing to select the skill by. A file with no frontmatter is
+    /// not warned about. Only the file path is checked: the pre-parsed <c>Parse</c> overload takes its
+    /// description from a loader that has already decided it. A frontmatter <c>name</c> that differs
+    /// from the directory is deliberately not checked: the frontmatter name is the skill's id, and the
+    /// directory is not authored for every caller (the eval harness derives it from the candidate).
     /// </remarks>
-    private void WarnOnSilentDefaults(SkillFrontmatter frontmatter, string directoryName, string skillFilePath)
+    private void WarnOnMissingDescription(SkillFrontmatter frontmatter, string skillFilePath)
     {
         if (!frontmatter.DeclaresFields)
             return;
@@ -240,18 +239,8 @@ public sealed partial class SkillMetadataParser
         if (string.IsNullOrWhiteSpace(frontmatter.String("description")))
         {
             _logger.LogWarning(
-                "Skill {Path} has frontmatter but no `description:`, so it is advertised to the model as an empty line",
+                "Skill {Path} has frontmatter but no usable `description:`, so the model has nothing to select it by",
                 skillFilePath);
-        }
-
-        var declaredName = frontmatter.String("name");
-        if (declaredName is not null
-            && directoryName.Length > 0
-            && !string.Equals(declaredName, directoryName, StringComparison.Ordinal))
-        {
-            _logger.LogWarning(
-                "Skill {Path} declares `name: {DeclaredName}` but lives in a directory named {DirectoryName}; its id is the frontmatter name, so anything that refers to it by directory names something else",
-                skillFilePath, declaredName, directoryName);
         }
     }
 

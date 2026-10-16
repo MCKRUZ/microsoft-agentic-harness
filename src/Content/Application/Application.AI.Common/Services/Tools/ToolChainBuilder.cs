@@ -195,7 +195,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         {
             foreach (var toolName in skill.AllowedTools)
             {
-                var resolved = ResolveToolByName(toolName);
+                var resolved = ResolveToolByNameOrWarn(toolName);
                 if (resolved != null)
                     foreach (var t in resolved)
                         managed.Add(new ProvisionedTool(t, null, skill.Id, toolName));
@@ -436,7 +436,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var tools = new List<AITool>();
         foreach (var name in toolNames)
         {
-            var resolved = ResolveToolByName(name);
+            var resolved = ResolveToolByNameOrWarn(name);
             if (resolved != null)
                 tools.AddRange(resolved);
         }
@@ -929,18 +929,31 @@ public partial class ToolChainBuilder : IToolChainBuilder
         return (null, false);
     }
 
+    /// <summary>
+    /// <see cref="ResolveToolByName"/> for callers where a miss is final: the name is dropped from the
+    /// chain and nothing replaces it. Said out loud (#840), because the alternative is a skill that
+    /// declares a tool, runs without it, and leaves no trace of why. Not used where a miss is a normal
+    /// step (an optional declaration, or one with a fallback), which is why the warning is not in
+    /// <see cref="ResolveToolByName"/> itself.
+    /// </summary>
+    private IEnumerable<AITool>? ResolveToolByNameOrWarn(string toolName)
+    {
+        var resolved = ResolveToolByName(toolName);
+        if (resolved is null)
+        {
+            _logger.LogWarning(
+                "Tool '{ToolName}' is not registered under that key in keyed DI, so it is not part of this agent's tool set",
+                toolName);
+        }
+
+        return resolved;
+    }
+
     private IEnumerable<AITool>? ResolveToolByName(string toolName)
     {
         var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
         if (tool == null)
-        {
-            // A name no registration answers to is dropped from the chain. Said out loud (#840): the
-            // alternative is a skill that declares a tool, runs without it, and leaves no trace of why.
-            _logger.LogWarning(
-                "Tool '{ToolName}' is not registered under that key in keyed DI, so it is not part of this agent's tool set",
-                toolName);
             return null;
-        }
 
         if (_toolConverter != null)
         {
