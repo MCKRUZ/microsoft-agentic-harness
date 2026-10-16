@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
 using Domain.Common;
 using MediatR;
@@ -42,10 +43,20 @@ public sealed class ReflectOnFailuresCommandHandler
         var input = new ReflectionInput
         {
             CurrentSkill = request.CurrentSkill,
-            Rollouts = request.Rollouts,
+            Rollouts = request.Rollouts.Select(ProposerRolloutView.From).ToList(),
             MetaSkillMemory = request.MetaSkillMemory,
             IncludeSuccesses = request.IncludeSuccesses
         };
+
+        // Tripwire (#841): see TrainSkillCommandHandler. The same refusal on the standalone reflect path.
+        var leaks = GraderMarkerScanner.Scan(input);
+        if (leaks.Count > 0)
+        {
+            _logger.LogError(
+                "Refusing to reflect on {Count} rollouts: {Leaks} grader-verdict marker(s) in the proposer's evidence [{Findings}]",
+                request.Rollouts.Count, leaks.Count, GraderMarkerScanner.Describe(leaks));
+            return Result<Patch>.Fail(GraderMarkerScanner.EvidenceLeakCode);
+        }
 
         Patch patch;
         try

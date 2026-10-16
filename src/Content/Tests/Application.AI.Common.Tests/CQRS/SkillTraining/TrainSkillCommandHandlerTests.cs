@@ -807,6 +807,69 @@ public class TrainSkillCommandHandlerTests
 
     // ── Stubs ────────────────────────────────────────────────────────────────────
 
+    private static readonly TrainSkillConfig OneStepConfig = new()
+    {
+        Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1, LrScheduler = "constant", Patience = 6
+    };
+
+    [Fact]
+    public async Task Handle_TrajectoryCarriesASerializedVerdict_RefusesTheRunBeforeTheProposerReadsIt()
+    {
+        // A runner that wrote its report into a trajectory puts the grader's verdict in the proposer's
+        // context. That is a wrong read path, not a bad step: the run is refused (#841).
+        var runner = new StubRolloutRunner((skill, batch) => batch.Split == "train"
+            ? [new RolloutResult
+            {
+                ItemId = "t1", Hard = 0.0, Soft = 0.2,
+                Trajectory = "agent said done. {\"OverallVerdict\":\"Fail\",\"PassedCount\":0}"
+            }]
+            : []);
+        var proposerCalls = 0;
+        var proposer = new StubProposer(_ => { proposerCalls++; return new Patch(); });
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore());
+
+        var result = await sut.Handle(NewCommand(OneStepConfig), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(GraderMarkerScanner.EvidenceLeakCode);
+        proposerCalls.Should().Be(0, "the proposer must not read evidence that carries a verdict");
+    }
+
+    [Fact]
+    public async Task Handle_VerdictLeakIsAudited()
+    {
+        var audit = new CapturingAudit();
+        var runner = new StubRolloutRunner((skill, batch) => batch.Split == "train"
+            ? [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.2, Trajectory = "{\"Hard\": 0.0}" }]
+            : []);
+        var sut = NewSut(runner, new StubProposer(_ => new Patch()), new InMemorySkillTrainingCheckpointStore(), audit);
+
+        await sut.Handle(NewCommand(OneStepConfig), CancellationToken.None);
+
+        audit.Entries.Should().ContainSingle(e => e.AgentId == "skill-X" && e.Action == "skill_training.evidence_leak");
+    }
+
+    [Fact]
+    public async Task Handle_ProposerReceivesPassFailAndTrajectory_NeverTheScores()
+    {
+        ReflectionInput? seen = null;
+        var runner = new StubRolloutRunner((skill, batch) => batch.Split == "train"
+            ? [
+                new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.4, Trajectory = "tried and failed", TaskType = "rag" },
+                new RolloutResult { ItemId = "t2", Hard = 1.0, Soft = 1.0, Trajectory = "worked" }
+              ]
+            : []);
+        var proposer = new StubProposer(input => { seen = input; return new Patch(); });
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore());
+
+        await sut.Handle(NewCommand(OneStepConfig), CancellationToken.None);
+
+        seen.Should().NotBeNull();
+        seen!.Rollouts.Should().Equal(
+            new ProposerRolloutView("t1", false, "tried and failed", "rag"),
+            new ProposerRolloutView("t2", true, "worked", string.Empty));
+    }
+
     private sealed class StubRolloutRunner : IRolloutRunner
     {
         private readonly Func<string, RolloutBatch, IReadOnlyList<RolloutResult>> _fn;

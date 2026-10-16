@@ -178,10 +178,26 @@ public sealed class TrainSkillCommandHandler
                 var input = new ReflectionInput
                 {
                     CurrentSkill = currentSkill,
-                    Rollouts = trainRollouts,
+                    Rollouts = trainRollouts.Select(ProposerRolloutView.From).ToList(),
                     MetaSkillMemory = metaMemory,
                     IncludeSuccesses = true
                 };
+
+                // Tripwire (#841): the proposer must never read the grader's own output. The view above
+                // carries no score, so a hit means a verdict arrived another way (a runner that wrote its
+                // report into a trajectory, a skill an earlier step copied a result into). That is a wrong
+                // read path, not a bad step: refuse the run rather than record a Reject and carry on.
+                var leaks = GraderMarkerScanner.Scan(input);
+                if (leaks.Count > 0)
+                {
+                    _logger.LogError(
+                        "Refusing skill-training run {SkillId} at step {Step}: {Count} grader-verdict marker(s) in the proposer's evidence [{Findings}]",
+                        request.SkillId, globalStep, leaks.Count, GraderMarkerScanner.Describe(leaks));
+                    SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                        $"deny: {leaks.Count} grader-verdict marker(s) in proposer evidence", globalStep);
+                    return Result<SkillTrainingRunResult>.Fail(GraderMarkerScanner.EvidenceLeakCode);
+                }
+
                 Patch proposed;
                 try
                 {

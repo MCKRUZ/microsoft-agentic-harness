@@ -1,5 +1,6 @@
 using Application.AI.Common.CQRS.SkillTraining.ReflectOnFailures;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -71,6 +72,24 @@ public class ReflectOnFailuresCommandHandlerTests
         var act = () => sut.Handle(NewCommand(), CancellationToken.None);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task Handle_RolloutTrajectoryCarriesASerializedVerdict_ReturnsTheLeakCodeWithoutCallingTheProposer()
+    {
+        var calls = 0;
+        var sut = NewSut(new StubProposer(_ => { calls++; return new Patch(); }));
+        var command = new ReflectOnFailuresCommand
+        {
+            CurrentSkill = "# skill",
+            Rollouts = [new RolloutResult { ItemId = "case-1", Hard = 0.0, Soft = 0.2, Trajectory = "{\"OverallVerdict\":\"Fail\"}" }]
+        };
+
+        var result = await sut.Handle(command, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(GraderMarkerScanner.EvidenceLeakCode);
+        calls.Should().Be(0);
     }
 
     private static ReflectOnFailuresCommandHandler NewSut(IPatchProposer proposer) =>
