@@ -68,6 +68,8 @@
 
     <!-- Auth -->
     <PackageReference Include="Microsoft.Identity.Web" />
+    <PackageReference Include="System.Security.Cryptography.Xml" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
 
     <!-- Azure config sources -->
     <PackageReference Include="Azure.Identity" />
