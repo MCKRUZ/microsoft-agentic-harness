@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.ClaimVerification;
@@ -157,22 +158,45 @@ public sealed class TrainSkillCommandHandler
         var scheduler = ResolveScheduler(cfg.LrScheduler);
         var totalSteps = cfg.Epochs * cfg.StepsPerEpoch;
 
-        var currentSkill = request.InitialSkill;
-        var bestSkill = currentSkill;
-        double currentScore = 0.0;
-        double bestScore = 0.0;
-        var bestStep = 0;
-        var consecutiveRejects = 0;
-        var globalStep = 0;
+        // Resume (#842): an earlier attempt at this run may have left checkpoints. Continue from the last
+        // one rather than starting over, but only when they came from this skill, this starting text and
+        // this configuration: a reused RunId with different inputs would otherwise splice two runs.
+        var fingerprint = ComputeRunFingerprint(request);
+        var (resume, refusal) = await LoadResumeStateAsync(request, fingerprint, cancellationToken).ConfigureAwait(false);
+        if (refusal is not null)
+            return Result<SkillTrainingRunResult>.ValidationFailure([refusal]);
+
+        var currentSkill = resume?.CurrentSkill ?? request.InitialSkill;
+        var bestSkill = resume?.BestSkill ?? currentSkill;
+        var currentScore = resume?.CurrentScore ?? 0.0;
+        var bestScore = resume?.BestScore ?? 0.0;
+        var bestStep = resume?.BestStep ?? 0;
+        var consecutiveRejects = resume?.ConsecutiveRejects ?? 0;
+        var globalStep = resume?.GlobalStep ?? 0;
         var steps = new List<SkillTrainingStepRecord>(totalSteps);
-        var metaMemory = string.Empty;
-        var hasAcceptedAny = false;
+        steps.AddRange(resume?.Steps ?? []);
+        var metaMemory = resume?.MetaMemory ?? string.Empty;
+        var hasAcceptedAny = resume?.HasAcceptedAny ?? false;
+        var lastAction = resume?.LastAction ?? GateAction.Reject;
         IReadOnlyList<RolloutResult> lastValRollouts = [];
         IReadOnlyList<RolloutResult> priorEpochValRollouts = [];
 
-        for (var epoch = 1; epoch <= cfg.Epochs; epoch++)
+        if (resume is not null)
         {
-            for (var stepInEpoch = 1; stepInEpoch <= cfg.StepsPerEpoch; stepInEpoch++)
+            _logger.LogInformation(
+                "Resuming skill-training run {RunId} after step {Step} ({Rejects} consecutive reject(s))",
+                request.RunId, resume.GlobalStep, resume.ConsecutiveRejects);
+            if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
+        }
+
+        // The next step is one past the last one run. Whole epochs before it are skipped; a resume that
+        // lands mid-epoch finishes that epoch's remaining steps first.
+        var startEpoch = (globalStep / cfg.StepsPerEpoch) + 1;
+        var startStepInEpoch = (globalStep % cfg.StepsPerEpoch) + 1;
+
+        for (var epoch = startEpoch; epoch <= cfg.Epochs; epoch++)
+        {
+            for (var stepInEpoch = epoch == startEpoch ? startStepInEpoch : 1; stepInEpoch <= cfg.StepsPerEpoch; stepInEpoch++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 globalStep++;
@@ -457,20 +481,9 @@ public sealed class TrainSkillCommandHandler
                         globalStep);
                 }
 
-                await _checkpointStore.SaveAsync(
-                    new SkillTrainingCheckpoint
-                    {
-                        RunId = request.RunId,
-                        SkillId = request.SkillId,
-                        Step = globalStep,
-                        Epoch = epoch,
-                        SkillContent = gateResult.Action == GateAction.Reject ? currentSkill : gateResult.CurrentSkill,
-                        SkillHash = ComputeHash(gateResult.Action == GateAction.Reject ? currentSkill : gateResult.CurrentSkill),
-                        Score = gateResult.Action == GateAction.Reject ? currentScore : gateResult.CurrentScore,
-                        Action = gateResult.Action,
-                        MetaSkillMemory = metaMemory,
-                        CreatedAt = _time.GetUtcNow()
-                    },
+                lastAction = gateResult.Action;
+                await SaveCheckpointAsync(
+                    request, fingerprint, globalStep, epoch, currentSkill, currentScore, lastAction, metaMemory,
                     cancellationToken).ConfigureAwait(false);
 
                 if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -507,6 +520,12 @@ public sealed class TrainSkillCommandHandler
                 }
 
                 priorEpochValRollouts = lastValRollouts;
+
+                // The memory just changed, after the epoch's last checkpoint was written. Write that
+                // checkpoint again so a resume from this point starts with the updated memory.
+                await SaveCheckpointAsync(
+                    request, fingerprint, globalStep, epoch, currentSkill, currentScore, lastAction, metaMemory,
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -779,6 +798,75 @@ public sealed class TrainSkillCommandHandler
         ProposedEditCount = proposed,
         AppliedEditCount = applied
     };
+
+    private Task SaveCheckpointAsync(
+        TrainSkillCommand request, string fingerprint, int step, int epoch,
+        string skill, double score, GateAction action, string metaMemory, CancellationToken cancellationToken) =>
+        _checkpointStore.SaveAsync(
+            new SkillTrainingCheckpoint
+            {
+                RunId = request.RunId,
+                SkillId = request.SkillId,
+                Step = step,
+                Epoch = epoch,
+                SkillContent = skill,
+                SkillHash = ComputeHash(skill),
+                Score = score,
+                Action = action,
+                MetaSkillMemory = metaMemory,
+                RunFingerprint = fingerprint,
+                CreatedAt = _time.GetUtcNow()
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Rebuilds the loop state from the checkpoints an earlier attempt at this run left behind. Returns
+    /// no state when there are none, and a refusal when they belong to a different skill, starting text
+    /// or configuration.
+    /// </summary>
+    private async Task<(TrainSkillResumeState? State, string? Refusal)> LoadResumeStateAsync(
+        TrainSkillCommand request, string fingerprint, CancellationToken cancellationToken)
+    {
+        var stored = await _checkpointStore.ListAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+        if (stored.Count == 0)
+            return (null, null);
+
+        var ordered = stored.OrderBy(c => c.Step).ToList();
+        var last = ordered[^1];
+        if (last.SkillId != request.SkillId || last.RunFingerprint != fingerprint)
+        {
+            return (null,
+                $"RunId '{request.RunId}' already holds checkpoints from a different skill, starting text or configuration; use a new RunId to start a new run.");
+        }
+
+        var best = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false) ?? last;
+        var trailingRejects = ordered.AsEnumerable().Reverse().TakeWhile(c => c.Action == GateAction.Reject).Count();
+
+        return (new TrainSkillResumeState(
+            CurrentSkill: last.SkillContent,
+            CurrentScore: last.Score,
+            BestSkill: best.SkillContent,
+            BestScore: best.Score,
+            BestStep: best.Step,
+            ConsecutiveRejects: trailingRejects,
+            GlobalStep: last.Step,
+            // A best score above zero can only have come from an accepted step, even if eviction dropped it.
+            HasAcceptedAny: best.Score > 0.0 || ordered.Any(c => c.Action is GateAction.Accept or GateAction.AcceptNewBest),
+            MetaMemory: last.MetaSkillMemory,
+            LastAction: last.Action,
+            Steps: ordered.Select(c => new SkillTrainingStepRecord
+            {
+                Step = c.Step, Epoch = c.Epoch, Action = c.Action, CandidateScore = c.Score,
+                ProposedEditCount = 0, AppliedEditCount = 0
+            }).ToList()), null);
+    }
+
+    /// <summary>
+    /// A digest of everything that decides what a run does: the skill id, the starting text and the whole
+    /// configuration. Checkpoints written under a different digest are not resumed.
+    /// </summary>
+    private static string ComputeRunFingerprint(TrainSkillCommand request) =>
+        ComputeHash(string.Join('\n', request.SkillId, ComputeHash(request.InitialSkill), JsonSerializer.Serialize(request.Config)));
 
     private static string ComputeHash(string content)
     {

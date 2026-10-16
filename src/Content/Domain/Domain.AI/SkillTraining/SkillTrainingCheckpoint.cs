@@ -53,6 +53,13 @@ public sealed record SkillTrainingCheckpoint
     /// <summary>Cross-epoch optimizer strategy memory, if any.</summary>
     public string MetaSkillMemory { get; init; } = string.Empty;
 
+    /// <summary>
+    /// A digest of the skill id, starting text and configuration the run was started with. A run resumes
+    /// from these checkpoints only when its own digest matches, so a reused run id with different inputs
+    /// cannot splice two runs together. Empty on a checkpoint written before resume existed.
+    /// </summary>
+    public string RunFingerprint { get; init; } = string.Empty;
+
     /// <summary>UTC timestamp when this checkpoint was written.</summary>
     public required DateTimeOffset CreatedAt { get; init; }
 }
