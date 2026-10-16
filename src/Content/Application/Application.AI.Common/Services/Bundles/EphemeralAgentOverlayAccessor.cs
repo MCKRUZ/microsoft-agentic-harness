@@ -47,22 +47,6 @@ public static class EphemeralAgentOverlayAccessor
     public static IDisposable Begin(EphemeralAgentOverlay overlay)
     {
         ArgumentNullException.ThrowIfNull(overlay);
-        var previous = s_current.Value;
-        s_current.Value = overlay;
-        return new OverlayScope(previous);
-    }
-
-    private sealed class OverlayScope(EphemeralAgentOverlay? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
+        return AmbientScope.Begin(s_current, overlay);
     }
 }

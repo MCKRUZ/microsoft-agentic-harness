@@ -1,3 +1,4 @@
+using Application.AI.Common.Services;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Workspace;
 
@@ -28,27 +29,6 @@ public sealed class WorkspaceContextAccessor : IWorkspaceContextAccessor
     {
         ArgumentNullException.ThrowIfNull(workspace);
 
-        var previous = Slot.Value;
-        Slot.Value = workspace;
-        return new Restorer(previous);
-    }
-
-    private sealed class Restorer : IDisposable
-    {
-        private readonly WorkspaceContext? _previous;
-        private bool _disposed;
-
-        public Restorer(WorkspaceContext? previous)
-        {
-            _previous = previous;
-        }
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            Slot.Value = _previous;
-        }
+        return AmbientScope.Begin(Slot, workspace);
     }
 }

@@ -41,22 +41,6 @@ public static class BundleRunIdAccessor
     public static IDisposable Begin(string runId)
     {
         ArgumentException.ThrowIfNullOrEmpty(runId);
-        var previous = s_current.Value;
-        s_current.Value = runId;
-        return new RunIdScope(previous);
-    }
-
-    private sealed class RunIdScope(string? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
+        return AmbientScope.Begin(s_current, runId);
     }
 }
