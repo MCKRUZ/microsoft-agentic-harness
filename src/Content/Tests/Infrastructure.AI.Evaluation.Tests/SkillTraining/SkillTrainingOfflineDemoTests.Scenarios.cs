@@ -168,4 +168,39 @@ public sealed partial class SkillTrainingOfflineDemoTests
         firstRunSeen[0].Should().StartWith("ERROR", "nothing had been learned yet");
         secondRunSeen[0].Should().Contain("Kept:", "the second run's very first step reads the first run's lesson");
     }
+
+    [Fact]
+    public async Task Run_InterruptedByARestart_ResumesFromTheDatabaseTheFirstProcessLeft()
+    {
+        var database = Path.Combine(_root, "checkpoints.db");
+        var calls = 0;
+        Func<Session, Task<string>> script = async session =>
+        {
+            if (++calls == 2)
+                throw new OperationCanceledException();
+
+            var skill = await session.SkillAsync();
+            return skill.Contains(Rule, StringComparison.Ordinal)
+                ? Session.KeepBase
+                : Session.Reply(skill.TrimEnd('\n') + "\n" + Rule + "\n");
+        };
+        var command = Command(Config(epochs: 3));
+
+        // The first "process" runs step 1, is interrupted in step 2, and is gone.
+        using (var first = NewRig(script, checkpointDatabase: database))
+        {
+            var interrupted = () => first.TrainAsync(command);
+            await interrupted.Should().ThrowAsync<OperationCanceledException>();
+        }
+
+        // A second "process": a new container, a new store object, the same file.
+        using var second = NewRig(script, checkpointDatabase: database);
+        var resumed = await second.TrainAsync(command);
+
+        resumed.IsSuccess.Should().BeTrue(string.Join("; ", resumed.Errors));
+        resumed.Value!.BestSkill.Should().Contain(Rule);
+        resumed.Value.Steps.Select(s => s.Step).Should().Equal(1, 2, 3);
+        second.Handler.Calls.Should().Be(2, "the second process ran steps 2 and 3 and did not repeat step 1");
+        second.Checkpoints().Select(c => c.Step).Should().Equal(1, 2, 3);
+    }
 }

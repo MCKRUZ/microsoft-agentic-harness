@@ -206,6 +206,67 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public async Task AddInfrastructureAIDependencies_ReplacesTheInMemoryCheckpointStoreWithTheDurableOne()
+    {
+        // #853: resume only survives a restart if the store is the database one.
+        var dir = Path.Combine(Path.GetTempPath(), $"checkpoint-di-{Guid.NewGuid():N}");
+        try
+        {
+            var appConfig = IsolatedAppConfig.Create();
+            appConfig.AI.SkillTraining.CheckpointDatabasePath = Path.Combine(dir, "ck.db");
+            var services = CreateBaseServices(appConfig);
+            services.AddSingleton<Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore,
+                Application.AI.Common.Services.SkillTraining.InMemorySkillTrainingCheckpointStore>();
+
+            services.AddInfrastructureAIDependencies(appConfig);
+
+            var registration = services.Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore))
+                .Should().ContainSingle().Subject;
+            registration.ImplementationType.Should().Be<Infrastructure.AI.SkillTraining.EfSkillTrainingCheckpointStore>();
+            registration.Lifetime.Should().Be(ServiceLifetime.Singleton);
+
+            using var provider = services.BuildServiceProvider();
+            var store = provider.GetRequiredService<Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore>();
+            await store.SaveAsync(new Domain.AI.SkillTraining.SkillTrainingCheckpoint
+            {
+                RunId = "r", SkillId = "s", Step = 1, Epoch = 1, SkillContent = "x", SkillHash = "h", Score = 0.5,
+                Action = Domain.AI.SkillTraining.GateAction.Accept, CreatedAt = DateTimeOffset.UtcNow
+            }, CancellationToken.None);
+            File.Exists(Path.Combine(dir, "ck.db")).Should().BeTrue("the checkpoint went to the configured database file");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_LeavesACheckpointStoreTheConsumerRegisteredThemselves()
+    {
+        var services = CreateBaseServices();
+        services.AddSingleton<Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore,
+            Application.AI.Common.Services.SkillTraining.InMemorySkillTrainingCheckpointStore>();
+        services.AddSingleton<Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore, ConsumerCheckpointStore>();
+
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+
+        services.Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore))
+            .Select(d => d.ImplementationType).Should().Contain(typeof(ConsumerCheckpointStore))
+            .And.NotContain(typeof(Infrastructure.AI.SkillTraining.EfSkillTrainingCheckpointStore));
+    }
+
+    private sealed class ConsumerCheckpointStore : Application.AI.Common.Interfaces.SkillTraining.ISkillTrainingCheckpointStore
+    {
+        public Task SaveAsync(Domain.AI.SkillTraining.SkillTrainingCheckpoint checkpoint, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<Domain.AI.SkillTraining.SkillTrainingCheckpoint?> GetAsync(string runId, int step, CancellationToken cancellationToken) => Task.FromResult<Domain.AI.SkillTraining.SkillTrainingCheckpoint?>(null);
+        public Task<Domain.AI.SkillTraining.SkillTrainingCheckpoint?> GetBestAsync(string runId, CancellationToken cancellationToken) => Task.FromResult<Domain.AI.SkillTraining.SkillTrainingCheckpoint?>(null);
+        public Task<IReadOnlyList<Domain.AI.SkillTraining.SkillTrainingCheckpoint>> ListAsync(string runId, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<Domain.AI.SkillTraining.SkillTrainingCheckpoint>>([]);
+        public Task<IAsyncDisposable?> TryBeginRunAsync(string runId, CancellationToken cancellationToken) => Task.FromResult<IAsyncDisposable?>(null);
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_ReplacesTheFailFastPatchProposerDefault()
     {
         var services = CreateBaseServices();

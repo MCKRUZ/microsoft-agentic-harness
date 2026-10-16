@@ -14,7 +14,8 @@ namespace Domain.Common.Config.AI.SkillTraining;
 /// ├── WorkDescription     — What the skill's work is, for the proposer's mission
 /// ├── DatasetPath         — The eval dataset the rollout runner draws items from
 /// ├── RolloutAgentName    — The agent whose system prompt is replaced by the candidate skill
-/// └── MaxRolloutConcurrency — Rollouts run at once within a batch
+/// ├── MaxRolloutConcurrency — Rollouts run at once within a batch
+/// └── CheckpointDatabasePath — SQLite file holding checkpoints, so a run survives a restart
 /// </code>
 /// </remarks>
 public class SkillTrainingConfig
@@ -66,4 +67,11 @@ public class SkillTrainingConfig
     /// </summary>
     /// <value>Default: 2.</value>
     public int MaxRolloutConcurrency { get; set; } = 2;
+
+    /// <summary>
+    /// SQLite file the training checkpoints and run claims are stored in, relative to the application base
+    /// directory. A run interrupted by a restart resumes from here (#853).
+    /// </summary>
+    /// <value>Default: <c>data/skill-training.db</c>.</value>
+    public string CheckpointDatabasePath { get; set; } = "data/skill-training.db";
 }

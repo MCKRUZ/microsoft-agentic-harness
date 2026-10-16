@@ -34,6 +34,9 @@ public sealed partial class SkillTrainingConfigValidator : AbstractValidator<Ski
         RuleFor(x => x.EvidenceRoot)
             .NotEmpty().WithMessage("EvidenceRoot must be set; the proposer's evidence is written there.");
 
+        RuleFor(x => x.CheckpointDatabasePath)
+            .NotEmpty().WithMessage("CheckpointDatabasePath must be set; training checkpoints are stored there.");
+
         RuleFor(x => x.ProposerAgentName)
             .NotEmpty().WithMessage("ProposerAgentName must be set.")
             .Must(name => AgentNamePattern().IsMatch(name ?? string.Empty))
