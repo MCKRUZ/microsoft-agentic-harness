@@ -7,6 +7,7 @@ using FluentAssertions;
 using Infrastructure.AI.Plugins;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Plugins;
@@ -58,6 +59,50 @@ public sealed class PluginLoaderTests : IDisposable
         result!.Status.Should().Be(PluginLoadStatus.Loaded);
         result.SkillPaths.Should().ContainSingle().Which.Should().Be(skillsDir);
         _skillsConfig.AdditionalPaths.Should().Contain(skillsDir);
+    }
+
+    [Fact]
+    public void Load_ManifestDeclaresHookPaths_StillLoadsButWarnsTheyWillNeverFire()
+    {
+        // This loader reads a manifest's skills and MCP servers and nothing else, so declared hooks are
+        // parsed and then ignored. The plugin still loads (its skills and servers are unaffected), but
+        // the author is told (#840).
+        var logger = new CapturingLogger<PluginLoader>();
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, logger);
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+        var manifest = new PluginManifest
+        {
+            Name = "test-plugin",
+            Version = "1.0.0",
+            Skills = "./skills/",
+            Hooks = new PluginHooksManifest { Paths = ["./hooks/guard.sh"] }
+        };
+
+        var result = sut.Load(_tempDir, MakeDeclaration(), manifest);
+
+        result!.Status.Should().Be(PluginLoadStatus.Loaded);
+        _skillsConfig.AdditionalPaths.Should().Contain(skillsDir);
+        logger.Logged(LogLevel.Warning, "will never fire").Should().BeTrue();
+    }
+
+    [Fact]
+    public void Load_ManifestWithAnEmptyHooksBlock_LoadsWithoutWarning()
+    {
+        var logger = new CapturingLogger<PluginLoader>();
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, logger);
+        var manifest = new PluginManifest
+        {
+            Name = "test-plugin",
+            Version = "1.0.0",
+            Hooks = new PluginHooksManifest { Paths = [], Exclusive = true }
+        };
+
+        var result = sut.Load(_tempDir, MakeDeclaration(), manifest);
+
+        result!.Status.Should().Be(PluginLoadStatus.Loaded);
+        logger.Logged(LogLevel.Warning, "will never fire").Should().BeFalse(
+            "a hooks block that lists no hook has nothing to ignore");
     }
 
     [Fact]

@@ -56,6 +56,8 @@ public sealed class PluginLoader : IPluginLoader
     {
         try
         {
+            WarnOnDeclaredHooks(declaration, manifest);
+
             var skillPaths = string.IsNullOrEmpty(manifest.Skills)
                 ? []
                 : ResolveSkillPaths(pluginPath, declaration, manifest.Skills);
@@ -93,6 +95,24 @@ public sealed class PluginLoader : IPluginLoader
                 [],
                 [],
                 declaration);
+        }
+    }
+
+    /// <summary>
+    /// Says out loud when a manifest declares hook scripts (#840). This loader reads a manifest's
+    /// skills and MCP servers and nothing else, so <see cref="PluginManifest.Hooks"/> is parsed and then
+    /// ignored: a plugin that relies on a hook for a guarantee (blocking a call, verifying a write)
+    /// loads with that guarantee absent. The plugin still loads: its skills and MCP servers are
+    /// unaffected, and failing all of them would punish a plugin written for a host that does honour
+    /// hooks. The warning is what was missing.
+    /// </summary>
+    private void WarnOnDeclaredHooks(PluginDeclaration declaration, PluginManifest manifest)
+    {
+        if (manifest.Hooks is { Paths.Count: > 0 })
+        {
+            _logger.LogWarning(
+                "Plugin {Name} declares {Count} hook path(s), but this harness does not load plugin hooks, so they will never fire",
+                declaration.Name, manifest.Hooks.Paths.Count);
         }
     }
 
