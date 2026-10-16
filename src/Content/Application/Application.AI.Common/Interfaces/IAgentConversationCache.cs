@@ -12,7 +12,9 @@ namespace Application.AI.Common.Interfaces;
 /// The agent is created on the first turn (cache miss) and reused for later turns in the same
 /// conversation <em>as long as each turn still asks for what it was built for</em>: a turn whose
 /// skills or build-affecting options differ (a per-run deployment override, changed AGENT.md
-/// instructions or tool ceiling; an edit to a skill's own SKILL.md is not detected) rebuilds the agent rather than being served the stale one. Callers must serialise
+/// instructions or tool ceiling, or an edit to one of the skills' SKILL.md text, seen through each
+/// definition's content hash) rebuilds the agent rather than being served the stale one. A skill
+/// definition that carries no content hash cannot be checked this way. Callers must serialise
 /// requests for one conversation (the AgentHub turn lease does) — a get-or-rebuild is not atomic, so
 /// overlapping requests with different inputs would replace each other's agent. Explicit eviction via
 /// <see cref="Evict"/> should be called when the conversation ends; a 30-minute sliding TTL handles

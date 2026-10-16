@@ -2,10 +2,12 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Skills;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services;
@@ -20,6 +22,8 @@ internal sealed class AgentConversationCache : IAgentConversationCache
     private readonly IAgentFactory _agentFactory;
     private readonly IConversationRegistrationTracker _registrationTracker;
     private readonly ISkillCompletionTracker _completionTracker;
+    private readonly ISkillMetadataRegistry _skillRegistry;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<AgentConversationCache> _logger;
     private static readonly TimeSpan SlidingExpiration = TimeSpan.FromMinutes(30);
 
@@ -33,12 +37,16 @@ internal sealed class AgentConversationCache : IAgentConversationCache
         IAgentFactory agentFactory,
         IConversationRegistrationTracker registrationTracker,
         ISkillCompletionTracker completionTracker,
+        ISkillMetadataRegistry skillRegistry,
+        IServiceProvider serviceProvider,
         ILogger<AgentConversationCache> logger)
     {
         _cache = cache;
         _agentFactory = agentFactory;
         _registrationTracker = registrationTracker;
         _completionTracker = completionTracker;
+        _skillRegistry = skillRegistry;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
@@ -48,7 +56,7 @@ internal sealed class AgentConversationCache : IAgentConversationCache
         SkillAgentOptions options,
         CancellationToken cancellationToken = default)
     {
-        var fingerprint = AgentBuildFingerprint.From(skillIds, options);
+        var fingerprint = AgentBuildFingerprint.From(skillIds, ResolveContentHashes(skillIds, options), options);
 
         if (_cache.TryGetValue(conversationId, out CachedAgent? cached) && cached is not null)
         {
@@ -90,6 +98,22 @@ internal sealed class AgentConversationCache : IAgentConversationCache
         _cache.Set(ContextCacheKey(conversationId), built.Context, contextEntryOptions);
 
         return built.Agent;
+    }
+
+    /// <summary>
+    /// The content hash of the definition each requested skill resolves to right now, read through the
+    /// same rule the factory builds by so the cache watches the skill the agent is made from. An id that
+    /// does not resolve yields null; the build that follows reports it.
+    /// </summary>
+    /// <remarks>
+    /// Taken before the build, so a reload landing in between leaves the entry with the older hash and
+    /// costs one extra rebuild on the next turn. It can never leave an agent labelled newer than its text.
+    /// </remarks>
+    private string?[] ResolveContentHashes(IReadOnlyList<string> skillIds, SkillAgentOptions options)
+    {
+        var ownedSkills = _serviceProvider.GetService<IAgentOwnedSkillStore>();
+        return [.. skillIds.Select(id =>
+            SkillResolution.Resolve(id, options.OwningAgentId, ownedSkills, _skillRegistry)?.ContentHash)];
     }
 
     public AgentExecutionContext? TryGetContext(string conversationId)

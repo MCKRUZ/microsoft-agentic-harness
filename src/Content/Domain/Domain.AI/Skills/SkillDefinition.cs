@@ -160,6 +160,14 @@ public class SkillDefinition
 	/// </summary>
 	public DateTime LastModified { get; set; }
 
+	/// <summary>
+	/// SHA-256 (lower-case hex) of the SKILL.md text this definition was parsed from. Unlike
+	/// <see cref="LoadedAt"/>, which is stamped fresh on every parse, it changes only when the document
+	/// does, so a holder of a built agent can tell "the skill was edited" from "the registry reloaded".
+	/// Null when the definition was not built from document text.
+	/// </summary>
+	public string? ContentHash { get; set; }
+
 	#endregion
 
 	#region Level 3: Filing Cabinet (Resources — On Demand)

@@ -17,6 +17,14 @@ namespace Application.AI.Common.Services;
 /// null and empty both mean "no ceiling" — and the skill ids stay ordered, because merge order matters.
 /// </para>
 /// <para>
+/// <strong>A skill's own text is a build input too (#792).</strong> Each requested skill contributes the
+/// <see cref="SkillDefinition.ContentHash"/> of the definition it resolves to, so a SKILL.md edited while
+/// the conversation is live rebuilds the agent on the next turn, while a registry reload that left the
+/// text alone does not. A definition with no hash (one not parsed from document text) cannot be told
+/// apart from its earlier self, so for those the cache behaves as it did before: it reuses the agent
+/// until the sliding expiry or an explicit <c>Invalidate</c>.
+/// </para>
+/// <para>
 /// <strong>Fail-safe for what cannot be compared:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
 /// <see cref="SkillAgentOptions.MiddlewareTypes"/> and <see cref="SkillAgentOptions.AdditionalProperties"/>
 /// are object-valued, so a request that sets any of them is never reused — it rebuilds every turn rather
@@ -34,20 +42,33 @@ internal sealed class AgentBuildFingerprint
 {
     private readonly SkillAgentOptions _options;
     private readonly string[] _skillIds;
+    private readonly string?[] _skillContentHashes;
     private readonly string[] _allowedTools;
     private readonly bool _hasUncomparableInputs;
 
     private AgentBuildFingerprint(
-        SkillAgentOptions options, string[] skillIds, string[] allowedTools, bool hasUncomparableInputs)
+        SkillAgentOptions options,
+        string[] skillIds,
+        string?[] skillContentHashes,
+        string[] allowedTools,
+        bool hasUncomparableInputs)
     {
         _options = options;
         _skillIds = skillIds;
+        _skillContentHashes = skillContentHashes;
         _allowedTools = allowedTools;
         _hasUncomparableInputs = hasUncomparableInputs;
     }
 
     /// <summary>Captures the build-affecting inputs of one request.</summary>
-    public static AgentBuildFingerprint From(IReadOnlyList<string> skillIds, SkillAgentOptions options)
+    /// <param name="skillIds">The requested skill ids, in merge order.</param>
+    /// <param name="skillContentHashes">
+    /// <see cref="SkillDefinition.ContentHash"/> of the definition each id resolves to, in the same order;
+    /// null for an id that did not resolve or whose definition carries no hash.
+    /// </param>
+    /// <param name="options">The request's build options.</param>
+    public static AgentBuildFingerprint From(
+        IReadOnlyList<string> skillIds, IReadOnlyList<string?> skillContentHashes, SkillAgentOptions options)
         => new(
             options with
             {
@@ -58,6 +79,7 @@ internal sealed class AgentBuildFingerprint
                 TraceScope = null,
             },
             [.. skillIds],
+            [.. skillContentHashes],
             options.AllowedTools is null ? [] : [.. options.AllowedTools.Order(StringComparer.Ordinal)],
             options.AdditionalTools is { Count: > 0 }
                 || options.MiddlewareTypes is { Count: > 0 }
@@ -69,5 +91,6 @@ internal sealed class AgentBuildFingerprint
            && !other._hasUncomparableInputs
            && _options == other._options
            && _skillIds.AsSpan().SequenceEqual(other._skillIds)
+           && _skillContentHashes.AsSpan().SequenceEqual(other._skillContentHashes)
            && _allowedTools.AsSpan().SequenceEqual(other._allowedTools);
 }

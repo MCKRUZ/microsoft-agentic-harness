@@ -89,6 +89,26 @@ public sealed class SkillFrontmatterContractTests : IDisposable
     }
 
     /// <summary>
+    /// #792: the content hash is what lets a holder of a built agent tell "the skill was edited" from
+    /// "the registry reloaded". It must stay put across parses of identical text, however many times
+    /// <c>LoadedAt</c> is re-stamped, and move when the text does.
+    /// </summary>
+    [Fact]
+    public void ParseFromFile_ContentHash_IsStableAcrossParsesAndMovesWithTheText()
+    {
+        var path = WriteSkillFile("---\nname: hashed\ndescription: d\n---\nVersion one.");
+        var first = _sut.ParseFromFile(path, _tempDir);
+        var again = _sut.ParseFromFile(path, _tempDir);
+
+        File.WriteAllText(path, "---\nname: hashed\ndescription: d\n---\nVersion two.");
+        var edited = _sut.ParseFromFile(path, _tempDir);
+
+        first.ContentHash.Should().NotBeNullOrEmpty();
+        again.ContentHash.Should().Be(first.ContentHash, "identical text is the same skill however often it is parsed");
+        edited.ContentHash.Should().NotBe(first.ContentHash);
+    }
+
+    /// <summary>
     /// Block-sequence lists now parse. The hand-rolled reader accepted only inline arrays and
     /// returned empty for this shape, which meant a block-form <c>allowed-tools</c> was silently
     /// inert — the skill imposed no ceiling while appearing to declare one.

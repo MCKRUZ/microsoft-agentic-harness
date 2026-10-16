@@ -1,6 +1,7 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.SkillTraining;
 using Application.Common.Helpers;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
@@ -107,7 +108,8 @@ public sealed partial class SkillMetadataParser
             explicitDescription: null,
             skillFilePath,
             sourcePath,
-            pluginSource);
+            pluginSource,
+            SkillContentHash.Of(raw));
     }
 
     /// <summary>
@@ -125,6 +127,7 @@ public sealed partial class SkillMetadataParser
         var resolvedSourcePath = Path.GetFullPath(sourcePath);
         var skillFilePath = Path.Combine(resolvedSourcePath, "SKILL.md");
         string? rawFrontmatter = null;
+        string? contentHash = null;
 
         try
         {
@@ -132,6 +135,7 @@ public sealed partial class SkillMetadataParser
             {
                 var raw = _fileReader.ReadText(skillFilePath);
                 rawFrontmatter = ExtractFrontmatterAndBody(raw).Frontmatter;
+                contentHash = SkillContentHash.Of(raw);
             }
         }
         catch (Exception ex) when (ex is not SkillPathRefusedException)
@@ -153,7 +157,8 @@ public sealed partial class SkillMetadataParser
             explicitDescription: skillDescription ?? string.Empty,
             skillFilePath,
             resolvedSourcePath,
-            pluginSource);
+            pluginSource,
+            contentHash);
     }
 
     /// <summary>
@@ -168,7 +173,8 @@ public sealed partial class SkillMetadataParser
         string? explicitDescription,
         string skillFilePath,
         string baseDirectory,
-        string? pluginSource)
+        string? pluginSource,
+        string? contentHash)
     {
         var (objectives, traceFormat, instructions) = ExtractStructuredSections(body);
 
@@ -211,6 +217,7 @@ public sealed partial class SkillMetadataParser
             FilePath = skillFilePath,
             BaseDirectory = baseDirectory,
             LoadedAt = DateTime.UtcNow,
+            ContentHash = contentHash,
 
             PluginSource = pluginSource,
             Egress = egress,
