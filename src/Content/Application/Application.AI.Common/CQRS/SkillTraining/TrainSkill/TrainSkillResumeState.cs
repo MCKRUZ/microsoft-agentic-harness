@@ -8,11 +8,10 @@ namespace Application.AI.Common.CQRS.SkillTraining.TrainSkill;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Rebuilt from checkpoints alone, so it is exact for the skill, the scores, the patience counter and
-/// the cross-epoch memory, and lossy in two ways a resumed run states rather than hides: the step records
-/// of the steps already run carry their action and score but not the proposed/applied edit counts, and
-/// the validation rollouts used for the paired slow update are gone, so the first epoch boundary after a
-/// resume cannot run one.
+/// Rebuilt from checkpoints alone. Exact for the skill, the best skill, the scores, the patience counter,
+/// the cross-epoch memory and every step record, because every step writes a checkpoint. Lossy in one way
+/// a resumed run states rather than hides: the validation rollouts used for the paired slow update are
+/// gone, so the first epoch boundary after a resume cannot run one.
 /// </para>
 /// </remarks>
 /// <param name="CurrentSkill">The skill the next step will start from.</param>
@@ -24,7 +23,7 @@ namespace Application.AI.Common.CQRS.SkillTraining.TrainSkill;
 /// <param name="GlobalStep">The last step already run; the next step is one more.</param>
 /// <param name="HasAcceptedAny">Whether any earlier step was accepted.</param>
 /// <param name="MetaMemory">The cross-epoch memory as of the last checkpoint.</param>
-/// <param name="LastAction">The gate action of the last step already run.</param>
+/// <param name="NeedsEpochBoundary">True when the last step ended an epoch whose boundary work never finished.</param>
 /// <param name="Steps">Step records rebuilt from the checkpoints, oldest first.</param>
 internal sealed record TrainSkillResumeState(
     string CurrentSkill,
@@ -36,5 +35,5 @@ internal sealed record TrainSkillResumeState(
     int GlobalStep,
     bool HasAcceptedAny,
     string MetaMemory,
-    GateAction LastAction,
+    bool NeedsEpochBoundary,
     IReadOnlyList<SkillTrainingStepRecord> Steps);

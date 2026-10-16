@@ -60,6 +60,22 @@ public sealed record SkillTrainingCheckpoint
     /// </summary>
     public string RunFingerprint { get; init; } = string.Empty;
 
+    /// <summary>The candidate's projected score this step (not the current score, which <see cref="Score"/> holds on a reject).</summary>
+    public double CandidateScore { get; init; }
+
+    /// <summary>Number of edits proposed this step before selection.</summary>
+    public int ProposedEditCount { get; init; }
+
+    /// <summary>Number of edits actually applied this step.</summary>
+    public int AppliedEditCount { get; init; }
+
+    /// <summary>
+    /// True once the epoch-boundary work (slow update, meta-skill memory) that follows this epoch's last
+    /// step has run and this checkpoint holds its result. A resume that finds the epoch's last step
+    /// without it does that work before continuing.
+    /// </summary>
+    public bool EpochBoundaryDone { get; init; }
+
     /// <summary>UTC timestamp when this checkpoint was written.</summary>
     public required DateTimeOffset CreatedAt { get; init; }
 }

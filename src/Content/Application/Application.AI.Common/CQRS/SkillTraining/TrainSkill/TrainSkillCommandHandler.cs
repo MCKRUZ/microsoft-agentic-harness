@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -112,6 +114,12 @@ public sealed class TrainSkillCommandHandler
         _audit = audit;
     }
 
+    /// <summary>
+    /// Run ids with a run in flight, per checkpoint store. Two runs of one id would both resume from the
+    /// same checkpoint and overwrite each other's steps, splicing two outcomes under one id.
+    /// </summary>
+    private static readonly ConditionalWeakTable<ISkillTrainingCheckpointStore, ConcurrentDictionary<string, byte>> ActiveRuns = new();
+
     /// <inheritdoc />
     public async Task<Result<SkillTrainingRunResult>> Handle(
         TrainSkillCommand request,
@@ -120,6 +128,28 @@ public sealed class TrainSkillCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // In-process only: a checkpoint store shared by several hosts would need its own lease.
+        var active = ActiveRuns.GetOrCreateValue(_checkpointStore);
+        if (!active.TryAdd(request.RunId, 0))
+        {
+            return Result<SkillTrainingRunResult>.ValidationFailure(
+                [$"RunId '{request.RunId}' already has a run in flight; wait for it to finish or use a new RunId."]);
+        }
+
+        try
+        {
+            return await RunAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            active.TryRemove(request.RunId, out _);
+        }
+    }
+
+    private async Task<Result<SkillTrainingRunResult>> RunAsync(
+        TrainSkillCommand request,
+        CancellationToken cancellationToken)
+    {
         var cfg = request.Config;
 
         // Defensive guards in case the consumer registers this handler without the
@@ -162,9 +192,9 @@ public sealed class TrainSkillCommandHandler
         // one rather than starting over, but only when they came from this skill, this starting text and
         // this configuration: a reused RunId with different inputs would otherwise splice two runs.
         var fingerprint = ComputeRunFingerprint(request);
-        var (resume, refusal) = await LoadResumeStateAsync(request, fingerprint, cancellationToken).ConfigureAwait(false);
+        var (resume, refusal) = await LoadResumeStateAsync(request, cfg, fingerprint, cancellationToken).ConfigureAwait(false);
         if (refusal is not null)
-            return Result<SkillTrainingRunResult>.ValidationFailure([refusal]);
+            return refusal;
 
         var currentSkill = resume?.CurrentSkill ?? request.InitialSkill;
         var bestSkill = resume?.BestSkill ?? currentSkill;
@@ -177,7 +207,6 @@ public sealed class TrainSkillCommandHandler
         steps.AddRange(resume?.Steps ?? []);
         var metaMemory = resume?.MetaMemory ?? string.Empty;
         var hasAcceptedAny = resume?.HasAcceptedAny ?? false;
-        var lastAction = resume?.LastAction ?? GateAction.Reject;
         IReadOnlyList<RolloutResult> lastValRollouts = [];
         IReadOnlyList<RolloutResult> priorEpochValRollouts = [];
 
@@ -186,12 +215,25 @@ public sealed class TrainSkillCommandHandler
             _logger.LogInformation(
                 "Resuming skill-training run {RunId} after step {Step} ({Rejects} consecutive reject(s))",
                 request.RunId, resume.GlobalStep, resume.ConsecutiveRejects);
-            if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
+
+            if (resume.NeedsEpochBoundary)
+            {
+                // The earlier attempt stopped between an epoch's last step and its boundary work. Do that
+                // work now (without the slow update, whose validation rollouts are gone) and record it.
+                metaMemory = await RunEpochBoundaryAsync(
+                    request, cfg, steps[^1].Epoch, currentSkill, currentScore, metaMemory, [], [],
+                    cancellationToken).ConfigureAwait(false);
+                await SaveCheckpointAsync(
+                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: true,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // The next step is one past the last one run. Whole epochs before it are skipped; a resume that
-        // lands mid-epoch finishes that epoch's remaining steps first.
-        var startEpoch = (globalStep / cfg.StepsPerEpoch) + 1;
+        // lands mid-epoch finishes that epoch's remaining steps first. A run that had already used up its
+        // patience starts past the last epoch, so no loop runs and it goes straight to its result.
+        var patienceExhausted = resume is not null && consecutiveRejects >= cfg.Patience;
+        var startEpoch = patienceExhausted ? cfg.Epochs + 1 : (globalStep / cfg.StepsPerEpoch) + 1;
         var startStepInEpoch = (globalStep % cfg.StepsPerEpoch) + 1;
 
         for (var epoch = startEpoch; epoch <= cfg.Epochs; epoch++)
@@ -263,6 +305,9 @@ public sealed class TrainSkillCommandHandler
                         globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed: 0, applied: 0));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -283,6 +328,9 @@ public sealed class TrainSkillCommandHandler
                         $"deny: {editLeaks.Count} marker(s) in proposed edits", globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -312,6 +360,9 @@ public sealed class TrainSkillCommandHandler
                         $"deny: frozen surface(s) [{surfaces}]", globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -334,6 +385,9 @@ public sealed class TrainSkillCommandHandler
                         $"deny: edit(s) on [{surfaces}] outside TargetSurface '{cfg.TargetSurface}'", globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -349,6 +403,9 @@ public sealed class TrainSkillCommandHandler
                     // No edits proposed — record as a Reject no-op and continue.
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, 0));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -360,6 +417,9 @@ public sealed class TrainSkillCommandHandler
                 {
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applyReport.AppliedEdits.Count));
+                    await SaveCheckpointAsync(
+                        request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
+                        cancellationToken).ConfigureAwait(false);
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
@@ -481,9 +541,8 @@ public sealed class TrainSkillCommandHandler
                         globalStep);
                 }
 
-                lastAction = gateResult.Action;
                 await SaveCheckpointAsync(
-                    request, fingerprint, globalStep, epoch, currentSkill, currentScore, lastAction, metaMemory,
+                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: false,
                     cancellationToken).ConfigureAwait(false);
 
                 if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
@@ -492,39 +551,16 @@ public sealed class TrainSkillCommandHandler
             // ── Epoch boundary mechanisms ─────────────────────────────────────
             if (epoch < cfg.Epochs)
             {
-                if (cfg.UseSlowUpdate && priorEpochValRollouts.Count > 0 && lastValRollouts.Count > 0)
-                {
-                    // Paired comparison uses already-computed val rollouts — no extra LLM cost.
-                    // When Seed is fixed in TrainSkillConfig, item ids overlap and SlowUpdate finds them.
-                    var slowCmd = new SlowUpdate.SlowUpdateCommand
-                    {
-                        PriorRollouts = priorEpochValRollouts,
-                        CurrentRollouts = lastValRollouts
-                    };
-                    var slowResult = await _mediator.Send(slowCmd, cancellationToken).ConfigureAwait(false);
-                    if (slowResult.IsSuccess && slowResult.Value!.Total > 0)
-                    {
-                        _logger.LogInformation("Slow update at epoch {Epoch}: {Guidance}",
-                            epoch, slowResult.Value.Guidance);
-                        metaMemory = string.IsNullOrEmpty(metaMemory)
-                            ? slowResult.Value.Guidance
-                            : metaMemory + "\n\n" + slowResult.Value.Guidance;
-                    }
-                }
-
-                if (cfg.UseMetaSkill)
-                {
-                    metaMemory = await UpdateMetaMemoryAsync(
-                        request, currentSkill, currentScore, epoch, metaMemory,
-                        cancellationToken).ConfigureAwait(false);
-                }
-
+                metaMemory = await RunEpochBoundaryAsync(
+                    request, cfg, epoch, currentSkill, currentScore, metaMemory,
+                    priorEpochValRollouts, lastValRollouts, cancellationToken).ConfigureAwait(false);
                 priorEpochValRollouts = lastValRollouts;
 
                 // The memory just changed, after the epoch's last checkpoint was written. Write that
-                // checkpoint again so a resume from this point starts with the updated memory.
+                // checkpoint again, marked done, so a resume from here starts with the updated memory and
+                // does not repeat the work.
                 await SaveCheckpointAsync(
-                    request, fingerprint, globalStep, epoch, currentSkill, currentScore, lastAction, metaMemory,
+                    request, fingerprint, steps[^1], currentSkill, currentScore, metaMemory, epochBoundaryDone: true,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -534,8 +570,13 @@ public sealed class TrainSkillCommandHandler
         // opts in, the loop asks for advisory config-dial suggestions, bounds-checks each against the
         // code-owned constraint, audits both outcomes, and surfaces the survivors. It NEVER mutates live
         // config and runs after the optimization loop, so it cannot influence the gated result above.
-        var suggestions = await EmitHarnessChangeSuggestionsAsync(
-            request, cfg, lastValRollouts, globalStep, cancellationToken).ConfigureAwait(false);
+        // A resume that finds the run already finished runs no step, so it has no evidence to give the
+        // suggester and must not append the same audit rows a second time.
+        var ranAnyStep = resume is null || globalStep > resume.GlobalStep;
+        IReadOnlyList<HarnessChangeSuggestion> suggestions = ranAnyStep
+            ? await EmitHarnessChangeSuggestionsAsync(
+                request, cfg, lastValRollouts, globalStep, cancellationToken).ConfigureAwait(false)
+            : [];
 
         return Result<SkillTrainingRunResult>.Success(new SkillTrainingRunResult
         {
@@ -800,32 +841,81 @@ public sealed class TrainSkillCommandHandler
     };
 
     private Task SaveCheckpointAsync(
-        TrainSkillCommand request, string fingerprint, int step, int epoch,
-        string skill, double score, GateAction action, string metaMemory, CancellationToken cancellationToken) =>
+        TrainSkillCommand request, string fingerprint, SkillTrainingStepRecord record,
+        string skill, double score, string metaMemory, bool epochBoundaryDone, CancellationToken cancellationToken) =>
         _checkpointStore.SaveAsync(
             new SkillTrainingCheckpoint
             {
                 RunId = request.RunId,
                 SkillId = request.SkillId,
-                Step = step,
-                Epoch = epoch,
+                Step = record.Step,
+                Epoch = record.Epoch,
                 SkillContent = skill,
                 SkillHash = ComputeHash(skill),
                 Score = score,
-                Action = action,
+                Action = record.Action,
                 MetaSkillMemory = metaMemory,
                 RunFingerprint = fingerprint,
+                CandidateScore = record.CandidateScore,
+                ProposedEditCount = record.ProposedEditCount,
+                AppliedEditCount = record.AppliedEditCount,
+                EpochBoundaryDone = epochBoundaryDone,
                 CreatedAt = _time.GetUtcNow()
             },
             cancellationToken);
 
     /// <summary>
-    /// Rebuilds the loop state from the checkpoints an earlier attempt at this run left behind. Returns
-    /// no state when there are none, and a refusal when they belong to a different skill, starting text
-    /// or configuration.
+    /// What happens between two epochs: the paired slow update over the validation rollouts, then the
+    /// meta-skill memory update. Returns the cross-epoch memory after both.
     /// </summary>
-    private async Task<(TrainSkillResumeState? State, string? Refusal)> LoadResumeStateAsync(
-        TrainSkillCommand request, string fingerprint, CancellationToken cancellationToken)
+    private async Task<string> RunEpochBoundaryAsync(
+        TrainSkillCommand request,
+        TrainSkillConfig cfg,
+        int epoch,
+        string currentSkill,
+        double currentScore,
+        string metaMemory,
+        IReadOnlyList<RolloutResult> priorEpochValRollouts,
+        IReadOnlyList<RolloutResult> lastValRollouts,
+        CancellationToken cancellationToken)
+    {
+        if (cfg.UseSlowUpdate && priorEpochValRollouts.Count > 0 && lastValRollouts.Count > 0)
+        {
+            // Paired comparison uses already-computed val rollouts — no extra LLM cost.
+            // When Seed is fixed in TrainSkillConfig, item ids overlap and SlowUpdate finds them.
+            var slowCmd = new SlowUpdate.SlowUpdateCommand
+            {
+                PriorRollouts = priorEpochValRollouts,
+                CurrentRollouts = lastValRollouts
+            };
+            var slowResult = await _mediator.Send(slowCmd, cancellationToken).ConfigureAwait(false);
+            if (slowResult.IsSuccess && slowResult.Value!.Total > 0)
+            {
+                _logger.LogInformation("Slow update at epoch {Epoch}: {Guidance}",
+                    epoch, slowResult.Value.Guidance);
+                metaMemory = string.IsNullOrEmpty(metaMemory)
+                    ? slowResult.Value.Guidance
+                    : metaMemory + "\n\n" + slowResult.Value.Guidance;
+            }
+        }
+
+        if (cfg.UseMetaSkill)
+        {
+            metaMemory = await UpdateMetaMemoryAsync(
+                request, currentSkill, currentScore, epoch, metaMemory,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return metaMemory;
+    }
+
+    /// <summary>
+    /// Rebuilds the loop state from the checkpoints an earlier attempt at this run left behind. Returns
+    /// no state when there are none, and a ready failure when they cannot be resumed: they belong to a
+    /// different skill, starting text or configuration, they predate resume, or they carry grader output.
+    /// </summary>
+    private async Task<(TrainSkillResumeState? State, Result<SkillTrainingRunResult>? Refusal)> LoadResumeStateAsync(
+        TrainSkillCommand request, TrainSkillConfig cfg, string fingerprint, CancellationToken cancellationToken)
     {
         var stored = await _checkpointStore.ListAsync(request.RunId, cancellationToken).ConfigureAwait(false);
         if (stored.Count == 0)
@@ -833,40 +923,77 @@ public sealed class TrainSkillCommandHandler
 
         var ordered = stored.OrderBy(c => c.Step).ToList();
         var last = ordered[^1];
-        if (last.SkillId != request.SkillId || last.RunFingerprint != fingerprint)
+        if (string.IsNullOrEmpty(last.RunFingerprint))
         {
-            return (null,
-                $"RunId '{request.RunId}' already holds checkpoints from a different skill, starting text or configuration; use a new RunId to start a new run.");
+            return (null, Result<SkillTrainingRunResult>.ValidationFailure(
+                [$"RunId '{request.RunId}' holds checkpoints written before resume was supported, so they cannot be matched to this run; use a new RunId."]));
         }
 
-        var best = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false) ?? last;
+        if (last.RunFingerprint != fingerprint)
+        {
+            return (null, Result<SkillTrainingRunResult>.ValidationFailure(
+                [$"RunId '{request.RunId}' already holds checkpoints from a different skill, starting text or configuration; use a new RunId to start a new run."]));
+        }
+
+        // The best skill is the last one the gate promoted. Taking the highest score instead would pick a
+        // later checkpoint on a tie (every reject repeats the current score), reporting the wrong step.
+        // The store may have evicted the promoted checkpoint; then its highest-scoring one stands in.
+        var promoted = ordered.LastOrDefault(c => c.Action == GateAction.AcceptNewBest);
+        var best = promoted;
+        if (best is null && ordered.Any(c => c.Action is GateAction.Accept))
+            best = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+        var hasAcceptedAny = best is not null || ordered.Any(c => c.Action is GateAction.Accept or GateAction.AcceptNewBest);
+
+        // A restored skill or memory is read by the rollout runner and the proposer exactly like a live
+        // one, so it passes the same tripwire (#841): a store written by another build, or tampered with,
+        // must not be a way around it.
+        var leaks = GraderMarkerScanner.Scan(
+        [
+            ("checkpoint:skill", last.SkillContent),
+            ("checkpoint:best-skill", best?.SkillContent),
+            ("checkpoint:meta-skill-memory", last.MetaSkillMemory)
+        ]);
+        if (leaks.Count > 0)
+        {
+            _logger.LogError(
+                "Refusing to resume skill-training run {RunId}: the stored checkpoints carry grader-verdict marker(s) [{Findings}]",
+                request.RunId, GraderMarkerScanner.Describe(leaks));
+            SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                "deny: grader-verdict marker(s) in stored checkpoints", last.Step);
+            return (null, Result<SkillTrainingRunResult>.Fail(GraderMarkerScanner.EvidenceLeakCode));
+        }
+
         var trailingRejects = ordered.AsEnumerable().Reverse().TakeWhile(c => c.Action == GateAction.Reject).Count();
 
         return (new TrainSkillResumeState(
             CurrentSkill: last.SkillContent,
             CurrentScore: last.Score,
-            BestSkill: best.SkillContent,
-            BestScore: best.Score,
-            BestStep: best.Step,
+            BestSkill: best?.SkillContent ?? request.InitialSkill,
+            BestScore: best?.Score ?? 0.0,
+            BestStep: best?.Step ?? 0,
             ConsecutiveRejects: trailingRejects,
             GlobalStep: last.Step,
-            // A best score above zero can only have come from an accepted step, even if eviction dropped it.
-            HasAcceptedAny: best.Score > 0.0 || ordered.Any(c => c.Action is GateAction.Accept or GateAction.AcceptNewBest),
+            HasAcceptedAny: hasAcceptedAny,
             MetaMemory: last.MetaSkillMemory,
-            LastAction: last.Action,
-            Steps: ordered.Select(c => new SkillTrainingStepRecord
-            {
-                Step = c.Step, Epoch = c.Epoch, Action = c.Action, CandidateScore = c.Score,
-                ProposedEditCount = 0, AppliedEditCount = 0
-            }).ToList()), null);
+            NeedsEpochBoundary: last.Step % cfg.StepsPerEpoch == 0
+                && last.Epoch < cfg.Epochs
+                && !last.EpochBoundaryDone
+                && trailingRejects < cfg.Patience,
+            Steps: ordered.Select(c => NewStepRecord(
+                c.Step, c.Epoch, c.Action, c.CandidateScore, c.ProposedEditCount, c.AppliedEditCount)).ToList()), null);
     }
 
     /// <summary>
-    /// A digest of everything that decides what a run does: the skill id, the starting text and the whole
-    /// configuration. Checkpoints written under a different digest are not resumed.
+    /// A digest of everything that decides what a run does: the skill id, the starting text and the
+    /// configuration. Checkpoints written under a different digest are not resumed. The epoch budget and
+    /// the patience are left out on purpose: extending a run, or giving it more patience after an early
+    /// stop, is the natural reason to resume and changes nothing about the steps already run.
     /// </summary>
     private static string ComputeRunFingerprint(TrainSkillCommand request) =>
-        ComputeHash(string.Join('\n', request.SkillId, ComputeHash(request.InitialSkill), JsonSerializer.Serialize(request.Config)));
+        ComputeHash(string.Join('\n',
+            request.SkillId,
+            ComputeHash(request.InitialSkill),
+            JsonSerializer.Serialize(request.Config with { Epochs = 0, Patience = 0 })));
 
     private static string ComputeHash(string content)
     {
