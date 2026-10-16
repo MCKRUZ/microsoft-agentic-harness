@@ -75,7 +75,7 @@ public class ReflectOnFailuresCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_RolloutTrajectoryCarriesASerializedVerdict_ReturnsTheLeakCodeWithoutCallingTheProposer()
+    public async Task Handle_EveryTrajectoryCarriesAVerdict_ReturnsTheLeakCodeWithoutCallingTheProposer()
     {
         var calls = 0;
         var sut = NewSut(new StubProposer(_ => { calls++; return new Patch(); }));
@@ -90,6 +90,42 @@ public class ReflectOnFailuresCommandHandlerTests
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain(GraderMarkerScanner.EvidenceLeakCode);
         calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Handle_OneTrajectoryCarriesAVerdict_TheProposerReadsOnlyTheCleanOne()
+    {
+        ReflectionInput? seen = null;
+        var sut = NewSut(new StubProposer(input => { seen = input; return new Patch(); }));
+        var command = new ReflectOnFailuresCommand
+        {
+            CurrentSkill = "# skill",
+            Rollouts =
+            [
+                new RolloutResult { ItemId = "hostile", Hard = 0.0, Soft = 0.0, Trajectory = "{\"PassedCount\":9}" },
+                new RolloutResult { ItemId = "clean", Hard = 0.0, Soft = 0.2, Trajectory = "timed out" }
+            ]
+        };
+
+        var result = await sut.Handle(command, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        seen!.Rollouts.Select(r => r.ItemId).Should().Equal("clean");
+    }
+
+    [Fact]
+    public async Task Handle_SkillCarriesAVerdict_ReturnsTheLeakCode()
+    {
+        var sut = NewSut(new StubProposer(_ => new Patch()));
+        var command = new ReflectOnFailuresCommand
+        {
+            CurrentSkill = "# skill {\"FailedCount\": 2}",
+            Rollouts = [new RolloutResult { ItemId = "case-1", Hard = 0.0, Soft = 0.2 }]
+        };
+
+        var result = await sut.Handle(command, CancellationToken.None);
+
+        result.Errors.Should().Contain(GraderMarkerScanner.EvidenceLeakCode);
     }
 
     private static ReflectOnFailuresCommandHandler NewSut(IPatchProposer proposer) =>

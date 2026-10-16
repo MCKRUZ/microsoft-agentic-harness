@@ -34,6 +34,24 @@ public class MetaSkillUpdateCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_MemoryEntry_DoesNotCarryTheEpochScoreBackToTheProposer()
+    {
+        // The proposer reads this memory on the next step. An epoch score in it would hand the grader's
+        // number to the model through the back door (#841).
+        var memory = new RecordingKnowledgeMemory();
+        var sut = new MetaSkillUpdateCommandHandler(memory, NullLogger<MetaSkillUpdateCommandHandler>.Instance);
+
+        await sut.Handle(new MetaSkillUpdateCommand
+        {
+            RunId = "r", SkillId = "s", Epoch = 2,
+            CurrentSkill = "x", CurrentScore = 0.8123
+        }, CancellationToken.None);
+
+        memory.LastContent.Should().Contain("## Epoch 2");
+        memory.LastContent.Should().NotContain("score").And.NotContain("0.8123");
+    }
+
+    [Fact]
     public async Task Handle_FirstEpoch_NoPriorMemory_StoresJustNewEntry()
     {
         var memory = new RecordingKnowledgeMemory();

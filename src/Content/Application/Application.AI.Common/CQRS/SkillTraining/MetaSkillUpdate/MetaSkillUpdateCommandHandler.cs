@@ -59,7 +59,7 @@ public sealed class MetaSkillUpdateCommandHandler
             ? string.Empty
             : request.PriorMemory.TrimEnd() + "\n\n";
         var newEntry =
-            $"## Epoch {request.Epoch} (score {request.CurrentScore:F4})\n" +
+            $"## Epoch {request.Epoch}\n" +
             $"Skill length: {request.CurrentSkill.Length} chars.";
         var combined = prior + newEntry;
 

@@ -2,7 +2,7 @@ namespace Domain.AI.SkillTraining;
 
 /// <summary>
 /// What the patch proposer is allowed to know about one rollout: whether it passed, and what
-/// happened. Never a score.
+/// happened. Never a number the grader produced.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -11,10 +11,16 @@ namespace Domain.AI.SkillTraining;
 /// context, and a skill edit could be shaped to the score rather than to the work (#841). This view
 /// keeps only a deterministic pass/fail flag, taken from <see cref="RolloutResult.IsSuccess"/>, plus
 /// the trajectory the proposer needs to see <em>why</em>. Partial credit and any judge text never
-/// cross this boundary; the gate still sees the full <see cref="RolloutResult"/>.
+/// cross this boundary; the gate still sees the full <see cref="RolloutResult"/>. The flag is the
+/// grader's thresholded outcome, so the proposer still learns which rollouts the grader accepted; what
+/// it no longer learns is by how much.
 /// </para>
 /// <para>
-/// A deliberate deviation from the SkillOpt port, which handed the proposer the scored results.
+/// A deliberate deviation from the SkillOpt port, which handed the proposer the scored results. The
+/// cross-epoch memory no longer carries the epoch score either (<c>MetaSkillUpdateCommandHandler</c>).
+/// The one other reader of scored rollouts is <c>IHarnessChangeSuggester</c>, which is exempt on
+/// purpose: it tunes scalar settings such as a retry limit from outcome rates, so it needs the numbers,
+/// and what it returns is bounds-checked and never applied.
 /// </para>
 /// </remarks>
 /// <param name="ItemId">Stable identifier of the underlying eval case, so the proposer can cite one failure.</param>
