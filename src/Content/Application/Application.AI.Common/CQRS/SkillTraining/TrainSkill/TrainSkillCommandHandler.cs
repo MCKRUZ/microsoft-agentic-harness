@@ -141,6 +141,19 @@ public sealed class TrainSkillCommandHandler
                 [$"TargetSurface '{cfg.TargetSurface}' is not editable. The EditableSurfaceRegistry must be widened (in code) to unlock it before a run may target it."]);
         }
 
+        // Tripwire (#841): the skill the run starts from is read by the proposer on step 1. Later skills
+        // are checked as patches arrive (below), so this is the only place the starting text is checked.
+        var startLeaks = GraderMarkerScanner.Scan([("initial-skill", request.InitialSkill)]);
+        if (startLeaks.Count > 0)
+        {
+            _logger.LogError(
+                "Refusing skill-training run {SkillId}: the initial skill carries grader-verdict marker(s) [{Findings}]",
+                request.SkillId, GraderMarkerScanner.Describe(startLeaks));
+            SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                "deny: grader-verdict marker(s) in the initial skill", 0);
+            return Result<SkillTrainingRunResult>.Fail(GraderMarkerScanner.EvidenceLeakCode);
+        }
+
         var scheduler = ResolveScheduler(cfg.LrScheduler);
         var totalSteps = cfg.Epochs * cfg.StepsPerEpoch;
 
@@ -175,13 +188,41 @@ public sealed class TrainSkillCommandHandler
                     .RunAsync(currentSkill, trainBatch, cancellationToken).ConfigureAwait(false);
 
                 // ── Reflect ────────────────────────────────────────────────────
+                // Tripwire (#841): the proposer must never read the grader's own output. The view carries
+                // no score, so a hit means a verdict arrived another way (a runner that wrote its report
+                // into a trajectory). A rollout that carries one is left out of what the proposer reads
+                // (the gate below still scores it), so tool output that contains the markers can remove
+                // its own rollout from the proposer's view but cannot abort the run. If nothing clean
+                // is left, or the cross-epoch memory carries one, the read path is wrong: refuse.
+                var screened = GraderMarkerScanner.Screen(trainRollouts.Select(ProposerRolloutView.From).ToList());
+                var memoryLeaks = GraderMarkerScanner.Scan([("meta-skill-memory", metaMemory)]);
+                if (screened.AnyExcluded)
+                {
+                    _logger.LogError(
+                        "Step {Step}: {Count} grader-verdict marker(s) left rollout(s) out of the proposer's evidence [{Findings}]",
+                        globalStep, screened.Findings.Count, GraderMarkerScanner.Describe(screened.Findings));
+                    SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                        $"quarantine: {screened.Findings.Count} marker(s) in rollout trajectories", globalStep);
+                }
+
+                if (memoryLeaks.Count > 0 || (screened.AnyExcluded && screened.Clean.Count == 0))
+                {
+                    _logger.LogError(
+                        "Refusing skill-training run {SkillId} at step {Step}: no evidence is safe to show the proposer [{Findings}]",
+                        request.SkillId, globalStep, GraderMarkerScanner.Describe([.. memoryLeaks, .. screened.Findings]));
+                    SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                        "deny: no evidence safe to show the proposer", globalStep);
+                    return Result<SkillTrainingRunResult>.Fail(GraderMarkerScanner.EvidenceLeakCode);
+                }
+
                 var input = new ReflectionInput
                 {
                     CurrentSkill = currentSkill,
-                    Rollouts = trainRollouts,
+                    Rollouts = screened.Clean,
                     MetaSkillMemory = metaMemory,
                     IncludeSuccesses = true
                 };
+
                 Patch proposed;
                 try
                 {
@@ -198,6 +239,26 @@ public sealed class TrainSkillCommandHandler
                         globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed: 0, applied: 0));
+                    consecutiveRejects++;
+                    if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
+                    continue;
+                }
+
+                // ── Grader-verdict marker in a proposed edit (#841) ───────────
+                // An edit that writes a result into the skill would carry it into every later step and
+                // any resumed run. Reject the patch, like a fence violation, so the skill itself can
+                // never hold a marker (and the proposer cannot lock a run out by writing one).
+                var editLeaks = GraderMarkerScanner.Scan(
+                    proposed.Edits.Select((e, i) => ($"edit:{i}", (string?)e.Content)));
+                if (editLeaks.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "Step {Step}: proposed patch rejected, its edits carry grader-verdict marker(s) [{Findings}]",
+                        globalStep, GraderMarkerScanner.Describe(editLeaks));
+                    SafeAudit(request.SkillId, "skill_training.evidence_leak",
+                        $"deny: {editLeaks.Count} marker(s) in proposed edits", globalStep);
+                    steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
+                        candidateScore: 0.0, proposed.Edits.Count, applied: 0));
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;

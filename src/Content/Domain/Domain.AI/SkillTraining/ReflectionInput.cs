@@ -13,8 +13,11 @@ public sealed record ReflectionInput
     /// <summary>The skill document the rollouts were produced against.</summary>
     public required string CurrentSkill { get; init; }
 
-    /// <summary>The rollout outcomes the optimizer should reflect on.</summary>
-    public required IReadOnlyList<RolloutResult> Rollouts { get; init; }
+    /// <summary>
+    /// The rollout outcomes the optimizer should reflect on, as a pass/fail flag plus the trajectory.
+    /// Never a score: see <see cref="ProposerRolloutView"/> for why.
+    /// </summary>
+    public required IReadOnlyList<ProposerRolloutView> Rollouts { get; init; }
 
     /// <summary>
     /// Cross-epoch optimizer strategy memory (see <c>SkillTrainingCheckpoint.MetaSkillMemory</c>).

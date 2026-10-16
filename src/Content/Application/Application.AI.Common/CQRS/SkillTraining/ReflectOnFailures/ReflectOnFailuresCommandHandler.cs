@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
 using Domain.Common;
 using MediatR;
@@ -39,10 +40,31 @@ public sealed class ReflectOnFailuresCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Tripwire (#841): see TrainSkillCommandHandler. A rollout whose trajectory carries a marker is
+        // left out of what the proposer reads; if the skill or memory carries one, or nothing clean is
+        // left, the caller's read path is wrong and the command refuses.
+        var screened = GraderMarkerScanner.Screen(request.Rollouts.Select(ProposerRolloutView.From).ToList());
+        var textLeaks = GraderMarkerScanner.Scan(
+            [("skill", request.CurrentSkill), ("meta-skill-memory", request.MetaSkillMemory)]);
+        if (textLeaks.Count > 0 || (screened.AnyExcluded && screened.Clean.Count == 0))
+        {
+            _logger.LogError(
+                "Refusing to reflect on {Count} rollouts: no evidence is safe to show the proposer [{Findings}]",
+                request.Rollouts.Count, GraderMarkerScanner.Describe([.. textLeaks, .. screened.Findings]));
+            return Result<Patch>.Fail(GraderMarkerScanner.EvidenceLeakCode);
+        }
+
+        if (screened.AnyExcluded)
+        {
+            _logger.LogError(
+                "{Count} grader-verdict marker(s) left rollout(s) out of the proposer's evidence [{Findings}]",
+                screened.Findings.Count, GraderMarkerScanner.Describe(screened.Findings));
+        }
+
         var input = new ReflectionInput
         {
             CurrentSkill = request.CurrentSkill,
-            Rollouts = request.Rollouts,
+            Rollouts = screened.Clean,
             MetaSkillMemory = request.MetaSkillMemory,
             IncludeSuccesses = request.IncludeSuccesses
         };
