@@ -101,6 +101,15 @@ public sealed class SkillTrainingConfigValidatorTests
         _sut.Validate(new SkillTrainingConfig { MaxRolloutConcurrency = concurrency }).IsValid.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CheckpointDatabasePath_Blank_IsRejected(string path)
+    {
+        _sut.Validate(new SkillTrainingConfig { CheckpointDatabasePath = path }).Errors
+            .Should().ContainSingle(e => e.PropertyName == nameof(SkillTrainingConfig.CheckpointDatabasePath));
+    }
+
     [Fact]
     public void EvidenceRoot_Blank_IsRejected()
     {

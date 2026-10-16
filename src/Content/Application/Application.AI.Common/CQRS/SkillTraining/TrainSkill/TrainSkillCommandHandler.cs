@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -118,12 +116,6 @@ public sealed class TrainSkillCommandHandler
         _audit = audit;
     }
 
-    /// <summary>
-    /// Run ids with a run in flight, per checkpoint store. Two runs of one id would both resume from the
-    /// same checkpoint and overwrite each other's steps, splicing two outcomes under one id.
-    /// </summary>
-    private static readonly ConditionalWeakTable<ISkillTrainingCheckpointStore, ConcurrentDictionary<string, byte>> ActiveRuns = new();
-
     /// <summary>The most lessons from earlier runs a fresh run starts with.</summary>
     private const int SeedLimit = 5;
 
@@ -135,22 +127,17 @@ public sealed class TrainSkillCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // In-process only: a checkpoint store shared by several hosts would need its own lease.
-        var active = ActiveRuns.GetOrCreateValue(_checkpointStore);
-        if (!active.TryAdd(request.RunId, 0))
+        // Two runs of one id would both resume from the same checkpoint and overwrite each other's steps,
+        // splicing two outcomes under one id. The store decides how far the claim reaches: its own process
+        // for the in-memory store, every process sharing it for a durable one.
+        await using var claim = await _checkpointStore.TryBeginRunAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+        if (claim is null)
         {
             return Result<SkillTrainingRunResult>.ValidationFailure(
                 [$"RunId '{request.RunId}' already has a run in flight; wait for it to finish or use a new RunId."]);
         }
 
-        try
-        {
-            return await RunAsync(request, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            active.TryRemove(request.RunId, out _);
-        }
+        return await RunAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<Result<SkillTrainingRunResult>> RunAsync(
