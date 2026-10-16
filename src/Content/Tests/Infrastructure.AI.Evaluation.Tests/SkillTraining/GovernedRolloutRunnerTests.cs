@@ -250,6 +250,39 @@ public sealed class GovernedRolloutRunnerTests
         result.Trajectory.Should().Contain("Step 1: lookup").And.Contain("{\"ok\":true}");
     }
 
+    [Fact]
+    public async Task Run_JudgeInputs_CarryNoProvenance()
+    {
+        // What a metric (a judge among them) receives is the dataset's own case and the agent's own
+        // result: nothing says which skill version produced the output, so a judge cannot favour or punish
+        // a candidate for being one. The candidate text and the rollout agent's name appear nowhere in it.
+        var spy = new SpyMetric();
+        var candidate = "# CANDIDATE-MARKER-9137\n- rule\n";
+        var original = Case("a", metric: "spy");
+        var sut = Sut(new FakeInvoker { Answer = _ => "plain answer" }, new FakeLoader(original), metrics: [spy]);
+
+        await sut.RunAsync(candidate, Batch(), CancellationToken.None);
+
+        spy.Received.Should().ContainSingle();
+        var (receivedCase, receivedOutput) = spy.Received[0];
+        receivedCase.Should().BeEquivalentTo(original, "the metric is given the dataset's case, not a copy carrying the rollout's overrides");
+        var everything = System.Text.Json.JsonSerializer.Serialize(new { receivedCase, receivedOutput });
+        everything.Should().NotContain("CANDIDATE-MARKER-9137").And.NotContain("worker");
+    }
+
+    private sealed class SpyMetric : IEvalMetric
+    {
+        public string Key => "spy";
+        public List<(EvalCase Case, AgentInvocationResult Output)> Received { get; } = [];
+
+        public Task<MetricScore> ScoreAsync(EvalCase @case, AgentInvocationResult output, MetricSpec spec, CancellationToken cancellationToken)
+        {
+            lock (Received)
+                Received.Add((@case, output));
+            return Task.FromResult(new MetricScore { MetricKey = Key, Score = 1.0, Verdict = Verdict.Pass });
+        }
+    }
+
     private sealed class StaticMonitor(SkillTrainingConfig value) : IOptionsMonitor<SkillTrainingConfig>
     {
         public SkillTrainingConfig CurrentValue => value;
