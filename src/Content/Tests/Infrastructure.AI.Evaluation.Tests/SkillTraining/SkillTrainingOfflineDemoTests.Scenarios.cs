@@ -140,6 +140,7 @@ public sealed partial class SkillTrainingOfflineDemoTests
         var resumed = await rig.TrainAsync(command);
 
         resumed.Value!.BestSkill.Should().Contain(Rule);
+        rig.Handler.Calls.Should().Be(4, "step 1 ran once, step 2 was interrupted, and the resume ran steps 2 and 3, not 1 again");
         resumed.Value.Steps.Select(s => s.Step).Should().Equal(1, 2, 3);
         rig.Checkpoints().Select(c => c.Step).Should().Equal(1, 2, 3);
         rig.Memory.Nodes.Should().NotBeEmpty("the epoch boundaries before and after the interruption both stored their lessons");
