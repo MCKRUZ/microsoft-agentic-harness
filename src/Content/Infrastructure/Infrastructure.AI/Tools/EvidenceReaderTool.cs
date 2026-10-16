@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
-using Application.AI.Common.Services.SkillTraining;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
@@ -8,8 +8,8 @@ using Domain.Common.Config.AI.Governance;
 namespace Infrastructure.AI.Tools;
 
 /// <summary>
-/// A read-only view of one evidence tree for the skill-training proposer session (#843): read, list,
-/// search and exists, and no operation that writes.
+/// A read-only view of one evidence folder for a proposer session (#843, #847): read, list, search and
+/// exists, and no operation that writes. Used by the skill-training proposer and the MetaHarness proposer.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,11 +21,12 @@ namespace Infrastructure.AI.Tools;
 /// </para>
 /// <para>
 /// <b>Confined twice.</b> The tool is built over a <see cref="IFileSystemService"/> whose only allowed
-/// base path is the configured evidence root, so a path outside it (including a symlink or a <c>..</c> out
+/// base paths are the configured evidence roots (the skill-training evidence root and the MetaHarness trace root), so a path outside them (including a symlink or a <c>..</c> out
 /// of it) is refused by the same hardened guard the general file tool uses. Inside the root it is narrowed
-/// again to the one step's folder published by <see cref="SkillTrainingEvidenceScope"/>: the root holds a
-/// folder per step, and concurrent runs and trees left by a crash share it, so root-level confinement alone
-/// would let a session steered by text in a trajectory read another run's evidence. With no folder
+/// again to the one folder published by <see cref="EvidenceReadScope"/> (a training step's evidence, or a
+/// MetaHarness run's directory): a root holds a folder per step or run, and concurrent runs and trees left by
+/// a crash share it, so root-level confinement alone would let a session steered by text in a trajectory read
+/// another run's evidence. With no folder
 /// published the tool refuses everything.
 /// </para>
 /// <para>
@@ -65,7 +66,7 @@ public sealed class EvidenceReaderTool : ITool
 
     /// <inheritdoc />
     public string Description =>
-        "Reads the evidence for one skill-training step: list a folder (path, optional pattern), read a file " +
+        "Reads the evidence for one proposer step: list a folder (path, optional pattern), read a file " +
         "(path, optional offset and max_chars; a long file is paged, and the reply says where to continue), " +
         "search files (path, search_term, optional pattern), or check a path exists. It cannot write.";
 
@@ -111,7 +112,7 @@ public sealed class EvidenceReaderTool : ITool
         try
         {
             var requested = parameters.TryGetValue("path", out var raw) && raw is string text ? text : null;
-            if (requested is not null && !SkillTrainingEvidenceScope.Allows(requested))
+            if (requested is not null && !EvidenceReadScope.Allows(requested))
                 return ToolResult.Fail("Access denied: path is outside this step's evidence.");
 
             return operation.ToLowerInvariant() switch

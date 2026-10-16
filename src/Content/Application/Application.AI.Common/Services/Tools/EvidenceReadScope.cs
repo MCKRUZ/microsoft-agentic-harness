@@ -1,4 +1,4 @@
-namespace Application.AI.Common.Services.SkillTraining;
+namespace Application.AI.Common.Services.Tools;
 
 /// <summary>
 /// The one step's evidence folder the current proposer session may read, published for the duration of
@@ -19,7 +19,7 @@ namespace Application.AI.Common.Services.SkillTraining;
 /// nothing here is one.
 /// </para>
 /// </remarks>
-public static class SkillTrainingEvidenceScope
+public static class EvidenceReadScope
 {
     private static readonly AsyncLocal<string?> CurrentDirectory = new();
 

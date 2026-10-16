@@ -193,7 +193,7 @@ public sealed class DependencyInjectionTests
             Directory.CreateDirectory(Path.GetDirectoryName(inside)!);
             await File.WriteAllTextAsync(inside, "evidence");
             await File.WriteAllTextAsync(outside, "private");
-            using var step = Application.AI.Common.Services.SkillTraining.SkillTrainingEvidenceScope.Begin(Path.GetDirectoryName(inside)!);
+            using var step = Application.AI.Common.Services.Tools.EvidenceReadScope.Begin(Path.GetDirectoryName(inside)!);
             (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = inside })).Success.Should().BeTrue();
             (await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = outside })).Success.Should().BeFalse();
         }
@@ -202,6 +202,44 @@ public sealed class DependencyInjectionTests
             var parent = Path.GetDirectoryName(root)!;
             if (Directory.Exists(parent))
                 Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AddInfrastructureAIDependencies_TheEvidenceToolReadsAMetaHarnessRunDirectoryAndNoSiblingRun()
+    {
+        // #847: the MetaHarness proposer reads its run's traces through the evidence tool. The tool may reach
+        // the trace root, and each session is narrowed to its own run directory inside it.
+        var dir = Path.Combine(Path.GetTempPath(), $"metaharness-di-{Guid.NewGuid():N}");
+        try
+        {
+            var traceRoot = Path.Combine(dir, "traces");
+            var mine = Path.Combine(traceRoot, "optimizations", "run-a");
+            var sibling = Path.Combine(traceRoot, "optimizations", "run-b");
+            Directory.CreateDirectory(mine);
+            Directory.CreateDirectory(sibling);
+            await File.WriteAllTextAsync(Path.Combine(mine, "traces.jsonl"), "my traces");
+            await File.WriteAllTextAsync(Path.Combine(sibling, "traces.jsonl"), "another run's traces");
+
+            var appConfig = IsolatedAppConfig.Create();
+            appConfig.MetaHarness.TraceDirectoryRoot = traceRoot;
+            var services = CreateBaseServices(appConfig);
+            services.AddInfrastructureAIDependencies(appConfig);
+            using var provider = services.BuildServiceProvider();
+            var tool = provider.GetRequiredKeyedService<Application.AI.Common.Interfaces.Tools.ITool>("evidence_reader");
+
+            using var scope = Application.AI.Common.Services.Tools.EvidenceReadScope.Begin(mine);
+            var own = await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = Path.Combine(mine, "traces.jsonl") });
+            var other = await tool.ExecuteAsync("read", new Dictionary<string, object?> { ["path"] = Path.Combine(sibling, "traces.jsonl") });
+
+            own.Success.Should().BeTrue();
+            own.Output.Should().Be("my traces");
+            other.Success.Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
         }
     }
 

@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
-using Application.AI.Common.Services.SkillTraining;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Models;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
@@ -41,7 +41,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
     /// <summary>Calls the tool as a proposer session would: with this step's folder (the root here) published.</summary>
     private async Task<ToolResult> Run(string operation, Dictionary<string, object?> args)
     {
-        using var _ = SkillTrainingEvidenceScope.Begin(_root);
+        using var _ = EvidenceReadScope.Begin(_root);
         return await _sut.ExecuteAsync(operation, args);
     }
 
@@ -66,7 +66,7 @@ public sealed class EvidenceReaderToolTests : IDisposable
         Directory.CreateDirectory(theirs);
         await File.WriteAllTextAsync(Path.Combine(mine, "a.md"), "mine");
         await File.WriteAllTextAsync(Path.Combine(theirs, "a.md"), "another run's trajectory");
-        using var _ = SkillTrainingEvidenceScope.Begin(mine);
+        using var _ = EvidenceReadScope.Begin(mine);
 
         var own = await _sut.ExecuteAsync("read", Args(("path", Path.Combine(mine, "a.md"))));
         var sibling = await _sut.ExecuteAsync("read", Args(("path", Path.Combine(theirs, "a.md"))));
