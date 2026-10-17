@@ -1,3 +1,4 @@
+using Application.AI.Common.Services;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.Common.Config;
@@ -103,9 +104,7 @@ public sealed class KnowledgeScopeAccessor : IKnowledgeScope, IKnowledgeScopeWri
         string? datasetName = null,
         string? datasetOwnerId = null)
     {
-        var previous = s_identity.Value;
-        s_identity.Value = new ScopeIdentity(userId, tenantId, datasetId, datasetName, datasetOwnerId);
-        return new ScopeToken(previous);
+        return AmbientScope.Begin(s_identity, new ScopeIdentity(userId, tenantId, datasetId, datasetName, datasetOwnerId));
     }
 
     private sealed record ScopeIdentity(
@@ -120,19 +119,4 @@ public sealed class KnowledgeScopeAccessor : IKnowledgeScope, IKnowledgeScopeWri
     /// ambient before the corresponding <see cref="SetScope"/> call. Idempotent — a second dispose is a
     /// no-op rather than a second (wrong) restore.
     /// </summary>
-    private sealed class ScopeToken : IDisposable
-    {
-        private readonly ScopeIdentity? _previous;
-        private bool _disposed;
-
-        public ScopeToken(ScopeIdentity? previous) => _previous = previous;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            s_identity.Value = _previous;
-        }
-    }
 }

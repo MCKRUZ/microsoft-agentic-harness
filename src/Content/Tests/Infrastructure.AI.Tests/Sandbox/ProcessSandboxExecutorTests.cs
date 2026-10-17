@@ -104,6 +104,25 @@ public class ProcessSandboxExecutorTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task ExecuteAsync_ChildExitsWithoutReadingStdin_ReportsItsRealExitCode()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
+        // The child never reads its input, so a write larger than the pipe buffer can only finish by
+        // failing once the child is gone. That used to turn a plain exit into an "execution failed".
+        var request = CreateRequest(
+            command: "cmd.exe",
+            argumentList: ["/c", "exit", "3"],
+            input: new string('x', 4 * 1024 * 1024));
+
+        var result = await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(3, "the child's own exit code must survive; the executor reported: {0}", result.ErrorMessage);
+        result.Attestation!.FailureReason.Should().Contain("exited with code 3");
+    }
+
+    [SkippableFact]
     public async Task ExecuteAsync_StdinInput_PassedToProcess()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");

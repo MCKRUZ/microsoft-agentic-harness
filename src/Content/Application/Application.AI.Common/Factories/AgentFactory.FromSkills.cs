@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Skills;
 using Domain.AI.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -80,16 +81,7 @@ public partial class AgentFactory
         string id,
         string? owningAgentId,
         IAgentOwnedSkillStore? ownedSkills)
-    {
-        if (owningAgentId is not null && ownedSkills is not null)
-        {
-            var owned = ownedSkills.TryGet(owningAgentId, id);
-            if (owned is not null)
-                return owned;
-        }
-
-        return _skillRegistry.TryGet(id);
-    }
+        => SkillResolution.Resolve(id, owningAgentId, ownedSkills, _skillRegistry);
 
     /// <inheritdoc />
     public async Task<IDictionary<string, AIAgent>> CreateAgentsFromSkillsAsync(

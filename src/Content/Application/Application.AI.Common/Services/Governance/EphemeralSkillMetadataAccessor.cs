@@ -71,22 +71,6 @@ public static class EphemeralSkillMetadataAccessor
     public static IDisposable Begin(SkillDefinition skill)
     {
         ArgumentNullException.ThrowIfNull(skill);
-        var previous = s_current.Value;
-        s_current.Value = skill;
-        return new Scope(previous);
-    }
-
-    private sealed class Scope(SkillDefinition? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
+        return AmbientScope.Begin(s_current, skill);
     }
 }

@@ -7,7 +7,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Tools;
-using Application.AI.Common.Tests.Governance;
+using Application.AI.Common.Tests.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI.DirectToolInvocation;
@@ -16,6 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using static Application.AI.Common.Tests.CQRS.Changes.Support.TestHelpers;
 
 namespace Application.AI.Common.Tests.Services.Tools;
 
@@ -86,26 +87,7 @@ public sealed partial class DirectToolInvokerMcpTests
         CancellationToken cancellationToken = default,
         bool withProvider = true)
     {
-        var services = new ServiceCollection();
-        services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
-        services.AddScoped<IToolInvocationGovernor>(sp =>
-            new RecordingGovernor(sp.GetRequiredService<IAgentExecutionContext>(), _governor));
-
-        // Every gate is registered unconditionally: the chain requires all of them, and an absent gate
-        // and a permissive one must never be confusable at runtime.
-        services.AddSingleton(AdmissionHarness.PermissiveClassificationGate());
-        // A mock reports HasObservers == false, so the chain never asks it for a decision.
-        services.AddSingleton(Mock.Of<IToolCallObserverChain>());
-        services.AddSingleton(AdmissionHarness.PermissiveProgressEvaluator());
-        services.AddSingleton<IGovernanceTraceRecorder>(AdmissionHarness.TraceRecorder());
-        services.AddSingleton(AdmissionHarness.PermissiveAuthorizationGate());
-        services.AddSingleton(_reporter.Object);
-        services.AddSingleton(AdmissionHarness.PermissiveSanitizer());
-        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
-        services.AddSingleton(AdmissionHarness.Config());
-        services.AddSingleton(AdmissionHarness.StubResultStore());
-        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
-        services.AddToolCallAdmissionChain();
+        var services = DirectInvokerContainer.Build(_governor, _reporter.Object);
 
         await using var provider = services.BuildServiceProvider();
 
@@ -117,37 +99,5 @@ public sealed partial class DirectToolInvokerMcpTests
             withProvider ? _provider.Object : null);
 
         return await sut.InvokeMcpToolAsync(request, cancellationToken);
-    }
-
-    private sealed class GovernorRecord
-    {
-        public ToolInvocationDecision Decision { get; set; } = ToolInvocationDecision.Allow();
-        public string? AgentIdWhenAuthorizing { get; set; }
-        public TimeSpan Delay { get; set; }
-    }
-
-    private sealed class RecordingGovernor(IAgentExecutionContext executionContext, GovernorRecord record)
-        : IToolInvocationGovernor
-    {
-        public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
-            string toolName, CancellationToken cancellationToken,
-            IReadOnlyDictionary<string, object?>? arguments = null,
-            ToolCompositionTaint? composition = null,
-            Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null)
-        {
-            record.AgentIdWhenAuthorizing = executionContext.AgentId;
-
-            if (record.Delay > TimeSpan.Zero)
-                await Task.Delay(record.Delay, cancellationToken);
-
-            return record.Decision;
-        }
-    }
-
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
-    {
-        public T CurrentValue => value;
-        public T Get(string? name) => value;
-        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 }

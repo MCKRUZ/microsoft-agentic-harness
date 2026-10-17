@@ -664,6 +664,47 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		outcome.Approvers.Should().BeEquivalentTo("approver-1", "approver-2");
 	}
 
+	// ===== Plan/step binding (#784) =====
+	// The plan executor releases a blocked step only when the verdict names that step, so EVERY way the
+	// service can resolve an escalation has to copy the request's binding onto the outcome. One test per
+	// path: a path that forgot it would turn its approvals into silent failures at the reconciler.
+
+	private static readonly EscalationBinding SampleBinding = new(Guid.NewGuid(), Guid.NewGuid());
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ResolvingDecision_CopiesTheRequestsBindingOntoTheOutcome()
+	{
+		var request = CreateTestRequest() with { Binding = SampleBinding };
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var result = await _sut.SubmitDecisionAsync(request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		result.Outcome!.Binding.Should().Be(SampleBinding);
+	}
+
+	[Fact]
+	public async Task Timeout_CopiesTheRequestsBindingOntoTheOutcome()
+	{
+		var request = CreateTestRequest(timeoutSeconds: 1) with { Binding = SampleBinding };
+
+		var outcome = await _sut.RequestEscalationAsync(request, CancellationToken.None);
+
+		outcome.Binding.Should().Be(SampleBinding);
+	}
+
+	[Fact]
+	public async Task CancelEscalationAsync_CopiesTheRequestsBindingOntoTheOutcome()
+	{
+		var request = CreateTestRequest() with { Binding = SampleBinding };
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var outcome = await _sut.CancelEscalationAsync(
+			request.EscalationId, "No longer needed", "admin@contoso.com", CancellationToken.None);
+
+		outcome.Binding.Should().Be(SampleBinding);
+	}
+
 	[Fact]
 	public async Task SubmitDecisionAsync_ResolvedOutcome_CarriesRoster()
 	{

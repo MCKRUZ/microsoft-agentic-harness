@@ -226,7 +226,9 @@ public sealed partial class PlanExecutor
         try
         {
             var stepSw = Stopwatch.StartNew();
-            var result = await executor.ExecuteAsync(step, upstreamOutputs, stepCts.Token);
+            var result = executor is IPlanAwareStepExecutor planAware
+                ? await planAware.ExecuteAsync(ctx.PlanId, step, upstreamOutputs, stepCts.Token)
+                : await executor.ExecuteAsync(step, upstreamOutputs, stepCts.Token);
             stepSw.Stop();
 
             StepDurationHistogram.Record(stepSw.Elapsed.TotalMilliseconds,

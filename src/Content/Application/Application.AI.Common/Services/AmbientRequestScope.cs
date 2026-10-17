@@ -19,24 +19,6 @@ public sealed class AmbientRequestScope : IAmbientRequestScope
     {
         ArgumentNullException.ThrowIfNull(requestServices);
 
-        var previous = s_current.Value;
-        s_current.Value = requestServices;
-        return new ScopeToken(previous);
-    }
-
-    private sealed class ScopeToken : IDisposable
-    {
-        private readonly IServiceProvider? _previous;
-        private bool _disposed;
-
-        public ScopeToken(IServiceProvider? previous) => _previous = previous;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            s_current.Value = _previous;
-        }
+        return AmbientScope.Begin(s_current, requestServices);
     }
 }

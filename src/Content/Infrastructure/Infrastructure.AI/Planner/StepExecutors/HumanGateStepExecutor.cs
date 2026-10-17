@@ -18,7 +18,7 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// approval completes the gate and releases its downstream, a rejection fails it. The gate's job ends
 /// the moment the escalation is queued.
 /// </remarks>
-public sealed class HumanGateStepExecutor : IPlanStepExecutor
+public sealed class HumanGateStepExecutor : IPlanAwareStepExecutor
 {
     private readonly IEscalationService _escalationService;
     private readonly IPlanProgressNotifier _notifier;
@@ -37,7 +37,31 @@ public sealed class HumanGateStepExecutor : IPlanStepExecutor
         _logger = logger;
     }
 
+    /// <summary>
+    /// Refuses to run. A gate that does not know its plan cannot bind the escalation it would queue, and
+    /// an unbound escalation is one any approval could release; the plan executor always calls the
+    /// overload that carries the plan id.
+    /// </summary>
+    public Task<StepExecutionResult> ExecuteAsync(
+        PlanStep step,
+        IReadOnlyDictionary<PlanStepId, string> upstreamOutputs,
+        CancellationToken ct)
+    {
+        _logger.LogError(
+            "Human gate '{Step}' was run without a plan id; refusing to queue an escalation that cannot be bound to its step",
+            step.Name);
+
+        return Task.FromResult(new StepExecutionResult
+        {
+            Status = StepExecutionStatus.Failed,
+            Duration = TimeSpan.Zero,
+            ErrorMessage = PlanStepErrors.HumanGateUnbound
+        });
+    }
+
+    /// <inheritdoc />
     public async Task<StepExecutionResult> ExecuteAsync(
+        PlanId planId,
         PlanStep step,
         IReadOnlyDictionary<PlanStepId, string> upstreamOutputs,
         CancellationToken ct)
@@ -66,7 +90,8 @@ public sealed class HumanGateStepExecutor : IPlanStepExecutor
             ApprovalStrategy = MapApprovalStrategy(config.ApprovalStrategy),
             Approvers = config.Approvers,
             TimeoutSeconds = (int)config.Timeout.TotalSeconds,
-            RequestedAt = DateTimeOffset.UtcNow
+            RequestedAt = DateTimeOffset.UtcNow,
+            Binding = new EscalationBinding(planId.Value, step.Id.Value)
         };
 
         var escalationId = await _escalationService.QueueEscalationAsync(request, ct);

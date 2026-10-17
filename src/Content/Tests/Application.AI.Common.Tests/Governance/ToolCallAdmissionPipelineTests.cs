@@ -1031,6 +1031,108 @@ public sealed class ToolCallAdmissionPipelineTests
             AdmissionHarness.StubExecutionContext(), AdmissionHarness.StubResultStore());
     }
 
+    // ===== Approved, then refused by a later stage (#784) =====
+    // A human's yes only loosens the governor stage. Classification, the host's rules, the loop guard and
+    // call-once still apply after it, so an approved call can be refused. The approver has to hear that
+    // their approved call never ran; before this, the approval record just ended.
+
+    public static TheoryData<EscalationNotExecutedReason> LaterStagesThatCanRefuse() => new()
+    {
+        { EscalationNotExecutedReason.RefusedByClassification },
+        { EscalationNotExecutedReason.RefusedByHostRule },
+        { EscalationNotExecutedReason.RefusedByLoopGuard },
+        { EscalationNotExecutedReason.RefusedByCallOnce },
+    };
+
+    private static ToolCallAdmissionPipeline RefusingAt(
+        EscalationNotExecutedReason stage, IToolInvocationGovernor governor, IApprovalExecutionReporter reporter)
+    {
+        var classification = AdmissionHarness.PermissiveClassificationGate();
+        IToolCallObserverChain? observers = null;
+        var progress = AdmissionHarness.PermissiveProgressEvaluator();
+        var callOnce = AdmissionHarness.PermissiveCallOnceGate();
+
+        switch (stage)
+        {
+            case EscalationNotExecutedReason.RefusedByClassification:
+                var gate = new Mock<IToolClassificationGate>();
+                gate.Setup(g => g.EvaluateAsync(
+                        It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(ClassificationVerdict.Block("blocked"));
+                classification = gate.Object;
+                break;
+            case EscalationNotExecutedReason.RefusedByHostRule:
+                observers = AdmissionHarness.ObserverChain(ToolInvocationDecision.Deny("host says no")).Object;
+                break;
+            case EscalationNotExecutedReason.RefusedByLoopGuard:
+                var loop = new Mock<IProgressEvaluator>();
+                loop.Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
+                    .Returns(ProgressVerdict.Halt("loop"));
+                progress = loop.Object;
+                break;
+            case EscalationNotExecutedReason.RefusedByCallOnce:
+                callOnce = AdmissionHarness.DenyingCallOnceGate("already called").Object;
+                break;
+        }
+
+        return AdmissionHarness.Pipeline(
+            governor: governor, classificationGate: classification, observers: observers,
+            progressEvaluator: progress, callOnceGate: callOnce, executionReporter: reporter);
+    }
+
+    [Theory]
+    [MemberData(nameof(LaterStagesThatCanRefuse))]
+    public async Task AdmitAsync_ApprovedCallRefusedByALaterStage_ReportsItAsNeverExecuted(EscalationNotExecutedReason stage)
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var call = Call();
+        var pipeline = RefusingAt(stage, AdmissionHarness.ApprovingGovernor(call), reporter.Object);
+
+        var admission = await pipeline.AdmitAsync(
+            new ToolCallAdmissionRequest(Tool, Args, CountsTowardLoopDetection: true), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse();
+        reporter.Verify(
+            r => r.ReportNotExecutedAsync(
+                call, stage, ToolCallAdmissionPipeline.RefusedAfterApprovalReportedBy, CancellationToken.None),
+            Times.Once);
+    }
+
+    [Theory]
+    [MemberData(nameof(LaterStagesThatCanRefuse))]
+    public async Task AdmitAsync_UnapprovedCallRefusedByALaterStage_ReportsNothing(EscalationNotExecutedReason stage)
+    {
+        // Control: no human was asked, so there is no approver to tell.
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var pipeline = RefusingAt(stage, AdmissionHarness.PermissiveGovernor(), reporter.Object);
+
+        var admission = await pipeline.AdmitAsync(
+            new ToolCallAdmissionRequest(Tool, Args, CountsTowardLoopDetection: true), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse();
+        reporter.Verify(
+            r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_ApprovedCallThatClearsEveryStage_IsNotReportedAsNeverExecuted()
+    {
+        // Control: an approved call that runs is reported by its caller after the tool finishes, not here.
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var call = Call();
+        var pipeline = AdmissionHarness.Pipeline(
+            governor: AdmissionHarness.ApprovingGovernor(call), executionReporter: reporter.Object);
+
+        var admission = await pipeline.AdmitAsync(new ToolCallAdmissionRequest(Tool, Args), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeTrue();
+        admission.ApprovedCall.Should().Be(call);
+        reporter.Verify(
+            r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     // ===== ReportExecutionAsync: #325 execution reporting dispatch =====
 
     private static ToolCallAdmissionPipeline WithReporter(

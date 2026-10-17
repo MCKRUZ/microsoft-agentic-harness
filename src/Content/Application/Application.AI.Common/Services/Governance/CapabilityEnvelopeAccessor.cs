@@ -55,22 +55,6 @@ public static class CapabilityEnvelopeAccessor
     public static IDisposable Begin(CapabilityEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        var previous = s_current.Value;
-        s_current.Value = envelope;
-        return new EnvelopeScope(previous);
-    }
-
-    private sealed class EnvelopeScope(CapabilityEnvelope? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
+        return AmbientScope.Begin(s_current, envelope);
     }
 }

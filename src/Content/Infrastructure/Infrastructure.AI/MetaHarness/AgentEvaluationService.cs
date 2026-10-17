@@ -17,6 +17,7 @@ using FluentValidation;
 using Infrastructure.AI.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 // Aliased, not a plain `using Application.AI.Common.Services.Agent;` — that namespace also
@@ -40,7 +41,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly IExecutionTraceStore _traceStore;
     private readonly IAgentFactory _agentFactory;
-    private readonly IToolCallAdmissionPipeline _admissionPipeline;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly ICurrentSkillAccessor _currentSkillAccessor;
     private readonly IMcpSecurityScanner _scanner;
@@ -55,11 +56,14 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         (skill, script, arguments, serviceProvider, cancellationToken) =>
             Task.FromResult<object?>(null);
 
-    /// <param name="admissionPipeline">
-    /// The scoped admission chain armed around every eval run's <c>agent.RunAsync</c> call (#482) —
-    /// without it, <c>GovernedAIFunction</c>'s null-ambient early-return path leaves any tool a
-    /// candidate-loaded skill declares completely ungoverned, the same gap #478 closed for
-    /// <c>Presentation.FoundryHost</c>.
+    /// <param name="scopeFactory">
+    /// Opens the governed child scope each eval task runs under (#482, #687). Every task arms its own
+    /// admission chain from its own scope, the same ambient chain <c>ExecuteAgentTurnCommandHandler</c>
+    /// arms for every production turn — without it, <c>GovernedAIFunction</c>'s null-ambient early-return
+    /// path leaves any tool a candidate-loaded skill declares completely ungoverned, the same gap #478
+    /// closed for <c>Presentation.FoundryHost</c>. One chain per task rather than one shared by all of
+    /// them: the chain holds loop-detection and call-once state that <c>Reset()</c> wipes, so under
+    /// <c>MaxEvalParallelism &gt; 1</c> a task starting while a sibling was mid-run wiped the sibling's state.
     /// </param>
     /// <param name="sanitizer">
     /// Passed to the <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/> this service now wires onto its own
@@ -89,7 +93,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         IOptionsMonitor<MetaHarnessConfig> config,
         IExecutionTraceStore traceStore,
         IAgentFactory agentFactory,
-        IToolCallAdmissionPipeline admissionPipeline,
+        IServiceScopeFactory scopeFactory,
         ICompositeResponseSanitizer sanitizer,
         ICurrentSkillAccessor currentSkillAccessor,
         IMcpSecurityScanner scanner,
@@ -101,7 +105,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         _config = config;
         _traceStore = traceStore;
         _agentFactory = agentFactory;
-        _admissionPipeline = admissionPipeline;
+        _scopeFactory = scopeFactory;
         _sanitizer = sanitizer;
         _currentSkillAccessor = currentSkillAccessor;
         _scanner = scanner;
@@ -239,6 +243,8 @@ public sealed partial class AgentEvaluationService : IEvaluationService
     /// keeps only the trace-lifecycle envelope (start/catch/finally/cleanup), a genuinely separate
     /// concern from running one candidate's turn.
     /// </summary>
+    /// <summary>The agent id an eval task governs as, and the name of the agent it builds.</summary>
+    private const string EvaluationAgentId = "EvaluationAgent";
     private async Task<TaskEvaluationResult> RunCandidateTurnAsync(
         HarnessCandidate candidate,
         EvalTask task,
@@ -266,7 +272,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
 
         var context = new AgentExecutionContext
         {
-            Name = "EvaluationAgent",
+            Name = EvaluationAgentId,
             Instruction = candidate.Snapshot.SystemPromptSnapshot,
             DeploymentName = string.IsNullOrEmpty(cfg.EvaluationModelVersion) ? null : cfg.EvaluationModelVersion,
             TraceScope = scope,
@@ -280,15 +286,19 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         var agent = await _agentFactory.CreateAgentAsync(context, cancellationToken);
 
         // #482: arm the same ambient admission chain ExecuteAgentTurnCommandHandler arms for every
-        // production turn. Begin (not assign-and-null) so a nested/enclosing governed flow is
-        // restored rather than disarmed on the way out — see ToolAdmissionAccessor's remarks.
+        // production turn, from a child scope of this task's own (#687). GovernanceArmer arms the scope
+        // and resets its chain, and Publish below uses ToolAdmissionAccessor.Begin (not assign-and-null)
+        // so a nested/enclosing governed flow is restored rather than disarmed on the way out — see
+        // that accessor's remarks.
         //
-        // Reset before arming, mirroring DirectToolInvoker.ArmGovernance: this pipeline is a single
-        // scoped instance shared across every eval task and candidate run in this scope (found in
-        // review), so without a reset here its loop-detection and call-once state accumulates across
-        // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
-        // unrelated later task in the same scope.
-        _admissionPipeline.Reset();
+        // One scope per task, not one chain per service: this service is scoped and fans tasks out in
+        // parallel, so a single shared chain let one task's Reset() land in the middle of another task's
+        // run and wipe its loop-detection and call-once state. DirectInvocation is the right policy for
+        // the same reason it is for a direct tool call: an eval task is one standalone unit of work with
+        // no request session, so it mints its own conversation id, has no call-once scope, and starts at
+        // turn one. No parent trace is passed — an eval has no turn trace to fold its decisions into.
+        await using var governed = GovernanceArmer.OpenChild(
+            _scopeFactory, EvaluationAgentId, GovernanceArmingPolicy.DirectInvocation);
 
         // #618: opened for the same reason as ToolAdmissionAccessor below — GovernedAIFunction
         // (via GoverningToolContextProvider) consults this accessor only when a governed tool
@@ -304,7 +314,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
             : null;
 
         AgentResponse response;
-        using (ToolAdmissionAccessor.Begin(_admissionPipeline))
+        using (governed.Publish())
         {
             response = await agent.RunAsync(
                 [new ChatMessage(ChatRole.User, task.InputPrompt)],

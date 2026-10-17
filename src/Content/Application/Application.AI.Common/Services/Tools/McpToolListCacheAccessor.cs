@@ -155,28 +155,12 @@ public static class McpToolListCacheAccessor
     /// </summary>
     public static IDisposable Begin()
     {
-        var previous = s_current.Value;
-        s_current.Value = new Scope();
-        return new CacheScope(previous);
+        return AmbientScope.Begin(s_current, new Scope());
     }
 
     /// <summary>The per-flow state: a lazily-allocated backing dictionary, present only once something is cached.</summary>
     private sealed class Scope
     {
         public ConcurrentDictionary<string, IList<AITool>>? Cache;
-    }
-
-    private sealed class CacheScope(Scope? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
     }
 }

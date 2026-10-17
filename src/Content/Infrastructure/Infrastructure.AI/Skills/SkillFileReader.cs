@@ -1,4 +1,3 @@
-using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
 using Infrastructure.AI.Tools;
@@ -32,13 +31,8 @@ namespace Infrastructure.AI.Skills;
 /// configuration, not plugin-supplied content.
 /// </para>
 /// </remarks>
-public sealed class SkillFileReader : ISkillFileReader
+public sealed class SkillFileReader : SandboxedSkillFileReaderBase
 {
-    // Matched to FileSystemService deliberately: a manifest or reference file large enough to
-    // exhaust memory is a defect or an attack either way, and two different limits on two sandboxes
-    // over the same disk would be a difference nobody could justify later.
-    private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
-
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly ILogger<SkillFileReader> _logger;
     private readonly Lock _lock = new();
@@ -61,95 +55,18 @@ public sealed class SkillFileReader : ISkillFileReader
     }
 
     /// <inheritdoc />
-    public string ReadText(string path)
-    {
-        var fullPath = ValidateForRead(path);
-        return File.ReadAllText(fullPath);
-    }
+    protected override string OutsideSandboxMessage(string path) =>
+        $"Path is outside the configured skill content roots: {path}";
 
     /// <inheritdoc />
-    public async Task<string> ReadTextAsync(string path, CancellationToken cancellationToken = default)
-    {
-        var fullPath = ValidateForRead(path);
-        return await File.ReadAllTextAsync(fullPath, System.Text.Encoding.UTF8, cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public bool FileExists(string path) => File.Exists(Resolve(path));
-
-    /// <inheritdoc />
-    public bool DirectoryExists(string path) => Directory.Exists(Resolve(path));
-
-    /// <inheritdoc />
-    public IReadOnlyList<string> EnumerateDirectories(string path)
-    {
-        var guard = CurrentGuard();
-        var fullPath = Resolve(path);
-
-        if (!Directory.Exists(fullPath))
-            throw new DirectoryNotFoundException($"Directory not found: {path}");
-
-        var results = new List<string>();
-        foreach (var subdirectory in Directory.EnumerateDirectories(fullPath))
-        {
-            // Re-checked rather than trusted because it was enumerated from inside the sandbox: a
-            // junction planted in a skill root enumerates with a legitimate-looking literal path,
-            // and a caller that recursed into it would be walking wherever it points.
-            if (guard.IsPathAllowed(subdirectory))
-                results.Add(subdirectory);
-            else
-                _logger.LogWarning("Skipped skill subdirectory outside the skill sandbox: {Path}", subdirectory);
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Validates a path against the current sandbox, reporting a refusal as
-    /// <see cref="SkillPathRefusedException"/>.
-    /// </summary>
-    /// <remarks>
-    /// The translation is the point. Callers must be able to tell "the sandbox said no" — which is
-    /// fatal, because absorbing it into an empty result would boot an agent silently missing its
-    /// skills — apart from an ordinary file-permission denial on a directory that is legitimately
-    /// inside the sandbox, which is not. Both arrive as <see cref="UnauthorizedAccessException"/>,
-    /// so only the one raised here can be distinguished by type.
-    /// </remarks>
-    private string Resolve(string path)
-    {
-        try
-        {
-            return CurrentGuard().ResolveAndValidate(path);
-        }
-        catch (UnauthorizedAccessException ex) when (ex is not SkillPathRefusedException)
-        {
-            throw new SkillPathRefusedException(
-                $"Path is outside the configured skill content roots: {path}", ex);
-        }
-    }
-
-    /// <summary>
-    /// Validates a path for reading and enforces the size limit before any content is loaded.
-    /// </summary>
-    private string ValidateForRead(string path)
-    {
-        var fullPath = Resolve(path);
-
-        var fileInfo = new FileInfo(fullPath);
-        if (!fileInfo.Exists)
-            throw new FileNotFoundException($"Skill file not found: {path}");
-
-        if (fileInfo.Length > MaxFileSizeBytes)
-            throw new IOException($"Skill file exceeds size limit ({MaxFileSizeBytes / 1024 / 1024} MB).");
-
-        return fullPath;
-    }
+    protected override void LogSkippedSubdirectory(string subdirectory) =>
+        _logger.LogWarning("Skipped skill subdirectory outside the skill sandbox: {Path}", subdirectory);
 
     /// <summary>
     /// Returns a guard over the currently configured skill content roots, rebuilding it only when
     /// that set has changed since the last call.
     /// </summary>
-    private SandboxedPathGuard CurrentGuard()
+    private protected override SandboxedPathGuard CurrentGuard()
     {
         var roots = ResolveContentRoots();
         var signature = string.Join('\0', roots);

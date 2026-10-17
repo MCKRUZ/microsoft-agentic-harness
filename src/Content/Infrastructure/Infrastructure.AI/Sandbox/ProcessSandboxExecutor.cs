@@ -71,8 +71,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
 
-            await process.StandardInput.WriteAsync(request.Input);
-            process.StandardInput.Close();
+            await DeliverInputAsync(process, request);
 
             bool timedOut = false;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -122,6 +121,24 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
                 _launchPreparer.ReleaseResourceLimiter(pid);
 
             _launchPreparer.CleanupWorkspace(workspaceDir);
+        }
+    }
+
+    /// <summary>
+    /// Writes the request input to the child's stdin and closes it. A child that exits without reading
+    /// its input (an early failure, or a tool that takes no input) closes the pipe under the write; that
+    /// is the child's outcome to report through its exit code, not an execution failure of the sandbox.
+    /// </summary>
+    private async Task DeliverInputAsync(Process process, SandboxExecutionRequest request)
+    {
+        try
+        {
+            await process.StandardInput.WriteAsync(request.Input);
+            process.StandardInput.Close();
+        }
+        catch (IOException ex)
+        {
+            _logger.LogDebug(ex, "Tool {ToolName} closed stdin before reading all of its input", request.ToolName);
         }
     }
 

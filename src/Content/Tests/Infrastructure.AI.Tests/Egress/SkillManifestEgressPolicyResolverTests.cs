@@ -436,6 +436,42 @@ public sealed class SkillManifestEgressPolicyResolverTests
     }
 
     /// <summary>
+    /// #742: a candidate's proposed allowlist applies to calls made on behalf of the candidate's skill, and
+    /// to nothing else. A call with no skill in scope (the model's own HTTP call, a tool bound to no skill)
+    /// gets the harness-wide default even while a candidate is under evaluation, exactly as it does in
+    /// production. Widening it to the candidate's hosts would let a proposed skill's allowlist govern
+    /// traffic that is not the skill's. A skill-bound tool call always has its scope: the governed
+    /// function establishes it before admission and holds it through the tool's own execution, which is
+    /// where a sandbox egress preflight runs.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_EphemeralSkillActiveButNoSkillInScope_GetsTheDefaultPolicyNotTheCandidates()
+    {
+        var accessor = new CurrentSkillAccessor();
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var resolver = NewResolver(accessor, registry.Object);
+        var candidate = SkillWithAllowlist("candidate-42", new EgressAllowlistEntry
+        {
+            Host = "candidate.example.com", Schemes = ["https"], Ports = [443]
+        });
+
+        using var _ = EphemeralSkillMetadataAccessor.Begin(candidate);
+
+        // Control, same instrument: with the candidate's skill in scope its host is allowed.
+        using (accessor.BeginScope(["candidate-42"]))
+        {
+            var scoped = await resolver.ResolveFor(TestIdentity.Default).AllowAsync(
+                new Uri("https://candidate.example.com/"), TestIdentity.Default, CancellationToken.None);
+            scoped.Allowed.Should().BeTrue();
+        }
+
+        var unscoped = await resolver.ResolveFor(TestIdentity.Default).AllowAsync(
+            new Uri("https://candidate.example.com/"), TestIdentity.Default, CancellationToken.None);
+        unscoped.Allowed.Should().BeFalse("a call that is not the candidate skill's gets the default policy");
+        registry.VerifyNoOtherCalls();
+    }
+
+    /// <summary>
     /// #618's concurrency fix: two ephemeral skills sharing an id — the normal case for meta-harness
     /// eval, where a candidate is usually named after the real skill it proposes to change — must
     /// each resolve their OWN allowlist, never a stale one cached from the other. This reproduces the
