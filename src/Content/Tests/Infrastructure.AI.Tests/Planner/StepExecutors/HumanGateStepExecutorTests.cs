@@ -152,4 +152,45 @@ public sealed class HumanGateStepExecutorTests
         _escalationService.Verify(
             s => s.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    private async Task<EscalationRequest> QueueWith(PlanStepId upstream, string output, PlanStep step)
+    {
+        EscalationRequest? captured = null;
+        _escalationService.Setup(s => s.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(Guid.NewGuid());
+
+        await _sut.ExecuteAsync(_planId, step, new Dictionary<PlanStepId, string> { [upstream] = output }, CancellationToken.None);
+
+        return captured!;
+    }
+
+    // #784: approving a 200-character summary is approving a rendering. The digest covers the full output,
+    // so two gates that look identical to the approver but release different data are told apart.
+    [Fact]
+    public async Task ExecuteAsync_OutputsThatDifferOnlyBeyondTheSummary_HaveDifferentDigestsAndSayTheyWereCut()
+    {
+        var step = CreateStep(new HumanGateConfig { EscalationMessage = "Review", ApprovalStrategy = ApprovalStrategy.AnyOf });
+        var upstream = new PlanStepId(Guid.NewGuid());
+        var head = new string('x', 300);
+
+        var first = await QueueWith(upstream, head + "send to finance", step);
+        var second = await QueueWith(upstream, head + "send to everyone", step);
+
+        Assert.Equal(first.Arguments[upstream.Value.ToString()], second.Arguments[upstream.Value.ToString()]);
+        Assert.NotEqual(first.Arguments[EscalationCallDigest.DigestKey], second.Arguments[EscalationCallDigest.DigestKey]);
+        Assert.Contains("1 upstream output(s) shortened", first.Arguments[EscalationCallDigest.TruncatedKey]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ShortOutputs_CarryADigestButNoTruncationNote()
+    {
+        var step = CreateStep(new HumanGateConfig { EscalationMessage = "Review", ApprovalStrategy = ApprovalStrategy.AnyOf });
+        var upstream = new PlanStepId(Guid.NewGuid());
+
+        var request = await QueueWith(upstream, "all good", step);
+
+        Assert.StartsWith("sha256:", request.Arguments[EscalationCallDigest.DigestKey]);
+        Assert.DoesNotContain(EscalationCallDigest.TruncatedKey, request.Arguments.Keys);
+    }
 }

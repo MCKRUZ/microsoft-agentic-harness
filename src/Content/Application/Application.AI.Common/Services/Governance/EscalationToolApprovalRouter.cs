@@ -541,13 +541,22 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
 
     /// <summary>
     /// Renders the call arguments for the approver, scrubbed through the response-sanitizer chain
-    /// and length-capped.
+    /// and length-capped, with a digest of the whole call and a note when the rendering is not all of it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The arguments are the whole point of asking a human — approving "file_system" tells them
     /// nothing, approving a specific path tells them everything. But an argument set is
     /// model-influenced text that lands in a notification, a durable record, and an audit line, so
     /// it is sanitized with the same chain that scrubs tool output before it is shown anywhere.
+    /// </para>
+    /// <para>
+    /// Capping and scrubbing mean the approver can approve arguments that differ beyond what they saw
+    /// (#784), so the entry list also carries <see cref="EscalationCallDigest.DigestKey"/> — a digest of
+    /// the full, untruncated, unscrubbed call — and, when anything was cut or omitted,
+    /// <see cref="EscalationCallDigest.TruncatedKey"/> saying how much. The digest is taken before the
+    /// cap, over every argument, so it covers exactly what the rendering hides.
+    /// </para>
     /// </remarks>
     private IReadOnlyDictionary<string, string> SanitizeArguments(
         string toolName, IReadOnlyDictionary<string, object?>? arguments)
@@ -555,25 +564,40 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         if (arguments is null || arguments.Count == 0)
             return new Dictionary<string, string>();
 
+        var full = arguments
+            .OrderBy(a => a.Key, StringComparer.Ordinal)
+            .Select(a => KeyValuePair.Create(a.Key, RenderFull(a.Value)))
+            .ToList();
+
         var rendered = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var kvp in arguments.OrderBy(a => a.Key, StringComparer.Ordinal).Take(MaxArgumentCount))
-            rendered[kvp.Key] = _sanitizer.Sanitize(Render(kvp.Value), toolName).SanitizedContent;
+        var shortened = 0;
+        foreach (var (key, text) in full.Take(MaxArgumentCount))
+        {
+            if (text.Length > MaxArgumentValueLength)
+                shortened++;
 
-        if (arguments.Count > MaxArgumentCount)
-            rendered["(truncated)"] = $"{arguments.Count - MaxArgumentCount} further argument(s) omitted";
+            rendered[EscalationCallDigest.DisplayKey(key)] = _sanitizer.Sanitize(Clamp(text), toolName).SanitizedContent;
+        }
 
+        var omitted = full.Count - Math.Min(full.Count, MaxArgumentCount);
+        if (shortened > 0 || omitted > 0)
+        {
+            rendered[EscalationCallDigest.TruncatedKey] =
+                $"{shortened} value(s) shortened, {omitted} further argument(s) omitted; the call digest covers the full call";
+        }
+
+        rendered[EscalationCallDigest.DigestKey] = EscalationCallDigest.Compute(toolName, full);
         return rendered;
     }
 
-    private static string Render(object? value)
+    private static string RenderFull(object? value)
     {
         if (value is null)
             return "null";
 
-        string text;
         try
         {
-            text = value as string ?? JsonSerializer.Serialize(value);
+            return value as string ?? JsonSerializer.Serialize(value);
         }
         catch (Exception)
         {
@@ -581,13 +605,14 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             // than the writer's depth limit — must not fail the approval request. The approver still
             // learns a value of this shape was passed. Catching broadly here is deliberate: this runs
             // on model-supplied input, so the set of reachable exceptions is not ours to enumerate.
-            text = $"<unserializable {value.GetType().Name}>";
+            return $"<unserializable {value.GetType().Name}>";
         }
+    }
 
-        return text.Length > MaxArgumentValueLength
+    private static string Clamp(string text) =>
+        text.Length > MaxArgumentValueLength
             ? string.Concat(text.AsSpan(0, MaxArgumentValueLength), "… (truncated)")
             : text;
-    }
 
     /// <summary>
     /// Resolves the blast radius at or above which an approval is raised at Critical priority.
