@@ -2,7 +2,6 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
-using Domain.AI.Escalation;
 using Domain.AI.Models;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.DependencyInjection;
@@ -154,9 +153,6 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     private async Task<DirectToolInvocationOutcome> AuthorizeAndRunAsync(
         ArmedInvocation armed, TimeSpan effectiveTimeout, Stopwatch sw, CancellationToken cancellationToken)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(effectiveTimeout);
-
         // Resolved before admission (#418), not after as before: ICapabilityEnforcer.EnforceAsync
         // needs this call's requested paths/hosts, extracted from armed.Request against the tool's
         // own ResourceParametersByOperation declaration — which requires the tool itself. Resolving
@@ -176,59 +172,24 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         // to a human, approving a bare tool name tells them nothing. This is the surface most exposed
         // to external callers, so it is the one where an approver most needs to see what they are
         // signing off on.
-        var admission = await armed.AdmissionPipeline
-            .AdmitAsync(
-                new ToolCallAdmissionRequest(
-                    armed.ToolName, armed.Request.Parameters, CountsTowardLoopDetection: false,
-                    ResourceRequest: ResourceParameterExtractor.Extract(
-                        armed.Request.Operation, armed.Request.Parameters, tool.ResourceParametersByOperation)),
-                deadline.Token)
-            .ConfigureAwait(false);
+        var admissionRequest = new ToolCallAdmissionRequest(
+            armed.ToolName, armed.Request.Parameters, CountsTowardLoopDetection: false,
+            ResourceRequest: ResourceParameterExtractor.Extract(
+                armed.Request.Operation, armed.Request.Parameters, tool.ResourceParametersByOperation));
 
-        if (!admission.IsAllowed)
-        {
-            // The chain's message is already scrubbed for consumption outside the host — rule ids,
-            // paths and policy internals stay in the trace and the structured log.
-            return Refused(DirectToolInvocationStatus.Denied, admission.DeniedMessage!, sw);
-        }
-
-        ToolResult result;
-        try
-        {
-            result = await tool
-                .ExecuteAsync(armed.Request.Operation, armed.Request.Parameters, deadline.Token)
-                .ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // Reported before rethrowing so the deadline/cancellation/fault handling in
-            // RunArmedAsync is unchanged — this only adds the approval-loop close, never
-            // replaces the caller-facing outcome.
-            await ApprovalExecutionReporting
-                .ReportCallDidNotCompleteAsync(armed.AdmissionPipeline, admission, ReportedBy)
-                .ConfigureAwait(false);
-            throw;
-        }
-
-        // #460: the raw failure text is passed through untreated — ToolCallAdmissionPipeline
-        // sanitizes, redacts, and bounds it exactly once, at the chokepoint every reporting path
-        // (this one and GovernedAIFunction's) funnels through, rather than each duplicating that
-        // treatment.
-        await ReportExecutionAsync(
+        return await AdmitInvokeAndReportAsync<ToolResult>(
             armed.AdmissionPipeline,
-            admission,
-            result.Success
-                ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
-                : new ToolExecutionReport(
-                    EscalationExecutionStatus.Failed,
-                    result.Error ?? "the tool reported failure with no message",
-                    null,
-                    ToolName: armed.ToolName),
-            ReportedBy)
+            admissionRequest,
+            effectiveTimeout,
+            ReportedBy,
+            sw,
+            cancellationToken,
+            invoke: deadlineToken => tool.ExecuteAsync(armed.Request.Operation, armed.Request.Parameters, deadlineToken),
+            failureTextOf: result => result.Success
+                ? null
+                : result.Error ?? "the tool reported failure with no message",
+            shape: (result, admission) => ShapeAsync(result, armed, admission, sw.Elapsed, cancellationToken))
             .ConfigureAwait(false);
-
-        sw.Stop();
-        return await ShapeAsync(result, armed, admission, sw.Elapsed, cancellationToken).ConfigureAwait(false);
     }
 
     private const string ReportedBy = "direct-invocation";
