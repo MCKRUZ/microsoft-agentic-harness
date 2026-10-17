@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services;
 
 namespace Infrastructure.AI.Skills;
 
@@ -33,31 +34,10 @@ public sealed class CurrentSkillAccessor : ICurrentSkillAccessor
         foreach (var skillId in skillIds)
             ArgumentException.ThrowIfNullOrWhiteSpace(skillId, nameof(skillIds));
 
-        var previous = Slot.Value;
         // Copies rather than stores the caller's reference (#589 security-review finding): every
         // in-repo caller happens to pass a freshly-built list today, but ICurrentSkillAccessor is a
         // public interface a template consumer implements against, and a caller who mutated its list
         // after this call returned would otherwise mutate the live ambient scope past validation.
-        Slot.Value = [.. skillIds];
-        return new Restorer(previous);
-    }
-
-    private sealed class Restorer : IDisposable
-    {
-        private readonly IReadOnlyList<string>? _previous;
-        private bool _disposed;
-
-        public Restorer(IReadOnlyList<string>? previous)
-        {
-            _previous = previous;
-        }
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            Slot.Value = _previous;
-        }
+        return AmbientScope.Begin(Slot, (IReadOnlyList<string>?)[.. skillIds]);
     }
 }

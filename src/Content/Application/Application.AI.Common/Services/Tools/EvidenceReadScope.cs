@@ -33,9 +33,7 @@ public static class EvidenceReadScope
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
 
-        var previous = CurrentDirectory.Value;
-        CurrentDirectory.Value = Path.GetFullPath(directory);
-        return new Restore(previous);
+        return AmbientScope.Begin(CurrentDirectory, Path.GetFullPath(directory));
     }
 
     /// <summary>
@@ -68,10 +66,5 @@ public static class EvidenceReadScope
         return full.Equals(root, comparison)
             || full.StartsWith(root + Path.DirectorySeparatorChar, comparison)
             || full.StartsWith(root + Path.AltDirectorySeparatorChar, comparison);
-    }
-
-    private sealed class Restore(string? previous) : IDisposable
-    {
-        public void Dispose() => CurrentDirectory.Value = previous;
     }
 }

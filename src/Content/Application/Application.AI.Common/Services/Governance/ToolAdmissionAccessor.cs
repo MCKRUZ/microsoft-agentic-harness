@@ -81,26 +81,10 @@ public static class ToolAdmissionAccessor
         return Publish(new Published(pipeline, agentId));
     }
 
-    private static AdmissionScope Publish(Published value)
+    private static IDisposable Publish(Published value)
     {
-        var previous = s_current.Value;
-        s_current.Value = value;
-        return new AdmissionScope(previous);
+        return AmbientScope.Begin(s_current, value);
     }
 
     private sealed record Published(IToolCallAdmissionPipeline Pipeline, string? AgentId);
-
-    private sealed class AdmissionScope(Published? previous) : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            s_current.Value = previous;
-        }
-    }
 }
