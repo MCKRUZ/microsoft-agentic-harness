@@ -300,6 +300,48 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         outcome.Should().BeNull("a tampered legacy row must not verify just because its shape is old");
     }
 
+    // #784: the plan/step binding rides in the request and in the sealed outcome bytes, so it survives a
+    // restart and cannot be rewritten in the row without breaking the seal.
+
+    [Fact]
+    public async Task Binding_SurvivesTheRoundTripOnTheRequestAndTheOutcome()
+    {
+        var store = CreateStore();
+        var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid());
+        var request = CreateRequest() with { Binding = binding };
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkResolvedPendingAuditAsync(CreateOutcome(request.EscalationId) with { Binding = binding }, CancellationToken.None);
+        await store.MarkResolvedAsync(request.EscalationId, CancellationToken.None);
+
+        var polled = await store.GetResolvedOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+        polled!.Binding.Should().Be(binding);
+    }
+
+    [Fact]
+    public async Task GetResolvedOutcomeAsync_BindingRewrittenInTheRow_FailsVerification()
+    {
+        var store = CreateStore();
+        var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid());
+        var request = CreateRequest() with { Binding = binding };
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkResolvedPendingAuditAsync(CreateOutcome(request.EscalationId) with { Binding = binding }, CancellationToken.None);
+        await store.MarkResolvedAsync(request.EscalationId, CancellationToken.None);
+
+        // An attacker repoints the approved verdict at a different step by rewriting only the binding.
+        await using (var context = new GovernanceStateDbContext(_options))
+        {
+            var entity = await context.Escalations.SingleAsync(e => e.Id == request.EscalationId);
+            entity.OutcomeJson = entity.OutcomeJson!.Replace(
+                binding.StepId.ToString(), Guid.NewGuid().ToString(), StringComparison.OrdinalIgnoreCase);
+            await context.SaveChangesAsync();
+        }
+
+        var polled = await store.GetResolvedOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+        polled.Should().BeNull("the binding is part of the sealed bytes, so rewriting it must not verify");
+    }
+
     /// <summary>
     /// Minimal <see cref="IDbContextFactory{TContext}"/> over fixed options, mirroring the
     /// planner store tests' factory double.

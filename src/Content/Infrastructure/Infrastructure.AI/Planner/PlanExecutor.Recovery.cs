@@ -115,7 +115,8 @@ public sealed partial class PlanExecutor
                     Priority = EscalationPriority.Blocking,
                     ApprovalStrategy = ApprovalStrategyType.AnyOf,
                     Approvers = ["supervisor"],
-                    RequestedAt = DateTimeOffset.UtcNow
+                    RequestedAt = DateTimeOffset.UtcNow,
+                    Binding = StepBinding(ctx.PlanId, step.Id)
                 };
 
                 var escalationId = await _escalationService.QueueEscalationAsync(request, ct);
@@ -188,6 +189,15 @@ public sealed partial class PlanExecutor
             if (outcome is null)
                 continue;
 
+            // The escalation id came from this step's own stored output, which is a different record
+            // from the escalation. A verdict releases the step only if it says it was made about this
+            // step; one bound elsewhere (or to nothing) fails the step instead, approved or not.
+            if (outcome.Binding != StepBinding(ctx.PlanId, step.Id))
+            {
+                await FailMisboundBlockAsync(step, escalationId.Value, outcome, ctx, ct);
+                continue;
+            }
+
             if (outcome.IsApproved)
                 await ReleaseApprovedBlockAsync(step, escalationId.Value, ctx, ct);
             else
@@ -244,6 +254,46 @@ public sealed partial class PlanExecutor
             "Blocked step {StepId} in plan {PlanId} failed: {Reason}", step.Id, ctx.PlanId, reason);
 
         await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: reason);
+        await SkipDownstreamSubgraphAsync(step.Id, ctx);
+    }
+
+    /// <summary>The binding an escalation queued for <paramref name="stepId"/> of <paramref name="planId"/> carries.</summary>
+    private static EscalationBinding StepBinding(PlanId planId, PlanStepId stepId) =>
+        new(planId.Value, stepId.Value);
+
+    /// <summary>
+    /// Fails a blocked step whose stored escalation reference leads to a verdict that is not bound to
+    /// it, and skips its downstream. Terminal for the same reason a rejection is: the step has no
+    /// legitimate verdict to wait for, so leaving it <c>Blocked</c> would show an operator "awaiting
+    /// approval" for something no one is able to approve. Logged at error level because the usual cause
+    /// is a tampered or corrupted reference, not a human decision.
+    /// </summary>
+    private async Task FailMisboundBlockAsync(
+        PlanStep step, Guid escalationId, EscalationOutcome outcome, PlanExecutionRuntime ctx, CancellationToken ct)
+    {
+        string errorCode;
+        if (outcome.Binding is null)
+        {
+            // Expected right after an upgrade: an escalation queued before bindings existed has none, and
+            // so does any escalation that was never queued for a plan step (a tool approval). Both are
+            // refused; only the first is benign, and the log cannot tell them apart.
+            errorCode = PlanStepErrors.EscalationUnbound;
+            _logger.LogWarning(
+                "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to no plan step " +
+                "(queued before bindings existed, or not queued for a plan step); failing the step instead of releasing it",
+                step.Id, ctx.PlanId, escalationId);
+        }
+        else
+        {
+            errorCode = PlanStepErrors.EscalationBindingMismatch;
+            _logger.LogError(
+                "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to " +
+                "plan {BoundPlanId} step {BoundStepId} rather than this step; failing the step instead of releasing it",
+                step.Id, ctx.PlanId, escalationId, outcome.Binding.PlanId, outcome.Binding.StepId);
+        }
+
+        await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct,
+            errorMessage: errorCode);
         await SkipDownstreamSubgraphAsync(step.Id, ctx);
     }
 

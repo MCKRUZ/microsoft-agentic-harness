@@ -217,6 +217,7 @@ public sealed partial class DefaultEscalationService
 					ResolutionType = resolutionType,
 					ResolvedAt = DateTimeOffset.UtcNow,
 					Approvers = state.Request.Approvers,
+					Binding = state.Request.Binding,
 					EscalatedToTier = escalatedToTier
 				};
 				MarkResolving(state, outcome);

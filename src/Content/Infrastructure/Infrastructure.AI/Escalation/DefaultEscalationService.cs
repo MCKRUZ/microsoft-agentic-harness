@@ -409,7 +409,8 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 			Decisions = state.Decisions.ToList().AsReadOnly(),
 			ResolutionType = resolutionType,
 			ResolvedAt = DateTimeOffset.UtcNow,
-			Approvers = state.Request.Approvers
+			Approvers = state.Request.Approvers,
+			Binding = state.Request.Binding
 		};
 
 		MarkResolving(state, outcome);
@@ -570,6 +571,7 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 				ResolutionType = EscalationResolutionType.Denied,
 				ResolvedAt = DateTimeOffset.UtcNow,
 				Approvers = state.Request.Approvers,
+				Binding = state.Request.Binding,
 				// Stamped on the outcome — and thereby into the durable outcome audit record —
 				// so the force-denial is attributable to its actor, not just a log line.
 				CancelledBy = cancelledBy

@@ -6,6 +6,7 @@ using Domain.AI.Planner;
 using Domain.Common;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
+using Infrastructure.AI.Planner.StepExecutors;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -122,7 +123,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
 
         // The human approves the specific escalation the gate raised.
         _escalation.Setup(e => e.GetOutcomeAsync(escalationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Outcome(escalationId, approved: true));
+            .ReturnsAsync(Outcome(escalationId, approved: true, Bound(plan, gateId)));
 
         var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
 
@@ -151,7 +152,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Equal(StepExecutionStatus.Blocked, first.Value!.FinalStatus);
 
         _escalation.Setup(e => e.GetOutcomeAsync(escalationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Outcome(escalationId, approved: false));
+            .ReturnsAsync(Outcome(escalationId, approved: false, Bound(plan, gateId)));
 
         var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
 
@@ -204,7 +205,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Contains(escalationId.ToString(), blocked.Value![stepAId].Output);
 
         _escalation.Setup(e => e.GetOutcomeAsync(escalationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Outcome(escalationId, approved: true));
+            .ReturnsAsync(Outcome(escalationId, approved: true, Bound(plan, stepAId)));
 
         var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
 
@@ -249,7 +250,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Equal(1, stepACalls);
 
         _escalation.Setup(e => e.GetOutcomeAsync(escalationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Outcome(escalationId, approved: false));
+            .ReturnsAsync(Outcome(escalationId, approved: false, Bound(plan, stepAId)));
 
         var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
 
@@ -264,6 +265,102 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Equal(StepExecutionStatus.Skipped, states.Value![stepBId].Status);
     }
 
+    // #784: the escalation id a Blocked step follows comes from the step's own stored output, a
+    // different record from the escalation. A verdict releases the step only when it says it was made
+    // about this plan and step. Each case below is an APPROVED outcome the reconciler must refuse.
+    public static TheoryData<string> MisboundVerdicts() => new()
+    {
+        { "another step of the same plan" },
+        { "the same step id in another plan" },
+        { "no binding at all" },
+    };
+
+    [Theory]
+    [MemberData(nameof(MisboundVerdicts))]
+    public async Task Execute_BlockedStepFollowsAnApprovedVerdictBoundElsewhere_FailsTheStepAndNeverReleasesIt(string case_)
+    {
+        var escalationId = Guid.NewGuid();
+        var (plan, gateId, workId) = GatedPlan();
+        var workInvocations = new List<PlanStepId>();
+        var executor = BuildExecutor(BlockingGate(escalationId), CompletingWork(workInvocations));
+        await _store.SavePlanAsync(plan, CancellationToken.None);
+        Assert.Equal(StepExecutionStatus.Blocked, (await executor.ExecuteAsync(plan.Id, CancellationToken.None)).Value!.FinalStatus);
+
+        EscalationBinding? binding = case_ switch
+        {
+            "another step of the same plan" => new EscalationBinding(plan.Id.Value, workId.Value),
+            "the same step id in another plan" => new EscalationBinding(Guid.NewGuid(), gateId.Value),
+            _ => null
+        };
+        _escalation.Setup(e => e.GetOutcomeAsync(escalationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(escalationId, approved: true, binding));
+
+        var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.NotEqual(StepExecutionStatus.Completed, second.Value!.FinalStatus);
+        Assert.Empty(workInvocations);
+        var states = await _store.LoadStepStatesAsync(plan.Id, CancellationToken.None);
+        Assert.Equal(StepExecutionStatus.Failed, states.Value![gateId].Status);
+        // A verdict bound elsewhere is a mismatch; one bound to nothing (queued before bindings existed,
+        // or never queued for a plan step) is reported apart, since after an upgrade it is the expected cause.
+        var expectedCode = binding is null ? PlanStepErrors.EscalationUnbound : PlanStepErrors.EscalationBindingMismatch;
+        Assert.Equal(expectedCode, states.Value![gateId].ErrorMessage);
+        Assert.Equal(StepExecutionStatus.Skipped, states.Value![workId].Status);
+    }
+
+    // End to end with the REAL human gate: the plan executor has to hand it the plan id (the scoped
+    // PlanExecutionContext does not carry one), the gate queues a bound escalation, and the verdict the
+    // service builds from that request releases exactly that gate. If the executor called the plain
+    // overload instead, the gate would refuse and this plan would never leave step one.
+    [Fact]
+    public async Task Execute_RealHumanGate_QueuesABoundEscalationWhoseApprovalReleasesIt()
+    {
+        EscalationRequest? queued = null;
+        _escalation.Setup(e => e.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => queued = r)
+            .ReturnsAsync((EscalationRequest r, CancellationToken _) => r.EscalationId);
+        var (plan, gateId, workId) = GatedPlan();
+        var workInvocations = new List<PlanStepId>();
+        var executor = BuildExecutor(
+            new HumanGateStepExecutor(
+                _escalation.Object, _notifier.Object, new PlanExecutionContext(), NullLogger<HumanGateStepExecutor>.Instance),
+            CompletingWork(workInvocations));
+        await _store.SavePlanAsync(plan, CancellationToken.None);
+
+        var first = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
+        Assert.Equal(StepExecutionStatus.Blocked, first.Value!.FinalStatus);
+        Assert.Equal(new EscalationBinding(plan.Id.Value, gateId.Value), queued!.Binding);
+
+        // The service copies the request's binding onto the verdict, as DefaultEscalationService does.
+        _escalation.Setup(e => e.GetOutcomeAsync(queued.EscalationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(queued.EscalationId, approved: true, queued.Binding));
+
+        var second = await executor.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, second.Value!.FinalStatus);
+        Assert.Equal(new[] { workId }, workInvocations);
+    }
+
+    // The escalate-on-failure producer queues its own request, so it must stamp the binding too, or
+    // its own approval would be refused by the check above.
+    [Fact]
+    public async Task Execute_EscalateOnFailure_QueuesTheEscalationBoundToItsPlanAndStep()
+    {
+        EscalationRequest? queued = null;
+        _escalation.Setup(e => e.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => queued = r)
+            .ReturnsAsync(Guid.NewGuid());
+        var (plan, stepAId, _) = EscalatePlan();
+        var executor = BuildLlmExecutor((_, _, _) => Task.FromResult(
+            new StepExecutionResult { Status = StepExecutionStatus.Failed, ErrorMessage = "boom", Duration = TimeSpan.FromMilliseconds(1) }));
+        await _store.SavePlanAsync(plan, CancellationToken.None);
+
+        await executor.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.NotNull(queued);
+        Assert.Equal(new EscalationBinding(plan.Id.Value, stepAId.Value), queued!.Binding);
+    }
+
     // --- Helpers ---
 
     private PlanExecutor BuildExecutor(
@@ -274,12 +371,20 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         gateMock.Setup(e => e.ExecuteAsync(It.IsAny<PlanStep>(), It.IsAny<IReadOnlyDictionary<PlanStepId, string>>(), It.IsAny<CancellationToken>()))
             .Returns<PlanStep, IReadOnlyDictionary<PlanStepId, string>, CancellationToken>(gateHandler);
 
+        return BuildExecutor(gateMock.Object, workHandler);
+    }
+
+    private PlanExecutor BuildExecutor(
+        IPlanStepExecutor gate,
+        Func<PlanStep, IReadOnlyDictionary<PlanStepId, string>, CancellationToken, Task<StepExecutionResult>> workHandler)
+    {
+
         var workMock = new Mock<IPlanStepExecutor>();
         workMock.Setup(e => e.ExecuteAsync(It.IsAny<PlanStep>(), It.IsAny<IReadOnlyDictionary<PlanStepId, string>>(), It.IsAny<CancellationToken>()))
             .Returns<PlanStep, IReadOnlyDictionary<PlanStepId, string>, CancellationToken>(workHandler);
 
         var services = new ServiceCollection();
-        services.AddKeyedSingleton<IPlanStepExecutor>(StepType.HumanGate, gateMock.Object);
+        services.AddKeyedSingleton<IPlanStepExecutor>(StepType.HumanGate, gate);
         services.AddKeyedSingleton<IPlanStepExecutor>(StepType.LlmCall, workMock.Object);
         var provider = services.BuildServiceProvider();
 
@@ -336,14 +441,17 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             });
         };
 
-    private static EscalationOutcome Outcome(Guid escalationId, bool approved) => new()
+    private static EscalationOutcome Outcome(Guid escalationId, bool approved, EscalationBinding? binding) => new()
     {
         EscalationId = escalationId,
         IsApproved = approved,
         Decisions = [],
         ResolutionType = approved ? EscalationResolutionType.Approved : EscalationResolutionType.Denied,
-        ResolvedAt = new DateTimeOffset(2026, 5, 15, 12, 5, 0, TimeSpan.Zero)
+        ResolvedAt = new DateTimeOffset(2026, 5, 15, 12, 5, 0, TimeSpan.Zero),
+        Binding = binding
     };
+
+    private static EscalationBinding Bound(PlanGraph plan, PlanStepId stepId) => new(plan.Id.Value, stepId.Value);
 
     private static (PlanGraph Plan, PlanStepId GateId, PlanStepId WorkId) GatedPlan()
     {

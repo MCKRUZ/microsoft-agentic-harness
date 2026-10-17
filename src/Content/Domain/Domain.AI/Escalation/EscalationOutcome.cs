@@ -47,4 +47,12 @@ public sealed record EscalationOutcome
     /// audit record — so a force-denial is always attributable to its actor.
     /// </summary>
     public string? CancelledBy { get; init; }
+
+    /// <summary>
+    /// The plan step the originating request blocked, copied from
+    /// <see cref="EscalationRequest.Binding"/> on every resolution path (a decision, a timeout, a
+    /// cancellation). Part of the stored outcome, so it is covered by the outcome's seal. Null when the
+    /// request was not queued for a plan step.
+    /// </summary>
+    public EscalationBinding? Binding { get; init; }
 }
