@@ -317,6 +317,14 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<DirectToolInvocationConfig, DirectToolInvocationConfigValidator>()
             .ValidateOnStart();
 
+        // Cross-section rule (#784): an approver's window must fit inside the invocation deadline, or
+        // every approval-required direct invocation is cancelled and reported as denied. Neither
+        // section's own validator can see the other, so this one is attached to the section whose
+        // deadline it protects.
+        services.AddSingleton<
+            Microsoft.Extensions.Options.IValidateOptions<DirectToolInvocationConfig>,
+            DirectInvocationApprovalWindowValidator>();
+
         // OTel logs-signal knobs (export toggle, min export level, PII redaction). Rules are
         // conditional on OtelExportEnabled and the defaults are all valid, so hosts that omit
         // the section keep booting; a host that enables export with a bad level or an unknown
