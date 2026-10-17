@@ -2,7 +2,14 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Infrastructure.AI.MetaHarness;
+using Application.AI.Common.Skills;
+using Infrastructure.AI.Skills;
 using Infrastructure.AI.Tests.Helpers;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
+using Domain.Common.Config.AI;
+using Domain.Common.Config.MetaHarness;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -34,6 +41,58 @@ public partial class AgentEvaluationServiceTests
             "---\n" +
             "# Research Agent\nDo research.\n"
     };
+
+    /// <summary>
+    /// #684: a candidate's skill files are scanned once per evaluation, not once per eval task. The
+    /// snapshot is immutable for the whole evaluation, so repeating the work per task cost more with
+    /// every task added and told nobody anything new. The invariant is that the scan count does not grow
+    /// with the task count; the control (one task scans more than zero times) proves scanning is live.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_ManyTasks_ScansTheCandidateExactlyAsOftenAsOneTask()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new TestableAIAgent("ok"));
+
+        async Task<int> ScanCountFor(int taskCount)
+        {
+            var scans = 0;
+            var scanner = new Mock<Application.AI.Common.Interfaces.Governance.IMcpSecurityScanner>();
+            scanner
+                .Setup(s => s.ScanContent(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
+                .Returns((string name, string _, bool _) =>
+                {
+                    Interlocked.Increment(ref scans);
+                    return Domain.AI.Governance.McpToolScanResult.Safe(name);
+                });
+
+            var cfg = new MetaHarnessConfig { MaxEvalParallelism = 2, TraceDirectoryRoot = _traceRoot };
+            var sut = new AgentEvaluationService(
+                Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg),
+                BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object, ScopeFactory(),
+                PermissiveAdmission.PermissiveSanitizer(), new CurrentSkillAccessor(),
+                scanner.Object,
+                Mock.Of<IOptionsMonitor<AIConfig>>(m =>
+                    m.CurrentValue == new AIConfig { Governance = new GovernanceConfig { EnableMcpSecurity = true } }),
+                new EgressManifestValidator(),
+                NullLoggerFactory.Instance,
+                NullLogger<AgentEvaluationService>.Instance);
+
+            var tasks = Enumerable.Range(1, taskCount)
+                .Select(i => BuildTask($"t{i}", $"prompt {i}", pattern: null))
+                .ToArray();
+
+            await sut.EvaluateAsync(BuildCandidate(skillFiles: SkillWithEgressAllowlist), tasks);
+            return scans;
+        }
+
+        var oneTask = await ScanCountFor(1);
+        var fourTasks = await ScanCountFor(4);
+
+        Assert.True(oneTask > 0, "scanning must be live in this fixture, or the comparison proves nothing");
+        Assert.Equal(oneTask, fourTasks);
+    }
 
     /// <summary>
     /// The ephemeral scope must be open for exactly the span of <c>agent.RunAsync</c> — proved by
