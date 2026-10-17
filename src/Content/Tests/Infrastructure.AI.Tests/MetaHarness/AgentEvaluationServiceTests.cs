@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Skills;
 using Domain.AI.Agents;
 using Domain.Common.Config;
@@ -17,6 +18,7 @@ using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Traces;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -51,11 +53,23 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
         var traceStore = BuildTraceStore(cfg.TraceDirectoryRoot);
         return new AgentEvaluationService(opts, traceStore, _agentFactoryMock.Object,
-            PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
+            ScopeFactory(), PermissiveAdmission.PermissiveSanitizer(),
             new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
             DisabledScanningConfig(), new EgressManifestValidator(),
             NullLoggerFactory.Instance, logger ?? NullLogger<AgentEvaluationService>.Instance);
     }
+
+    /// <summary>
+    /// The scope factory each eval task opens its governed child scope from (#687): a real container whose
+    /// scopes each hand out their own execution context and their own admission chain, as production's do.
+    /// </summary>
+    /// <param name="pipeline">Builds the chain a scope resolves; defaults to a permissive real one.</param>
+    private static IServiceScopeFactory ScopeFactory(Func<IToolCallAdmissionPipeline>? pipeline = null) =>
+        new ServiceCollection()
+            .AddScoped<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext, Application.AI.Common.Services.Agent.AgentExecutionContext>()
+            .AddScoped(_ => (pipeline ?? PermissiveAdmission.Pipeline)())
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
 
     private IExecutionTraceStore BuildTraceStore(string traceRoot)
     {
@@ -130,18 +144,24 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
     /// This proves <c>Reset()</c> is called once per task.
     /// </summary>
     [Fact]
-    public async Task EvaluateAsync_MultipleTasks_ResetsAdmissionPipelineBeforeEachTask()
+    public async Task EvaluateAsync_MultipleTasks_ArmsAFreshResetPipelinePerTask()
     {
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestableAIAgent("The answer is 42"));
 
-        var admissionPipeline = new Mock<IToolCallAdmissionPipeline>();
+        var pipelines = new List<Mock<IToolCallAdmissionPipeline>>();
+        var scopeFactory = ScopeFactory(() =>
+        {
+            var pipeline = new Mock<IToolCallAdmissionPipeline>();
+            pipelines.Add(pipeline);
+            return pipeline.Object;
+        });
         var cfg = new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
         var sut = new AgentEvaluationService(
             opts, BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object,
-            admissionPipeline.Object, PermissiveAdmission.PermissiveSanitizer(),
+            scopeFactory, PermissiveAdmission.PermissiveSanitizer(),
             new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
             DisabledScanningConfig(), new EgressManifestValidator(),
             NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
@@ -155,7 +175,10 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
 
         await sut.EvaluateAsync(candidate, tasks);
 
-        admissionPipeline.Verify(p => p.Reset(), Times.Exactly(tasks.Length));
+        // One chain per task, each reset exactly once before its run.
+        Assert.Equal(tasks.Length, pipelines.Count);
+        foreach (var pipeline in pipelines)
+            pipeline.Verify(p => p.Reset(), Times.Once);
     }
 
     /// <summary>No tasks match their expected output patterns. PassRate should equal 0.0.</summary>
@@ -293,6 +316,38 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
 
         Assert.Equal(1.0, result.PassRate);
         Assert.Equal(2, peak);
+    }
+
+    /// <summary>
+    /// #687: each concurrent eval task runs under its OWN admission chain. The chain holds loop-detection
+    /// and call-once state that <c>Reset()</c> wipes, so one chain shared by every task meant a task
+    /// starting while a sibling was mid-run wiped the sibling's state. Both agents wait at a barrier so the
+    /// two runs are provably in flight together, then record the chain they were published.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_ConcurrentTasks_EachRunUnderItsOwnAdmissionPipeline()
+    {
+        var observed = new System.Collections.Concurrent.ConcurrentBag<IToolCallAdmissionPipeline?>();
+        using var barrier = new Barrier(2);
+
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new TestableAIAgent((_, _) =>
+            {
+                observed.Add(ToolAdmissionAccessor.Current);
+                barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+                return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, "ok")));
+            }));
+
+        var sut = BuildSut(new MetaHarnessConfig { MaxEvalParallelism = 2, TraceDirectoryRoot = _traceRoot });
+        var tasks = new[] { BuildTask("t1", "p1", pattern: null), BuildTask("t2", "p2", pattern: null) };
+
+        var result = await sut.EvaluateAsync(BuildCandidate(), tasks);
+
+        Assert.Equal(1.0, result.PassRate);
+        Assert.Equal(2, observed.Count);
+        Assert.All(observed, p => Assert.NotNull(p));
+        Assert.Equal(2, observed.Distinct().Count());
     }
 
     // ── #618 candidate skill materialization tests: see the AgentEvaluationServiceTests
