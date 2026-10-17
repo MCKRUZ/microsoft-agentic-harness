@@ -5,7 +5,6 @@ using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Bundles;
-using Domain.AI.Escalation;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -170,10 +169,10 @@ public sealed partial class DirectToolInvoker
     }
 
     /// <summary>
-    /// Runs the admission chain and then the MCP tool itself, mirroring
-    /// <see cref="DirectToolInvoker.AuthorizeAndRunAsync"/> exactly — same gate call, same reporting
-    /// call, same fail-closed output policy — the only difference is how the tool is invoked and how
-    /// its result is told apart from a failure.
+    /// Runs the admission chain and then the MCP tool itself through
+    /// <see cref="DirectToolInvoker.AdmitInvokeAndReportAsync{TRaw}"/>, the same core
+    /// <see cref="DirectToolInvoker.AuthorizeAndRunAsync"/> uses (#547) — the only differences are how
+    /// the tool is invoked and how its result is told apart from a failure.
     /// </summary>
     private async Task<DirectToolInvocationOutcome> AuthorizeAndRunMcpAsync(
         DirectMcpToolInvocationRequest request,
@@ -184,54 +183,28 @@ public sealed partial class DirectToolInvoker
         Stopwatch sw,
         CancellationToken cancellationToken)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(effectiveTimeout);
-
-        var admission = await admissionPipeline
-            .AdmitAsync(
-                new ToolCallAdmissionRequest(request.ToolName, request.Arguments, CountsTowardLoopDetection: false),
-                deadline.Token)
-            .ConfigureAwait(false);
-
-        if (!admission.IsAllowed)
-            return Refused(DirectToolInvocationStatus.Denied, admission.DeniedMessage!, sw);
-
         // Same failure normalization production tool chains apply to every MCP-sourced function before
         // GovernedAIFunction ever sees the result — an MCP tool's own non-throwing failure shape is
         // normalized to the one marker both this method and GovernedAIFunction recognize.
         var normalized = new McpFailureNormalizingAIFunction(tool);
         var arguments = new AIFunctionArguments(new Dictionary<string, object?>(request.Arguments));
 
-        object? rawResult;
-        try
-        {
-            rawResult = await normalized.InvokeAsync(arguments, deadline.Token).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            await ApprovalExecutionReporting
-                .ReportCallDidNotCompleteAsync(admissionPipeline, admission, McpReportedBy)
-                .ConfigureAwait(false);
-            throw;
-        }
-
-        var failure = rawResult as ConvertedToolFailure;
-        var failureText = failure?.ErrorText;
-
-        // #460: the raw failure text is passed through untreated — ShapeMcp sanitizes, redacts, and
-        // bounds it exactly once, at the same chokepoint the keyed-DI path's Shape uses.
-        await ReportExecutionAsync(
+        // No resource request, deliberately: an MCP function declares no ResourceParametersByOperation
+        // (only a ResourceParameterDeclaringAIFunction does), and the agent path's GovernedAIFunction
+        // sends none for one either, so a scoped profile treats this call the same on both surfaces.
+        return await AdmitInvokeAndReportAsync<object?>(
             admissionPipeline,
-            admission,
-            failureText is null
-                ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
-                : new ToolExecutionReport(EscalationExecutionStatus.Failed, failureText, null, ToolName: request.ToolName),
-            McpReportedBy).ConfigureAwait(false);
-
-        sw.Stop();
-        return await ShapeMcpAsync(
-            failureText, rawResult, request.ToolName, admissionPipeline, admission, config, sw.Elapsed,
-            cancellationToken).ConfigureAwait(false);
+            new ToolCallAdmissionRequest(request.ToolName, request.Arguments, CountsTowardLoopDetection: false),
+            effectiveTimeout,
+            McpReportedBy,
+            sw,
+            cancellationToken,
+            invoke: async deadlineToken => await normalized.InvokeAsync(arguments, deadlineToken).ConfigureAwait(false),
+            failureTextOf: rawResult => (rawResult as ConvertedToolFailure)?.ErrorText,
+            shape: (rawResult, admission) => ShapeMcpAsync(
+                (rawResult as ConvertedToolFailure)?.ErrorText, rawResult, request.ToolName, admissionPipeline,
+                admission, config, sw.Elapsed, cancellationToken))
+            .ConfigureAwait(false);
     }
 
     /// <summary>
