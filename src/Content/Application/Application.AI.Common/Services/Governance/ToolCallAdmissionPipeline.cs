@@ -212,6 +212,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (!decision.IsAllowed)
             return Refuse(decision.DeniedMessage, toolName);
 
+        // From here a human may already have said yes. Approval only loosens THIS stage, so each later
+        // refusal goes through RefuseAfterApprovalAsync, which tells the approver their approved call
+        // never ran. Without it the approval record just ends there (#784).
+        var approved = decision.ApprovedCall;
+
         // 3 — data classification, for calls that have a data surface to classify. A block refuses the
         // call outright; a redact verdict lets it run and scrubs the output afterwards, which is why
         // the verdict survives past this stage.
@@ -234,7 +239,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 .EvaluateAsync(toolName, arguments, cancellationToken)
                 .ConfigureAwait(false);
             if (classification.Outcome == ClassificationGateOutcome.Block)
-                return Refuse(classification.BlockedMessage, toolName);
+            {
+                return await RefuseAfterApprovalAsync(
+                    approved, EscalationNotExecutedReason.RefusedByClassification,
+                    Refuse(classification.BlockedMessage, toolName)).ConfigureAwait(false);
+            }
         }
 
         // 4 — the host's own rules, last of the access gates.
@@ -244,7 +253,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 .EvaluateAsync(toolName, arguments, cancellationToken)
                 .ConfigureAwait(false);
             if (!observed.IsAllowed)
-                return Refuse(observed.DeniedMessage, toolName);
+            {
+                return await RefuseAfterApprovalAsync(
+                    approved, EscalationNotExecutedReason.RefusedByHostRule,
+                    Refuse(observed.DeniedMessage, toolName)).ConfigureAwait(false);
+            }
         }
 
         // 5 — the loop guard, and only for callers that issue a sequence. Asking it about a call is
@@ -256,7 +269,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var verdict = _progressEvaluator.Evaluate(
                 toolName, () => ComputeArgumentsSignature(request.Arguments));
             if (verdict.ShouldHalt)
-                return Refuse(verdict.HaltMessage, toolName);
+            {
+                return await RefuseAfterApprovalAsync(
+                    approved, EscalationNotExecutedReason.RefusedByLoopGuard,
+                    Refuse(verdict.HaltMessage, toolName)).ConfigureAwait(false);
+            }
         }
 
         // 6 — durable call-once enforcement, last of all: a different kind of question ("has this
@@ -270,7 +287,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             // an unreported denial is indistinguishable from an unenforced rule to governance
             // reporting, the dashboard, and the audit.
             _trace.RecordDownstreamBlock(toolName, "denied by call-once enforcement");
-            return Refuse(callOnce.DeniedMessage, toolName);
+            return await RefuseAfterApprovalAsync(
+                approved, EscalationNotExecutedReason.RefusedByCallOnce,
+                Refuse(callOnce.DeniedMessage, toolName)).ConfigureAwait(false);
         }
 
         var admission = classification.Outcome == ClassificationGateOutcome.RedactOutput
@@ -282,6 +301,33 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // later gate above still refused the call outright above, so a call that reaches here
         // with an approval genuinely proceeded because a human said yes.
         return decision.ApprovedCall is { } call ? admission.WithApproval(call) : admission;
+    }
+
+    /// <summary>The <c>reportedBy</c> recorded for an approved call this pipeline itself refused.</summary>
+    internal const string RefusedAfterApprovalReportedBy = "admission-pipeline";
+
+    /// <summary>
+    /// Returns <paramref name="refusal"/>, first reporting the approved call (when there was one) as
+    /// never executed so the approver learns a later stage overrode their yes.
+    /// </summary>
+    /// <remarks>
+    /// Reported here, once, rather than by each caller from a refused result: every surface that admits
+    /// a call (the agent turn, direct invocation, the plan executor, Magentic participants) would
+    /// otherwise have to remember it. The reporter must not throw, and the report is made on
+    /// <see cref="CancellationToken.None"/> for the same reason <c>ReportExecutionAsync</c>'s are: a
+    /// cancelled turn must not be why the approver never hears. A call nobody approved reports nothing.
+    /// </remarks>
+    private async ValueTask<ToolCallAdmission> RefuseAfterApprovalAsync(
+        ApprovedCall? approved, EscalationNotExecutedReason reason, ToolCallAdmission refusal)
+    {
+        if (approved is { } call)
+        {
+            await _executionReporter
+                .ReportNotExecutedAsync(call, reason, RefusedAfterApprovalReportedBy, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        return refusal;
     }
 
     /// <summary>

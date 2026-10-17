@@ -41,7 +41,8 @@ internal static class AdmissionHarness
         int? outputCeiling = null,
         int? aggregateLimit = null,
         IAgentExecutionContext? executionContext = null,
-        IToolResultStore? resultStore = null) =>
+        IToolResultStore? resultStore = null,
+        IApprovalExecutionReporter? executionReporter = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
@@ -49,7 +50,7 @@ internal static class AdmissionHarness
             progressEvaluator ?? PermissiveProgressEvaluator(),
             callOnceGate ?? PermissiveCallOnceGate(),
             trace ?? TraceRecorder(),
-            Mock.Of<IApprovalExecutionReporter>(),
+            executionReporter ?? Mock.Of<IApprovalExecutionReporter>(),
             sanitizer ?? PermissiveSanitizer(),
             redactionFilter ?? PermissiveRedactionFilter(),
             Config(outputCeiling, aggregateLimit),
@@ -269,6 +270,20 @@ internal static class AdmissionHarness
                 It.IsAny<CancellationToken>(),
                 It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .ReturnsAsync(ToolInvocationDecision.Allow());
+        return governor.Object;
+    }
+
+    /// <summary>A governor that sends every call to a human and gets a yes, as the real one does after approval.</summary>
+    /// <param name="call">The approval it stamps on each allowed call.</param>
+    public static IToolInvocationGovernor ApprovingGovernor(ApprovedCall call)
+    {
+        var governor = new Mock<IToolInvocationGovernor>();
+        governor
+            .Setup(g => g.AuthorizeAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .ReturnsAsync(ToolInvocationDecision.Allow(call));
         return governor.Object;
     }
 
