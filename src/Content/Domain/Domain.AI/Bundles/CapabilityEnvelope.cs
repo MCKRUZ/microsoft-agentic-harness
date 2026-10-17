@@ -53,7 +53,23 @@ public sealed record CapabilityEnvelope
     /// servers by name and never define endpoints, so this list is the whole of a bundle's outbound MCP
     /// surface — closing SSRF-by-construction. Empty (the default) grants no MCP servers.
     /// </summary>
-    public IReadOnlyList<string> AllowedMcpServers { get; init; } = [];
+    /// <remarks>
+    /// <strong>Duplicates are removed on the way in</strong> (#549), keeping the first spelling and the
+    /// original order. Server names are matched case-insensitively everywhere (see
+    /// <see cref="GrantsMcpServer"/>), so <c>"Docs"</c> and <c>"docs"</c> are one server. A name listed
+    /// twice used to be a latent hazard: the per-request tool-list cache stores the first fetch for a
+    /// server, so a transient empty result for the first occurrence was served again for the second
+    /// instead of being retried. Normalising here, in the accessor, covers every producer — the
+    /// configured envelope, the bundle run's union of staged servers, and any <c>with</c> expression —
+    /// rather than relying on each of them to remember.
+    /// </remarks>
+    public IReadOnlyList<string> AllowedMcpServers
+    {
+        get => _allowedMcpServers;
+        init => _allowedMcpServers = Distinct(value);
+    }
+
+    private readonly IReadOnlyList<string> _allowedMcpServers = [];
 
     /// <summary>
     /// The subset of <see cref="AllowedMcpServers"/> that are this run's OWN bundle-owned servers (i.e.
@@ -152,4 +168,7 @@ public sealed record CapabilityEnvelope
     /// </summary>
     private static bool Contains(IReadOnlyList<string> names, string name) =>
         names.Contains(name, StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<string> Distinct(IReadOnlyList<string> names) =>
+        [.. names.Distinct(StringComparer.OrdinalIgnoreCase)];
 }
