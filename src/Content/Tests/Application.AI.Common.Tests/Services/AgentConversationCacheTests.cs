@@ -107,7 +107,7 @@ public sealed class AgentConversationCacheTests
 
         _cache = new AgentConversationCache(
             _memoryCache, factory, _registrationTracker, _completionTracker,
-            NullLogger<AgentConversationCache>.Instance);
+            registry.Object, services, NullLogger<AgentConversationCache>.Instance);
     }
 
     [Fact]
@@ -478,7 +478,7 @@ public sealed class AgentConversationCacheTraceLifecycleTests
 
         var cache = new AgentConversationCache(
             memory, factory, new ConversationRegistrationTracker(), completionTracker,
-            NullLogger<AgentConversationCache>.Instance);
+            registry.Object, services, NullLogger<AgentConversationCache>.Instance);
 
         return (cache, writer, memory, finalized.Task);
     }
