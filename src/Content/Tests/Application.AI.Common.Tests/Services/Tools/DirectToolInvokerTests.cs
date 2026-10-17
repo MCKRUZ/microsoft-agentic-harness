@@ -8,6 +8,7 @@ using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Governance;
+using Application.AI.Common.Tests.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Escalation;
@@ -21,6 +22,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using static Application.AI.Common.Tests.CQRS.Changes.Support.TestHelpers;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Tools;
@@ -875,81 +877,23 @@ public sealed class DirectToolInvokerTests
     private async Task<DirectToolInvocationOutcome> Invoke(
         DirectToolInvocationRequest request, ExecutableTool tool, CancellationToken cancellationToken = default)
     {
-        var services = new ServiceCollection();
-        services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
-        services.AddScoped<IToolInvocationGovernor>(sp =>
-            new RecordingGovernor(sp.GetRequiredService<IAgentExecutionContext>(), _governor));
-        services.AddKeyedSingleton<ITool>(tool.Name, tool);
-
-        // Every gate below is registered unconditionally, never conditionally: the invoker resolves
-        // the admission chain as a REQUIRED service, and the chain requires all four. An absent gate
-        // and a gate that permits everything are indistinguishable at runtime and only one of them is
-        // safe, so a test that omitted one would be asserting against a composition that cannot exist
-        // in production. When a test supplies none of its own, it gets permissive ones — exactly what
-        // a host with every feature off has.
-        services.AddSingleton<IToolClassificationGate>(
-            _classificationGate ?? AdmissionHarness.PermissiveClassificationGate());
-        services.AddSingleton<IToolCallObserverChain>(
-            _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
-        services.AddSingleton(AdmissionHarness.PermissiveProgressEvaluator());
-
-        // The turn's governance trail. Real rather than mocked, and registered for the same reason as
-        // the gates above: the chain requires it, so a container without it is a composition that
-        // cannot exist in production.
-        services.AddSingleton<IGovernanceTraceRecorder>(AdmissionHarness.TraceRecorder());
-
-        // Per-agent RBAC, permitting — the answer the real gate gives when tool authorization is off,
-        // which is this fixture's composition. Registered because the chain requires it: an absent
-        // gate and a switched-off one must never be confusable at runtime.
-        services.AddSingleton(AdmissionHarness.PermissiveAuthorizationGate());
-
-        // Closes the approval loop for whichever call this chain approves. Substituted here for the
-        // same reason RecordingGovernor substitutes the real governor above: the real implementation
-        // needs the escalation subsystem's Infrastructure registrations, which this Application-layer
-        // fixture does not build — the chain still requires SOME registration, an absent one and a
-        // no-op one must never be confusable at runtime.
-        services.AddSingleton(_executionReporter.Object);
-
-        // #487/#489: DirectToolInvoker no longer owns a private sanitizer at all — every sanitize pass,
-        // on every path (the caller-facing output/error AND ToolCallAdmissionPipeline.ReportExecutionAsync's
-        // reported copy), now runs through the ONE sanitizer registered here. That is safe to be this
-        // fixture's own _sanitizer specifically because RecordingSanitizer defaults to pass-through
-        // (see its own remarks) — the old default of blanking everything is what used to force two
-        // separate instances; a real IContentRedactionFilter is still used, not a pass-through, because
-        // ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted asserts real redaction on
-        // the reported copy independent of whatever the sanitizer did.
-        services.AddSingleton<ICompositeResponseSanitizer>(_sanitizer);
-        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
-
-        // #532: the chain now bounds tool output and reads its ceiling from AppConfig, so it requires
-        // one — registered here for the same reason as every gate above, and stated the same way: an
-        // absent registration is a composition that cannot exist in production. Most tests leave
-        // _pipelineOutputCeiling unset, which binds the shipped 50,000-character default — far above
-        // the small per-test ceilings this fixture gives DirectToolInvoker itself, so the invoker's own
-        // cut is what those tests observe and the pipeline's is a no-op at that size.
-        //
-        // A prior version of this comment stated that separation as though it always held. It does
-        // not: on real shipped defaults the invoker's ceiling (262,144) is roughly five times LARGER
-        // than the pipeline's (50,000), the inverse of what most tests here set up — which is exactly
-        // why the family below needs _pipelineOutputCeiling set below the invoker's ceiling rather than
-        // above it, to reproduce the ratio production actually ships with.
+        // #532: the chain bounds tool output and reads its ceiling from AppConfig. Most tests leave
+        // _pipelineOutputCeiling unset, which binds the shipped 50,000-character default, far above the
+        // small per-test ceilings this fixture gives DirectToolInvoker itself, so the invoker's own cut is
+        // what those tests observe. The family that needs the pipeline's ceiling BELOW the invoker's sets
+        // it, to reproduce the ratio production ships with (invoker 262,144, pipeline 50,000).
         var pipelineConfig = new Domain.Common.Config.AppConfig();
         if (_pipelineOutputCeiling is { } ceiling)
             pipelineConfig.AI.ContextManagement.ToolResultStorage.PerResultCharLimit = ceiling;
-        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
-            new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
 
-        // #521: the chain now constructor-injects IToolResultStore to spill truncated output — same
-        // "an absent registration is a composition that cannot exist in production" reasoning as every
-        // gate above. AgentExecutionContext (registered scoped above) supplies a real ToolResultScopeId.
-        services.AddSingleton(AdmissionHarness.StubResultStore());
-
-        // The real chain, not a mock of it, built the same way the production root builds it. This
-        // suite's whole subject is what the Execution API does before, during and after a tool call,
-        // and that is now the chain's behaviour plus this type's response shaping — mocking the chain
-        // would move every governance assertion here off the code that actually runs.
-        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
-        services.AddToolCallAdmissionChain();
+        var services = DirectInvokerContainer.Build(
+            _governor,
+            _executionReporter.Object,
+            sanitizer: _sanitizer,
+            classificationGate: _classificationGate,
+            observerChain: _observerChain,
+            appConfig: new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
+        services.AddKeyedSingleton<ITool>(tool.Name, tool);
 
         var provider = services.BuildServiceProvider();
 
@@ -992,51 +936,6 @@ public sealed class DirectToolInvokerTests
 
             return result;
         }
-    }
-
-    /// <summary>
-    /// A governor that answers as the test dictates and records what the world looked like when it was
-    /// asked. Resolved <em>from the invocation's own scope</em> and reading the same scoped
-    /// <see cref="IAgentExecutionContext"/> the real governor reads, so the arming assertions observe
-    /// the production mechanism rather than a stand-in the test wired up itself.
-    /// </summary>
-    private sealed class RecordingGovernor(IAgentExecutionContext executionContext, GovernorRecord record)
-        : IToolInvocationGovernor
-    {
-        public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
-            string toolName, CancellationToken cancellationToken,
-            IReadOnlyDictionary<string, object?>? arguments = null,
-            Domain.AI.Governance.ToolCompositionTaint? composition = null,
-            Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null)
-        {
-            record.AgentIdWhenAuthorizing = executionContext.AgentId;
-            record.ConversationIdWhenAuthorizing = executionContext.ConversationId;
-            record.CallOnceScopeIdWhenAuthorizing = executionContext.CallOnceScopeId;
-            record.TurnNumberWhenAuthorizing = executionContext.TurnNumber;
-
-            if (record.Delay > TimeSpan.Zero)
-                await Task.Delay(record.Delay, cancellationToken);
-
-            return record.Decision;
-        }
-    }
-
-    /// <summary>
-    /// Shared between the test and the scoped governor the container builds, since the test cannot
-    /// hold the scoped instance itself.
-    /// </summary>
-    private sealed class GovernorRecord
-    {
-        public ToolInvocationDecision Decision { get; set; } = ToolInvocationDecision.Allow();
-        public string? AgentIdWhenAuthorizing { get; set; }
-        public string? ConversationIdWhenAuthorizing { get; set; }
-        public string? CallOnceScopeIdWhenAuthorizing { get; set; }
-        public int? TurnNumberWhenAuthorizing { get; set; }
-
-        /// <summary>Makes authorization slow, so the deadline's reach over it is observable.</summary>
-        public TimeSpan Delay { get; set; }
-
-        public void Deny(string reason) => Decision = ToolInvocationDecision.Deny(reason);
     }
 
     /// <summary>
@@ -1114,12 +1013,5 @@ public sealed class DirectToolInvokerTests
         /// </summary>
         public string? RedactResult(string toolName, string? content) =>
             content is null ? null : RedactionResult switch { null => Redacted, string s => s, _ => null };
-    }
-
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
-    {
-        public T CurrentValue => value;
-        public T Get(string? name) => value;
-        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 }
