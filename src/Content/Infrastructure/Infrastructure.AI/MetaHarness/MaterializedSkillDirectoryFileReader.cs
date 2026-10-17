@@ -1,5 +1,4 @@
-using Application.AI.Common.Exceptions;
-using Application.AI.Common.Interfaces.Skills;
+using Infrastructure.AI.Skills;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.Logging;
 
@@ -20,13 +19,8 @@ namespace Infrastructure.AI.MetaHarness;
 /// lifetime, so a plain immutable <see cref="SandboxedPathGuard"/> built once at construction is
 /// sufficient.
 /// </remarks>
-public sealed class MaterializedSkillDirectoryFileReader : ISkillFileReader
+public sealed class MaterializedSkillDirectoryFileReader : SandboxedSkillFileReaderBase
 {
-    // Matched to SkillFileReader deliberately (#618 follow-up finding on the abandoned first
-    // attempt at this fix): a manifest large enough to exhaust memory is a defect or an attack
-    // either way, and an eval-only reader is not exempt just because its content is temporary.
-    private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
-
     private readonly SandboxedPathGuard _guard;
     private readonly ILogger _logger;
 
@@ -42,71 +36,14 @@ public sealed class MaterializedSkillDirectoryFileReader : ISkillFileReader
     }
 
     /// <inheritdoc />
-    public string ReadText(string path) => File.ReadAllText(ValidateForRead(path));
+    private protected override SandboxedPathGuard CurrentGuard() => _guard;
 
     /// <inheritdoc />
-    public async Task<string> ReadTextAsync(string path, CancellationToken cancellationToken = default) =>
-        await File.ReadAllTextAsync(ValidateForRead(path), System.Text.Encoding.UTF8, cancellationToken);
+    protected override string OutsideSandboxMessage(string path) =>
+        $"Path is outside the materialized candidate skill directory: {path}";
 
     /// <inheritdoc />
-    public bool FileExists(string path) => File.Exists(Resolve(path));
-
-    /// <inheritdoc />
-    public bool DirectoryExists(string path) => Directory.Exists(Resolve(path));
-
-    /// <inheritdoc />
-    public IReadOnlyList<string> EnumerateDirectories(string path)
-    {
-        var fullPath = Resolve(path);
-        if (!Directory.Exists(fullPath))
-            throw new DirectoryNotFoundException($"Directory not found: {path}");
-
-        var results = new List<string>();
-        foreach (var subdirectory in Directory.EnumerateDirectories(fullPath))
-        {
-            // Logged, matching SkillFileReader.EnumerateDirectories' own rejection path — silently
-            // dropping this would make "why didn't the candidate's sibling skill load" unnecessarily
-            // hard to diagnose (code-review finding).
-            if (_guard.IsPathAllowed(subdirectory))
-                results.Add(subdirectory);
-            else
-                _logger.LogWarning(
-                    "Skipped materialized skill subdirectory outside the eval sandbox: {Path}", subdirectory);
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Validates a path against the sandbox, translating a refusal to
-    /// <see cref="SkillPathRefusedException"/> — see <c>SkillFileReader.Resolve</c>'s remarks for
-    /// why that translation matters (a genuine permission denial on a permitted path must not be
-    /// confused with a sandbox refusal).
-    /// </summary>
-    private string Resolve(string path)
-    {
-        try
-        {
-            return _guard.ResolveAndValidate(path);
-        }
-        catch (UnauthorizedAccessException ex) when (ex is not SkillPathRefusedException)
-        {
-            throw new SkillPathRefusedException(
-                $"Path is outside the materialized candidate skill directory: {path}", ex);
-        }
-    }
-
-    private string ValidateForRead(string path)
-    {
-        var fullPath = Resolve(path);
-
-        var fileInfo = new FileInfo(fullPath);
-        if (!fileInfo.Exists)
-            throw new FileNotFoundException($"Skill file not found: {path}");
-
-        if (fileInfo.Length > MaxFileSizeBytes)
-            throw new IOException($"Skill file exceeds size limit ({MaxFileSizeBytes / 1024 / 1024} MB).");
-
-        return fullPath;
-    }
+    protected override void LogSkippedSubdirectory(string subdirectory) =>
+        _logger.LogWarning(
+            "Skipped materialized skill subdirectory outside the eval sandbox: {Path}", subdirectory);
 }
