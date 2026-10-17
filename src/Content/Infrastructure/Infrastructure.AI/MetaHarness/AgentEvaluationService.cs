@@ -125,8 +125,23 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         var parallelism = Math.Max(1, cfg.MaxEvalParallelism);
         using var semaphore = new SemaphoreSlim(parallelism, parallelism);
 
-        var taskResults = await Task.WhenAll(
-            evalTasks.Select(task => RunSingleTaskAsync(candidate, task, cfg, semaphore, cancellationToken)));
+        // #684: the candidate's skill files are materialized, parsed, scanned and validated ONCE here,
+        // not once per task. The candidate's snapshot is immutable for the whole evaluation, so every
+        // task would produce the identical result, and the work scaled linearly with the suite size.
+        var prepared = PrepareCandidate(candidate);
+
+        TaskEvaluationResult[] taskResults;
+        try
+        {
+            taskResults = await Task.WhenAll(
+                evalTasks.Select(task => RunSingleTaskAsync(candidate, task, cfg, prepared, semaphore, cancellationToken)));
+        }
+        finally
+        {
+            // Removed only after every task has finished: they all read the one directory.
+            if (prepared.SkillDirectory is not null)
+                TryDeleteDirectory(prepared.SkillDirectory);
+        }
 
         var passed = taskResults.Count(r => r.Passed);
         var passRate = evalTasks.Count > 0 ? (double)passed / evalTasks.Count : 0.0;
@@ -143,13 +158,14 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         HarnessCandidate candidate,
         EvalTask task,
         MetaHarnessConfig cfg,
+        PreparedCandidate prepared,
         SemaphoreSlim semaphore,
         CancellationToken cancellationToken)
     {
         await semaphore.WaitAsync(cancellationToken);
         try
         {
-            return await ExecuteTaskAsync(candidate, task, cfg, cancellationToken);
+            return await ExecuteTaskAsync(candidate, task, cfg, prepared, cancellationToken);
         }
         finally
         {
@@ -161,6 +177,7 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         HarnessCandidate candidate,
         EvalTask task,
         MetaHarnessConfig cfg,
+        PreparedCandidate prepared,
         CancellationToken cancellationToken)
     {
         var scope = new TraceScope
@@ -180,24 +197,20 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         ITraceWriter? traceWriter = null;
         var traceCompleted = false;
         TaskEvaluationResult? taskResult = null;
-        string? skillDirectory = null;
 
         try
         {
             traceWriter = await _traceStore.StartRunAsync(scope, metadata, cancellationToken);
 
-            // Materialize the candidate's proposed skills so the eval agent loads them through the
-            // same MAF progressive-disclosure path used in production. Without this, a candidate that
-            // changes only skill files would evaluate identically to its parent. Kept in THIS method
-            // (not the extracted RunCandidateTurnAsync below) because skillDirectory must be assigned
-            // to the outer local before anything that can throw, so the finally block's cleanup below
-            // always has it — async methods can't use out/ref parameters to hand that back from an
-            // extracted method.
-            string? bareSkillName;
-            (skillDirectory, bareSkillName) = MaterializeCandidateSkills(candidate.Snapshot, scope.ExecutionRunId);
+            // A candidate whose skill files could not be prepared (a malformed proposal, a path-traversal
+            // attempt, a prompt-injection refusal) fails EVERY task the same way it did when each task
+            // prepared its own, with the same message and its own trace. Thrown inside this try so the
+            // task-level catch below records it as a failed, not crashed, task.
+            if (prepared.Failure is { } failure)
+                throw new InvalidOperationException(failure.Message, failure);
 
             taskResult = await RunCandidateTurnAsync(
-                candidate, task, cfg, scope, traceWriter, skillDirectory, bareSkillName, cancellationToken);
+                candidate, task, cfg, scope, traceWriter, prepared, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -227,9 +240,6 @@ public sealed partial class AgentEvaluationService : IEvaluationService
 
                 await traceWriter.DisposeAsync();
             }
-
-            if (skillDirectory is not null)
-                TryDeleteDirectory(skillDirectory);
         }
 
         return taskResult!;
@@ -251,24 +261,12 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         MetaHarnessConfig cfg,
         TraceScope scope,
         ITraceWriter traceWriter,
-        string? skillDirectory,
-        string? bareSkillName,
+        PreparedCandidate prepared,
         CancellationToken cancellationToken)
     {
-        // #618: one reader confined to skillDirectory, shared below between the candidate-skill parse
-        // and the progressive-disclosure provider (/simplify efficiency finding: two independent
-        // readers over the identical root did the same sandbox-guard setup twice for no reason).
-        var skillReader = skillDirectory is not null
-            ? new MaterializedSkillDirectoryFileReader(
-                skillDirectory, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>())
-            : null;
-
-        // #618: parsed from the SAME materialized directory and bare-skill subdirectory name
-        // MaterializeCandidateSkills just resolved and wrote to. Null for a multi-skill/sibling-only
-        // materialization (#618 scoped this to the common single-skill case) or when there is no
-        // skill directory at all.
-        var candidateSkill = TryBuildCandidateSkillDefinition(
-            skillDirectory, bareSkillName, skillReader, scope.ExecutionRunId);
+        var skillDirectory = prepared.SkillDirectory;
+        var skillReader = prepared.SkillReader;
+        var candidateSkill = prepared.CandidateSkill;
 
         var context = new AgentExecutionContext
         {
@@ -325,6 +323,63 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         var (passed, failureReason) = Grade(output, task.ExpectedOutputPattern);
         return new TaskEvaluationResult(
             task.TaskId, passed, ResolveTokenCost(response, task.InputPrompt, output), failureReason);
+    }
+
+    /// <summary>
+    /// Everything about a candidate's skills that is the same for every eval task: the materialized
+    /// directory, the one reader confined to it, and the parsed single-skill definition used for egress
+    /// scoping (#618). Built once per evaluation (#684). A preparation failure is carried rather than
+    /// thrown, so each task can still fail and write its own trace.
+    /// </summary>
+    private sealed record PreparedCandidate(
+        string? SkillDirectory,
+        MaterializedSkillDirectoryFileReader? SkillReader,
+        SkillDefinition? CandidateSkill,
+        Exception? Failure);
+
+    /// <summary>
+    /// Materializes, reads, parses, scans and validates the candidate's skill files once. The materialized
+    /// directory is read-only to every task, so sharing it is safe; the caller deletes it after the last
+    /// task finishes.
+    /// </summary>
+    private PreparedCandidate PrepareCandidate(HarnessCandidate candidate)
+    {
+        // Keys the shared directory and the diagnostic logging for this evaluation. Distinct from each
+        // task's own execution run id, which names that task's trace.
+        var preparationRunId = Guid.NewGuid();
+        string? skillDirectory = null;
+
+        try
+        {
+            string? bareSkillName;
+            (skillDirectory, bareSkillName) = MaterializeCandidateSkills(candidate.Snapshot, preparationRunId);
+
+            // #618: one reader confined to skillDirectory, shared between the candidate-skill parse and the
+            // progressive-disclosure provider each task builds.
+            var skillReader = skillDirectory is not null
+                ? new MaterializedSkillDirectoryFileReader(
+                    skillDirectory, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>())
+                : null;
+
+            // #618: parsed from the SAME materialized directory and bare-skill subdirectory name
+            // MaterializeCandidateSkills just resolved and wrote to. Null for a multi-skill/sibling-only
+            // materialization (#618 scoped this to the common single-skill case) or with no skill directory.
+            var candidateSkill = TryBuildCandidateSkillDefinition(
+                skillDirectory, bareSkillName, skillReader, preparationRunId);
+
+            return new PreparedCandidate(skillDirectory, skillReader, candidateSkill, Failure: null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // MaterializeCandidateSkills cleans up after its own failure; a later parse or scan failure
+            // leaves the directory it wrote, which nothing else will now delete.
+            if (skillDirectory is not null)
+                TryDeleteDirectory(skillDirectory);
+
+            _logger.LogError(ex, "Candidate {CandidateId}: its skill files could not be prepared; every eval task will fail",
+                candidate.CandidateId);
+            return new PreparedCandidate(null, null, null, ex);
+        }
     }
 
     /// <summary>
