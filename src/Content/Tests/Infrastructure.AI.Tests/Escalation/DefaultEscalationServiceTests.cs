@@ -705,6 +705,58 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		outcome.Binding.Should().Be(SampleBinding);
 	}
 
+	// ===== Latest escalation for a plan step (#863) =====
+	// The binding names the step, not the escalation, and one step raises several in turn. The service
+	// records which was queued last so the plan executor can refuse an older, already-approved one.
+
+	[Fact]
+	public async Task IsLatestForBindingAsync_TwoEscalationsForOneStep_OnlyTheLaterOneIsLatest()
+	{
+		var first = CreateTestRequest() with { Binding = SampleBinding };
+		var second = CreateTestRequest() with { Binding = SampleBinding };
+		await _sut.QueueEscalationAsync(first, CancellationToken.None);
+		await _sut.QueueEscalationAsync(second, CancellationToken.None);
+
+		(await _sut.IsLatestForBindingAsync(first.EscalationId, SampleBinding, CancellationToken.None))
+			.Should().BeFalse("a newer escalation was queued for the same step");
+		(await _sut.IsLatestForBindingAsync(second.EscalationId, SampleBinding, CancellationToken.None))
+			.Should().BeTrue();
+	}
+
+	[Fact]
+	public async Task IsLatestForBindingAsync_EscalationForAnotherStep_DoesNotDisplaceThisOne()
+	{
+		var mine = CreateTestRequest() with { Binding = SampleBinding };
+		var other = CreateTestRequest() with
+		{
+			Binding = new EscalationBinding(SampleBinding.PlanId, Guid.NewGuid(), EscalationBindingKind.GateApproval)
+		};
+		await _sut.QueueEscalationAsync(mine, CancellationToken.None);
+		await _sut.QueueEscalationAsync(other, CancellationToken.None);
+
+		(await _sut.IsLatestForBindingAsync(mine.EscalationId, SampleBinding, CancellationToken.None))
+			.Should().BeTrue();
+	}
+
+	[Fact]
+	public async Task IsLatestForBindingAsync_NothingRecordedForTheStep_IsNotLatest()
+	{
+		// Fail closed: an escalation the service has no record of for this step cannot be shown to be the
+		// one the step is waiting on.
+		(await _sut.IsLatestForBindingAsync(Guid.NewGuid(), SampleBinding, CancellationToken.None))
+			.Should().BeFalse();
+	}
+
+	[Fact]
+	public async Task IsLatestForBindingAsync_ARequestWithNoBinding_RecordsNothing()
+	{
+		var request = CreateTestRequest();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		(await _sut.IsLatestForBindingAsync(request.EscalationId, SampleBinding, CancellationToken.None))
+			.Should().BeFalse();
+	}
+
 	[Fact]
 	public async Task SubmitDecisionAsync_ResolvedOutcome_CarriesRoster()
 	{

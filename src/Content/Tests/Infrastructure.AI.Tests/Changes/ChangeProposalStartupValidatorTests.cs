@@ -59,6 +59,8 @@ public sealed class ChangeProposalStartupValidatorTests
             Task.FromResult<EscalationRequest?>(null);
         public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct) =>
             Task.FromResult<EscalationOutcome?>(null);
+        public Task<bool> IsLatestForBindingAsync(Guid escalationId, EscalationBinding binding, CancellationToken ct) =>
+            Task.FromResult(false);
         public Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<EscalationRequest>>([]);
         public Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, string cancelledBy, CancellationToken ct) =>

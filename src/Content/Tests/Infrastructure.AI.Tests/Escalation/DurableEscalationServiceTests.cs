@@ -160,6 +160,27 @@ public sealed class DurableEscalationServiceTests : IDisposable
 		}
 	}
 
+	// ===== Latest escalation for a plan step survives a restart (#863) =====
+
+	[Fact]
+	public async Task IsLatestForBindingAsync_AfterRestart_StillRefusesTheOlderEscalationForTheStep()
+	{
+		var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid(), EscalationBindingKind.FailureRetry);
+		var older = CreateRequest() with { Binding = binding };
+		var newer = CreateRequest() with { Binding = binding };
+		var first = CreateService(CreateDurableStore());
+		await first.QueueEscalationAsync(older, CancellationToken.None);
+		await first.QueueEscalationAsync(newer, CancellationToken.None);
+		first.Dispose();
+
+		// Simulated restart: the in-process record is gone, only the database remains. The anchor has to
+		// come from the store, or a replayed older approval would be accepted the moment the host restarts.
+		var rebooted = CreateService(CreateDurableStore());
+
+		(await rebooted.IsLatestForBindingAsync(older.EscalationId, binding, CancellationToken.None)).Should().BeFalse();
+		(await rebooted.IsLatestForBindingAsync(newer.EscalationId, binding, CancellationToken.None)).Should().BeTrue();
+	}
+
 	// ===== Rehydration after restart =====
 
 	[Fact]
@@ -422,6 +443,10 @@ public sealed class DurableEscalationServiceTests : IDisposable
 
 		public Task<EscalationOutcome?> GetResolvedOutcomeAsync(Guid escalationId, CancellationToken ct)
 			=> _inner.GetResolvedOutcomeAsync(escalationId, ct);
+
+		/// <inheritdoc />
+		public Task<Guid?> GetLatestForBindingAsync(EscalationBinding binding, CancellationToken ct)
+			=> _inner.GetLatestForBindingAsync(binding, ct);
 	}
 
 	/// <summary>

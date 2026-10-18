@@ -114,6 +114,8 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         entity.Status = nameof(EscalationPersistedStatus.Pending);
         entity.RequestJson = requestJson;
         entity.RequestSealJson = requestSealJson;
+        entity.BindingPlanId = request.Binding?.PlanId;
+        entity.BindingStepId = request.Binding?.StepId;
         entity.DecisionsJson = "[]";
         entity.OutcomeJson = null;
         entity.OutcomeSealJson = null;
@@ -312,6 +314,23 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
             "Persisted outcome for escalation {EscalationId} failed seal verification; refusing to serve it",
             escalationId);
         return null;
+    }
+
+    /// <inheritdoc />
+    public async Task<Guid?> GetLatestForBindingAsync(EscalationBinding binding, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        await using var context = await _contextFactory.CreateDbContextAsync(ct);
+
+        // Any status: a resolved escalation is exactly the one a replay would point at, and it must
+        // still count as "older than the one the step is waiting on". Backed by
+        // ix_escalation_state_binding_created_at.
+        return await context.Escalations
+            .AsNoTracking()
+            .Where(e => e.BindingPlanId == binding.PlanId && e.BindingStepId == binding.StepId)
+            .OrderByDescending(e => e.CreatedAtTicks)
+            .Select(e => (Guid?)e.Id)
+            .FirstOrDefaultAsync(ct);
     }
 
     /// <summary>

@@ -63,6 +63,17 @@ public sealed class EscalationStateEntity
     /// </summary>
     public string? RequestSealJson { get; set; }
 
+    /// <summary>
+    /// The plan the request is bound to, copied out of <see cref="RequestJson"/> so "the latest escalation
+    /// for this step" is an indexed lookup. Null for a request bound to no plan step. Not a trust anchor
+    /// on its own: it answers which row is newest, never whether a verdict is genuine (that is the seal's
+    /// job). Editing it can only make a step fail to find its escalation.
+    /// </summary>
+    public Guid? BindingPlanId { get; set; }
+
+    /// <summary>The step the request is bound to; see <see cref="BindingPlanId"/>.</summary>
+    public Guid? BindingStepId { get; set; }
+
     /// <summary>JSON array of the collected <c>ApproverDecision</c> records, in submission order.</summary>
     public string DecisionsJson { get; set; } = "[]";
 

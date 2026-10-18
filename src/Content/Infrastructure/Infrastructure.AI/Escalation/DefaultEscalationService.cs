@@ -52,6 +52,14 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 {
 	private readonly ConcurrentDictionary<Guid, EscalationState> _activeEscalations = new();
 	private readonly ConcurrentDictionary<Guid, EscalationOutcome> _resolvedOutcomes = new();
+
+	/// <summary>
+	/// The escalation most recently queued for each plan step, keyed by (plan, step). The in-process
+	/// half of the anchor behind <see cref="IsLatestForBindingAsync"/>; the durable store is the other.
+	/// One <see cref="Guid"/> per step that ever blocked, retained for the life of the process like
+	/// <see cref="_resolvedOutcomes"/>.
+	/// </summary>
+	private readonly ConcurrentDictionary<(Guid PlanId, Guid StepId), Guid> _latestByBinding = new();
 	private readonly SemaphoreSlim _reconcileGate = new(1, 1);
 	private int _disposed;
 	private readonly IServiceProvider _serviceProvider;
@@ -477,6 +485,33 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 	}
 
 	/// <inheritdoc />
+	public async Task<bool> IsLatestForBindingAsync(Guid escalationId, EscalationBinding binding, CancellationToken ct)
+	{
+		ArgumentNullException.ThrowIfNull(binding);
+
+		// The durable store answers first when it holds anything for this step: it survives a restart and
+		// is shared with any other host writing to it. The in-process record covers the default
+		// configuration, where there is no store and nothing outlives the process anyway.
+		var durable = await _stateStore.GetLatestForBindingAsync(binding, ct);
+		if (durable is { } latestDurable)
+			return latestDurable == escalationId;
+
+		return _latestByBinding.TryGetValue((binding.PlanId, binding.StepId), out var latest)
+			&& latest == escalationId;
+	}
+
+	/// <summary>
+	/// Records <paramref name="request"/> as the latest escalation for its plan step, once it is durably
+	/// created. Called only after the create succeeded: an escalation that failed to open must not displace
+	/// the one the step is still waiting on.
+	/// </summary>
+	private void NoteLatestForBinding(EscalationRequest request)
+	{
+		if (request.Binding is { } binding)
+			_latestByBinding[(binding.PlanId, binding.StepId)] = request.EscalationId;
+	}
+
+	/// <inheritdoc />
 	public async Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct)
 	{
 		if (_resolvedOutcomes.TryGetValue(escalationId, out var outcome))
@@ -677,6 +712,8 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 			throw new EscalationDurableStateException(
 				EscalationDurableStateException.DurableCreateFailedCode, ex);
 		}
+
+		NoteLatestForBinding(state.Request);
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationRequestedAsync(state.Request, ct),

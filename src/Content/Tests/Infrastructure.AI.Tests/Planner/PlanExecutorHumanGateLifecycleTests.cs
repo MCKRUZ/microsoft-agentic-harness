@@ -77,6 +77,11 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         // Default: no escalation has resolved -> a blocked step stays blocked.
         _escalation.Setup(e => e.GetOutcomeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((EscalationOutcome?)null);
+
+        // Default: the escalation a step waits on is the latest one queued for it (#863). A test about a
+        // replayed older approval overrides this for the id it replays.
+        _escalation.Setup(e => e.IsLatestForBindingAsync(It.IsAny<Guid>(), It.IsAny<EscalationBinding>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
     }
 
     public void Dispose() => _connection.Dispose();
@@ -403,6 +408,46 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
         Assert.Empty(workInvocations);
         var states = await _store.LoadStepStatesAsync(plan.Id, CancellationToken.None);
         Assert.Equal(StepExecutionStatus.Blocked, states.Value![gateId].Status);
+    }
+
+    // #863: the binding names the step, not the escalation. An escalate-on-failure step raises a new
+    // escalation each time it fails after an approval, so the plan state store's reference to the OLD,
+    // already-approved one could be repointed at it to release the step while the new one is pending.
+    // The anchor is the escalation service's record of which escalation was queued last.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Execute_BlockedStepFollowsAnOlderEscalationForTheSameStep_FailsTheStepWhateverTheVerdict(bool oldVerdictApproved)
+    {
+        var oldEscalation = Guid.NewGuid();
+        _escalation.Setup(e => e.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(oldEscalation);
+        var (plan, stepAId, stepBId) = EscalatePlan();
+        var stepACalls = 0;
+        var executor = BuildLlmExecutor((step, _, _) =>
+        {
+            if (step.Id == stepAId)
+                stepACalls++;
+            return Task.FromResult(new StepExecutionResult { Status = StepExecutionStatus.Failed, ErrorMessage = "boom", Duration = TimeSpan.FromMilliseconds(1) });
+        });
+        await _store.SavePlanAsync(plan, CancellationToken.None);
+        Assert.Equal(StepExecutionStatus.Blocked, (await executor.ExecuteAsync(plan.Id, CancellationToken.None)).Value!.FinalStatus);
+
+        // The old escalation carries a perfectly valid binding for this step, but a newer one has since
+        // been queued for it, so the service no longer reports the old one as the latest.
+        var binding = Bound(plan, stepAId, EscalationBindingKind.FailureRetry);
+        _escalation.Setup(e => e.GetOutcomeAsync(oldEscalation, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(oldEscalation, oldVerdictApproved, binding));
+        _escalation.Setup(e => e.IsLatestForBindingAsync(oldEscalation, binding, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        await executor.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.Equal(1, stepACalls);
+        var states = await _store.LoadStepStatesAsync(plan.Id, CancellationToken.None);
+        Assert.Equal(StepExecutionStatus.Failed, states.Value![stepAId].Status);
+        Assert.Equal(PlanStepErrors.EscalationSuperseded, states.Value![stepAId].ErrorMessage);
+        Assert.Equal(StepExecutionStatus.Skipped, states.Value![stepBId].Status);
     }
 
     // #863: only a human gate raises a gate approval. A verdict of that kind bound to an ordinary step

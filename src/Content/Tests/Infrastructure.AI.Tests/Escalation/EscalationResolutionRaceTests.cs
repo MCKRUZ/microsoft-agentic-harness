@@ -499,6 +499,10 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 		}
 
 		/// <inheritdoc />
+		public Task<Guid?> GetLatestForBindingAsync(EscalationBinding binding, CancellationToken ct)
+			=> Task.FromResult<Guid?>(null);
+
+		/// <inheritdoc />
 		public Task<EscalationOutcome?> GetResolvedOutcomeAsync(Guid escalationId, CancellationToken ct)
 		{
 			lock (_sync)

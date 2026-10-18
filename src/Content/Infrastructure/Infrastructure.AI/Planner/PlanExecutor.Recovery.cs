@@ -202,6 +202,16 @@ public sealed partial class PlanExecutor
                 continue;
             }
 
+            // The binding names the step, not the escalation, and a step can raise several in turn. The id
+            // in the step's stored output could have been repointed at an older, already-approved one, so
+            // the verdict only counts if it is the escalation most recently queued for this step, as
+            // recorded outside the plan state store.
+            if (!await _escalationService.IsLatestForBindingAsync(escalationId.Value, binding, ct))
+            {
+                await FailSupersededBlockAsync(step, escalationId.Value, ctx, ct);
+                continue;
+            }
+
             if (outcome.IsApproved)
                 await ReleaseApprovedBlockAsync(step, escalationId.Value, binding.Kind, ctx, ct);
             else
@@ -282,6 +292,26 @@ public sealed partial class PlanExecutor
             EscalationBindingKind.FailureRetry => true,
             _ => false
         };
+
+    /// <summary>
+    /// Fails a blocked step whose stored escalation reference leads to a verdict for this step that is not
+    /// from the escalation most recently queued for it. Terminal for the same reason a misbound verdict
+    /// is: the reference no longer points at anything this step can legitimately wait for, and leaving it
+    /// <c>Blocked</c> would show an operator "awaiting approval" while the real decision sits elsewhere.
+    /// Logged at error level because the usual cause is a rewritten reference, not a human decision.
+    /// </summary>
+    private async Task FailSupersededBlockAsync(
+        PlanStep step, Guid escalationId, PlanExecutionRuntime ctx, CancellationToken ct)
+    {
+        _logger.LogError(
+            "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, which is not the escalation " +
+            "most recently queued for this step; failing the step instead of acting on an older verdict",
+            step.Id, ctx.PlanId, escalationId);
+
+        await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct,
+            errorMessage: PlanStepErrors.EscalationSuperseded);
+        await SkipDownstreamSubgraphAsync(step.Id, ctx);
+    }
 
     /// <summary>
     /// Fails a blocked step whose stored escalation reference leads to a verdict that is not bound to
