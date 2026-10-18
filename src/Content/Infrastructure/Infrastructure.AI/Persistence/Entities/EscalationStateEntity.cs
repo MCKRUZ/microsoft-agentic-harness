@@ -78,6 +78,16 @@ public sealed class EscalationStateEntity
     public string DecisionsJson { get; set; } = "[]";
 
     /// <summary>
+    /// JSON of the <c>GovernanceRecordSeal</c> covering <see cref="DecisionsJson"/> while the escalation is
+    /// pending (#863). The decisions collected so far decide when a strategy resolves, and the outcome sealed
+    /// at resolution certifies whatever list it was built from, so an unsealed list would let a forged
+    /// approve decision be certified by the seal on the outcome. Re-sealed on every write of the list. Null on
+    /// rows written before decisions were sealed, which verification treats as unverified (fail-closed).
+    /// Only a pending row is checked: once an outcome exists it carries its own decisions under its own seal.
+    /// </summary>
+    public string? DecisionsSealJson { get; set; }
+
+    /// <summary>
     /// JSON of the resolved <c>EscalationOutcome</c>; null until a resolution is reached.
     /// </summary>
     public string? OutcomeJson { get; set; }

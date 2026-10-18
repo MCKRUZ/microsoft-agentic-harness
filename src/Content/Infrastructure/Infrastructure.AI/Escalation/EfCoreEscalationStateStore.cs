@@ -98,6 +98,11 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         var requestSeal = await _sealer.SealAsync(RequestSubjectId(request.EscalationId), requestJson, ct);
         var requestSealJson = SerializeGuarded(requestSeal, nameof(EscalationStateEntity.RequestSealJson));
 
+        // A new escalation starts with no decisions, and that empty list is sealed too: an unsealed one
+        // would be the easy place to plant a first forged approval.
+        const string EmptyDecisions = "[]";
+        var emptyDecisionsSealJson = await SealDecisionsAsync(request.EscalationId, EmptyDecisions, ct);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
         var entity = await context.Escalations.FindAsync([request.EscalationId], ct);
@@ -116,7 +121,8 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         entity.RequestSealJson = requestSealJson;
         entity.BindingPlanId = request.Binding?.PlanId;
         entity.BindingStepId = request.Binding?.StepId;
-        entity.DecisionsJson = "[]";
+        entity.DecisionsJson = EmptyDecisions;
+        entity.DecisionsSealJson = emptyDecisionsSealJson;
         entity.OutcomeJson = null;
         entity.OutcomeSealJson = null;
         entity.UpdatedAtTicks = DateTimeOffset.UtcNow.UtcTicks;
@@ -129,6 +135,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     {
         ArgumentNullException.ThrowIfNull(decisions);
         var decisionsJson = SerializeGuarded(decisions, nameof(EscalationStateEntity.DecisionsJson));
+        var decisionsSealJson = await SealDecisionsAsync(escalationId, decisionsJson, ct);
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
@@ -137,6 +144,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
                 $"No durable state record exists for escalation {escalationId}; refusing to record a decision against it.");
 
         entity.DecisionsJson = decisionsJson;
+        entity.DecisionsSealJson = decisionsSealJson;
         entity.UpdatedAtTicks = DateTimeOffset.UtcNow.UtcTicks;
         await context.SaveChangesAsync(ct);
     }
@@ -252,7 +260,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
             .OrderBy(e => e.UpdatedAtTicks)
             .Take(MaxScanRecords)
             .Select(e => new RawEscalationRow(
-                e.Id, e.Status, e.RequestJson, e.RequestSealJson, e.DecisionsJson,
+                e.Id, e.Status, e.RequestJson, e.RequestSealJson, e.DecisionsJson, e.DecisionsSealJson,
                 e.OutcomeJson, e.OutcomeSealJson, e.CreatedAtTicks))
             .ToListAsync(ct);
 
@@ -260,8 +268,12 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         foreach (var row in rows)
         {
             var snapshot = TryMapSnapshot(row);
-            if (snapshot is null || !await IsRequestSealVerifiedAsync(row, ct))
+            if (snapshot is null
+                || !await IsRequestSealVerifiedAsync(row, ct)
+                || !await AreDecisionsTrustedAsync(snapshot, row, ct))
+            {
                 continue;
+            }
 
             snapshots.Add(await ApplySealVerificationAsync(snapshot, row, ct));
         }
@@ -331,6 +343,49 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
             .OrderByDescending(e => e.CreatedAtTicks)
             .Select(e => (Guid?)e.Id)
             .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>
+    /// Seals a decision list under a subject of its own, returning the seal as stored JSON.
+    /// </summary>
+    private async Task<string> SealDecisionsAsync(Guid escalationId, string decisionsJson, CancellationToken ct)
+    {
+        var seal = await _sealer.SealAsync(DecisionsSubjectId(escalationId), decisionsJson, ct);
+        return SerializeGuarded(seal, nameof(EscalationStateEntity.DecisionsSealJson));
+    }
+
+    /// <summary>
+    /// Whether the decision list on a scanned row can be trusted (#863). A pending row's list must verify
+    /// against its seal, and one that does not is dropped from the scan like a forged request: the list
+    /// decides when a strategy resolves, so an unverifiable one cannot be restored. A row that has an
+    /// outcome is not checked this way, because that outcome carries its own decisions under its own
+    /// seal and the column is then redundant.
+    /// </summary>
+    /// <param name="snapshot">The mapped snapshot.</param>
+    /// <param name="row">The raw row it came from.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<bool> AreDecisionsTrustedAsync(EscalationStateSnapshot snapshot, RawEscalationRow row, CancellationToken ct)
+    {
+        if (snapshot.Status != EscalationPersistedStatus.Pending)
+            return true;
+
+        var seal = row.DecisionsSealJson is null
+            ? null
+            : TryDeserialize<GovernanceRecordSeal>(row.DecisionsSealJson, row.Id, "decisions seal");
+
+        // A null DecisionsJson reads as an empty list in TryMapSnapshot, but the seal covers real bytes, so
+        // a missing column fails here instead of passing as "no decisions".
+        if (row.DecisionsJson is not null
+            && await _sealer.VerifyAsync(DecisionsSubjectId(row.Id), row.DecisionsJson, seal, ct))
+        {
+            return true;
+        }
+
+        _logger.LogError(
+            "Durable escalation {EscalationId} carries a decision list whose seal does not verify (or has none); " +
+            "quarantining it (the row is preserved for investigation and will not be restored)",
+            row.Id);
+        return false;
     }
 
     /// <summary>
@@ -499,6 +554,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         string? RequestJson,
         string? RequestSealJson,
         string? DecisionsJson,
+        string? DecisionsSealJson,
         string? OutcomeJson,
         string? OutcomeSealJson,
         long CreatedAtTicks);
@@ -516,4 +572,11 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     /// </summary>
     /// <param name="escalationId">The escalation the request belongs to.</param>
     internal static string RequestSubjectId(Guid escalationId) => "request:" + escalationId.ToString("N");
+
+    /// <summary>
+    /// The seal subject for an escalation's pending decision list; distinct from the request and outcome
+    /// subjects so no two seals on one row are interchangeable.
+    /// </summary>
+    /// <param name="escalationId">The escalation the list belongs to.</param>
+    internal static string DecisionsSubjectId(Guid escalationId) => "decisions:" + escalationId.ToString("N");
 }
