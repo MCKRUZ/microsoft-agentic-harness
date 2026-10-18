@@ -38,6 +38,15 @@ namespace Infrastructure.AI.Escalation;
 /// verified on read; an outcome whose seal does not verify is withheld, so the reconciler
 /// never re-drives a possibly forged verdict into the compliance audit log.
 /// </para>
+/// <para>
+/// <b>Pending requests are sealed too (#863).</b> The outcome built when a request resolves copies its
+/// plan-step binding from the request, so the outcome's seal only proves the binding was not changed
+/// <em>after</em> resolution. Sealing the request closes the other half: a pending row whose seal does
+/// not verify is quarantined (preserved, logged, not restored), because the approver roster, the
+/// approval strategy and the binding it carries can no longer be trusted. A row with no request seal at
+/// all is treated the same way rather than as a legacy row to be let through: accepting it would let an
+/// attacker defeat the seal by deleting it.
+/// </para>
 /// </remarks>
 public sealed class EfCoreEscalationStateStore : IEscalationStateStore
 {
@@ -84,6 +93,11 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         ArgumentNullException.ThrowIfNull(request);
         var requestJson = SerializeGuarded(request, nameof(EscalationStateEntity.RequestJson));
 
+        // Sealed over the exact bytes about to be stored, under a subject of its own so a request seal
+        // can never be passed off as the seal of the same escalation's outcome.
+        var requestSeal = await _sealer.SealAsync(RequestSubjectId(request.EscalationId), requestJson, ct);
+        var requestSealJson = SerializeGuarded(requestSeal, nameof(EscalationStateEntity.RequestSealJson));
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
         var entity = await context.Escalations.FindAsync([request.EscalationId], ct);
@@ -99,6 +113,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
 
         entity.Status = nameof(EscalationPersistedStatus.Pending);
         entity.RequestJson = requestJson;
+        entity.RequestSealJson = requestSealJson;
         entity.DecisionsJson = "[]";
         entity.OutcomeJson = null;
         entity.OutcomeSealJson = null;
@@ -235,7 +250,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
             .OrderBy(e => e.UpdatedAtTicks)
             .Take(MaxScanRecords)
             .Select(e => new RawEscalationRow(
-                e.Id, e.Status, e.RequestJson, e.DecisionsJson,
+                e.Id, e.Status, e.RequestJson, e.RequestSealJson, e.DecisionsJson,
                 e.OutcomeJson, e.OutcomeSealJson, e.CreatedAtTicks))
             .ToListAsync(ct);
 
@@ -243,8 +258,10 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         foreach (var row in rows)
         {
             var snapshot = TryMapSnapshot(row);
-            if (snapshot is not null)
-                snapshots.Add(await ApplySealVerificationAsync(snapshot, row, ct));
+            if (snapshot is null || !await IsRequestSealVerifiedAsync(row, ct))
+                continue;
+
+            snapshots.Add(await ApplySealVerificationAsync(snapshot, row, ct));
         }
 
         return snapshots;
@@ -295,6 +312,30 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
             "Persisted outcome for escalation {EscalationId} failed seal verification; refusing to serve it",
             escalationId);
         return null;
+    }
+
+    /// <summary>
+    /// Verifies the seal over the stored request. A request that does not verify is dropped from the scan
+    /// entirely, not stripped like an outcome: there is nothing left to restore, since the roster, the
+    /// strategy and the binding it names are exactly what a forger would have edited.
+    /// </summary>
+    /// <param name="row">The raw row the request came from.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<bool> IsRequestSealVerifiedAsync(RawEscalationRow row, CancellationToken ct)
+    {
+        var seal = row.RequestSealJson is null
+            ? null
+            : TryDeserialize<GovernanceRecordSeal>(row.RequestSealJson, row.Id, "request seal");
+
+        // TryMapSnapshot already rejected a null RequestJson.
+        if (await _sealer.VerifyAsync(RequestSubjectId(row.Id), row.RequestJson!, seal, ct))
+            return true;
+
+        _logger.LogError(
+            "Durable escalation {EscalationId} carries a request whose seal does not verify (or has none); " +
+            "quarantining it (the row is preserved for investigation and will not be restored)",
+            row.Id);
+        return false;
     }
 
     /// <summary>
@@ -437,6 +478,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
         Guid Id,
         string? Status,
         string? RequestJson,
+        string? RequestSealJson,
         string? DecisionsJson,
         string? OutcomeJson,
         string? OutcomeSealJson,
@@ -448,4 +490,11 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     /// </summary>
     /// <param name="escalationId">The escalation the seal belongs to.</param>
     private static string SubjectId(Guid escalationId) => escalationId.ToString("N");
+
+    /// <summary>
+    /// The seal subject for an escalation's pending request. Distinct from <see cref="SubjectId"/> so the
+    /// two seals on one row are not interchangeable.
+    /// </summary>
+    /// <param name="escalationId">The escalation the request belongs to.</param>
+    internal static string RequestSubjectId(Guid escalationId) => "request:" + escalationId.ToString("N");
 }

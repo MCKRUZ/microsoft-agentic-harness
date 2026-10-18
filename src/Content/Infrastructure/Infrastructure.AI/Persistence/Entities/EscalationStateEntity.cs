@@ -53,6 +53,16 @@ public sealed class EscalationStateEntity
     /// <summary>JSON of the originating <c>EscalationRequest</c>.</summary>
     public string RequestJson { get; set; } = string.Empty;
 
+    /// <summary>
+    /// JSON of the <c>GovernanceRecordSeal</c> covering <see cref="RequestJson"/>, produced when the
+    /// escalation was queued. A pending request carries the approver roster, the approval strategy and
+    /// the plan-step binding, and the outcome sealed at resolution copies its binding from it, so an
+    /// unsealed request would let a forged binding be certified by a genuine approval (#863). Null on rows
+    /// written before request sealing existed, which verification treats as unverified (fail-closed): the
+    /// row is preserved but not restored.
+    /// </summary>
+    public string? RequestSealJson { get; set; }
+
     /// <summary>JSON array of the collected <c>ApproverDecision</c> records, in submission order.</summary>
     public string DecisionsJson { get; set; } = "[]";
 

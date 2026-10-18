@@ -133,15 +133,21 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 		RespondedAt = DateTimeOffset.UtcNow
 	};
 
+	// The request is sealed the way the store seals it, so a row injected here is rejected only for the
+	// defect a test plants, not because its request seal is missing.
 	private async Task InsertRawRowAsync(
 		Guid id, string status, string requestJson, long createdAtTicks, string decisionsJson = "[]")
 	{
+		var requestSeal = await _sealer.SealAsync(
+			EfCoreEscalationStateStore.RequestSubjectId(id), requestJson, CancellationToken.None);
+		var requestSealJson = System.Text.Json.JsonSerializer.Serialize(requestSeal, GovernanceStateJson.Options);
+
 		await using var context = new GovernanceStateDbContext(_dbOptions);
 		await context.Database.EnsureCreatedAsync();
 		await context.Database.ExecuteSqlRawAsync(
-			"INSERT INTO escalation_state (Id, Status, RequestJson, DecisionsJson, OutcomeJson, OutcomeSealJson, CreatedAtTicks, UpdatedAtTicks) " +
-			"VALUES ({0}, {1}, {2}, {3}, NULL, NULL, {4}, {5});",
-			id, status, requestJson, decisionsJson, createdAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+			"INSERT INTO escalation_state (Id, Status, RequestJson, RequestSealJson, DecisionsJson, OutcomeJson, OutcomeSealJson, CreatedAtTicks, UpdatedAtTicks) " +
+			"VALUES ({0}, {1}, {2}, {3}, {4}, NULL, NULL, {5}, {6});",
+			id, status, requestJson, requestSealJson, decisionsJson, createdAtTicks, DateTimeOffset.UtcNow.UtcTicks);
 	}
 
 	private static string SerializeRequest(EscalationRequest request) =>

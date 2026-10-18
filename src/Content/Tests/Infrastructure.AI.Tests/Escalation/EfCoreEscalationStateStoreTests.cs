@@ -342,6 +342,83 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         polled.Should().BeNull("the binding is part of the sealed bytes, so rewriting it must not verify");
     }
 
+    // #863: the outcome copies its binding from the pending request, so sealing only the outcome proves
+    // the binding was unchanged after resolution, not that it was the one the step queued. The request is
+    // sealed as well, and a pending row that fails the check is quarantined rather than restored.
+
+    private async Task EditRowAsync(Guid id, Action<Infrastructure.AI.Persistence.Entities.EscalationStateEntity> edit)
+    {
+        await using var context = new GovernanceStateDbContext(_options);
+        var entity = await context.Escalations.SingleAsync(e => e.Id == id);
+        edit(entity);
+        await context.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task GetActive_RequestBindingRewrittenInThePendingRow_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid(), EscalationBindingKind.GateApproval);
+        var request = CreateRequest() with { Binding = binding };
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // An attacker with write access to the escalation store repoints the pending request at a victim step.
+        await EditRowAsync(request.EscalationId, e => e.RequestJson = e.RequestJson.Replace(
+            binding.StepId.ToString(), Guid.NewGuid().ToString(), StringComparison.OrdinalIgnoreCase));
+
+        var active = await store.GetActiveAsync(CancellationToken.None);
+
+        active.Should().BeEmpty("a request whose bytes changed after sealing must not be restored");
+    }
+
+    [Fact]
+    public async Task GetActive_RequestSealStripped_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // Deleting the seal must not downgrade the row to a trusted legacy one.
+        await EditRowAsync(request.EscalationId, e => e.RequestSealJson = null);
+
+        (await store.GetActiveAsync(CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetActive_RequestSealLiftedFromAnotherEscalation_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var donor = CreateRequest();
+        var victim = CreateRequest();
+        await store.SavePendingAsync(donor, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.SavePendingAsync(victim, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        string? donorSeal;
+        await using (var context = new GovernanceStateDbContext(_options))
+            donorSeal = (await context.Escalations.SingleAsync(e => e.Id == donor.EscalationId)).RequestSealJson;
+        await EditRowAsync(victim.EscalationId, e => e.RequestSealJson = donorSeal);
+
+        var active = await store.GetActiveAsync(CancellationToken.None);
+
+        active.Should().ContainSingle().Which.Request.EscalationId.Should().Be(
+            donor.EscalationId, "a seal is bound to the one escalation it was issued for");
+    }
+
+    [Fact]
+    public async Task GetActive_OneQuarantinedRequest_DoesNotHideTheOthers()
+    {
+        var store = CreateStore();
+        var healthy = CreateRequest();
+        var forged = CreateRequest();
+        await store.SavePendingAsync(healthy, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.SavePendingAsync(forged, DateTimeOffset.UtcNow, CancellationToken.None);
+        await EditRowAsync(forged.EscalationId, e => e.RequestSealJson = null);
+
+        var active = await store.GetActiveAsync(CancellationToken.None);
+
+        active.Should().ContainSingle().Which.Request.EscalationId.Should().Be(healthy.EscalationId);
+    }
+
     /// <summary>
     /// Minimal <see cref="IDbContextFactory{TContext}"/> over fixed options, mirroring the
     /// planner store tests' factory double.

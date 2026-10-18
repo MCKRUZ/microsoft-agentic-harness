@@ -16,8 +16,8 @@ namespace Domain.AI.Escalation;
 /// </para>
 /// <para>
 /// <b>What this guarantees, and what it does not.</b> The seal proves the binding was not changed after
-/// the escalation resolved. It does not prove the binding is the one the step queued, because the pending
-/// request it is copied from is stored unsealed; and it names the step, not the individual escalation, so
+/// the escalation resolved, and the pending request it is copied from is sealed too (#863), so a forged
+/// binding is not restored after a restart. It names the step, not the individual escalation, so
 /// an earlier approval for the same step is not distinguished from a later one. It is defence in depth
 /// against a verdict made about something else, not protection against a writer of the plan state store,
 /// who could mark the step complete directly.
