@@ -1,5 +1,6 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Application.AI.Common.Extensions;
 
@@ -30,7 +31,7 @@ public static class EvalMetricRegistrationExtensions
     /// <summary>
     /// Registers <typeparamref name="TMetric"/> as a concrete singleton, a plain
     /// <see cref="IEvalMetric"/>, and a keyed <see cref="IEvalMetric"/> under <paramref name="key"/>.
-    /// Calling this twice for the same <typeparamref name="TMetric"/> (e.g. a consumer that composes
+    /// Calling this twice with the same type and key (e.g. a consumer that composes
     /// <c>AddEvaluationDependencies</c> more than once) is a no-op the second time, not a duplicate
     /// registration — <c>EvalRunner</c>'s constructor builds its lookup with <c>ToDictionary</c>,
     /// which throws on a duplicate key.
@@ -39,29 +40,70 @@ public static class EvalMetricRegistrationExtensions
     /// Must equal the registered metric's own <see cref="IEvalMetric.Key"/> — the keyed alias exists
     /// only so a caller who already knows the key can resolve one metric without walking the whole
     /// <c>IEnumerable&lt;IEvalMetric&gt;</c>; the non-keyed registration is what actually makes the
-    /// metric runnable. Enforced at first resolution: a mismatch throws
+    /// metric runnable. Enforced the first time either registration is resolved: a mismatch throws
     /// <see cref="InvalidOperationException"/> rather than silently registering an alias under a
-    /// string no <c>MetricSpec</c> will ever reference.
+    /// string no <c>MetricSpec</c> will ever reference. The check sits on the plain registration too
+    /// because that is the one <c>EvalRunner</c> always resolves (#440); on the keyed alias alone it
+    /// only ran when something asked for the alias by key, which no host does.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TMetric"/> was already registered here under a different key, or another
+    /// metric type already holds <paramref name="key"/>. Either would otherwise be dropped silently
+    /// or crash <c>EvalRunner</c> later with a bare duplicate-key error.
+    /// </exception>
     public static IServiceCollection AddEvalMetric<TMetric>(this IServiceCollection services, string key)
         where TMetric : class, IEvalMetric
     {
-        if (services.Any(d => d.ServiceType == typeof(TMetric)))
-            return services;
-
-        services.AddSingleton<TMetric>();
-        services.AddSingleton<IEvalMetric>(sp => sp.GetRequiredService<TMetric>());
-        services.AddKeyedSingleton<IEvalMetric>(key, (sp, _) =>
+        foreach (var existing in services.Select(d => d.ImplementationInstance).OfType<EvalMetricRegistration>())
         {
-            var metric = sp.GetRequiredService<TMetric>();
-            if (metric.Key != key)
+            var sameType = existing.MetricType == typeof(TMetric);
+            if (sameType && existing.Key == key)
+                return services;
+
+            if (sameType)
             {
                 throw new InvalidOperationException(
-                    $"AddEvalMetric<{typeof(TMetric).Name}> was registered under key '{key}', but the " +
-                    $"metric's own Key is '{metric.Key}'. The keyed alias must match IEvalMetric.Key exactly.");
+                    $"AddEvalMetric<{typeof(TMetric).Name}> was already called with key '{existing.Key}' and is now " +
+                    $"being registered under '{key}'. One metric type has one key; the second registration would " +
+                    "otherwise be dropped silently.");
             }
-            return metric;
-        });
+
+            if (existing.Key == key)
+            {
+                throw new InvalidOperationException(
+                    $"AddEvalMetric<{typeof(TMetric).Name}> cannot use key '{key}': it already belongs to " +
+                    $"{existing.MetricType.Name}. EvalRunner builds its lookup by key and would fail on the duplicate.");
+            }
+        }
+
+        services.AddSingleton(new EvalMetricRegistration(typeof(TMetric), key));
+
+        // A consumer may have registered their own instance of TMetric first (it is the only way to give a
+        // metric constructor arguments the container cannot supply). Keep it, and still add the two
+        // IEvalMetric registrations that make it runnable; skipping them here was the original bug.
+        services.TryAddSingleton<TMetric>();
+        services.AddSingleton<IEvalMetric>(sp => ResolveChecked<TMetric>(sp, key));
+        services.AddKeyedSingleton<IEvalMetric>(key, (sp, _) => ResolveChecked<TMetric>(sp, key));
         return services;
     }
+
+    private static TMetric ResolveChecked<TMetric>(IServiceProvider sp, string key)
+        where TMetric : class, IEvalMetric
+    {
+        var metric = sp.GetRequiredService<TMetric>();
+        if (metric.Key != key)
+        {
+            throw new InvalidOperationException(
+                $"AddEvalMetric<{typeof(TMetric).Name}> was registered under key '{key}', but the " +
+                $"metric's own Key is '{metric.Key}'. The keyed alias must match IEvalMetric.Key exactly.");
+        }
+        return metric;
+    }
+
+    /// <summary>
+    /// Records which metric type was registered under which key, so a second call can tell "the same
+    /// registration again" from "a conflicting one". Registered as an instance so it is visible on the
+    /// service collection without resolving anything.
+    /// </summary>
+    private sealed record EvalMetricRegistration(Type MetricType, string Key);
 }
