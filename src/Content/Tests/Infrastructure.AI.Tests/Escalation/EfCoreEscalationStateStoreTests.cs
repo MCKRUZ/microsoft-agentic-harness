@@ -358,7 +358,7 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
     public async Task GetActive_RequestBindingRewrittenInThePendingRow_QuarantinesTheEscalation()
     {
         var store = CreateStore();
-        var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid());
+        var binding = new EscalationBinding(Guid.NewGuid(), Guid.NewGuid(), EscalationBindingKind.GateApproval);
         var request = CreateRequest() with { Binding = binding };
         await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
 
