@@ -91,7 +91,7 @@ public sealed class HumanGateStepExecutor : IPlanAwareStepExecutor
             Approvers = config.Approvers,
             TimeoutSeconds = (int)config.Timeout.TotalSeconds,
             RequestedAt = DateTimeOffset.UtcNow,
-            Binding = new EscalationBinding(planId.Value, step.Id.Value)
+            Binding = new EscalationBinding(planId.Value, step.Id.Value, EscalationBindingKind.GateApproval)
         };
 
         var escalationId = await _escalationService.QueueEscalationAsync(request, ct);

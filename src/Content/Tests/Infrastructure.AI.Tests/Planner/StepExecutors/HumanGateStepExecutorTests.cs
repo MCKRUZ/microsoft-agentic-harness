@@ -136,7 +136,7 @@ public sealed class HumanGateStepExecutorTests
         await _sut.ExecuteAsync(_planId, step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         // Only a verdict that names this plan and step may release it (#784).
-        Assert.Equal(new EscalationBinding(_planId.Value, step.Id.Value), captured!.Binding);
+        Assert.Equal(new EscalationBinding(_planId.Value, step.Id.Value, EscalationBindingKind.GateApproval), captured!.Binding);
     }
 
     [Fact]
