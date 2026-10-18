@@ -137,4 +137,14 @@ public interface IEscalationStateStore
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The audited outcome, or null.</returns>
     Task<EscalationOutcome?> GetResolvedOutcomeAsync(Guid escalationId, CancellationToken ct);
+
+    /// <summary>
+    /// Returns the id of the escalation most recently created for <paramref name="binding"/>'s plan
+    /// step, in any status, or null when none is recorded. The anchor behind
+    /// <see cref="IEscalationService.IsLatestForBindingAsync"/>: it lives in this store, not in the plan
+    /// state store, so whoever can rewrite a step's stored escalation reference cannot also move it.
+    /// </summary>
+    /// <param name="binding">The plan step to look up.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<Guid?> GetLatestForBindingAsync(EscalationBinding binding, CancellationToken ct);
 }

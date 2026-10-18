@@ -419,6 +419,62 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         active.Should().ContainSingle().Which.Request.EscalationId.Should().Be(healthy.EscalationId);
     }
 
+    // #863: the anchor behind "is this the escalation the step is waiting on". It lives in this store so
+    // whoever can rewrite a step's stored escalation reference in the plan state store cannot also move it.
+
+    private static EscalationBinding StepBinding(Guid? planId = null, Guid? stepId = null) =>
+        new(planId ?? Guid.NewGuid(), stepId ?? Guid.NewGuid(), EscalationBindingKind.FailureRetry);
+
+    [Fact]
+    public async Task GetLatestForBinding_ReturnsTheNewestEscalationForTheStepInAnyStatus()
+    {
+        var store = CreateStore();
+        var binding = StepBinding();
+        var older = CreateRequest() with { Binding = binding };
+        var newer = CreateRequest() with { Binding = binding };
+        await store.SavePendingAsync(older, new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero), CancellationToken.None);
+        await store.SavePendingAsync(newer, new DateTimeOffset(2026, 7, 1, 10, 0, 0, TimeSpan.Zero), CancellationToken.None);
+
+        // The older one resolves and is audited, so it is Resolved; the newer is still Pending.
+        await store.MarkResolvedPendingAuditAsync(CreateOutcome(older.EscalationId) with { Binding = binding }, CancellationToken.None);
+        await store.MarkResolvedAsync(older.EscalationId, CancellationToken.None);
+
+        (await store.GetLatestForBindingAsync(binding, CancellationToken.None)).Should().Be(newer.EscalationId);
+    }
+
+    [Fact]
+    public async Task GetLatestForBinding_AnotherStepsEscalation_IsNotConsidered()
+    {
+        var store = CreateStore();
+        var planId = Guid.NewGuid();
+        var mine = CreateRequest() with { Binding = StepBinding(planId) };
+        var other = CreateRequest() with { Binding = StepBinding(planId) };
+        await store.SavePendingAsync(mine, new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero), CancellationToken.None);
+        await store.SavePendingAsync(other, new DateTimeOffset(2026, 7, 1, 10, 0, 0, TimeSpan.Zero), CancellationToken.None);
+
+        (await store.GetLatestForBindingAsync(mine.Binding!, CancellationToken.None)).Should().Be(mine.EscalationId);
+    }
+
+    [Fact]
+    public async Task GetLatestForBinding_NothingRecorded_IsNull()
+    {
+        var store = CreateStore();
+        await store.SavePendingAsync(CreateRequest(), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        (await store.GetLatestForBindingAsync(StepBinding(), CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetLatestForBinding_SurvivesANewStoreInstanceOverTheSameDatabase()
+    {
+        var binding = StepBinding();
+        var request = CreateRequest() with { Binding = binding };
+        await CreateStore().SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // A restart: nothing in memory, only the database file.
+        (await CreateStore().GetLatestForBindingAsync(binding, CancellationToken.None)).Should().Be(request.EscalationId);
+    }
+
     /// <summary>
     /// Minimal <see cref="IDbContextFactory{TContext}"/> over fixed options, mirroring the
     /// planner store tests' factory double.

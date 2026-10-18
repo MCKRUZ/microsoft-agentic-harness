@@ -58,6 +58,31 @@ public interface IEscalationService
     Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct);
 
     /// <summary>
+    /// Whether <paramref name="escalationId"/> is the most recent escalation queued for
+    /// <paramref name="binding"/>'s plan step.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A binding names a step, not an individual escalation, and one step can raise several in turn
+    /// (an escalate-on-failure step that is approved, re-run and fails again). The plan state store keeps
+    /// only the id the step is waiting on, so repointing it at an older, already-approved escalation for
+    /// the same step would release the step while the newer escalation is still pending or was denied.
+    /// This is the anchor that closes that: the service records, outside the plan state store, which
+    /// escalation was queued last for each step, and the plan executor releases a step only on that one
+    /// (#863).
+    /// </para>
+    /// <para>
+    /// <b>Fail closed.</b> An escalation the service has no record of for this step (queued before this
+    /// check existed, or pruned) is not the latest. The durable store, when enabled, is authoritative so a
+    /// second host or a restart sees the same answer; the in-process record answers when it is not.
+    /// </para>
+    /// </remarks>
+    /// <param name="escalationId">The escalation the step is waiting on.</param>
+    /// <param name="binding">The plan step the escalation was queued for.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<bool> IsLatestForBindingAsync(Guid escalationId, EscalationBinding binding, CancellationToken ct);
+
+    /// <summary>
     /// Returns all pending escalations assigned to a specific approver.
     /// </summary>
     Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct);

@@ -41,6 +41,13 @@ public static class PlanStepErrors
     /// </summary>
     public const string EscalationUnbound = "step.escalation_unbound";
 
+    /// <summary>
+    /// A blocked step's stored escalation reference led to a verdict for the right step, but not from the
+    /// escalation most recently queued for it. The step is failed rather than released: an older approval
+    /// must not stand in for the decision the step is actually waiting on.
+    /// </summary>
+    public const string EscalationSuperseded = "step.escalation_superseded";
+
     /// <summary>An unhandled exception escaped the step executor.</summary>
     public const string ExecutionFailed = "step.execution_failed";
 

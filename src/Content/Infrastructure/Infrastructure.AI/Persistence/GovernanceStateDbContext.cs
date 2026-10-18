@@ -62,6 +62,8 @@ public sealed class GovernanceStateDbContext : DbContext
         escalation.Property(e => e.DecisionsJson).IsRequired();
         escalation.HasIndex(e => new { e.Status, e.UpdatedAtTicks })
             .HasDatabaseName("ix_escalation_state_status_updated_at");
+        escalation.HasIndex(e => new { e.BindingPlanId, e.BindingStepId, e.CreatedAtTicks })
+            .HasDatabaseName("ix_escalation_state_binding_created_at");
 
         var proposal = modelBuilder.Entity<ChangeProposalEntity>();
         proposal.ToTable("change_proposal");

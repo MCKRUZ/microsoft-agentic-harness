@@ -44,6 +44,7 @@ public sealed class EscalationServiceApprovalRouterTests : IDisposable
         public Task<EscalationDecisionResult> SubmitDecisionAsync(Guid escalationId, ApproverDecision decision, CancellationToken ct) => throw new NotImplementedException();
         public Task<EscalationRequest?> GetPendingEscalationAsync(Guid escalationId, CancellationToken ct) => throw new NotImplementedException();
         public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct) => throw new NotImplementedException();
+        public Task<bool> IsLatestForBindingAsync(Guid escalationId, EscalationBinding binding, CancellationToken ct) => throw new NotImplementedException();
         public Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct) => throw new NotImplementedException();
         public Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, string cancelledBy, CancellationToken ct) => throw new NotImplementedException();
     }

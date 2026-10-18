@@ -57,4 +57,9 @@ public sealed class NullEscalationStateStore : IEscalationStateStore
     /// <inheritdoc />
     public Task<EscalationOutcome?> GetResolvedOutcomeAsync(Guid escalationId, CancellationToken ct)
         => Task.FromResult<EscalationOutcome?>(null);
+
+    /// <inheritdoc />
+    /// <remarks>Always null: with no durable store the service's in-process record is the only anchor.</remarks>
+    public Task<Guid?> GetLatestForBindingAsync(EscalationBinding binding, CancellationToken ct)
+        => Task.FromResult<Guid?>(null);
 }

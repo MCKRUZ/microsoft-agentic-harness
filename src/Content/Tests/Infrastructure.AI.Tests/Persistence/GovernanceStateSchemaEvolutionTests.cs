@@ -57,6 +57,10 @@ public sealed class GovernanceStateSchemaEvolutionTests : IDisposable
             "an escalation database written before sealing shipped must gain the column in place");
 
         (await ColumnsOfAsync("escalation_state")).Should().Contain(
+            new[] { "BindingPlanId", "BindingStepId" },
+            "a database written before the latest-escalation anchor (#863) must gain its lookup columns in place");
+
+        (await ColumnsOfAsync("escalation_state")).Should().Contain(
             "RequestSealJson",
             "a database written before pending requests were sealed (#863) must gain that column in place too");
 
@@ -98,6 +102,9 @@ public sealed class GovernanceStateSchemaEvolutionTests : IDisposable
         await context.Database.ExecuteSqlRawAsync("DROP INDEX \"ix_escalation_state_status_updated_at\";");
         await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"escalation_state\" DROP COLUMN \"OutcomeSealJson\";");
         await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"escalation_state\" DROP COLUMN \"RequestSealJson\";");
+        await context.Database.ExecuteSqlRawAsync("DROP INDEX \"ix_escalation_state_binding_created_at\";");
+        await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"escalation_state\" DROP COLUMN \"BindingPlanId\";");
+        await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"escalation_state\" DROP COLUMN \"BindingStepId\";");
         await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"change_proposal\" DROP COLUMN \"ProposalSealJson\";");
     }
 
