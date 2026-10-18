@@ -141,13 +141,16 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 		var requestSeal = await _sealer.SealAsync(
 			EfCoreEscalationStateStore.RequestSubjectId(id), requestJson, CancellationToken.None);
 		var requestSealJson = System.Text.Json.JsonSerializer.Serialize(requestSeal, GovernanceStateJson.Options);
+		var decisionsSeal = await _sealer.SealAsync(
+			EfCoreEscalationStateStore.DecisionsSubjectId(id), decisionsJson, CancellationToken.None);
+		var decisionsSealJson = System.Text.Json.JsonSerializer.Serialize(decisionsSeal, GovernanceStateJson.Options);
 
 		await using var context = new GovernanceStateDbContext(_dbOptions);
 		await context.Database.EnsureCreatedAsync();
 		await context.Database.ExecuteSqlRawAsync(
-			"INSERT INTO escalation_state (Id, Status, RequestJson, RequestSealJson, DecisionsJson, OutcomeJson, OutcomeSealJson, CreatedAtTicks, UpdatedAtTicks) " +
-			"VALUES ({0}, {1}, {2}, {3}, {4}, NULL, NULL, {5}, {6});",
-			id, status, requestJson, requestSealJson, decisionsJson, createdAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+			"INSERT INTO escalation_state (Id, Status, RequestJson, RequestSealJson, DecisionsJson, DecisionsSealJson, OutcomeJson, OutcomeSealJson, CreatedAtTicks, UpdatedAtTicks) " +
+			"VALUES ({0}, {1}, {2}, {3}, {4}, {5}, NULL, NULL, {6}, {7});",
+			id, status, requestJson, requestSealJson, decisionsJson, decisionsSealJson, createdAtTicks, DateTimeOffset.UtcNow.UtcTicks);
 	}
 
 	private static string SerializeRequest(EscalationRequest request) =>

@@ -419,6 +419,93 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         active.Should().ContainSingle().Which.Request.EscalationId.Should().Be(healthy.EscalationId);
     }
 
+    // #863: the decisions collected so far decide when a strategy resolves, and the outcome sealed at
+    // resolution certifies whatever list it was built from, so a pending row's list is sealed on every write.
+
+    private static ApproverDecision Approve(string name) => new()
+    {
+        ApproverName = name,
+        Verdict = ApproverVerdict.Approve,
+        RespondedAt = DateTimeOffset.UtcNow
+    };
+
+    [Fact]
+    public async Task GetActive_SavedDecisions_SurviveARestartWithTheirSeal()
+    {
+        var request = CreateRequest();
+        await CreateStore().SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+        await CreateStore().SaveDecisionsAsync(request.EscalationId, [Approve("approver-1")], CancellationToken.None);
+
+        var active = await CreateStore().GetActiveAsync(CancellationToken.None);
+
+        active.Should().ContainSingle().Which.Decisions.Should().ContainSingle()
+            .Which.ApproverName.Should().Be("approver-1");
+    }
+
+    [Fact]
+    public async Task GetActive_ApprovalAddedToThePendingRow_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // An attacker with write access plants a roster member's approval without going through the service.
+        var forged = System.Text.Json.JsonSerializer.Serialize(
+            new[] { Approve("approver-1") }, GovernanceStateJson.Options);
+        await EditRowAsync(request.EscalationId, e => e.DecisionsJson = forged);
+
+        (await store.GetActiveAsync(CancellationToken.None)).Should().BeEmpty(
+            "a decision list whose bytes changed after sealing must not be restored");
+    }
+
+    [Fact]
+    public async Task GetActive_DecisionsSealStripped_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        await EditRowAsync(request.EscalationId, e => e.DecisionsSealJson = null);
+
+        (await store.GetActiveAsync(CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetActive_EarlierDecisionListSealedForAnotherEscalation_QuarantinesTheEscalation()
+    {
+        var store = CreateStore();
+        var donor = CreateRequest();
+        var victim = CreateRequest();
+        await store.SavePendingAsync(donor, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.SavePendingAsync(victim, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // Both lists are "[]", so only the subject binding tells the two seals apart.
+        string? donorSeal;
+        await using (var context = new GovernanceStateDbContext(_options))
+            donorSeal = (await context.Escalations.SingleAsync(e => e.Id == donor.EscalationId)).DecisionsSealJson;
+        await EditRowAsync(victim.EscalationId, e => e.DecisionsSealJson = donorSeal);
+
+        (await store.GetActiveAsync(CancellationToken.None)).Should().ContainSingle()
+            .Which.Request.EscalationId.Should().Be(donor.EscalationId);
+    }
+
+    [Fact]
+    public async Task GetActive_ResolvedRowWithNoDecisionsSeal_IsStillReturnedForTheReconciler()
+    {
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkResolvedPendingAuditAsync(CreateOutcome(request.EscalationId), CancellationToken.None);
+
+        // Once an outcome exists it carries its own decisions under its own seal; quarantining the row for the
+        // redundant column would strand a verdict that still has to reach the compliance audit.
+        await EditRowAsync(request.EscalationId, e => e.DecisionsSealJson = null);
+
+        var active = await store.GetActiveAsync(CancellationToken.None);
+
+        active.Should().ContainSingle().Which.Outcome.Should().NotBeNull();
+    }
+
     // #863: the anchor behind "is this the escalation the step is waiting on". It lives in this store so
     // whoever can rewrite a step's stored escalation reference in the plan state store cannot also move it.
 
