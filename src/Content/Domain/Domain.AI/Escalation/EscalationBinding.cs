@@ -11,7 +11,8 @@ namespace Domain.AI.Escalation;
 /// escalation and the step would be released by a decision a human made about something else. The
 /// binding closes that. It is written on the request when the step queues it and copied onto every
 /// <see cref="EscalationOutcome"/> the service builds, so it travels inside the sealed outcome bytes,
-/// and the plan executor releases a step only when the outcome names that step.
+/// and the plan executor releases a step only when the outcome names that step and a reason that step can
+/// have (<see cref="EscalationBindingKind"/>).
 /// </para>
 /// <para>
 /// <b>What this guarantees, and what it does not.</b> The seal proves the binding was not changed after
@@ -28,4 +29,5 @@ namespace Domain.AI.Escalation;
 /// </remarks>
 /// <param name="PlanId">The plan the step belongs to.</param>
 /// <param name="StepId">The step the escalation blocks.</param>
-public sealed record EscalationBinding(Guid PlanId, Guid StepId);
+/// <param name="Kind">Why it was raised, which decides what an approval may do (see <see cref="EscalationBindingKind"/>).</param>
+public sealed record EscalationBinding(Guid PlanId, Guid StepId, EscalationBindingKind Kind);

@@ -669,7 +669,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	// service can resolve an escalation has to copy the request's binding onto the outcome. One test per
 	// path: a path that forgot it would turn its approvals into silent failures at the reconciler.
 
-	private static readonly EscalationBinding SampleBinding = new(Guid.NewGuid(), Guid.NewGuid());
+	private static readonly EscalationBinding SampleBinding = new(Guid.NewGuid(), Guid.NewGuid(), EscalationBindingKind.GateApproval);
 
 	[Fact]
 	public async Task SubmitDecisionAsync_ResolvingDecision_CopiesTheRequestsBindingOntoTheOutcome()

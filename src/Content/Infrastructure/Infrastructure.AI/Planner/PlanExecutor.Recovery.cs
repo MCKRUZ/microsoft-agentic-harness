@@ -116,7 +116,7 @@ public sealed partial class PlanExecutor
                     ApprovalStrategy = ApprovalStrategyType.AnyOf,
                     Approvers = ["supervisor"],
                     RequestedAt = DateTimeOffset.UtcNow,
-                    Binding = StepBinding(ctx.PlanId, step.Id)
+                    Binding = new EscalationBinding(ctx.PlanId.Value, step.Id.Value, EscalationBindingKind.FailureRetry)
                 };
 
                 var escalationId = await _escalationService.QueueEscalationAsync(request, ct);
@@ -165,6 +165,9 @@ public sealed partial class PlanExecutor
     ///   failure re-escalates per the step's retry policy. It is <b>never</b> marked Completed without
     ///   re-running, and its escalation-reference output is never fed downstream.</description></item>
     /// </list>
+    /// <para>Which of the two a block is comes from the escalation's
+    /// <see cref="EscalationBinding.Kind"/>, not from the step's type: a human gate can also fail and
+    /// escalate, and a supervisor approving that failure re-runs the gate rather than passing it (#863).</para>
     /// <para>Rejection is uniform: the step is failed and its downstream skipped terminally (a human
     /// "no" is not re-run through the retry policy — that could re-escalate the rejected request). An
     /// unresolved escalation (null outcome) leaves the step <c>Blocked</c>; a blocked step without a
@@ -191,29 +194,36 @@ public sealed partial class PlanExecutor
 
             // The escalation id came from this step's own stored output, which is a different record
             // from the escalation. A verdict releases the step only if it says it was made about this
-            // step; one bound elsewhere (or to nothing) fails the step instead, approved or not.
-            if (outcome.Binding != StepBinding(ctx.PlanId, step.Id))
+            // step, for a reason this step can have; one bound elsewhere (or to nothing) fails the step
+            // instead, approved or not.
+            if (outcome.Binding is not { } binding || !IsBoundTo(binding, ctx.PlanId, step))
             {
                 await FailMisboundBlockAsync(step, escalationId.Value, outcome, ctx, ct);
                 continue;
             }
 
             if (outcome.IsApproved)
-                await ReleaseApprovedBlockAsync(step, escalationId.Value, ctx, ct);
+                await ReleaseApprovedBlockAsync(step, escalationId.Value, binding.Kind, ctx, ct);
             else
                 await FailRejectedBlockAsync(step, escalationId.Value, outcome, ctx, ct);
         }
     }
 
     /// <summary>
-    /// Releases a blocked step whose escalation was approved. A human gate is completed and its
-    /// downstream released; an escalate-on-failure block is reset to <c>Pending</c> so its real work
-    /// re-runs. In neither case is the escalation-reference output propagated as the step's output —
+    /// Releases a blocked step whose escalation was approved. A gate's own approval completes it and
+    /// releases its downstream; a failure-retry approval resets the step to <c>Pending</c> so its real
+    /// work re-runs. In neither case is the escalation-reference output propagated as the step's output —
     /// a gate produces no data, and a re-run produces its own genuine output.
     /// </summary>
-    private async Task ReleaseApprovedBlockAsync(PlanStep step, Guid escalationId, PlanExecutionRuntime ctx, CancellationToken ct)
+    /// <remarks>
+    /// The branch is the escalation's <paramref name="kind"/>, not the step's type (#863). A human gate
+    /// whose retry policy escalates on failure is blocked by a failure escalation answered by a
+    /// supervisor; completing the gate on that approval would pass a gate its own approvers never saw.
+    /// </remarks>
+    private async Task ReleaseApprovedBlockAsync(
+        PlanStep step, Guid escalationId, EscalationBindingKind kind, PlanExecutionRuntime ctx, CancellationToken ct)
     {
-        if (step.Type == StepType.HumanGate)
+        if (kind == EscalationBindingKind.GateApproval)
         {
             _logger.LogInformation(
                 "Human gate {StepId} in plan {PlanId} released: escalation {EscalationId} approved",
@@ -257,9 +267,21 @@ public sealed partial class PlanExecutor
         await SkipDownstreamSubgraphAsync(step.Id, ctx);
     }
 
-    /// <summary>The binding an escalation queued for <paramref name="stepId"/> of <paramref name="planId"/> carries.</summary>
-    private static EscalationBinding StepBinding(PlanId planId, PlanStepId stepId) =>
-        new(planId.Value, stepId.Value);
+    /// <summary>
+    /// Whether <paramref name="binding"/> names <paramref name="step"/> of <paramref name="planId"/> for a
+    /// reason that step can have. Only a human gate raises a gate approval; any step can raise a failure
+    /// retry. A kind that is neither (a binding stored before kinds existed reads as <c>0</c>) matches
+    /// nothing.
+    /// </summary>
+    private static bool IsBoundTo(EscalationBinding binding, PlanId planId, PlanStep step) =>
+        binding.PlanId == planId.Value
+        && binding.StepId == step.Id.Value
+        && binding.Kind switch
+        {
+            EscalationBindingKind.GateApproval => step.Type == StepType.HumanGate,
+            EscalationBindingKind.FailureRetry => true,
+            _ => false
+        };
 
     /// <summary>
     /// Fails a blocked step whose stored escalation reference leads to a verdict that is not bound to
@@ -288,8 +310,8 @@ public sealed partial class PlanExecutor
             errorCode = PlanStepErrors.EscalationBindingMismatch;
             _logger.LogError(
                 "Blocked step {StepId} in plan {PlanId} references escalation {EscalationId}, whose verdict is bound to " +
-                "plan {BoundPlanId} step {BoundStepId} rather than this step; failing the step instead of releasing it",
-                step.Id, ctx.PlanId, escalationId, outcome.Binding.PlanId, outcome.Binding.StepId);
+                "plan {BoundPlanId} step {BoundStepId} ({BoundKind}) rather than this step; failing the step instead of releasing it",
+                step.Id, ctx.PlanId, escalationId, outcome.Binding.PlanId, outcome.Binding.StepId, outcome.Binding.Kind);
         }
 
         await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct,
