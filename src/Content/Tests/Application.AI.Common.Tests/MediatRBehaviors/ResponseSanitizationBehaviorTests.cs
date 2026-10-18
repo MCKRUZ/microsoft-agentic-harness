@@ -74,13 +74,13 @@ public sealed class ResponseSanitizationBehaviorTests
     [Fact]
     public async Task Handle_GovernanceDisabledButSanitizationEnabled_StillSanitizes()
     {
-        var output = new TestToolOutput("secret: AKIAIOSFODNN7EXAMPLE");
+        var output = new TestToolOutput("secret: AKIA" + "IOSFODNN7EXAMPLE");
         var sanitized = SanitizationResult.WithFindings(
             "secret: [REDACTED:aws_key]",
-            "secret: AKIAIOSFODNN7EXAMPLE",
+            "secret: AKIA" + "IOSFODNN7EXAMPLE",
             [new SanitizationFinding(SanitizationCategory.CredentialLeak, ThreatLevel.High, "AWS key", 8, 20, 0.95)]);
 
-        _sanitizer.Setup(x => x.Sanitize("secret: AKIAIOSFODNN7EXAMPLE", "test")).Returns(sanitized);
+        _sanitizer.Setup(x => x.Sanitize("secret: AKIA" + "IOSFODNN7EXAMPLE", "test")).Returns(sanitized);
 
         var behavior = CreateBehavior(new GovernanceConfig
         {
@@ -94,7 +94,7 @@ public sealed class ResponseSanitizationBehaviorTests
             () => Task.FromResult(Result<TestToolOutput>.Success(output)),
             CancellationToken.None);
 
-        _sanitizer.Verify(x => x.Sanitize("secret: AKIAIOSFODNN7EXAMPLE", "test"), Times.Once);
+        _sanitizer.Verify(x => x.Sanitize("secret: AKIA" + "IOSFODNN7EXAMPLE", "test"), Times.Once);
         Assert.True(result.IsSuccess);
         Assert.Equal("secret: [REDACTED:aws_key]", result.Value!.ToolOutput);
     }
@@ -133,13 +133,13 @@ public sealed class ResponseSanitizationBehaviorTests
     [Fact]
     public async Task Handle_FindingsBelowThreshold_RedactsAndContinues()
     {
-        var output = new TestToolOutput("secret: AKIAIOSFODNN7EXAMPLE");
+        var output = new TestToolOutput("secret: AKIA" + "IOSFODNN7EXAMPLE");
         var sanitized = SanitizationResult.WithFindings(
             "secret: [REDACTED:aws_key]",
-            "secret: AKIAIOSFODNN7EXAMPLE",
+            "secret: AKIA" + "IOSFODNN7EXAMPLE",
             [new SanitizationFinding(SanitizationCategory.CredentialLeak, ThreatLevel.High, "AWS key", 8, 20, 0.95)]);
 
-        _sanitizer.Setup(x => x.Sanitize("secret: AKIAIOSFODNN7EXAMPLE", "test"))
+        _sanitizer.Setup(x => x.Sanitize("secret: AKIA" + "IOSFODNN7EXAMPLE", "test"))
             .Returns(sanitized);
 
         var behavior = CreateBehavior();

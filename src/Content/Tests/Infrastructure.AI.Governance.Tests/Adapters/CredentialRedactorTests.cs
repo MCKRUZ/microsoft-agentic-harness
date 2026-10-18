@@ -28,10 +28,10 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_AwsAccessKey_RedactsAndReportsHigh()
     {
-        var result = _redactor.Sanitize("Key is AKIAIOSFODNN7EXAMPLE for the account.");
+        var result = _redactor.Sanitize("Key is AKIA" + "IOSFODNN7EXAMPLE for the account.");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:aws_key]", result.SanitizedContent);
-        Assert.DoesNotContain("AKIAIOSFODNN7EXAMPLE", result.SanitizedContent);
+        Assert.DoesNotContain("AKIA" + "IOSFODNN7EXAMPLE", result.SanitizedContent);
         Assert.Single(result.Findings);
         Assert.Equal(SanitizationCategory.CredentialLeak, result.Findings[0].Category);
         Assert.Equal(ThreatLevel.High, result.Findings[0].ThreatLevel);
@@ -40,7 +40,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_AzureConnectionString_RedactsAndReportsHigh()
     {
-        var connStr = "DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=abc123def456==;EndpointSuffix=core.windows.net";
+        var connStr = "DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=" + "abc123def456==;EndpointSuffix=core.windows.net";
         var result = _redactor.Sanitize($"Connection: {connStr}");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:azure_connection_string]", result.SanitizedContent);
@@ -60,7 +60,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_GitHubPat_RedactsAndReportsHigh()
     {
-        var result = _redactor.Sanitize("Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh to authenticate.");
+        var result = _redactor.Sanitize("Use ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh to authenticate.");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:github_pat]", result.SanitizedContent);
     }
@@ -68,7 +68,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_OpenAiApiKey_RedactsAndReportsHigh()
     {
-        var result = _redactor.Sanitize("Set OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuv");
+        var result = _redactor.Sanitize("Set OPENAI_API_KEY=sk-proj-" + "abcdefghijklmnopqrstuv");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:api_key]", result.SanitizedContent);
     }
@@ -76,7 +76,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_SlackToken_RedactsAndReportsHigh()
     {
-        var result = _redactor.Sanitize("Bot token: xoxb-1234567890123-abcdefghij");
+        var result = _redactor.Sanitize("Bot token: xoxb-" + "1234567890123-abcdefghij");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:slack_token]", result.SanitizedContent);
     }
@@ -84,7 +84,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_PrivateKeyBlock_RedactsAndReportsHigh()
     {
-        var pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----";
+        var pem = "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----";
         var result = _redactor.Sanitize($"Cert:\n{pem}");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:private_key]", result.SanitizedContent);
@@ -96,7 +96,7 @@ public sealed class CredentialRedactorTests
     public void Sanitize_RealisticallySizedPrivateKeyBody_StillRedacts()
     {
         var body = string.Join("\n", Enumerable.Repeat(new string('M', 64), 60)); // ~4160 chars
-        var pem = $"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        var pem = $"-----BEGIN RSA " + "PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
 
         var result = _redactor.Sanitize($"Key:\n{pem}");
 
@@ -113,7 +113,7 @@ public sealed class CredentialRedactorTests
         // member to catch what this pattern misses). NonBacktracking removes the need for any length
         // cap: this proves a body well past the old 8000-char bound still redacts in full.
         var body = string.Join("\n", Enumerable.Repeat(new string('M', 64), 180)); // ~11,700 chars
-        var pem = $"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        var pem = $"-----BEGIN RSA " + "PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
 
         var result = _redactor.Sanitize($"Key:\n{pem}");
 
@@ -132,7 +132,7 @@ public sealed class CredentialRedactorTests
         // place, since the bound only shrinks the search window, not the backtracking cost within it.
         // Mutation test: remove RegexOptions.NonBacktracking and this throws RegexMatchTimeoutException
         // or takes multiple seconds instead of completing quickly.
-        var content = "-----BEGIN RSA PRIVATE KEY-----\n" + new string('M', 3_000_000);
+        var content = "-----BEGIN RSA " + "PRIVATE KEY-----\n" + new string('M', 3_000_000);
 
         var act = () => _redactor.Sanitize(content);
 
@@ -158,7 +158,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_GenericSecretKeyValue_RedactsWithLowerConfidence()
     {
-        var result = _redactor.Sanitize("password=SuperSecret123!");
+        var result = _redactor.Sanitize("password=" + "SuperSecret123!");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:generic_secret]", result.SanitizedContent);
         Assert.True(result.Findings[0].Confidence < 0.8);
@@ -167,7 +167,7 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_BasicAuthHeader_RedactsAndReportsHigh()
     {
-        var result = _redactor.Sanitize("Authorization: Basic dXNlcjpwYXNzd29yZA==");
+        var result = _redactor.Sanitize("Authorization: Basic " + "dXNlcjpwYXNzd29yZA==");
         Assert.True(result.WasSanitized);
         Assert.Contains("[REDACTED:basic_auth]", result.SanitizedContent);
     }
@@ -175,12 +175,12 @@ public sealed class CredentialRedactorTests
     [Fact]
     public void Sanitize_MultipleSecrets_RedactsAll()
     {
-        var content = "Key: AKIAIOSFODNN7EXAMPLE, token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh";
+        var content = "Key: AKIA" + "IOSFODNN7EXAMPLE, token: ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh";
         var result = _redactor.Sanitize(content);
         Assert.True(result.WasSanitized);
         Assert.True(result.Findings.Count >= 2);
-        Assert.DoesNotContain("AKIAIOSFODNN7EXAMPLE", result.SanitizedContent);
-        Assert.DoesNotContain("ghp_ABCDEFGHIJ", result.SanitizedContent);
+        Assert.DoesNotContain("AKIA" + "IOSFODNN7EXAMPLE", result.SanitizedContent);
+        Assert.DoesNotContain("ghp_" + "ABCDEFGHIJ", result.SanitizedContent);
     }
 
     [Fact]

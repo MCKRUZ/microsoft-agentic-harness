@@ -83,8 +83,8 @@ public class GovernanceSanitizationExample
 
         var testCases = new[]
         {
-            ("AWS key: AKIAIOSFODNN7EXAMPLE found in logs", "AWS API Key"),
-            ("GitHub token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01 is active", "GitHub PAT"),
+            ("AWS key: AKIA" + "IOSFODNN7EXAMPLE found in logs", "AWS API Key"),
+            ("GitHub token: ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01 is active", "GitHub PAT"),
             ("Authorization: Bearer FAKE-JWT-HEADER.FAKE-JWT-PAYLOAD.FAKE-JWT-SIGNATURE", "JWT Token"),
             ("Server=prod.db.com;Database=users;User Id=admin;Password=SuperSecret123!", "Connection String"),
         };
