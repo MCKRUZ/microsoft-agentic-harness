@@ -345,22 +345,15 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
 
     private async Task EnqueueOrMarkFailedAsync(ScheduleRecord schedule, RunRecord record, DateTimeOffset firedAt)
     {
-        try
+        // Not the tick's own token, and a failure recorded terminal: see AdmittedRunDispatch. The failure
+        // is stamped with the tick that fired, not the moment of failure.
+        var notQueued = await AdmittedRunDispatch
+            .QueueOrAbandonAsync(_queue, _runStore, record, () => firedAt)
+            .ConfigureAwait(false);
+        if (notQueued is not null)
         {
-            // Deliberately not the tick's own token — matching StartWorkflowRunCommandHandler, the
-            // record is committed past admission, and a record committed but never queued is stranded.
-            await _queue.EnqueueAsync(record.JobId, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Run {JobId} fired by schedule {ScheduleId} was accepted but could not be queued.",
+            _logger.LogError(notQueued, "Run {JobId} fired by schedule {ScheduleId} was accepted but could not be queued.",
                 record.JobId, schedule.ScheduleId);
-            _runStore.Update(record with
-            {
-                Status = RunStatus.Failed,
-                Error = "The run was accepted but could not be queued for execution.",
-                CompletedAt = firedAt,
-            });
             return;
         }
 

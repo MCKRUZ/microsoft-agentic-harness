@@ -1,6 +1,7 @@
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.Runs;
+using Application.AI.Common.Services.Runs;
 using Domain.AI.Runs;
 using Domain.Common;
 using Domain.Common.Config;
@@ -166,17 +167,12 @@ public sealed class StartEvalRunCommandHandler
             return Result<StartEvalRunResult>.Fail("The run could not be accepted.");
         }
 
-        // Deliberately NOT the caller's token: past admission the record is committed, and a client
-        // that hangs up mid-request is ordinary — stranding a run must not be reachable by hanging up.
-        try
+        var notQueued = await AdmittedRunDispatch
+            .QueueOrAbandonAsync(_queue, _runStore, record, _time.GetUtcNow)
+            .ConfigureAwait(false);
+        if (notQueued is not null)
         {
-            await _queue.EnqueueAsync(record.JobId, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Run {JobId} was accepted but could not be queued.", record.JobId);
-            Abandon(record, "The run was accepted but could not be queued for execution.");
-
+            _logger.LogError(notQueued, "Run {JobId} was accepted but could not be queued.", record.JobId);
             return Result<StartEvalRunResult>.Fail("The run could not be queued for execution.");
         }
 
@@ -188,21 +184,12 @@ public sealed class StartEvalRunCommandHandler
     }
 
     /// <summary>
-    /// Records an admitted run as failed when it could not be set up to execute.
+    /// Records an admitted run as failed when it could not be set up to execute. The submission is left
+    /// alone: the sweeper reclaims it with the record once the record is terminal, and removing it by hand
+    /// here would split a lifetime that is deliberately shared.
     /// </summary>
-    /// <remarks>
-    /// Failed rather than deleted, and the submission is left alone. The record is what the sweeper
-    /// reclaims, and it only reclaims terminal runs — so making this one terminal is what eventually
-    /// releases both it and the submission keyed by the same id. Removing either by hand here would
-    /// split a lifetime that is deliberately shared.
-    /// </remarks>
     private void Abandon(RunRecord record, string error) =>
-        _runStore.Update(record with
-        {
-            Status = RunStatus.Failed,
-            Error = error,
-            CompletedAt = _time.GetUtcNow()
-        });
+        AdmittedRunDispatch.Abandon(_runStore, record, error, _time.GetUtcNow());
 
     /// <summary>Explains a refused admission in terms the caller can act on.</summary>
     /// <remarks>
