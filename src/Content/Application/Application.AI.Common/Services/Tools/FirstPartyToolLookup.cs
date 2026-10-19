@@ -271,6 +271,15 @@ public sealed class FirstPartyToolLookup
     /// rather than an oversight.
     /// </para>
     /// </remarks>
+    /// <param name="toolKey">A name that may be a first-party tool's DI registration key, in any casing.</param>
+    /// <param name="publishedName">
+    /// The tool's self-reported name when resolved; otherwise <paramref name="toolKey"/> itself.
+    /// </param>
+    /// <param name="constructionError">
+    /// The exception when the key is registered but the tool could not be constructed; null when the key
+    /// names no first-party tool, which is the normal case for an MCP tool name.
+    /// </param>
+    /// <returns>True when the key named a first-party tool that could be constructed.</returns>
     public bool TryResolvePublishedName(string toolKey, out string publishedName, out Exception? constructionError)
     {
         // #651: a hit skips the DI probe AND the caller's own per-call caching concerns entirely —

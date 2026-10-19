@@ -342,27 +342,15 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// </summary>
     private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
     {
-        // OrdinalIgnoreCase: matches the runtime permission resolver's actual invocation-time
-        // consumer, GlobPatternMatcher.IsMatch (correctness-review advisory) — an ordinal
-        // case-sensitive comparison here would emit a harmless-but-redundant second Deny rule for a
-        // tool whose published name differs from its key only in case. (Since #655, FirstPartyToolLookup
-        // resolves ANY casing of a registered key to its canonical form before probing DI — a separate
-        // question from how the resolved PUBLISHED NAME compares to the caller's ORIGINAL key, which is
-        // what this line's own comparison governs.)
-        var diverges = TryResolvePublishedName(toolKey, out var publishedName)
-            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase);
+        // The divergence comparison (case-insensitive, as GlobPatternMatcher compares at invocation) and
+        // the #652 grouping name both come from ToolNameForms, the same definitions the envelope grant
+        // resolver uses (#657), so a fix to either lands on both providers. Since #655 the lookup resolves
+        // any casing of a registered key; that is separate from how the resolved published name compares
+        // to the caller's original key, which is what ToolNameForms.For decides.
+        var forms = ToolNameForms.For(toolKey, TryResolvePublishedName(toolKey, out var publishedName), publishedName);
 
-        // #652: both rules record the published name they share, so a consumer summarising rules can
-        // report one logical tool once. Routed through the shared rule rather than re-deriving
-        // `diverges ? published : null` here (/simplify finding): #652 was itself a mis-keyed
-        // grouping decision, and two independent definitions of "is this rule one of a pair" is the
-        // shape that lets a fix in one provider leave the defect standing in the other.
-        var groupingName = ToolNameForms.GroupingNameFor(diverges, publishedName);
-
-        rules.Add(DenyRule(toolKey, groupingName));
-
-        if (diverges)
-            rules.Add(DenyRule(publishedName, groupingName));
+        foreach (var form in forms.Forms)
+            rules.Add(DenyRule(form, forms.GroupingName));
     }
 
     /// <summary>
