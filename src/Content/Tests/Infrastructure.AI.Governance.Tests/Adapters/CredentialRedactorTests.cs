@@ -96,7 +96,9 @@ public sealed class CredentialRedactorTests
     public void Sanitize_RealisticallySizedPrivateKeyBody_StillRedacts()
     {
         var body = string.Join("\n", Enumerable.Repeat(new string('M', 64), 60)); // ~4160 chars
-        var pem = $"-----BEGIN RSA " + "PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        // Both halves interpolate: the split only keeps the header from appearing whole in source.
+        var pem = $"-----BEGIN RSA " + $"PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        Assert.Contains(body, pem);
 
         var result = _redactor.Sanitize($"Key:\n{pem}");
 
@@ -113,7 +115,8 @@ public sealed class CredentialRedactorTests
         // member to catch what this pattern misses). NonBacktracking removes the need for any length
         // cap: this proves a body well past the old 8000-char bound still redacts in full.
         var body = string.Join("\n", Enumerable.Repeat(new string('M', 64), 180)); // ~11,700 chars
-        var pem = $"-----BEGIN RSA " + "PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        var pem = $"-----BEGIN RSA " + $"PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----";
+        Assert.Contains(body, pem);
 
         var result = _redactor.Sanitize($"Key:\n{pem}");
 
