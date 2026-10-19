@@ -33,6 +33,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
     /// <inheritdoc />
     public string AuditName => "egress";
 
+    /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,

@@ -14,9 +14,16 @@ namespace Domain.AI.Audit;
 /// is shorter, or whose record at that sequence differs, is reported as broken.
 /// </para>
 /// <para>
-/// Only as trustworthy as where it is kept. The verifier keeps it beside its receipts and also emits
-/// the head in its structured log, which leaves the host when log export is on; a writer with full
-/// control of the host can rewrite the local copy but not the exported one.
+/// <strong>What it covers.</strong> Everything up to the last clean pass. Records appended after it (by
+/// default up to a day's worth, at the default verification interval) are protected by the hash links
+/// against edits in the middle, but not against being cut off: only the next pass's checkpoint covers
+/// them.
+/// </para>
+/// <para>
+/// <strong>Where it is kept, and the limit that follows.</strong> Beside the verification receipts, on
+/// the same host. Whoever can write both the log and that folder (by default the same service account)
+/// can remove the checkpoint; the next pass after a restart then re-baselines, with a warning rather
+/// than an alarm. An anchor kept off the host would close that, and is not provided here.
 /// </para>
 /// </remarks>
 /// <param name="Sequence">The sequence number of the newest record when the checkpoint was taken.</param>

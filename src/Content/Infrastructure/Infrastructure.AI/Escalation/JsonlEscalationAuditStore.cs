@@ -64,6 +64,9 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     public string AuditName => "escalations";
 
     /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
     public async Task RecordRequestAsync(EscalationRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);

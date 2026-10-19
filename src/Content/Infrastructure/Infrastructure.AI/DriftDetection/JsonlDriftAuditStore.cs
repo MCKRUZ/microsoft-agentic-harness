@@ -75,6 +75,9 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     public string AuditName => "drift";
 
     /// <inheritdoc />
+    public string AuditLocation => _auditDirectory;
+
+    /// <inheritdoc />
     public async Task<Result> RecordAsync(DriftAuditRecord record, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(record);

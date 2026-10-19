@@ -76,7 +76,7 @@ public sealed class RemainingBackgroundServiceConfigResilienceTests
     public async Task AuditChainVerification_ConfigUnreadable_StartsAndRunsAPass()
     {
         var sut = new AuditChainVerificationService(
-            Array.Empty<IVerifiableAuditChain>(), ThrowingMonitor(), new FakeTimeProvider(),
+            Array.Empty<IVerifiableAuditChain>(), Mock.Of<IAuditChainCheckpoints>(), ThrowingMonitor(), new FakeTimeProvider(),
             NullLogger<AuditChainVerificationService>.Instance);
 
         // The pass reads the receipt path before it looks at any chain.
@@ -158,7 +158,7 @@ public sealed class RemainingBackgroundServiceConfigResilienceTests
             .Callback(() => Interlocked.Increment(ref passes))
             .ReturnsAsync(AuditChainVerificationResult.Valid(1));
         var sut = new AuditChainVerificationService(
-            [chain.Object], new ScriptedOptionsMonitor(config, 1, 2), time,
+            [chain.Object], Mock.Of<IAuditChainCheckpoints>(), new ScriptedOptionsMonitor(config, 1, 2), time,
             NullLogger<AuditChainVerificationService>.Instance);
 
         await sut.StartAsync(CancellationToken.None);

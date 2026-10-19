@@ -92,6 +92,9 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     public string AuditName => "governance";
 
     /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
     public void Log(string agentId, string action, string decision)
     {
         var record = new GovernanceAuditRecord

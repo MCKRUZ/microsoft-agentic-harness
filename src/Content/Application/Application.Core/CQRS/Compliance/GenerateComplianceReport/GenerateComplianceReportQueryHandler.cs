@@ -47,6 +47,7 @@ public sealed class GenerateComplianceReportQueryHandler
     private readonly IEscalationAuditStore _escalationAuditStore;
     private readonly IDriftAuditStore _driftAuditStore;
     private readonly IEnumerable<IVerifiableAuditChain> _chains;
+    private readonly IAuditChainCheckpoints _checkpoints;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<GenerateComplianceReportQueryHandler> _logger;
 
@@ -59,6 +60,7 @@ public sealed class GenerateComplianceReportQueryHandler
         IEscalationAuditStore escalationAuditStore,
         IDriftAuditStore driftAuditStore,
         IEnumerable<IVerifiableAuditChain> chains,
+        IAuditChainCheckpoints checkpoints,
         TimeProvider timeProvider,
         ILogger<GenerateComplianceReportQueryHandler> logger)
     {
@@ -69,6 +71,7 @@ public sealed class GenerateComplianceReportQueryHandler
         ArgumentNullException.ThrowIfNull(escalationAuditStore);
         ArgumentNullException.ThrowIfNull(driftAuditStore);
         ArgumentNullException.ThrowIfNull(chains);
+        ArgumentNullException.ThrowIfNull(checkpoints);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -79,6 +82,7 @@ public sealed class GenerateComplianceReportQueryHandler
         _escalationAuditStore = escalationAuditStore;
         _driftAuditStore = driftAuditStore;
         _chains = chains;
+        _checkpoints = checkpoints;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -183,9 +187,10 @@ public sealed class GenerateComplianceReportQueryHandler
         var results = new List<ComplianceChainIntegrity>();
         foreach (var chain in _chains)
         {
-            // No checkpoint: the report checks internal consistency on demand. Truncation is the
-            // scheduled verifier's job, which keeps the checkpoints (#416).
-            var verification = await chain.VerifyChainAsync(checkpoint: null, cancellationToken).ConfigureAwait(false);
+            // Against the scheduled verifier's last checkpoint, read but never advanced: a report must not
+            // certify as intact a log the verifier reports truncated (#416).
+            var checkpoint = await _checkpoints.ReadAsync(chain, cancellationToken).ConfigureAwait(false);
+            var verification = await chain.VerifyChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
             results.Add(new ComplianceChainIntegrity
             {
                 ChainName = chain.AuditName,

@@ -26,6 +26,9 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
     /// <inheritdoc />
     public string AuditName => "changes";
 
+    /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
