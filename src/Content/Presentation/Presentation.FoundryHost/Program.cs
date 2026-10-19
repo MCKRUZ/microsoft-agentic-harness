@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Governance;
-using Application.AI.Common.Services.Governance;
 using Azure.AI.AgentServer.Core;
 using Domain.AI.Skills;
 using Domain.Common.Config;
@@ -172,18 +170,9 @@ public static class Program
             // root (`provider`, held open for process lifetime above) — not AgentHost's separate
             // WebApplicationBuilder.Services, which never had the harness's services registered into
             // it — is what resolves the scoped admission pipeline, one fresh scope per request,
-            // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn.
-            app.App.Use(async (context, next) =>
-            {
-                await using var requestScope = provider.CreateAsyncScope();
-                var admissionPipeline = requestScope.ServiceProvider
-                    .GetRequiredService<IToolCallAdmissionPipeline>();
-
-                using (ToolAdmissionAccessor.Begin(admissionPipeline))
-                {
-                    await next(context).ConfigureAwait(false);
-                }
-            });
+            // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn. The same scope also gives
+            // each request its own tool-call trace claims (#541); see FoundryRequestScope.
+            app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, () => next(context)));
 
             await app.RunAsync().ConfigureAwait(false);
         }
