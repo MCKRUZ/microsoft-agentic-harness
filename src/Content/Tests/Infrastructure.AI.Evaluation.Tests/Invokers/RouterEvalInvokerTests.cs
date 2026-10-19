@@ -134,6 +134,51 @@ public sealed class RouterEvalInvokerTests
             "wrong-case key as recognized would let a real typo pass validation undetected");
     }
 
+    // #503: the union above is right for "could ANY path read this key" and wrong for "does THIS case's
+    // path read it". Per case, the check follows the same discriminator the dispatch does.
+
+    private static RouterEvalInvoker TwoProbeSut() => MakeSut(
+        MediatorReturning("x"),
+        new FakeProbe("query_type", _ => Decision("MultiHop")),
+        new FakeProbe("task_complexity", _ => Decision("Complex"), "tool_count"));
+
+    [Fact]
+    public void RecognizedOverrideKeysFor_RouterCase_IsTargetPlusOnlyItsOwnProbesKeys()
+    {
+        var sut = TwoProbeSut();
+
+        var keys = sut.RecognizedOverrideKeysFor(CaseFor("router:query_type"));
+
+        keys.Should().BeEquivalentTo(["target"],
+            "tool_count belongs to task_complexity's probe, and agent_name to the agent path; neither "
+            + "is read when this case routes to query_type");
+    }
+
+    [Fact]
+    public void RecognizedOverrideKeysFor_RouterCaseForAProbeWithKeys_RecognizesThem()
+    {
+        var keys = TwoProbeSut().RecognizedOverrideKeysFor(CaseFor("router:task_complexity"));
+
+        keys.Should().BeEquivalentTo(["target", "tool_count"]);
+    }
+
+    [Fact]
+    public void RecognizedOverrideKeysFor_AgentCase_ExcludesProbeKeys()
+    {
+        var keys = TwoProbeSut().RecognizedOverrideKeysFor(Case());
+
+        keys.Should().Contain("agent_name").And.Contain("target");
+        keys.Should().NotContain("tool_count", "a probe key is only read once a case routes to that probe");
+    }
+
+    [Fact]
+    public void RecognizedOverrideKeysFor_RouterCaseNamingNoRegisteredProbe_IsOnlyTarget()
+    {
+        var keys = TwoProbeSut().RecognizedOverrideKeysFor(CaseFor("router:nonexistent"));
+
+        keys.Should().BeEquivalentTo(["target"]);
+    }
+
     private static RouterEvalInvoker MakeSut(Mock<IMediator> mediator, params IRouterEvalProbe[] probes)
     {
         var inner = new HarnessAgentInvoker(ScopeFactoryFor(mediator.Object), NullLogger<HarnessAgentInvoker>.Instance);
@@ -181,13 +226,16 @@ public sealed class RouterEvalInvokerTests
     {
         private readonly Func<string, RouterDecision> _classify;
 
-        public FakeProbe(string key, Func<string, RouterDecision> classify)
+        public FakeProbe(string key, Func<string, RouterDecision> classify, params string[] recognizedOverrideKeys)
         {
             Key = key;
             _classify = classify;
+            RecognizedOverrideKeys = recognizedOverrideKeys.ToHashSet(StringComparer.Ordinal);
         }
 
         public string Key { get; }
+
+        public IReadOnlySet<string> RecognizedOverrideKeys { get; }
 
         public Task<RouterDecision> ClassifyAsync(
             string input,

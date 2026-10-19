@@ -83,6 +83,27 @@ public sealed class RouterEvalInvoker : IAgentInvoker
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Uses <see cref="TryResolveRouterKey"/>, the same discriminator <see cref="InvokeAsync"/> dispatches
+    /// on, so the check and the dispatch cannot drift apart (#503). A router case recognizes
+    /// <c>target</c> plus only its own probe's keys; an agent case recognizes the wrapped invoker's keys
+    /// plus <c>target</c>. A router case naming an unregistered probe recognizes only <c>target</c>:
+    /// the run fails on that case anyway, with its own error.
+    /// </remarks>
+    public IReadOnlySet<string> RecognizedOverrideKeysFor(EvalCase @case)
+    {
+        ArgumentNullException.ThrowIfNull(@case);
+
+        if (!TryResolveRouterKey(@case, out var routerKey))
+            return new HashSet<string>(_inner.RecognizedOverrideKeys, StringComparer.Ordinal) { TargetKey };
+
+        var recognized = new HashSet<string>(StringComparer.Ordinal) { TargetKey };
+        if (_probesByKey.TryGetValue(routerKey, out var probe))
+            recognized.UnionWith(probe.RecognizedOverrideKeys);
+        return recognized;
+    }
+
+    /// <inheritdoc />
     public async Task<AgentInvocationResult> InvokeAsync(
         EvalCase @case,
         IReadOnlyDictionary<string, string>? runLevelOverrides,

@@ -26,9 +26,38 @@ namespace Presentation.EvalRunner.Tests.Composition;
 /// declared set before any case ever runs.
 /// </remarks>
 public sealed class MetricSpecParameterKeyValidationTests
+    : IClassFixture<MetricSpecParameterKeyValidationTests.InvokerFixture>
 {
     private static readonly Lazy<IReadOnlyDictionary<string, IEvalMetric>> MetricsByKey = new(BuildMetricsByKey);
-    private static readonly Lazy<IReadOnlySet<string>> RecognizedOverrideKeys = new(BuildInvoker);
+
+    private readonly IAgentInvoker _invoker;
+
+    /// <summary>Receives the real registered invoker, kept alive for this class's lifetime.</summary>
+    public MetricSpecParameterKeyValidationTests(InvokerFixture fixture) => _invoker = fixture.Invoker;
+
+    /// <summary>
+    /// The real registered <see cref="IAgentInvoker"/> (RouterEvalInvoker wrapping HarnessAgentInvoker),
+    /// not a fake, held with the provider that built it. Per-case recognized keys (#503) need the invoker
+    /// itself at check time, so the provider lives for the fixture's lifetime and is disposed with it,
+    /// which keeps #437's use-after-dispose finding closed.
+    /// </summary>
+    public sealed class InvokerFixture : IDisposable
+    {
+        private readonly ServiceProvider _provider;
+
+        /// <summary>Composes the evaluation host and resolves its invoker.</summary>
+        public InvokerFixture()
+        {
+            _provider = EvalRunnerTestComposition.BuildServices().BuildServiceProvider();
+            Invoker = _provider.GetRequiredService<IAgentInvoker>();
+        }
+
+        /// <summary>The production invoker.</summary>
+        public IAgentInvoker Invoker { get; }
+
+        /// <inheritdoc />
+        public void Dispose() => _provider.Dispose();
+    }
 
     private static IReadOnlyDictionary<string, IEvalMetric> BuildMetricsByKey()
     {
@@ -44,19 +73,6 @@ public sealed class MetricSpecParameterKeyValidationTests
 
         return provider.GetServices<IEvalMetric>()
             .ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static IReadOnlySet<string> BuildInvoker()
-    {
-        // The real registered IAgentInvoker (RouterEvalInvoker wrapping HarnessAgentInvoker) — not a
-        // fake — so RecognizedOverrideKeys reflects the actual union every production run checks
-        // InvocationOverrides against (#437). Copied into a plain set before the provider is disposed
-        // (correctness-review finding on the #437 PR: returning the live instance itself would be a
-        // use-after-dispose — harmless while the property is a pre-populated field, but a latent bug
-        // waiting for whichever future change makes it provider-backed instead).
-        var services = EvalRunnerTestComposition.BuildServices();
-        using var provider = services.BuildServiceProvider();
-        return provider.GetRequiredService<IAgentInvoker>().RecognizedOverrideKeys.ToHashSet();
     }
 
     public static IEnumerable<object[]> DatasetFiles()
@@ -126,13 +142,15 @@ public sealed class MetricSpecParameterKeyValidationTests
     [MemberData(nameof(DatasetFiles))]
     public async Task Every_case_invocation_override_key_is_recognized_by_the_invoker(string path)
     {
-        var recognizedOverrideKeys = RecognizedOverrideKeys.Value;
         var loader = new YamlEvalDatasetLoader();
         var dataset = await loader.LoadAsync(path, CancellationToken.None);
 
         var problems = new List<string>();
         foreach (var @case in dataset.Cases)
         {
+            // Per case (#503): a router case is checked against its own probe's keys, not the union of
+            // every path's, so a key only another path reads is reported here.
+            var recognizedOverrideKeys = _invoker.RecognizedOverrideKeysFor(@case);
             var unrecognized = @case.InvocationOverrides.Keys
                 .Where(k => !recognizedOverrideKeys.Contains(k))
                 .ToList();

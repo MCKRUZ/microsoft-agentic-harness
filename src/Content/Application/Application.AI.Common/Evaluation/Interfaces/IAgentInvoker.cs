@@ -40,6 +40,15 @@ public interface IAgentInvoker
     IReadOnlySet<string> RecognizedOverrideKeys => ImmutableHashSet<string>.Empty;
 
     /// <summary>
+    /// The <see cref="EvalCase.InvocationOverrides"/> keys this invoker reads <em>for this case</em>.
+    /// Defaults to <see cref="RecognizedOverrideKeys"/>; an invoker whose dispatch depends on the case
+    /// (one that routes some cases elsewhere) overrides it so a key that is read only on the other path
+    /// is reported for this one (#503).
+    /// </summary>
+    /// <param name="case">The case whose overrides are being checked.</param>
+    IReadOnlySet<string> RecognizedOverrideKeysFor(EvalCase @case) => RecognizedOverrideKeys;
+
+    /// <summary>
     /// Invokes the harness for the given case.
     /// </summary>
     /// <param name="case">The case being evaluated. Carries input and optional invocation overrides.</param>
