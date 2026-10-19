@@ -50,6 +50,16 @@ public static class ToolCallIdentifierSanitizer
     public readonly record struct Result(SanitizedIdentifier Value, bool Changed);
 
     /// <summary>
+    /// The sanitized form of <paramref name="raw"/> as a plain string, or <see langword="null"/> for a
+    /// null input. For a store that keeps a call id it did not log about: every surface that records a
+    /// call id (the replay transcript, the live stream, usage capture, the observability store, the
+    /// execution trace) must hold the same form of it, or an investigator following one malformed id
+    /// across them finds it in some and not others (#632).
+    /// </summary>
+    /// <param name="raw">The provider- or model-supplied value.</param>
+    public static string? SanitizeOrNull(string? raw) => raw is null ? null : Sanitize(raw).Value.Value;
+
+    /// <summary>
     /// Sanitizes <paramref name="raw"/>. Mapping every disallowed character to the same <c>'_'</c>
     /// collapses information — two distinct raw values (e.g. <c>"call#1"</c> and <c>"call$1"</c>) can
     /// sanitize to an identical string — so a hash suffix of the original raw value is appended

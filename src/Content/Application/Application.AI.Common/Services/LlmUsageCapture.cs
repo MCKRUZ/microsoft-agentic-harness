@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Pricing;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services;
@@ -112,6 +113,11 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
         if (string.IsNullOrEmpty(toolName))
             return;
 
+        // Sanitized on the way in (#632), by the same deterministic transform the live stream and the
+        // replay transcript apply, so a request and its result still pair up and every store that is
+        // fed from this capture holds the same id the stream showed.
+        callId = ToolCallIdentifierSanitizer.SanitizeOrNull(callId);
+
         lock (_lock)
         {
             _toolNames.Add(toolName);
@@ -138,6 +144,8 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
     {
         if (callId is null)
             return; // can't pair without an id; leave as-is
+
+        callId = ToolCallIdentifierSanitizer.SanitizeOrNull(callId);
 
         lock (_lock)
         {
