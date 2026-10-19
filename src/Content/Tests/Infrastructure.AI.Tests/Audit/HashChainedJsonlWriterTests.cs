@@ -303,6 +303,7 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
             _tempDir,
             () => Path.Combine(_tempDir, _segment),
             () => Directory.GetFiles(_tempDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            Path.Combine(_tempDir, ".chain.lock"),
             NullLogger.Instance);
 
     [Fact]
@@ -436,5 +437,79 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
             var result = await writer.VerifyChainAsync(CancellationToken.None);
             return new AuditChainCheckpoint(result.HeadSequence, result.HeadHash!);
         }
+    }
+    // #416 finding 2: scaled-out copies of the host sharing one storage location. Each writer instance
+    // below stands in for a separate process: it has its own in-process lock and its own idea of the head,
+    // and only the lock file beside the chain is shared.
+
+    [Fact]
+    public async Task TwoWriters_TakingTurns_WriteOneValidChain()
+    {
+        using var first = NewWriter();
+        using var second = NewWriter();
+
+        for (var i = 0; i < 5; i++)
+        {
+            (await first.AppendAsync($"{{\"from\":\"first\",\"n\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+            (await second.AppendAsync($"{{\"from\":\"second\",\"n\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        var result = await first.VerifyChainAsync(CancellationToken.None);
+
+        result.IsValid.Should().BeTrue(result.FailureReason);
+        result.VerifiedCount.Should().Be(10);
+    }
+
+    [Fact]
+    public async Task TwoWriters_AppendingAtTheSameTime_WriteOneValidChain()
+    {
+        using var first = NewWriter();
+        using var second = NewWriter();
+
+        async Task Burst(HashChainedJsonlWriter writer, string name)
+        {
+            for (var i = 0; i < 25; i++)
+                (await writer.AppendAsync($"{{\"from\":\"{name}\",\"n\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        await Task.WhenAll(Task.Run(() => Burst(first, "first")), Task.Run(() => Burst(second, "second")));
+
+        var result = await NewWriter().VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeTrue(result.FailureReason);
+        result.VerifiedCount.Should().Be(50);
+    }
+
+    [Fact]
+    public async Task Append_WhileAnotherProcessHoldsTheLock_WaitsForItThenWrites()
+    {
+        using var sut = NewWriter();
+        Task<Domain.Common.Result> append;
+
+        await using (new FileStream(_filePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            append = sut.AppendAsync("{\"a\":1}", CancellationToken.None);
+            await Task.Delay(150);
+            append.IsCompleted.Should().BeFalse("the append must wait while another writer holds the lock");
+        }
+
+        (await append).IsSuccess.Should().BeTrue();
+        (await sut.VerifyChainAsync(CancellationToken.None)).VerifiedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Append_AfterAnotherWriterAppendedALineThatDoesNotChain_ContinuesFromTheLastValidRecord()
+    {
+        using var sut = NewWriter();
+        (await sut.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        // A forged line, shaped like a record but not linked to the chain.
+        var forged = $"{{\"forged\":true}}\t{new string('a', 64)}\t{new string('b', 64)}\t1\n";
+        await File.AppendAllTextAsync(_filePath, forged);
+
+        (await sut.AppendAsync("{\"a\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeFalse("the forged line must still be reported");
+        result.FirstBrokenSequence.Should().Be(1);
     }
 }

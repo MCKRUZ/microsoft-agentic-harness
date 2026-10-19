@@ -58,6 +58,16 @@ namespace Infrastructure.AI.Audit;
 /// history occurs.
 /// </para>
 /// <para>
+/// <b>Several processes, one chain (#416).</b> Every append takes a lock file beside the chain, held across
+/// processes, and before writing catches up with any records another process appended since this one last
+/// wrote, validating them link by link from its own head. So scaled-out copies of the host sharing one
+/// storage location write one valid chain instead of two interleaved ones that verify as tampering. The
+/// lock is the operating system's file lock: share modes on Windows, <c>flock</c> on Linux and macOS. It
+/// holds on local disks and on SMB shares (Azure Files) from Windows or a Linux kernel newer than 5.4; it
+/// does not hold over NFS. Verification takes the lock only long enough to note how far each segment
+/// reaches, then reads up to there, so a line another process is half-way through writing is never read.
+/// </para>
+/// <para>
 /// <b>Out of scope (handled by the verification layer).</b> A torn trailing line from a crash
 /// mid-write, or wholesale deletion of the file/last segment, are not concealable by this
 /// primitive but are not <i>repaired</i> by it either — those are the province of WORM storage
@@ -84,12 +94,23 @@ public sealed class HashChainedJsonlWriter : IDisposable
     private readonly Func<string> _currentSegment;
     private readonly Func<IReadOnlyList<string>> _orderedSegments;
     private readonly string _displayLocation;
+    private readonly string _lockPath;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     private bool _headInitialized;
     private long _headSequence = -1;
     private string _headHash = GenesisHash;
+
+    /// <summary>The segment and length this process has validated the chain through.</summary>
+    private string? _tailSegment;
+    private long _tailLength;
+
+    /// <summary>How long an append waits for another process to release the chain's lock.</summary>
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>How long to wait between attempts to take the lock.</summary>
+    private static readonly TimeSpan LockRetryDelay = TimeSpan.FromMilliseconds(15);
 
     /// <summary>Initializes a single-file chain backed by one JSONL file.</summary>
     /// <param name="filePath">Absolute path to the JSONL file backing this chain.</param>
@@ -99,6 +120,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
             filePath,
             () => filePath,
             () => File.Exists(filePath) ? [filePath] : [],
+            filePath + ".lock",
             logger)
     {
     }
@@ -107,21 +129,28 @@ public sealed class HashChainedJsonlWriter : IDisposable
     /// <param name="displayLocation">A directory or label used in diagnostic log messages.</param>
     /// <param name="currentSegment">Selects the segment file the next record is appended to (by append time).</param>
     /// <param name="orderedSegments">Returns all existing segment files in chain (append) order.</param>
+    /// <param name="lockPath">
+    /// The file every process writing this chain locks while appending. Must be the same path for every
+    /// writer of the chain and must not be one of its segments.
+    /// </param>
     /// <param name="logger">Logger for operational diagnostics.</param>
     public HashChainedJsonlWriter(
         string displayLocation,
         Func<string> currentSegment,
         Func<IReadOnlyList<string>> orderedSegments,
+        string lockPath,
         ILogger logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayLocation);
         ArgumentNullException.ThrowIfNull(currentSegment);
         ArgumentNullException.ThrowIfNull(orderedSegments);
+        ArgumentException.ThrowIfNullOrWhiteSpace(lockPath);
         ArgumentNullException.ThrowIfNull(logger);
 
         _displayLocation = displayLocation;
         _currentSegment = currentSegment;
         _orderedSegments = orderedSegments;
+        _lockPath = lockPath;
         _logger = logger;
     }
 
@@ -188,7 +217,9 @@ public sealed class HashChainedJsonlWriter : IDisposable
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await EnsureHeadInitializedAsync(cancellationToken).ConfigureAwait(false);
+            // Across processes: no other writer appends while this one catches up and writes.
+            await using var chainLock = await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false);
+            await CatchUpWithOtherWritersAsync(cancellationToken).ConfigureAwait(false);
 
             var sequence = _headSequence + 1;
             var previousHash = _headHash;
@@ -206,15 +237,22 @@ public sealed class HashChainedJsonlWriter : IDisposable
             // says nothing about confidentiality on a shared host.
             OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
 
+            long lengthAfterWrite;
             await using (var stream = new FileStream(
                 segmentPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-            await using (var writer = new StreamWriter(stream))
             {
-                await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await using (var writer = new StreamWriter(stream, leaveOpen: true))
+                {
+                    await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+                }
+
+                lengthAfterWrite = stream.Length;
             }
 
             _headSequence = sequence;
             _headHash = recordHash;
+            _tailSegment = segmentPath;
+            _tailLength = lengthAfterWrite;
             return Result.Success();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -251,7 +289,17 @@ public sealed class HashChainedJsonlWriter : IDisposable
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var scan = await ScanChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+            // Note how far each segment reaches while no other process is mid-append, then read only that
+            // far, so a half-written line from another writer is never mistaken for tampering.
+            IReadOnlyDictionary<string, long> reach;
+            await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
+            {
+                reach = _orderedSegments()
+                    .Where(File.Exists)
+                    .ToDictionary(p => p, p => new FileInfo(p).Length, StringComparer.Ordinal);
+            }
+
+            var scan = await ScanChainAsync(checkpoint, cancellationToken, reach).ConfigureAwait(false);
             return scan.BreakSequence is { } brokenSequence
                 ? AuditChainVerificationResult.Broken(scan.VerifiedCount, brokenSequence, scan.BreakReason!) with
                 {
@@ -278,20 +326,94 @@ public sealed class HashChainedJsonlWriter : IDisposable
     public void Dispose() => _semaphore.Dispose();
 
     /// <summary>
-    /// Recovers the chain head (last valid sequence and hash) by scanning and validating the
-    /// segments once. The head is the tail of the longest valid prefix, so appends always
-    /// continue from cryptographically verified state. Runs once per process under the append
-    /// semaphore.
+    /// Brings this process's head up to date with the chain on disk, under the chain lock. The first time,
+    /// and whenever the chain changed in a way it cannot follow (another writer started a new segment, or
+    /// the file shrank), it scans and validates every segment and takes the last valid record as the head.
+    /// Otherwise it validates only what other writers appended since this process last wrote, link by link
+    /// from its own head, so a busy shared chain does not cost a full scan per append. Either way the head
+    /// is always cryptographically verified state, never an unverified tail.
     /// </summary>
-    private async Task EnsureHeadInitializedAsync(CancellationToken cancellationToken)
+    private async Task CatchUpWithOtherWritersAsync(CancellationToken cancellationToken)
     {
-        if (_headInitialized)
+        var segments = _orderedSegments();
+        var last = segments.Count > 0 ? segments[^1] : null;
+        var lastLength = last is not null && File.Exists(last) ? new FileInfo(last).Length : 0;
+
+        if (_headInitialized && last == _tailSegment && lastLength == _tailLength)
             return;
+
+        if (_headInitialized && last is not null && last == _tailSegment && lastLength > _tailLength)
+        {
+            await ValidateAppendedTailAsync(last, lastLength, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         var scan = await ScanChainAsync(checkpoint: null, cancellationToken).ConfigureAwait(false);
         _headSequence = scan.LastValidSequence;
         _headHash = scan.LastValidHash;
         _headInitialized = true;
+        _tailSegment = last;
+        _tailLength = lastLength;
+    }
+
+    /// <summary>
+    /// Validates the records other writers appended to <paramref name="segment"/> after
+    /// <see cref="_tailLength"/>, continuing from this process's head. A line that does not chain is left
+    /// in place (verification reports it) and the head stays at the last valid record.
+    /// </summary>
+    private async Task ValidateAppendedTailAsync(string segment, long length, CancellationToken cancellationToken)
+    {
+        var state = ScanState.FromHead(_headSequence, _headHash);
+
+        await using (var stream = new FileStream(segment, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            stream.Seek(_tailLength, SeekOrigin.Begin);
+            using var reader = new StreamReader(new PrefixStream(stream, length - _tailLength));
+
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                state.LineNumber++;
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (!ApplyLine(line, ref state, out var breakScan))
+                {
+                    _logger.LogError(
+                        "Audit chain at {AuditLocation}: a record appended by another writer does not chain ({Reason}); " +
+                        "continuing from the last valid record, and verification will report the break.",
+                        _displayLocation, breakScan.BreakReason);
+                    break;
+                }
+            }
+        }
+
+        _headSequence = state.LastValidSequence;
+        _headHash = state.LastValidHash;
+        _tailLength = length;
+    }
+
+    /// <summary>
+    /// Takes the chain's cross-process lock, retrying while another process holds it. The lock is an
+    /// exclusively opened lock file (a share-mode lock on Windows, <c>flock</c> elsewhere) and is released
+    /// by disposing the returned handle. The file itself is left in place: deleting it would race another
+    /// process that is about to open it.
+    /// </summary>
+    private async Task<FileStream> AcquireChainLockAsync(CancellationToken cancellationToken)
+    {
+        OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(Path.GetFullPath(_lockPath))!, _logger);
+
+        var deadline = DateTime.UtcNow + LockTimeout;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(LockRetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>
@@ -299,18 +421,22 @@ public sealed class HashChainedJsonlWriter : IDisposable
     /// sequence continuity, previous-hash links, and record hashes from genesis, tolerating only
     /// the leading legacy (pre-chain) lines.
     /// </summary>
-    private async Task<ChainScan> ScanChainAsync(AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
+    private async Task<ChainScan> ScanChainAsync(
+        AuditChainCheckpoint? checkpoint,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, long>? reach = null)
     {
         var state = ScanState.Genesis;
 
-        foreach (var segmentPath in _orderedSegments())
+        foreach (var segmentPath in reach?.Keys ?? _orderedSegments())
         {
             if (!File.Exists(segmentPath))
                 continue;
 
             await using var stream = new FileStream(
                 segmentPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(stream);
+            using var reader = new StreamReader(
+                reach is not null ? new PrefixStream(stream, reach[segmentPath]) : stream);
 
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
@@ -430,6 +556,20 @@ public sealed class HashChainedJsonlWriter : IDisposable
         public bool ChainStarted;
         public int LineNumber;
 
+        /// <summary>State that continues an already-validated chain whose newest record is <paramref name="headSequence"/>.</summary>
+        public static ScanState FromHead(long headSequence, string headHash) => headSequence < 0
+            ? Genesis
+            : new()
+            {
+                ExpectedSequence = headSequence + 1,
+                ExpectedPreviousHash = headHash,
+                VerifiedCount = 0,
+                LastValidSequence = headSequence,
+                LastValidHash = headHash,
+                ChainStarted = true,
+                LineNumber = 0
+            };
+
         public static ScanState Genesis => new()
         {
             ExpectedSequence = 0,
@@ -452,6 +592,50 @@ public sealed class HashChainedJsonlWriter : IDisposable
 
         public readonly ChainScan Break(long breakSequence, string reason) =>
             ChainScan.Break(VerifiedCount, breakSequence, LastValidSequence, LastValidHash, reason);
+    }
+
+    /// <summary>
+    /// A read-only view of the first <c>length</c> bytes from a stream's current position, so a reader stops
+    /// where the chain reached when it was measured instead of reading into a line still being written.
+    /// </summary>
+    private sealed class PrefixStream(Stream inner, long length) : Stream
+    {
+        private long _remaining = Math.Max(0, length);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+                return 0;
+
+            var read = inner.Read(buffer, offset, (int)Math.Min(count, _remaining));
+            _remaining -= read;
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_remaining <= 0)
+                return 0;
+
+            var read = await inner.ReadAsync(buffer[..(int)Math.Min(buffer.Length, _remaining)], cancellationToken).ConfigureAwait(false);
+            _remaining -= read;
+            return read;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>Outcome of a single forward pass over the chain.</summary>

@@ -68,6 +68,8 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
             () => Directory.Exists(_auditDirectory)
                 ? Directory.GetFiles(_auditDirectory, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray()
                 : [],
+            // Shared by every process writing these segments; not itself a *.jsonl segment.
+            Path.Combine(_auditDirectory, ".chain.lock"),
             logger);
     }
 
