@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.Common.Extensions;
 using Tests.Common;
 
 namespace Presentation.Common.Tests.Composition;
@@ -130,38 +131,54 @@ public sealed partial class SecurityControlHasACallerTests
     }
 
     /// <summary>
-    /// Validator names an <c>AddOptions</c> chain actually binds, read from the
-    /// <c>ValidateFluentValidation&lt;TConfig, TValidator&gt;</c> calls themselves.
+    /// Validator names an <c>AddOptions</c> chain actually binds, read from the production service
+    /// collection rather than from registration source (#535).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A bare mention is not a binding. The previous check credited any occurrence of the validator's
-    /// name anywhere in a DI file, so
-    /// <c>services.AddSingleton&lt;IValidator&lt;FooConfig&gt;, FooConfigValidator&gt;()</c> — a
-    /// registration that causes nothing to resolve it — satisfied a guard whose failure message tells
-    /// you to add an options binding. That is #516's exact defect passing the check written to catch
-    /// it. Candidacy widening from a filename match to all 85 validators grew the surface that
-    /// looseness applies to, so it is tightened here rather than left as-is.
+    /// <c>ValidateFluentValidation&lt;TConfig, TValidator&gt;</c> does one thing: it registers an
+    /// <c>IValidateOptions&lt;TConfig&gt;</c> instance of <see cref="FluentValidationValidateOptions{TOptions}"/>
+    /// wrapping a <c>TValidator</c>. So the bound set is a question about registrations, not a parsing
+    /// problem. Every false alarm the earlier text scan produced (a call whose type arguments wrapped
+    /// across lines, a namespace-qualified validator, a generic config argument) was an artifact of
+    /// matching text instead of comparing types, and none of them can occur here.
     /// </para>
     /// <para>
-    /// <strong>Must span newlines.</strong> These calls wrap: four of the twenty in-scope validators
-    /// are bound by a <c>ValidateFluentValidation&lt;</c> whose type arguments sit on the following
-    /// two lines. A line-anchored pattern silently misses those four and reports them as unbound —
-    /// that mistake was made while verifying this very finding, and briefly led to rejecting it.
-    /// </para>
-    /// <para>
-    /// <strong>Why depth-scanning rather than a regex.</strong> A first cut matched
-    /// <c>&lt;[^&lt;&gt;]*,\s*([A-Za-z0-9_]+)&gt;</c>, which fails toward a false alarm in two real
-    /// shapes: a namespace-qualified validator (<c>Governance.EscalationConfigValidator</c> — and this
-    /// repo already qualifies the *config* argument for precisely that reason, because
-    /// <c>EscalationConfig</c> exists in two namespaces) and a generic config argument
-    /// (<c>Options&lt;FooConfig&gt;</c>), which <c>[^&lt;&gt;]</c> cannot cross. Reporting a correctly
-    /// bound validator as unbound is how a guard gets ignored — this file's remarks say so in three
-    /// places, and it is a regression tightening the check introduced. Counting bracket depth handles
-    /// both without pretending a regex can balance brackets.
+    /// <strong>A bare mention is still not a binding.</strong> An
+    /// <c>AddSingleton&lt;IValidator&lt;FooConfig&gt;, FooConfigValidator&gt;()</c> registers no
+    /// <c>IValidateOptions</c>, so it is not counted: that registration causes nothing to resolve the
+    /// validator, which is #516's defect. The whole production composition is queried, not one file,
+    /// so a binding placed in any subsystem's registration code is seen.
     /// </para>
     /// </remarks>
-    private static HashSet<string> FindOptionsBoundValidators(string wiring)
+    private static HashSet<string> FindOptionsBoundValidators()
+    {
+        var (services, _) = CompositionRootTestHost.ComposeServices([]);
+
+        return services
+            .Select(d => d.ImplementationInstance)
+            .Where(instance => instance is not null
+                && instance.GetType().IsGenericType
+                && instance.GetType().GetGenericTypeDefinition() == typeof(FluentValidationValidateOptions<>))
+            .Select(instance => (Type)instance!.GetType()
+                .GetProperty(nameof(FluentValidationValidateOptions<object>.ValidatorType))!
+                .GetValue(instance)!)
+            .Select(validatorType => validatorType.Name)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Validator names bound by a <c>ValidateFluentValidation&lt;TConfig, TValidator&gt;</c> call in
+    /// <paramref name="wiring"/>, read from source. Kept only for a host's own registration code, which
+    /// the shared composition <see cref="FindOptionsBoundValidators"/> queries does not include and this
+    /// test project cannot compose (#535).
+    /// </summary>
+    /// <remarks>
+    /// Depth-scans the type argument list rather than matching it with a regex, so a call whose
+    /// arguments wrap across lines, a namespace-qualified validator and a generic config argument are
+    /// all credited. The last top-level argument is <c>TValidator</c>.
+    /// </remarks>
+    private static HashSet<string> FindTextBoundValidators(string wiring)
     {
         var bound = new HashSet<string>(StringComparer.Ordinal);
 
@@ -196,6 +213,18 @@ public sealed partial class SecurityControlHasACallerTests
         }
 
         return bound;
+    }
+
+    /// <summary>
+    /// A <c>DependencyInjection*.cs</c> file in a host project, which the shared composition does not
+    /// include.
+    /// </summary>
+    private static bool IsHostRegistrationFile(string path)
+    {
+        var normalized = path.Replace('\\', '/');
+        return normalized.Contains("/Presentation/", StringComparison.Ordinal)
+            && !normalized.Contains("/Presentation.Common/", StringComparison.Ordinal)
+            && Path.GetFileName(normalized).StartsWith("DependencyInjection", StringComparison.Ordinal);
     }
 
     /// <summary>

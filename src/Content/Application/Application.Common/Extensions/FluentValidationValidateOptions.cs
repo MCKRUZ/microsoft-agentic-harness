@@ -43,6 +43,12 @@ public sealed class FluentValidationValidateOptions<TOptions> : IValidateOptions
         _validator = validator ?? throw new ArgumentNullException(nameof(validator));
     }
 
+    /// <summary>
+    /// The concrete validator this registration runs. Lets a composition test ask the container which
+    /// validators are bound into the options pipeline instead of parsing registration source (#535).
+    /// </summary>
+    public Type ValidatorType => _validator.GetType();
+
     /// <inheritdoc />
     public ValidateOptionsResult Validate(string? name, TOptions options)
     {
