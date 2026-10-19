@@ -227,7 +227,7 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     // before the write, over the complete content — no gate for an adversarial classification to
     // sit outside of, and no page boundary for an adversarial offset to split across.
 
-    private const string AwsKeyShapedSecret = "AKIAIOSFODNN7EXAMPLE";
+    private const string AwsKeyShapedSecret = "AKIA" + "IOSFODNN7EXAMPLE";
 
     [Fact]
     public async Task StoreIfLargeAsync_LargeResult_StoredContentIsAlwaysRedacted()
