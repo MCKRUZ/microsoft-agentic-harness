@@ -48,6 +48,25 @@ internal static class CompositionRootTestHost
         IEnumerable<KeyValuePair<string, string?>> settings,
         Action<IServiceCollection, IConfiguration>? overrideServices = null)
     {
+        var (services, configuration) = ComposeServices(settings);
+
+        overrideServices?.Invoke(services, configuration);
+
+        return services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+        });
+    }
+
+    /// <summary>
+    /// Composes the full production service collection without building a provider, for tests that
+    /// inspect the registrations themselves rather than resolving anything.
+    /// </summary>
+    /// <param name="settings">In-memory configuration, as for <see cref="BuildProvider"/>.</param>
+    /// <returns>The composed collection and the configuration it was composed from.</returns>
+    public static (ServiceCollection Services, IConfiguration Configuration) ComposeServices(
+        IEnumerable<KeyValuePair<string, string?>> settings)
+    {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(settings)
             .Build();
@@ -63,12 +82,7 @@ internal static class CompositionRootTestHost
         var appConfig = configuration.GetSection("AppConfig").Get<AppConfig>() ?? new AppConfig();
         services.BuildGlobalSolutionServices(appConfig, includeHealthChecksUI: false);
 
-        overrideServices?.Invoke(services, configuration);
-
-        return services.BuildServiceProvider(new ServiceProviderOptions
-        {
-            ValidateScopes = true,
-        });
+        return (services, configuration);
     }
 
     /// <summary>

@@ -185,37 +185,26 @@ public sealed partial class SecurityControlHasACallerTests
         needsBinding.Should().NotContain("PushDriftEvaluationCommandValidator",
             "control: a validator over a MediatR request is run by RequestValidationBehavior");
 
-        // Every DI file, not just the composition root: a binding is equally real in a subsystem's own
-        // DependencyInjection partial, and reading one file reported anything registered elsewhere as
-        // unbound. Source text rather than a resolved container, because an unbound validator is still
-        // perfectly resolvable — that is exactly what made the original defect invisible.
-        // Both matched by PREFIX. IServiceCollectionExtensions was previously matched by exact
-        // filename, which was harmless while any mention of a validator anywhere counted as a
-        // binding, and is not any more: all twenty real bindings live in that one file, so this
-        // predicate is now the sole load-bearing path to them. This repo's own convention is to split
-        // registration files into partials (DependencyInjection.Governance.cs, .Identity.cs, ...), so
-        // an IServiceCollectionExtensions.Validation.cs is a natural refactor that would have dropped
-        // all twenty bindings at once and failed the guard with twenty names.
-        var wiringFiles = sources
-            .Where(s => Path.GetFileName(s.Path).StartsWith("DependencyInjection", StringComparison.Ordinal)
-                || Path.GetFileName(s.Path).StartsWith("IServiceCollectionExtensions", StringComparison.Ordinal))
-            .ToArray();
+        // Read from the production composition, not from registration source (#535): the container
+        // knows exactly which validators are wrapped into the options pipeline. A host's own
+        // registration code (Presentation.AgentHub binds AgentHubConfigValidator in its own
+        // DependencyInjection.cs) is not part of the shared composition and this test project cannot
+        // compose a host, so those files alone are still read as source.
+        var hostWiring = string.Join("\n", sources
+            .Where(s => IsHostRegistrationFile(s.Path))
+            .Select(s => s.Code));
+        var bound = FindOptionsBoundValidators();
+        bound.UnionWith(FindTextBoundValidators(hostWiring));
 
-        wiringFiles.Should().NotBeEmpty("the wiring files this reads must exist for its verdict to mean anything");
-
-        var wiring = string.Join("\n", wiringFiles.Select(s => s.Code));
-        var bound = FindOptionsBoundValidators(wiring);
-
-        // Control: the needle must match a binding known to be present, or "no offenders" would be
-        // satisfied by a scan that cannot see any binding at all.
+        // Control: a binding known to be present must be visible, or "no offenders" would be satisfied
+        // by a query that cannot see any binding at all.
         bound.Should().Contain("GovernanceConfigValidator",
             "control: a known-bound validator must be visible to this scan");
 
-        // Control: the wrapped call form must parse too. DriftDetectionConfigValidator is bound by a
-        // ValidateFluentValidation< whose type arguments sit on the next two lines; a line-anchored
-        // pattern sees only the single-line form and reports the wrapped ones as unbound.
+        // Control: a binding registered with a namespace-qualified config type must be credited too
+        // (DriftDetectionConfigValidator's registration qualifies both type arguments).
         bound.Should().Contain("DriftDetectionConfigValidator",
-            "control: a binding whose type arguments wrap across lines must still be credited");
+            "control: a binding written with qualified type arguments must still be credited");
 
         var unbound = needsBinding
             .Where(name => !bound.Contains(name))
