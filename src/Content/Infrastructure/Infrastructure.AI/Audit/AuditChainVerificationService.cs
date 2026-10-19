@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Common.Helpers;
+using Domain.AI.Audit;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Audit;
@@ -20,6 +21,14 @@ namespace Infrastructure.AI.Audit;
 /// that turns the cryptographic hash-chain into an operational guarantee — without it, tampering
 /// is only ever caught opportunistically on read.
 /// </summary>
+/// <remarks>
+/// Each clean pass records a checkpoint (the newest record's sequence and hash) and the next pass
+/// requires the chain to still reach it unchanged (#416). Without that, a log whose newest records
+/// were cut off, or one deleted and regrown after a restart, verifies as intact: what remains is
+/// internally consistent. The head is also written to the structured log, so a copy leaves the host
+/// when log export is on. A broken pass does not advance the checkpoint, so the alert repeats every
+/// pass until someone looks.
+/// </remarks>
 public sealed class AuditChainVerificationService : BackgroundService
 {
     private static readonly JsonSerializerOptions ReceiptOptions = new()
@@ -124,6 +133,9 @@ public sealed class AuditChainVerificationService : BackgroundService
     internal async Task VerifyAllChainsAsync(CancellationToken cancellationToken)
     {
         var receiptPath = _audit.Current.ReceiptPath;
+        var checkpoints = string.IsNullOrWhiteSpace(receiptPath)
+            ? null
+            : new AuditChainCheckpointStore(receiptPath, _logger);
 
         foreach (var chain in _chains)
         {
@@ -131,7 +143,10 @@ public sealed class AuditChainVerificationService : BackgroundService
 
             try
             {
-                var result = await chain.VerifyChainAsync(cancellationToken).ConfigureAwait(false);
+                var checkpoint = checkpoints is null
+                    ? null
+                    : await checkpoints.ReadAsync(chain.AuditName, cancellationToken).ConfigureAwait(false);
+                var result = await chain.VerifyChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
                 var nameTag = new KeyValuePair<string, object?>(
                     GovernanceConventions.AuditChainNameTag, chain.AuditName);
@@ -140,8 +155,15 @@ public sealed class AuditChainVerificationService : BackgroundService
                 if (result.IsValid)
                 {
                     _logger.LogInformation(
-                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s).",
-                        chain.AuditName, result.VerifiedCount);
+                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s), head sequence {HeadSequence} hash {HeadHash}.",
+                        chain.AuditName, result.VerifiedCount, result.HeadSequence, result.HeadHash);
+
+                    if (checkpoints is not null && result is { HeadSequence: >= 0, HeadHash: { } headHash })
+                    {
+                        await checkpoints.WriteAsync(
+                            chain.AuditName, new AuditChainCheckpoint(result.HeadSequence, headHash), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
                 else
                 {

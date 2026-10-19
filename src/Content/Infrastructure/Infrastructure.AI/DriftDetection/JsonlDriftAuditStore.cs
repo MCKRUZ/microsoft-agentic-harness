@@ -164,8 +164,9 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     }
 
     /// <inheritdoc />
-    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
-        _chain.VerifyChainAsync(cancellationToken);
+    public Task<AuditChainVerificationResult> VerifyChainAsync(
+        AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(checkpoint, cancellationToken);
 
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();

@@ -14,7 +14,7 @@ namespace Infrastructure.AI.Audit;
 /// Append-only JSONL writer that links every record into a cryptographic hash-chain,
 /// making the log tamper-evident: any retroactive edit, deletion, or reordering of a
 /// record breaks the chain at the first affected record and is detected by
-/// <see cref="VerifyChainAsync"/>.
+/// <see cref="VerifyChainAsync(CancellationToken)"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -48,7 +48,7 @@ namespace Infrastructure.AI.Audit;
 /// last <i>cryptographically valid</i> record, never to an unverified tail. A forged or torn
 /// line appended out of band therefore cannot seed the live head; legitimate records continue
 /// to chain onto verified state, and the forged/torn line is still surfaced by
-/// <see cref="VerifyChainAsync"/>.
+/// <see cref="VerifyChainAsync(CancellationToken)"/>.
 /// </para>
 /// <para>
 /// <b>Brownfield rollout.</b> When pointed at files that already contain un-chained lines
@@ -140,7 +140,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
 
     /// <summary>
     /// Reads every payload in the chain, across all segments in append order, without verifying
-    /// hash links — use <see cref="VerifyChainAsync"/> for integrity checking. Blank lines are
+    /// hash links — use <see cref="VerifyChainAsync(CancellationToken)"/> for integrity checking. Blank lines are
     /// skipped. Does not take the append semaphore (matching the two hand-written readers this
     /// primitive replaces), so a concurrent append may or may not be visible in a given pass.
     /// </summary>
@@ -234,15 +234,34 @@ public sealed class HashChainedJsonlWriter : IDisposable
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A verification result describing the chain's integrity.</returns>
-    public async Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken)
+    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        VerifyChainAsync(checkpoint: null, cancellationToken);
+
+    /// <summary>
+    /// Verifies the chain as <see cref="VerifyChainAsync(CancellationToken)"/> does and, when a
+    /// <paramref name="checkpoint"/> is given, also requires the chain to still reach it with the same
+    /// hash there (#416).
+    /// </summary>
+    /// <param name="checkpoint">The point the chain was last verified up to, or <c>null</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A verification result describing the chain's integrity, with its head.</returns>
+    public async Task<AuditChainVerificationResult> VerifyChainAsync(
+        AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
     {
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var scan = await ScanChainAsync(cancellationToken).ConfigureAwait(false);
+            var scan = await ScanChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
             return scan.BreakSequence is { } brokenSequence
-                ? AuditChainVerificationResult.Broken(scan.VerifiedCount, brokenSequence, scan.BreakReason!)
-                : AuditChainVerificationResult.Valid(scan.VerifiedCount);
+                ? AuditChainVerificationResult.Broken(scan.VerifiedCount, brokenSequence, scan.BreakReason!) with
+                {
+                    HeadSequence = scan.LastValidSequence,
+                    HeadHash = scan.LastValidSequence >= 0 ? scan.LastValidHash : null
+                }
+                : AuditChainVerificationResult.Valid(
+                    scan.VerifiedCount,
+                    scan.LastValidSequence,
+                    scan.LastValidSequence >= 0 ? scan.LastValidHash : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -269,7 +288,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
         if (_headInitialized)
             return;
 
-        var scan = await ScanChainAsync(cancellationToken).ConfigureAwait(false);
+        var scan = await ScanChainAsync(checkpoint: null, cancellationToken).ConfigureAwait(false);
         _headSequence = scan.LastValidSequence;
         _headHash = scan.LastValidHash;
         _headInitialized = true;
@@ -280,7 +299,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
     /// sequence continuity, previous-hash links, and record hashes from genesis, tolerating only
     /// the leading legacy (pre-chain) lines.
     /// </summary>
-    private async Task<ChainScan> ScanChainAsync(CancellationToken cancellationToken)
+    private async Task<ChainScan> ScanChainAsync(AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
     {
         var state = ScanState.Genesis;
 
@@ -301,7 +320,25 @@ public sealed class HashChainedJsonlWriter : IDisposable
 
                 if (!ApplyLine(line, ref state, out var breakScan))
                     return breakScan;
+
+                // The record the last pass ended on must still be there, unchanged. A different hash at
+                // that sequence means the chain was regrown from somewhere earlier, not appended to.
+                if (checkpoint is not null
+                    && state.LastValidSequence == checkpoint.Sequence
+                    && !string.Equals(state.LastValidHash, checkpoint.Hash, StringComparison.Ordinal))
+                {
+                    return state.Break(checkpoint.Sequence,
+                        $"Record at sequence {checkpoint.Sequence} differs from the one last verified there (chain rewritten or regrown).");
+                }
             }
+        }
+
+        // A clean chain that stops before the last verified record was cut off. Internal consistency
+        // cannot show this; only the checkpoint can.
+        if (checkpoint is not null && state.LastValidSequence < checkpoint.Sequence)
+        {
+            return state.Break(state.LastValidSequence + 1,
+                $"Chain ends at sequence {state.LastValidSequence} but was last verified up to {checkpoint.Sequence} (records removed from the end, or the log was deleted).");
         }
 
         return ChainScan.Valid(state.VerifiedCount, state.LastValidSequence, state.LastValidHash);

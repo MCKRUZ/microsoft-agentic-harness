@@ -196,12 +196,12 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         SetUpAllSourcesEmpty();
         var intactChain = new Mock<IVerifiableAuditChain>();
         intactChain.SetupGet(c => c.AuditName).Returns("drift");
-        intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<CancellationToken>()))
+        intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(AuditChainVerificationResult.Valid(42));
 
         var brokenChain = new Mock<IVerifiableAuditChain>();
         brokenChain.SetupGet(c => c.AuditName).Returns("governance");
-        brokenChain.Setup(c => c.VerifyChainAsync(It.IsAny<CancellationToken>()))
+        brokenChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(AuditChainVerificationResult.Broken(10, 11, "record-hash mismatch"));
 
         var sut = CreateSut([intactChain.Object, brokenChain.Object]);

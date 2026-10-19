@@ -154,7 +154,7 @@ public sealed class RemainingBackgroundServiceConfigResilienceTests
         var chain = new Mock<IVerifiableAuditChain>();
         chain.SetupGet(c => c.AuditName).Returns("test-chain");
         var passes = 0;
-        chain.Setup(c => c.VerifyChainAsync(It.IsAny<CancellationToken>()))
+        chain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .Callback(() => Interlocked.Increment(ref passes))
             .ReturnsAsync(AuditChainVerificationResult.Valid(1));
         var sut = new AuditChainVerificationService(

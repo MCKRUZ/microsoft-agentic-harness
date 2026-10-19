@@ -109,8 +109,9 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
     }
 
     /// <inheritdoc />
-    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
-        _chain.VerifyChainAsync(cancellationToken);
+    public Task<AuditChainVerificationResult> VerifyChainAsync(
+        AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(checkpoint, cancellationToken);
 
     /// <inheritdoc />
     public async Task<Result<IReadOnlyList<ChangeAuditRecord>>> GetRecordsAsync(

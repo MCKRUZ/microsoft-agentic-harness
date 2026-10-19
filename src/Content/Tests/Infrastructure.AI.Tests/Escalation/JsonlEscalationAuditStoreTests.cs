@@ -282,7 +282,7 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
         // proves the payload-shape change did not disturb the chain framing at the boundary
         // between the hand-written legacy line and normal store writes.
         await _store.RecordDecisionAsync(Guid.NewGuid(), BuildDecision(), CancellationToken.None);
-        var verification = await _store.VerifyChainAsync(CancellationToken.None);
+        var verification = await _store.VerifyChainAsync(checkpoint: null, CancellationToken.None);
         verification.IsValid.Should().BeTrue();
     }
 

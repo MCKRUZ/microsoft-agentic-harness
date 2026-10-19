@@ -183,7 +183,9 @@ public sealed class GenerateComplianceReportQueryHandler
         var results = new List<ComplianceChainIntegrity>();
         foreach (var chain in _chains)
         {
-            var verification = await chain.VerifyChainAsync(cancellationToken).ConfigureAwait(false);
+            // No checkpoint: the report checks internal consistency on demand. Truncation is the
+            // scheduled verifier's job, which keeps the checkpoints (#416).
+            var verification = await chain.VerifyChainAsync(checkpoint: null, cancellationToken).ConfigureAwait(false);
             results.Add(new ComplianceChainIntegrity
             {
                 ChainName = chain.AuditName,
