@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
+using Application.AI.Common.Services.Runs;
 using Domain.AI.Planner;
 using Domain.AI.Runs;
 using Domain.Common;
@@ -115,33 +116,14 @@ public sealed class StartWorkflowRunCommandHandler
 
         // Queued only after the record exists. The other order has a window in which a dispatcher
         // claims a job the store has never heard of, and the run vanishes with the caller holding an
-        // identifier that will never resolve.
-        //
-        // Deliberately NOT the caller's token. Past the admission above the record is committed, and a
-        // record that is committed but never queued is never claimed, never finishes, and — because
-        // only terminal runs are reclaimed — never goes away: it pins its workflow at 409 and holds one
-        // of the owner's slots for the life of the process. A client that disconnects mid-request is
-        // ordinary, so that must not be reachable by hanging up. Abandoning the run here would be
-        // wrong regardless: the caller was already told it was accepted.
-        try
+        // identifier that will never resolve. Why the caller's token is not used, and why a failure is
+        // recorded terminal rather than retried: AdmittedRunDispatch.
+        var notQueued = await AdmittedRunDispatch
+            .QueueOrAbandonAsync(_queue, _runStore, record, _time.GetUtcNow)
+            .ConfigureAwait(false);
+        if (notQueued is not null)
         {
-            await _queue.EnqueueAsync(record.JobId, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // Unreachable with an unbounded in-process channel, which is why the token was the only
-            // live cause. Guarded anyway because the queue is the seam for a durable one, where a
-            // write genuinely can fail — and the cost of an unguarded failure is not a lost run but a
-            // permanently unusable workflow. Recording it terminal releases both holds and tells the
-            // caller the truth.
-            _logger.LogError(ex, "Run {JobId} was accepted but could not be queued.", record.JobId);
-            _runStore.Update(record with
-            {
-                Status = RunStatus.Failed,
-                Error = "The run was accepted but could not be queued for execution.",
-                CompletedAt = _time.GetUtcNow()
-            });
-
+            _logger.LogError(notQueued, "Run {JobId} was accepted but could not be queued.", record.JobId);
             return Result<StartWorkflowRunResult>.Fail("The run could not be queued for execution.");
         }
 
