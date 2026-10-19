@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
 using Application.Common.Logging;
 using Domain.Common.Extensions;
+using Domain.Common.Helpers;
 using Domain.Common.MetaHarness;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -274,7 +275,8 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                     Ts = DateTimeOffset.UtcNow,
                     Type = TraceRecordTypes.ToolResult,
                     ExecutionRunId = _traceWriter.Scope.ExecutionRunId.ToString("D"),
-                    TurnId = result.CallId ?? Guid.NewGuid().ToString("D"),
+                    // Same form of the id every other store holds (#632).
+                    TurnId = ToolCallIdentifierSanitizer.SanitizeOrNull(result.CallId) ?? Guid.NewGuid().ToString("D"),
                     // SafeResultText strips the raw exception text from PayloadSummary on failure — that
                     // text used to be the only signal a reader had that the call failed at all, so
                     // ResultCategory must now carry that signal structurally instead.

@@ -61,6 +61,38 @@ public class LlmUsageCaptureTests
         inv.Stdout.Should().Be("contents of a.txt");
     }
 
+    // #632: the capture feeds the observability store's call_id, so it must hold the same form of a call id
+    // the live stream and the replay transcript do. A malformed id is where that matters: it is the row an
+    // investigator follows across surfaces.
+
+    private const string MalformedCallId = "call#1<script>";
+
+    [Fact]
+    public void RecordToolRequestAndResult_MalformedCallId_StoresTheSanitizedFormAndStillPairs()
+    {
+        var sut = CreateSut();
+
+        sut.RecordToolRequest(MalformedCallId, "ReadFile", "{}");
+        sut.RecordToolResult(MalformedCallId, "contents");
+
+        var inv = sut.TakeSnapshot().ToolInvocations.Should().ContainSingle().Subject;
+        inv.CallId.Should().Be(
+            Domain.Common.Helpers.ToolCallIdentifierSanitizer.Sanitize(MalformedCallId).Value.Value,
+            "every surface must hold the id the live stream showed");
+        inv.CallId.Should().NotContain("<");
+        inv.Stdout.Should().Be("contents", "request and result are sanitized the same way, so they still pair");
+    }
+
+    [Fact]
+    public void RecordToolRequest_WellFormedCallId_IsStoredUnchanged()
+    {
+        var sut = CreateSut();
+
+        sut.RecordToolRequest("call_abc-123", "ReadFile", "{}");
+
+        sut.TakeSnapshot().ToolInvocations.Single().CallId.Should().Be("call_abc-123");
+    }
+
     [Fact]
     public void RecordToolRequest_TwoDistinctCallIds_KeepsBothInvocations()
     {

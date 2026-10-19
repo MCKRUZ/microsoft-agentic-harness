@@ -903,4 +903,34 @@ public sealed class ToolDiagnosticsMiddlewareTests
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.AtLeastOnce);
     }
+    /// <summary>
+    /// #632: the execution trace keys a tool result by its call id. It must hold the same form of that
+    /// id as the live stream, the replay transcript and the observability store, or a malformed id is
+    /// findable in some of them and not this one.
+    /// </summary>
+    [Fact]
+    public async Task GetResponseAsync_MalformedCallId_TracesTheSanitizedForm()
+    {
+        const string malformed = "call#1<script>";
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(MakeChatClient());
+
+        ReplayedToolCallScope.Current = new ReplayedToolCallSet();
+        try
+        {
+            await middleware.GetResponseAsync(
+                [new ChatMessage(ChatRole.Tool, [new FunctionResultContent(malformed, "result")])],
+                null,
+                CancellationToken.None);
+        }
+        finally
+        {
+            ReplayedToolCallScope.Current = null;
+        }
+
+        var expected = Domain.Common.Helpers.ToolCallIdentifierSanitizer.Sanitize(malformed).Value.Value;
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == expected), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
 }
