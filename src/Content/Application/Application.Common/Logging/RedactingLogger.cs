@@ -64,22 +64,109 @@ public sealed class RedactingLogger : ILogger
     /// </list>
     /// <para>
     /// A templated <c>BeginScope</c> call is also the one realistic way a secret reaches scope state in
-    /// this codebase — and it is exactly the shape the fix above cannot safely rewrite without breaking
-    /// its own rendering identity. That gap is real and tracked (issue #500) rather than "fixed" a third
-    /// time with the same category of regression; the plain-string case this method does handle is the
-    /// one already-common, already-safe pattern (<c>BeginScope("free text here")</c>) with zero
-    /// type-identity risk.
+    /// this codebase. It is now handled (#500) without either mistake above: the state is never
+    /// replaced by a different type. When its rendering needs redacting, it is rebuilt by the same
+    /// framework factory that built it (<c>LoggerExtensions.BeginScope(format, args)</c>) from its own
+    /// original format and its arguments with string values redacted, so the pushed object is the same
+    /// internal type, renders through the same <c>ToString()</c>, and enumerates the same keys. A
+    /// templated scope whose rendering needs nothing redacted is pushed as the same instance.
+    /// </para>
+    /// <para>
+    /// If redacting the string arguments does not clean the rendering (the secret sits in a non-string
+    /// argument, or spans an argument and the literal text around it), the scope falls back to the
+    /// redacted rendering as a plain string. That loses the structure for that one scope, which is the
+    /// right trade: a secret reaching a local sink is worse than a scope rendered as text.
     /// </para>
     /// </remarks>
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull
     {
-        if (_redactor.Enabled && state is string text)
-        {
+        if (!_redactor.Enabled)
+            return _inner.BeginScope(state);
+
+        if (state is string text)
             return _inner.BeginScope(_redactor.Redact(text));
-        }
+
+        if (IsTemplatedScope(state, out var values))
+            return BeginTemplatedScope(state, values);
 
         return _inner.BeginScope(state);
+    }
+
+    /// <summary>The runtime type a templated <c>BeginScope(format, args)</c> call pushes.</summary>
+    /// <remarks>
+    /// Internal to Microsoft.Extensions.Logging.Abstractions, so recognized by name; a framework rename
+    /// would make this pass such scopes through unchanged, the behaviour before #500, not a failure.
+    /// </remarks>
+    private const string TemplatedScopeTypeName = "Microsoft.Extensions.Logging.FormattedLogValues";
+
+    /// <summary>The key under which a templated scope carries its message template.</summary>
+    private const string OriginalFormatKey = "{OriginalFormat}";
+
+    private static bool IsTemplatedScope<TState>(
+        TState state, out IReadOnlyList<KeyValuePair<string, object?>> values) where TState : notnull
+    {
+        if (state.GetType().FullName == TemplatedScopeTypeName
+            && state is IReadOnlyList<KeyValuePair<string, object?>> list)
+        {
+            values = list;
+            return true;
+        }
+
+        values = [];
+        return false;
+    }
+
+    private IDisposable? BeginTemplatedScope<TState>(
+        TState state, IReadOnlyList<KeyValuePair<string, object?>> values) where TState : notnull
+    {
+        var rendered = state.ToString() ?? string.Empty;
+        var redactedRendered = _redactor.Redact(rendered);
+        if (string.Equals(rendered, redactedRendered, StringComparison.Ordinal))
+            return _inner.BeginScope(state);
+
+        string? format = null;
+        var args = new List<object?>(values.Count);
+        foreach (var (key, value) in values)
+        {
+            if (key == OriginalFormatKey)
+                format = value as string;
+            else
+                args.Add(value is string s ? _redactor.Redact(s) : value);
+        }
+
+        if (format is null)
+            return _inner.BeginScope(redactedRendered);
+
+        return new TemplatedScopeRebuilder(_inner, _redactor, redactedRendered)
+            .BeginScope(format, [.. args]);
+    }
+
+    /// <summary>
+    /// Receives the scope state the framework builds for a template and its redacted arguments, and
+    /// pushes it to the inner logger only if its rendering is now clean; otherwise pushes the redacted
+    /// rendering as plain text. Exists only so the framework's own factory builds the state, which is
+    /// what keeps its type identical to the original's.
+    /// </summary>
+    private sealed class TemplatedScopeRebuilder(ILogger inner, ILocalLogRedactor redactor, string redactedRendered)
+        : ILogger
+    {
+        public IDisposable? BeginScope<TRebuilt>(TRebuilt state) where TRebuilt : notnull
+        {
+            var rendered = state.ToString() ?? string.Empty;
+            return string.Equals(rendered, redactor.Redact(rendered), StringComparison.Ordinal)
+                ? inner.BeginScope(state)
+                : inner.BeginScope(redactedRendered);
+        }
+
+        public bool IsEnabled(LogLevel logLevel) => false;
+
+        public void Log<TLogState>(
+            LogLevel logLevel, EventId eventId, TLogState state, Exception? exception,
+            Func<TLogState, Exception?, string> formatter)
+        {
+            // Never called: this type only receives a scope.
+        }
     }
 
     /// <inheritdoc />

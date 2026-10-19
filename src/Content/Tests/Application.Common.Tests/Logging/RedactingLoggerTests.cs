@@ -240,6 +240,62 @@ public sealed class RedactingLoggerTests
         public void Log<TState>(LogLevel l, EventId e, TState s, Exception? ex, Func<TState, Exception?, string> f) { }
     }
 
+    // #500: a templated scope is the realistic way a secret reaches scope state. It must be redacted
+    // without the two regressions earlier attempts caused: changing the pushed object's type, or losing
+    // its rendering.
+
+    private static readonly FixedRedactor SecretRedactor =
+        new(enabled: true, redact: t => t.Replace("secret-value", "[REDACTED]"));
+
+    private static object TemplatedState(string format, params object?[] args)
+    {
+        var probe = new CapturingLogger();
+        probe.BeginScope(format, args);
+        return probe.LastScopeState!;
+    }
+
+    [Fact]
+    public void BeginScope_TemplatedScopeCarryingASecret_IsRedactedAndKeepsItsType()
+    {
+        var inner = new CapturingLogger();
+        var logger = new RedactingLogger(inner, SecretRedactor);
+
+        logger.BeginScope("Connecting with {Token} for {User}", "secret-value", "alice");
+
+        var pushed = inner.LastScopeState!;
+        pushed.GetType().Should().Be(TemplatedState("x {A}", "y").GetType(),
+            "the framework's own templated-scope type must survive, or formatters that check it break");
+        pushed.ToString().Should().Be("Connecting with [REDACTED] for alice",
+            "a formatter rendering the scope with ToString() must get the redacted text, not boilerplate");
+        ((IEnumerable<KeyValuePair<string, object?>>)pushed).Should().Contain(
+            new KeyValuePair<string, object?>("User", "alice"),
+            "the structure a scope consumer enumerates must survive");
+    }
+
+    [Fact]
+    public void BeginScope_TemplatedScopeWithNothingToRedact_PassesThroughAsTheSameInstance()
+    {
+        var inner = new CapturingLogger();
+        var logger = new RedactingLogger(inner, SecretRedactor);
+        var state = TemplatedState("Run {RunId}", "run-1");
+
+        logger.BeginScope(state);
+
+        inner.LastScopeState.Should().BeSameAs(state);
+    }
+
+    [Fact]
+    public void BeginScope_TemplatedSecretInANonStringArgument_FallsBackToTheRedactedText()
+    {
+        var inner = new CapturingLogger();
+        var logger = new RedactingLogger(inner, SecretRedactor);
+
+        logger.BeginScope("Payload {Payload}", new Uri("https://example.test/secret-value"));
+
+        inner.LastScopeState.Should().Be("Payload https://example.test/[REDACTED]",
+            "a secret the string arguments do not hold still must not reach the sink");
+    }
+
     [Fact]
     public void BeginScope_RedactorDisabled_PassesScopeThroughUnchanged()
     {
