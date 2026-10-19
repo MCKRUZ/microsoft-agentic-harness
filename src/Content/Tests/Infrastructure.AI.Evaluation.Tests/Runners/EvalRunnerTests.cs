@@ -259,6 +259,7 @@ public sealed class EvalRunnerTests
     {
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
         return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
     }
@@ -280,6 +281,7 @@ public sealed class EvalRunnerTests
         invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new AgentInvocationResult { Success = true, Output = output });
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
         return invoker;
     }
 
@@ -360,5 +362,32 @@ public sealed class EvalRunnerTests
         var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
 
         report.Warnings.Should().ContainSingle(w => w.Contains("c1") && w.Contains("scenario"));
+    }
+
+    /// <summary>
+    /// #503: the runner checks a case against what the invoker reads <em>for that case</em>, not against
+    /// the union of every path. A key some other path reads must still be reported here.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_KeyOnlyAnotherPathReads_IsStillReportedForThisCase()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+        invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet.Create("tool_count"));
+        invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
+
+        var @case = new EvalCase
+        {
+            Id = "c1",
+            Input = "in",
+            ExpectedOutput = "match",
+            InvocationOverrides = new Dictionary<string, string> { ["tool_count"] = "3" },
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match" }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w => w.Contains("c1") && w.Contains("tool_count"));
     }
 }

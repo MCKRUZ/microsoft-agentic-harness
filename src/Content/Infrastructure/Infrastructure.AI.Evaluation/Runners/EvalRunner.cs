@@ -148,7 +148,7 @@ public sealed class EvalRunner : IEvalRunner
             AddUnrecognizedKeyWarning(
                 warnings,
                 @case.InvocationOverrides.Keys,
-                _invoker.RecognizedOverrideKeys,
+                _invoker.RecognizedOverrideKeysFor(@case),
                 $"Case '{@case.Id}': invocation override",
                 invokerName);
 
