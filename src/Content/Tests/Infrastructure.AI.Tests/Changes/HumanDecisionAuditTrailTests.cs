@@ -154,7 +154,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
             new ApproveChangeProposalCommand { ProposalId = pending.Id, ReviewerId = "alice@contoso.com" },
             CancellationToken.None);
 
-        var verification = await audit.VerifyChainAsync(CancellationToken.None);
+        var verification = await audit.VerifyChainAsync(checkpoint: null, CancellationToken.None);
 
         verification.IsValid.Should().BeTrue(
             "a human decision must link into the hash chain like any orchestrator-written record");

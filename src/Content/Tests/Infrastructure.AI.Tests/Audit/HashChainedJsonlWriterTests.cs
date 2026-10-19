@@ -1,3 +1,4 @@
+using Domain.AI.Audit;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -362,5 +363,78 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
         var result = await sut.VerifyChainAsync(CancellationToken.None);
         result.IsValid.Should().BeFalse();
         result.FirstBrokenSequence.Should().Be(1);
+    }
+    // #416: a hash chain cannot see its own end being cut off; the checkpoint from the last pass can.
+
+    private async Task<AuditChainCheckpoint> AppendAndCheckpointAsync(HashChainedJsonlWriter sut, int records)
+    {
+        for (var i = 0; i < records; i++)
+            (await sut.AppendAsync($"{{\"n\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        return new AuditChainCheckpoint(result.HeadSequence, result.HeadHash!);
+    }
+
+    [Fact]
+    public async Task VerifyChainAsync_ChainGrewPastItsCheckpoint_IsValid()
+    {
+        using var sut = NewWriter();
+        var checkpoint = await AppendAndCheckpointAsync(sut, 3);
+        (await sut.AppendAsync("{\"n\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await sut.VerifyChainAsync(checkpoint, CancellationToken.None);
+
+        result.IsValid.Should().BeTrue();
+        result.HeadSequence.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task VerifyChainAsync_NewestRecordsCutOff_IsBroken()
+    {
+        using (var sut = NewWriter())
+            await AppendAndCheckpointAsync(sut, 3);
+        var checkpoint = await CheckpointOf(NewWriter());
+
+        // Drop the last line: what remains is a perfectly consistent two-record chain.
+        var lines = await File.ReadAllLinesAsync(_filePath);
+        await File.WriteAllLinesAsync(_filePath, lines[..^1]);
+
+        using var reopened = NewWriter();
+        (await reopened.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue(
+            "control: without the checkpoint the truncated chain looks intact");
+
+        var result = await reopened.VerifyChainAsync(checkpoint, CancellationToken.None);
+
+        result.IsValid.Should().BeFalse();
+        result.FirstBrokenSequence.Should().Be(2);
+        result.FailureReason.Should().Contain("removed from the end");
+    }
+
+    [Fact]
+    public async Task VerifyChainAsync_LogDeletedAndRegrownPastTheCheckpoint_IsBroken()
+    {
+        AuditChainCheckpoint checkpoint;
+        using (var sut = NewWriter())
+            checkpoint = await AppendAndCheckpointAsync(sut, 3);
+
+        File.Delete(_filePath);
+        using var regrown = NewWriter();
+        for (var i = 0; i < 5; i++)
+            (await regrown.AppendAsync($"{{\"forged\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await regrown.VerifyChainAsync(checkpoint, CancellationToken.None);
+
+        result.IsValid.Should().BeFalse();
+        result.FirstBrokenSequence.Should().Be(checkpoint.Sequence);
+        result.FailureReason.Should().Contain("differs from the one last verified");
+    }
+
+    private static async Task<AuditChainCheckpoint> CheckpointOf(HashChainedJsonlWriter writer)
+    {
+        using (writer)
+        {
+            var result = await writer.VerifyChainAsync(CancellationToken.None);
+            return new AuditChainCheckpoint(result.HeadSequence, result.HeadHash!);
+        }
     }
 }

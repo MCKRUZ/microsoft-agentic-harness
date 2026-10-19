@@ -92,6 +92,9 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     public string AuditName => "governance";
 
     /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
     public void Log(string agentId, string action, string decision)
     {
         var record = new GovernanceAuditRecord
@@ -177,8 +180,9 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     }
 
     /// <inheritdoc />
-    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
-        _chain.VerifyChainAsync(cancellationToken);
+    public Task<AuditChainVerificationResult> VerifyChainAsync(
+        AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(checkpoint, cancellationToken);
 
     /// <inheritdoc />
     public async Task<Result<IReadOnlyList<GovernanceAuditRecord>>> GetRecordsAsync(

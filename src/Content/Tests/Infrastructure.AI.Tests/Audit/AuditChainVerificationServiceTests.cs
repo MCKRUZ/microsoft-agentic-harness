@@ -37,7 +37,11 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
         });
 
     private AuditChainVerificationService NewService(string receiptPath, params IVerifiableAuditChain[] chains) =>
-        new(chains, Config(receiptPath), _timeProvider, NullLogger<AuditChainVerificationService>.Instance);
+        NewService(new AuditChainCheckpointStore(Config(receiptPath), NullLogger<AuditChainCheckpointStore>.Instance), receiptPath, chains);
+
+    private AuditChainVerificationService NewService(
+        IAuditChainCheckpoints checkpoints, string receiptPath, params IVerifiableAuditChain[] chains) =>
+        new(chains, checkpoints, Config(receiptPath), _timeProvider, NullLogger<AuditChainVerificationService>.Instance);
 
     [Fact]
     public async Task VerifyAllChains_VerifiesEveryChainOnce()
@@ -106,23 +110,139 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
         healthy.Calls.Should().Be(1); // the throwing chain did not abort the pass
     }
 
+    // #416: each clean pass records the chain's head, and the next pass hands it back so the chain must
+    // still reach it. A broken pass must not move it forward, or the alert would stop after one pass.
+
+    [Fact]
+    public async Task VerifyAllChains_CleanPass_HandsItsHeadToTheNextPassAsTheCheckpoint()
+    {
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var sut = NewService(_receiptDir, chain);
+
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.CheckpointsSeen.Should().Equal(null, new AuditChainCheckpoint(2, "hash-2"));
+    }
+
+    [Fact]
+    public async Task VerifyAllChains_BrokenPass_KeepsThePreviousCheckpoint()
+    {
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var sut = NewService(_receiptDir, chain);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.Result = AuditChainVerificationResult.Broken(1, 1, "truncated") with { HeadSequence = 0, HeadHash = "hash-0" };
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.CheckpointsSeen[^1].Should().Be(new AuditChainCheckpoint(2, "hash-2"),
+            "a broken pass must not overwrite the point the chain has to reach");
+    }
+
+    [Fact]
+    public async Task VerifyAllChains_AgainstARealChain_ReportsTheLogBeingDeletedAndRegrown()
+    {
+        // End to end with the real primitive: three records, a pass, then the file is deleted and a
+        // new chain of the same length grows in its place. Internally consistent, so only the checkpoint
+        // can tell.
+        var logPath = Path.Combine(_receiptDir, "chain", "audit.jsonl");
+        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+        var writer = new HashChainedJsonlWriter(logPath, NullLogger.Instance);
+        for (var i = 0; i < 3; i++)
+            (await writer.AppendAsync($"{{\"n\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var chain = new WriterChain("real", writer);
+        var sut = NewService(_receiptDir, chain);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+        chain.LastResult!.IsValid.Should().BeTrue();
+
+        writer.Dispose();
+        File.Delete(logPath);
+        var regrown = new HashChainedJsonlWriter(logPath, NullLogger.Instance);
+        for (var i = 0; i < 3; i++)
+            (await regrown.AppendAsync($"{{\"forged\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        chain.Writer = regrown;
+
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.LastResult!.IsValid.Should().BeFalse();
+        chain.LastResult.FailureReason.Should().Contain("differs from the one last verified");
+        regrown.Dispose();
+    }
+
+    // #416 review: a checkpoint belongs to a chain at one location, so a moved or reset log gets a fresh
+    // baseline rather than a permanent false alarm; and deleting the file while the host runs must not
+    // let the next pass re-baseline onto a regrown chain.
+
+    [Fact]
+    public async Task VerifyAllChains_LogMovedToANewLocation_StartsAFreshBaselineInsteadOfAlarming()
+    {
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var sut = NewService(_receiptDir, chain);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.Location = Path.Combine(_receiptDir, "moved", "a.jsonl");
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.CheckpointsSeen.Should().HaveCount(2).And.OnlyContain(c => c == null);
+    }
+
+    [Fact]
+    public async Task VerifyAllChains_CheckpointFileDeletedWhileRunning_StillUsesTheOneHeldInMemory()
+    {
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var store = new AuditChainCheckpointStore(Config(_receiptDir), NullLogger<AuditChainCheckpointStore>.Instance);
+        var sut = NewService(store, _receiptDir, chain);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        File.Delete(store.LocationOf(chain)!);
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        chain.CheckpointsSeen[^1].Should().Be(new AuditChainCheckpoint(2, "hash-2"),
+            "deleting the file must not let this process re-baseline silently");
+    }
+
     private sealed class FakeChain(string name, AuditChainVerificationResult result) : IVerifiableAuditChain
     {
         public string AuditName => name;
+        public string Location { get; set; } = Path.Combine(Path.GetTempPath(), name + ".jsonl");
+        public string AuditLocation => Location;
         public int Calls { get; private set; }
+        public AuditChainVerificationResult Result { get; set; } = result;
+        public List<AuditChainCheckpoint?> CheckpointsSeen { get; } = [];
 
-        public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken)
+        public Task<AuditChainVerificationResult> VerifyChainAsync(
+            AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
         {
             Calls++;
-            return Task.FromResult(result);
+            CheckpointsSeen.Add(checkpoint);
+            return Task.FromResult(Result);
+        }
+    }
+
+    private sealed class WriterChain(string name, HashChainedJsonlWriter writer) : IVerifiableAuditChain
+    {
+        public string AuditName => name;
+        public string AuditLocation => "real-chain-location";
+        public HashChainedJsonlWriter Writer { get; set; } = writer;
+        public AuditChainVerificationResult? LastResult { get; private set; }
+
+        public async Task<AuditChainVerificationResult> VerifyChainAsync(
+            AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
+        {
+            LastResult = await Writer.VerifyChainAsync(checkpoint, cancellationToken);
+            return LastResult;
         }
     }
 
     private sealed class ThrowingChain(string name) : IVerifiableAuditChain
     {
         public string AuditName => name;
+        public string AuditLocation => name;
 
-        public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        public Task<AuditChainVerificationResult> VerifyChainAsync(
+            AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
             throw new IOException("disk gone");
     }
 }

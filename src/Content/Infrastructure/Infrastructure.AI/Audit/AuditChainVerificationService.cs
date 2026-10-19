@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Common.Helpers;
+using Domain.AI.Audit;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Audit;
@@ -20,6 +21,14 @@ namespace Infrastructure.AI.Audit;
 /// that turns the cryptographic hash-chain into an operational guarantee — without it, tampering
 /// is only ever caught opportunistically on read.
 /// </summary>
+/// <remarks>
+/// Each clean pass records a checkpoint (the newest record's sequence and hash) and the next pass
+/// requires the chain to still reach it unchanged (#416). Without that, a log whose newest records
+/// were cut off, or one deleted and regrown after a restart, verifies as intact: what remains is
+/// internally consistent. A broken pass does not advance the checkpoint, so the alert repeats every
+/// pass until someone looks; a log that was reset on purpose is re-baselined by deleting the checkpoint
+/// file the alert names. See <see cref="AuditChainCheckpoint"/> for what a checkpoint does not cover.
+/// </remarks>
 public sealed class AuditChainVerificationService : BackgroundService
 {
     private static readonly JsonSerializerOptions ReceiptOptions = new()
@@ -30,23 +39,28 @@ public sealed class AuditChainVerificationService : BackgroundService
     };
 
     private readonly IReadOnlyList<IVerifiableAuditChain> _chains;
+    private readonly IAuditChainCheckpoints _checkpoints;
     private readonly LastKnownGoodSetting<AuditConfig> _audit;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditChainVerificationService> _logger;
 
     /// <summary>Initializes a new <see cref="AuditChainVerificationService"/>.</summary>
     /// <param name="chains">All verifiable audit chains registered in the host.</param>
+    /// <param name="checkpoints">Where each chain's last verified point is kept (#416).</param>
     /// <param name="config">Application configuration providing the audit schedule and receipt path.</param>
     /// <param name="timeProvider">Time provider for scheduling and receipt timestamps.</param>
     /// <param name="logger">Logger for verification results and operational diagnostics.</param>
     public AuditChainVerificationService(
         IEnumerable<IVerifiableAuditChain> chains,
+        IAuditChainCheckpoints checkpoints,
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
         ILogger<AuditChainVerificationService> logger)
     {
         ArgumentNullException.ThrowIfNull(chains);
+        ArgumentNullException.ThrowIfNull(checkpoints);
         _chains = chains.ToList();
+        _checkpoints = checkpoints;
         _timeProvider = timeProvider;
         _logger = logger;
 
@@ -131,7 +145,8 @@ public sealed class AuditChainVerificationService : BackgroundService
 
             try
             {
-                var result = await chain.VerifyChainAsync(cancellationToken).ConfigureAwait(false);
+                var checkpoint = await _checkpoints.ReadAsync(chain, cancellationToken).ConfigureAwait(false);
+                var result = await chain.VerifyChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
                 var nameTag = new KeyValuePair<string, object?>(
                     GovernanceConventions.AuditChainNameTag, chain.AuditName);
@@ -140,8 +155,26 @@ public sealed class AuditChainVerificationService : BackgroundService
                 if (result.IsValid)
                 {
                     _logger.LogInformation(
-                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s).",
-                        chain.AuditName, result.VerifiedCount);
+                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s), head sequence {HeadSequence}.",
+                        chain.AuditName, result.VerifiedCount, result.HeadSequence);
+
+                    if (result is { HeadSequence: >= 0, HeadHash: { } headHash })
+                    {
+                        // A chain with records and no checkpoint is either verified here for the first
+                        // time or had its checkpoint removed; the two cannot be told apart, so it is said
+                        // out loud rather than baselined silently.
+                        if (checkpoint is null)
+                        {
+                            _logger.LogWarning(
+                                "Audit chain '{AuditName}' has no checkpoint (first verification at this location, or the " +
+                                "checkpoint was removed); baselining at sequence {HeadSequence}.",
+                                chain.AuditName, result.HeadSequence);
+                        }
+
+                        await _checkpoints.WriteAsync(
+                            chain, new AuditChainCheckpoint(result.HeadSequence, headHash), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
                 else
                 {
@@ -149,6 +182,14 @@ public sealed class AuditChainVerificationService : BackgroundService
                     _logger.LogCritical(
                         "Audit chain '{AuditName}' INTEGRITY BROKEN at sequence {BrokenSequence}: {FailureReason} ({VerifiedCount} record(s) verified before the break).",
                         chain.AuditName, result.FirstBrokenSequence, result.FailureReason, result.VerifiedCount);
+
+                    if (checkpoint is not null)
+                    {
+                        _logger.LogWarning(
+                            "If audit chain '{AuditName}' was reset or moved on purpose, delete {CheckpointPath} to re-baseline it; " +
+                            "otherwise treat this as tampering.",
+                            chain.AuditName, _checkpoints.LocationOf(chain));
+                    }
                 }
 
                 await WriteReceiptAsync(receiptPath, chain.AuditName, result, cancellationToken).ConfigureAwait(false);
@@ -176,7 +217,9 @@ public sealed class AuditChainVerificationService : BackgroundService
                 IsValid = result.IsValid,
                 VerifiedCount = result.VerifiedCount,
                 FirstBrokenSequence = result.FirstBrokenSequence,
-                FailureReason = result.FailureReason
+                FailureReason = result.FailureReason,
+                HeadSequence = result.HeadSequence,
+                HeadHash = result.HeadHash
             };
 
             // Owner-only (#660, following #640/#527's precedent): a receipt reports which audit
@@ -207,5 +250,7 @@ public sealed class AuditChainVerificationService : BackgroundService
         public required long VerifiedCount { get; init; }
         public long? FirstBrokenSequence { get; init; }
         public string? FailureReason { get; init; }
+        public long HeadSequence { get; init; }
+        public string? HeadHash { get; init; }
     }
 }

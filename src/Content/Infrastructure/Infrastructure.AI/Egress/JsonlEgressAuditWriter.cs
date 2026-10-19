@@ -33,6 +33,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
     /// <inheritdoc />
     public string AuditName => "egress";
 
+    /// <inheritdoc />
+    public string AuditLocation => _filePath;
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -109,8 +112,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
     }
 
     /// <inheritdoc />
-    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
-        _chain.VerifyChainAsync(cancellationToken);
+    public Task<AuditChainVerificationResult> VerifyChainAsync(
+        AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(checkpoint, cancellationToken);
 
     /// <inheritdoc />
     public async Task<Result<IReadOnlyList<EgressAuditRecord>>> GetRecordsAsync(

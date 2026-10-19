@@ -37,10 +37,21 @@ public sealed record AuditChainVerificationResult
     /// </summary>
     public string? FailureReason { get; init; }
 
+    /// <summary>
+    /// Gets the sequence number of the last record that verified cleanly, or <c>-1</c> when none did.
+    /// Recorded as the next pass's <see cref="AuditChainCheckpoint"/> (#416).
+    /// </summary>
+    public long HeadSequence { get; init; } = -1;
+
+    /// <summary>Gets the hash of the record at <see cref="HeadSequence"/>, or <c>null</c> when none verified.</summary>
+    public string? HeadHash { get; init; }
+
     /// <summary>Creates a result indicating the chain verified cleanly.</summary>
     /// <param name="verifiedCount">The number of records verified.</param>
-    public static AuditChainVerificationResult Valid(long verifiedCount) =>
-        new() { IsValid = true, VerifiedCount = verifiedCount };
+    /// <param name="headSequence">The sequence number of the newest verified record, or <c>-1</c> when none.</param>
+    /// <param name="headHash">The newest verified record's hash, or <c>null</c> when none.</param>
+    public static AuditChainVerificationResult Valid(long verifiedCount, long headSequence = -1, string? headHash = null) =>
+        new() { IsValid = true, VerifiedCount = verifiedCount, HeadSequence = headSequence, HeadHash = headHash };
 
     /// <summary>Creates a result indicating the chain broke.</summary>
     /// <param name="verifiedCount">The number of records that verified before the break.</param>

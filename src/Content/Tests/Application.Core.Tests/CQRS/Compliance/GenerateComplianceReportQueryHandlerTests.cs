@@ -39,10 +39,11 @@ public sealed class GenerateComplianceReportQueryHandlerTests
     private readonly Mock<IEscalationAuditStore> _escalation = new();
     private readonly Mock<IDriftAuditStore> _drift = new();
     private readonly FakeTimeProvider _timeProvider = new(Now);
+    private readonly Mock<IAuditChainCheckpoints> _checkpoints = new();
 
     private GenerateComplianceReportQueryHandler CreateSut(IEnumerable<IVerifiableAuditChain>? chains = null) =>
         new(_store.Object, _governance.Object, _change.Object, _egress.Object, _escalation.Object, _drift.Object,
-            chains ?? [], _timeProvider, NullLogger<GenerateComplianceReportQueryHandler>.Instance);
+            chains ?? [], _checkpoints.Object, _timeProvider, NullLogger<GenerateComplianceReportQueryHandler>.Instance);
 
     private static GenerateComplianceReportQuery NewQuery(string? conversationId = null) => new()
     {
@@ -196,12 +197,12 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         SetUpAllSourcesEmpty();
         var intactChain = new Mock<IVerifiableAuditChain>();
         intactChain.SetupGet(c => c.AuditName).Returns("drift");
-        intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<CancellationToken>()))
+        intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(AuditChainVerificationResult.Valid(42));
 
         var brokenChain = new Mock<IVerifiableAuditChain>();
         brokenChain.SetupGet(c => c.AuditName).Returns("governance");
-        brokenChain.Setup(c => c.VerifyChainAsync(It.IsAny<CancellationToken>()))
+        brokenChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(AuditChainVerificationResult.Broken(10, 11, "record-hash mismatch"));
 
         var sut = CreateSut([intactChain.Object, brokenChain.Object]);
@@ -226,5 +227,28 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         _store.Verify(s => s.RecordAuditAsync(
             "compliance_report_generated", "harness", null,
             It.IsAny<Dictionary<string, object>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+    /// <summary>
+    /// #416 review: the report used to verify internal consistency only, so it certified as intact a log
+    /// the scheduled verifier reported truncated. It now verifies against the verifier's last checkpoint.
+    /// </summary>
+    [Fact]
+    public async Task Handle_VerifiesEachChainAgainstTheVerifiersLastCheckpoint()
+    {
+        SetUpAllSourcesEmpty();
+        var checkpoint = new AuditChainCheckpoint(41, "hash-41");
+        var chain = new Mock<IVerifiableAuditChain>();
+        chain.SetupGet(c => c.AuditName).Returns("drift");
+        chain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AuditChainVerificationResult.Valid(42));
+        _checkpoints.Setup(c => c.ReadAsync(chain.Object, It.IsAny<CancellationToken>())).ReturnsAsync(checkpoint);
+
+        await CreateSut([chain.Object]).Handle(NewQuery(), CancellationToken.None);
+
+        chain.Verify(c => c.VerifyChainAsync(checkpoint, It.IsAny<CancellationToken>()), Times.Once);
+        _checkpoints.Verify(
+            c => c.WriteAsync(It.IsAny<IVerifiableAuditChain>(), It.IsAny<AuditChainCheckpoint>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a report reads the checkpoint; only the scheduled verifier advances it");
     }
 }

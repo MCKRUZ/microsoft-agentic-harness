@@ -41,11 +41,16 @@ public static partial class DependencyInjection
         services.AddSingleton<IVerifiableAuditChain>(sp =>
             (IVerifiableAuditChain)sp.GetRequiredService<IDriftAuditStore>());
 
+        // Registered whether or not scheduled verification runs: the compliance report reads checkpoints
+        // too, and with verification off there are simply none to read.
+        services.AddSingleton<IAuditChainCheckpoints, AuditChainCheckpointStore>();
+
         if (!appConfig.AI.Audit.VerificationEnabled)
             return;
 
         services.AddSingleton(sp => new AuditChainVerificationService(
             sp.GetServices<IVerifiableAuditChain>(),
+            sp.GetRequiredService<IAuditChainCheckpoints>(),
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetService<TimeProvider>() ?? TimeProvider.System,
             sp.GetRequiredService<ILogger<AuditChainVerificationService>>()));
