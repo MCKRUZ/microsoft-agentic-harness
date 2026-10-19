@@ -26,6 +26,32 @@ public sealed record ToolNameForms(string PublishedName, IReadOnlyList<string> F
     public string? GroupingName => GroupingNameFor(Diverges, PublishedName);
 
     /// <summary>
+    /// The name-forms for <paramref name="name"/>, given what resolving it as a first-party tool returned.
+    /// The one place that decides whether a resolved published name diverges from the name it was
+    /// resolved from (#657): the envelope grant resolver and the plugin rule provider each used to make
+    /// that comparison themselves, and a fix to one would have left the other standing.
+    /// </summary>
+    /// <remarks>
+    /// Case-insensitive, matching how the runtime permission resolver's <c>GlobPatternMatcher</c> compares
+    /// a rule pattern with an invoked name: a published name that differs only in case is the same tool
+    /// and needs no second rule.
+    /// </remarks>
+    /// <param name="name">The declared, granted or denied name.</param>
+    /// <param name="resolved">Whether <paramref name="name"/> resolved to a first-party tool.</param>
+    /// <param name="publishedName">The resolved published name; ignored when <paramref name="resolved"/> is false.</param>
+    /// <returns>One form normally; two when a first-party tool's key and published name disagree.</returns>
+    public static ToolNameForms For(string name, bool resolved, string publishedName)
+    {
+        var diverges = resolved && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
+
+        // PublishedName is the name the agent actually invokes the tool by, which is what a summary should
+        // show; when nothing diverges it is simply the name itself.
+        return diverges
+            ? new ToolNameForms(publishedName, [name, publishedName], Diverges: true)
+            : new ToolNameForms(name, [name], Diverges: false);
+    }
+
+    /// <summary>
     /// The single definition of when emitted rules are alternate names for one tool, for a caller
     /// that resolved the published name itself and has no <see cref="ToolNameForms"/> to hand.
     /// </summary>

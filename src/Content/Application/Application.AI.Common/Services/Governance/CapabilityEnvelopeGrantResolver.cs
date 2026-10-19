@@ -1,5 +1,6 @@
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Governance;
@@ -37,6 +38,14 @@ public sealed class CapabilityEnvelopeGrantResolver
     private readonly FirstPartyToolLookup _firstPartyToolLookup;
     private readonly ILogger<CapabilityEnvelopeGrantResolver> _logger;
 
+    /// <summary>
+    /// Tool keys whose construction failure has already been logged at Error (#657). A construction
+    /// failure is deliberately not memoized by <see cref="FirstPartyToolLookup"/>, so the same broken tool
+    /// is re-tried on every grant check, which runs on every tool-permission resolution under an armed
+    /// envelope; logging each attempt at Error flooded the log for one persistent misconfiguration.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _reportedConstructionFailures = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Initializes a new instance of the <see cref="CapabilityEnvelopeGrantResolver"/> class.</summary>
     /// <param name="firstPartyToolLookup">Resolves a first-party tool's self-reported published name.</param>
     /// <param name="logger">
@@ -65,7 +74,11 @@ public sealed class CapabilityEnvelopeGrantResolver
 
         if (!resolved && constructionError is not null)
         {
-            _logger.LogError(constructionError,
+            // Error the first time for each key, Debug after: the operator needs to see it once, and the
+            // retry on every later check is the lookup's deliberate choice (a transient failure must be
+            // able to recover), not new information.
+            var level = _reportedConstructionFailures.TryAdd(toolKey, 0) ? LogLevel.Error : LogLevel.Debug;
+            _logger.Log(level, constructionError,
                 "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
                 "capability-envelope grant check — the raw grant entry still applies, but a caller " +
                 "invoking it under a self-reported name that disagrees with the key would not be covered.",
@@ -81,6 +94,9 @@ public sealed class CapabilityEnvelopeGrantResolver
     /// first, then (only when that fails) whether any grant entry is a first-party tool's DI key whose
     /// resolved published name matches <paramref name="toolName"/>.
     /// </summary>
+    /// <param name="envelope">The capability envelope the caller runs under.</param>
+    /// <param name="toolName">The name the tool is being invoked by.</param>
+    /// <returns>True when a grant entry covers <paramref name="toolName"/> by either form.</returns>
     public bool Grants(CapabilityEnvelope envelope, string toolName)
     {
         ArgumentNullException.ThrowIfNull(envelope);
@@ -119,6 +135,8 @@ public sealed class CapabilityEnvelopeGrantResolver
     /// coverage is unchanged by the grouping; that method was removed once its last caller moved
     /// here, rather than kept as an untested convenience.
     /// </remarks>
+    /// <param name="names">The granted or declared names to expand.</param>
+    /// <returns>One group per name that contributed at least one new form, in input order.</returns>
     public IReadOnlyList<ToolNameForms> ExpandToNameForms(IReadOnlyCollection<string> names)
     {
         ArgumentNullException.ThrowIfNull(names);
@@ -155,16 +173,8 @@ public sealed class CapabilityEnvelopeGrantResolver
     /// collection whose emptiness the caller then has to handle although it can never be empty.
     /// </summary>
     /// <param name="name">The declared, granted or denied name to expand.</param>
-    public ToolNameForms ExpandOne(string name)
-    {
-        var diverges = TryResolvePublishedName(name, out var publishedName)
-            && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
-
-        // PublishedName is the name the agent actually invokes the tool by, which is what a summary
-        // should show; when nothing diverges it is simply the name itself.
-        return diverges
-            ? new ToolNameForms(publishedName, [name, publishedName], Diverges: true)
-            : new ToolNameForms(name, [name], Diverges: false);
-    }
+    /// <returns>The name's forms; never empty.</returns>
+    public ToolNameForms ExpandOne(string name) =>
+        ToolNameForms.For(name, TryResolvePublishedName(name, out var publishedName), publishedName);
 }
 
