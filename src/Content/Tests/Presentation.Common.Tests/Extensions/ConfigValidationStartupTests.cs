@@ -149,6 +149,16 @@ public class ConfigValidationStartupTests
             }
         },
         {
+            // The audit archive is read as part of each audit chain (#416); one that is an audit log's own folder
+            // would read the live files twice.
+            "AIConfig (Audit.ArchivePath)",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Governance:AuditStoragePath"] = "data/audit",
+                ["AppConfig:AI:Audit:ArchivePath"] = "data/audit",
+            }
+        },
+        {
             // Corpus-graph indexing on ingest writes through IGraphRagService, which exists
             // only alongside the graph database backend — enabling one without the other
             // would silently skip the stage on every ingest.
@@ -178,6 +188,22 @@ public class ConfigValidationStartupTests
         var act = () => startupValidator!.Validate();
         act.Should().Throw<OptionsValidationException>(
             $"an invalid {sectionLabel} value must fail host startup instead of passing silently");
+    }
+
+    [Fact]
+    public void RegisterConfigSections_BindsTheAISectionOnce_SoItsListsHoldEachConfiguredItemOnce()
+    {
+        // Validating the AI section (#416) must not bind it a second time into the same options instance; the
+        // AppConfig options, bound once, are the control.
+        using var provider = BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Telemetry:ContentCapture:RedactionCategories:0"] = "Email",
+        });
+
+        var viaAi = provider.GetRequiredService<IOptions<Domain.Common.Config.AI.AIConfig>>().Value;
+        var viaApp = provider.GetRequiredService<IOptions<Domain.Common.Config.AppConfig>>().Value.AI;
+
+        viaAi.Telemetry.ContentCapture.RedactionCategories.Should().Equal(viaApp.Telemetry.ContentCapture.RedactionCategories);
     }
 
     [Fact]

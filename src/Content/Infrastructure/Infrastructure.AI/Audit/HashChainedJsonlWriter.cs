@@ -514,7 +514,15 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                         continue;
 
                     if (!ApplyLine(line, ref state, out var breakScan))
+                    {
+                        // In the archive, a line that is not a record got there only through an operator's acceptance
+                        // (a line torn by a crash, or one from before hash chaining): the archiver checked everything
+                        // else. Step over it as the archiver did; a whole record that does not chain still breaks.
+                        if (segment.Archived && !IsSelfConsistentRecord(line))
+                            continue;
+
                         return breakScan;
+                    }
 
                     // The record the last pass ended on must still be there, unchanged. A different hash at
                     // that sequence means the chain was regrown from somewhere earlier, not appended to.

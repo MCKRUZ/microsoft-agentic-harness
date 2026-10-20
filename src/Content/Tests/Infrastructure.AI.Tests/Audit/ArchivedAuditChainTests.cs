@@ -212,6 +212,27 @@ public sealed class ArchivedAuditChainTests : IDisposable
     }
 
     [Fact]
+    public async Task WalkingBackIntoTheArchive_AWholeRecordThatDoesNotChain_IsStillABreak()
+    {
+        // Only lines that are not records are stepped over in the archive (what an acceptance lets in); a record that
+        // hashes right but does not chain is what a forger writes, and must not be passed over.
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var dayZero = (await File.ReadAllLinesAsync(LiveDay("2026-10-19"))).Single().Split('\t');
+        Archive("2026-10-19");
+        Archive("2026-10-20");
+        const string payload = "{\"forged\":true}";
+        var previous = new string('9', 64);
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"5\n{previous}\n{payload}")));
+        await File.AppendAllTextAsync(ArchivedDay("2026-10-19"), $"{payload}\t{hash}\t{previous}\t5\n");
+
+        var verified = await sut.VerifyChainAsync(new AuditChainCheckpoint(0, dayZero[1]), CancellationToken.None);
+
+        verified.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ACheckpointBeforeEveryArchivedRecord_IsABreak()
     {
         using var sut = Writer();

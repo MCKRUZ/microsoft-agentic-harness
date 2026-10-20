@@ -232,6 +232,13 @@ public sealed class AuditArchiverTests : IDisposable
         result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
         result.FilesArchived.Should().Be(2);
         (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue("the live chain continues the accepted file's last record");
+
+        // The application's checkpoint stayed before the tear (a broken pass never moves it), so its next pass walks
+        // back into the archive and through the accepted file: the torn line must be stepped over there too.
+        var dayZero = (await File.ReadAllLinesAsync(ArchivedDay("2026-10-19"))).Single().Split('\t');
+        var verified = await sut.VerifyChainAsync(new AuditChainCheckpoint(0, dayZero[1]), CancellationToken.None);
+        verified.IsValid.Should().BeTrue(verified.FailureReason);
+        verified.StartSequence.Should().Be(0);
     }
 
     [Fact]
