@@ -68,6 +68,8 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
             () => Directory.Exists(_auditDirectory)
                 ? Directory.GetFiles(_auditDirectory, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray()
                 : [],
+            // Shared by every process writing these segments; not itself a *.jsonl segment.
+            Path.Combine(_auditDirectory, ".chain.lock"),
             logger);
     }
 
@@ -175,39 +177,45 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     public void Dispose() => _chain.Dispose();
 
     private string GetFilePath(DateTimeOffset recordedAt) =>
-        Path.Combine(_auditDirectory, $"{recordedAt:yyyy-MM-dd}.jsonl");
+        Path.Combine(_auditDirectory, recordedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
 
     private IReadOnlyList<string> ResolveFilePaths(DriftAuditQuery query)
     {
         // Widen the file window by a day on each side: a record can land in the segment for its
         // append time, which may differ from RecordedAt by a clock skew / midnight crossing. The
         // precise RecordedAt filter in GetRecordsAsync trims the extra records back out.
+        //
+        // Files named after the window are read too. The writer never appends to a segment earlier than
+        // the latest one (#416), so once a host whose clock is ahead (or a planted later-dated file) starts
+        // a later segment, every host's records land there, whatever their RecordedAt.
         if (query.Start.HasValue && query.End.HasValue)
-            return EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), query.End.Value.Date.AddDays(1));
-
-        if (query.Start.HasValue)
-            return EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), _timeProvider.GetUtcNow().Date);
-
-        if (query.End.HasValue)
         {
-            // End-only: scan existing files, filter by parsed date to avoid unbounded enumeration
-            return Directory.Exists(_auditDirectory)
-                ? Directory.GetFiles(_auditDirectory, "*.jsonl")
-                    .Where(f => ParseDateFromFileName(f) <= query.End.Value.Date.AddDays(1))
-                    .ToList()
-                : [];
+            var upper = query.End.Value.Date.AddDays(1);
+            return [.. EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), upper), .. ExistingFilesDatedAfter(upper)];
         }
 
+        if (query.Start.HasValue)
+        {
+            var upper = _timeProvider.GetUtcNow().Date;
+            return [.. EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), upper), .. ExistingFilesDatedAfter(upper)];
+        }
+
+        // End-only, or no window: any file can hold a record from before the end, for the reason above.
         return Directory.Exists(_auditDirectory)
             ? Directory.GetFiles(_auditDirectory, "*.jsonl")
             : [];
     }
 
+    private IEnumerable<string> ExistingFilesDatedAfter(DateTime upper) =>
+        Directory.Exists(_auditDirectory)
+            ? Directory.GetFiles(_auditDirectory, "*.jsonl").Where(f => ParseDateFromFileName(f) > upper)
+            : [];
+
     private IReadOnlyList<string> EnumerateDatePaths(DateTime start, DateTime end)
     {
         var paths = new List<string>();
         for (var date = start; date <= end; date = date.AddDays(1))
-            paths.Add(Path.Combine(_auditDirectory, $"{date:yyyy-MM-dd}.jsonl"));
+            paths.Add(Path.Combine(_auditDirectory, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl"));
         return paths;
     }
 
