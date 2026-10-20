@@ -8,6 +8,7 @@ using Domain.Common.MetaHarness;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Traces;
 
@@ -16,6 +17,13 @@ namespace Infrastructure.AI.Traces;
 /// Creates one directory per execution run under <c>MetaHarnessConfig.TraceDirectoryRoot</c>
 /// and returns a scoped <see cref="ITraceWriter"/> for writing trace artifacts.
 /// </summary>
+[PersonalDataStore(
+    "Execution-trace files under {MetaHarness:TraceDirectoryRoot} (off by default): system prompts, model responses, tool-call JSONL, state snapshots and oversized tool results. Only the system prompt and summaries are secret-redacted. Run ids only; executions/ is never pruned.",
+    PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
 {
     private readonly IOptionsMonitor<AppConfig> _appConfig;

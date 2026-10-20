@@ -11,6 +11,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Context;
 
@@ -19,6 +20,13 @@ namespace Infrastructure.AI.Context;
 /// Small results (below <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.PerResultCharLimit"/>)
 /// are returned inline without any disk I/O.
 /// </summary>
+[PersonalDataStore(
+    "Oversized tool output spilled to {ToolResultStorage:StoragePath}/{conversationOrRunId}/tool-results/ (default .agent-sessions), secret-redacted first. Deleted 7 days after last write; deleting a conversation does not remove its spills.",
+    PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DocumentContent,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Configured,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class FileSystemToolResultStore : IToolResultStore
 {
     // /code-review + /simplify findings: the charset and shape checks below now live in

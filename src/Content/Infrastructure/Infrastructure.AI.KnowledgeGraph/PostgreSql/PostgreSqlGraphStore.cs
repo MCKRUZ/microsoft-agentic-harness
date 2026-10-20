@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Config;
 using Npgsql;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.PostgreSql;
 
@@ -28,6 +29,13 @@ namespace Infrastructure.AI.KnowledgeGraph.PostgreSql;
 /// read from <c>AppConfig.AI.Rag.GraphRag.ConnectionString</c>.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Knowledge-graph tables in PostgreSQL: extracted entities, facts and per-user memories with owner and tenant ids. Expiry is stamped per entity type (Fact 365d, Concept 730d) and swept daily, but unlisted types, including learnings and work episodes, never expire. Export returns nodes only.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.KnowledgeGraph.PostgreSql");

@@ -4,6 +4,7 @@ using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.StateManagement.Checkpoints;
 
@@ -34,6 +35,13 @@ namespace Infrastructure.AI.StateManagement.Checkpoints;
 /// }
 /// </code>
 /// </remarks>
+[PersonalDataStore(
+    "JSON workflow-state files at {StateManagement:BasePath}/{workflowId}/checkpoints/, including free-form metadata supplied by callers. Records carry a workflow id, not an owner. A file is kept until its workflow is deleted.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotSupported)]
 public class JsonCheckpointStateManager : IStateManager
 {
     private readonly ILogger<JsonCheckpointStateManager> _logger;

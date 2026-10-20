@@ -6,6 +6,7 @@ using Domain.AI.Runs;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Runs;
 
@@ -19,6 +20,13 @@ namespace Infrastructure.AI.Runs;
 /// the SQLite schema into existence before the first operation, visible to <c>ValidateOnBuild</c> —
 /// the same pattern <c>EfCorePlanStateStore</c> uses.
 /// </remarks>
+[PersonalDataStore(
+    "The schedules SQLite table: recurring run schedules with owner and tenant ids, target id, cron expression, time zone and the capability envelope. A schedule stays until its owner deletes it.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.ByOwner)]
 public sealed class EfScheduleStore : IScheduleStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()

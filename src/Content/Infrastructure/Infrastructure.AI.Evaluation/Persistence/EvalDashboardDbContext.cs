@@ -1,5 +1,6 @@
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Evaluation.Persistence;
 
@@ -9,6 +10,7 @@ namespace Infrastructure.AI.Evaluation.Persistence;
 /// support the dashboard's list view, drill-in, and prompt-version comparison
 /// without needing to parse JSON blobs at query time.
 /// </summary>
+[PersonalDataChannel("The eval-dashboard SQLite database; the eval-run store describes its tables.")]
 public sealed class EvalDashboardDbContext : DbContext
 {
     /// <summary>Ingested run headers.</summary>

@@ -7,6 +7,7 @@ using Infrastructure.AI.Persistence.Entities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Conversations;
 
@@ -43,6 +44,13 @@ namespace Infrastructure.AI.Conversations;
 /// no rows, and only then is a probe issued to tell "no such conversation" apart from "not yours".
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "The default conversation store, SQLite at Conversations:DatabasePath (default data/conversations.db): one row per conversation naming its user, plus every message including tool calls and results. Nothing ages them out; the owner can delete one conversation at a time.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.ByOwner)]
 public sealed class EfCoreConversationStore : IConversationStore
 {
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;

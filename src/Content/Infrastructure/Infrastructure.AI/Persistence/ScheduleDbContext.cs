@@ -1,6 +1,7 @@
 using Infrastructure.AI.Persistence.Configurations;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -17,6 +18,7 @@ namespace Infrastructure.AI.Persistence;
 /// assembly-scan-avoidance mechanism, since this context owns exactly one entity and has no
 /// sibling configurations to accidentally pull in.
 /// </remarks>
+[PersonalDataChannel("The schedules SQLite database; the schedule store describes its table.")]
 public sealed class ScheduleDbContext : DbContext
 {
     /// <summary>Recurring schedules.</summary>

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.RAG.Retrieval;
 
@@ -26,6 +27,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// hardware compared to scalar loops.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "An in-memory vector index (despite the name, nothing is written to disk) holding ingested document chunks, their embeddings and owner and tenant stamps. Lost at restart. Deletion is by document id only, never by owner.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotSupported)]
 public sealed class FaissVectorStore : IVectorStore
 {
     private const string DefaultCollection = "default";

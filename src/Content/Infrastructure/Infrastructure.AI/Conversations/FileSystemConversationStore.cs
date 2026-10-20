@@ -6,6 +6,7 @@ using Domain.Common.Config.AI.Conversations;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Conversations;
 
@@ -33,6 +34,13 @@ namespace Infrastructure.AI.Conversations;
 /// Any operation whose computed file path does not start with this base path throws
 /// <see cref="ArgumentException"/>, preventing path-traversal attacks via crafted conversation IDs.
 /// </summary>
+[PersonalDataStore(
+    "The file conversation store (Conversations:Provider=FileSystem): one JSON file per conversation under Conversations:ConversationsPath, naming its user and holding every message. Nothing ages them out; the owner can delete one at a time.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.ByOwner)]
 public sealed class FileSystemConversationStore : IConversationStore
 {
     private readonly string _basePath;

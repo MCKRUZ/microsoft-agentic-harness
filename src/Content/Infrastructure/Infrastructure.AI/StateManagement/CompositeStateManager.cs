@@ -5,6 +5,7 @@ using Infrastructure.AI.StateManagement.Checkpoints;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.StateManagement;
 
@@ -35,6 +36,7 @@ namespace Infrastructure.AI.StateManagement;
 /// AgentFrameworkWithMarkdown. Both JSON and markdown files are created/updated
 /// on every save operation.
 /// </remarks>
+[PersonalDataChannel("Fans workflow-state writes out to the JSON checkpoint store and the markdown decorator, which describe the files they keep.")]
 public class CompositeStateManager : IStateManager
 {
     private readonly IStateManager _decoratedManager;

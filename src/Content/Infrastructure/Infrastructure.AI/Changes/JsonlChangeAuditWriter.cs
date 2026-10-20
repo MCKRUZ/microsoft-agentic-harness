@@ -10,6 +10,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Changes;
 
@@ -21,6 +22,13 @@ namespace Infrastructure.AI.Changes;
 /// <see cref="HashChainedJsonlWriter"/> so a retroactively altered or deleted
 /// decision is detectable.
 /// </summary>
+[PersonalDataStore(
+    "Hash-chained JSONL under {Changes:AuditStoragePath} (default .agent-sessions/changes) of change-gate decisions: proposal id, gate, decision, reason, reviewer id, agent and tenant. Kept by design: deleting records would break the chain.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Tenant,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAuditChain, IDisposable
 {
     /// <inheritdoc />

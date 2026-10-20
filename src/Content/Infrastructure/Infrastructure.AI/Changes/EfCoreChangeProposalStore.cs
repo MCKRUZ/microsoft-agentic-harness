@@ -8,6 +8,7 @@ using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Changes;
 
@@ -35,6 +36,13 @@ namespace Infrastructure.AI.Changes;
 /// inspection.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Governance-state SQLite (off unless change proposals are durable): agent-proposed skill, prompt or config diffs and gate history with reviewer ids and reasons. Terminal proposals are deleted after DurableState:RetentionDays (90); open ones are kept.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Configured,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class EfCoreChangeProposalStore : IChangeProposalStore
 {
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;

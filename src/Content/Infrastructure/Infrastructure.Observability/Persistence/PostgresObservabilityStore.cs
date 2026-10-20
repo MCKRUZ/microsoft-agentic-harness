@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Infrastructure.Postgres.Migrations;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.Observability.Persistence;
 
@@ -17,6 +18,13 @@ namespace Infrastructure.Observability.Persistence;
 /// Postgres container, which the server runs only when it creates an empty data directory — so a
 /// schema change could never reach a database that already held data.
 /// </remarks>
+[PersonalDataStore(
+    "The PostgreSQL observability database (opt-in): sessions by conversation id, message previews and full content, tool arguments and output, safety events, audit metadata and context snapshots. No user column. Nothing deletes rows.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed partial class PostgresObservabilityStore : IObservabilityStore, IDisposable
 {
     private readonly NpgsqlDataSource _dataSource;

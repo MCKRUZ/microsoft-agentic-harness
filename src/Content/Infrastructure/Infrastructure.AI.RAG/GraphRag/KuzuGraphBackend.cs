@@ -4,6 +4,7 @@ using Application.Common.Interfaces.Common;
 using Domain.AI.KnowledgeGraph.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.RAG.GraphRag;
 
@@ -32,6 +33,13 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// pointing to the same file (SQLite WAL mode is enabled).
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Owner erasure removes only the memory nodes; expires_at is never enforced.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames | PersonalDataCategories.DocumentContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposable
 {
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);

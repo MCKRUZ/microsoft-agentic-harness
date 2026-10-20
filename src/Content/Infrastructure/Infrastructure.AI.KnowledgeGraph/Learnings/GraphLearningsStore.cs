@@ -9,6 +9,7 @@ using Domain.Common;
 using Domain.Common.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 
@@ -25,6 +26,13 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// singleton store from capturing the scoped <see cref="IKnowledgeScope"/>. Index nodes stay owner-less
 /// on purpose — they are shared routing structures, not the subject's data.
 /// </remarks>
+[PersonalDataStore(
+    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days; Permanent ones never are.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.NotSupported)]
 public sealed class GraphLearningsStore : ILearningsStore
 {
     private readonly IKnowledgeGraphStore _graphStore;

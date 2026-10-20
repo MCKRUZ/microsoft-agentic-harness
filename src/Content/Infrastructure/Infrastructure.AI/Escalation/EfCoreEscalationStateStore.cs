@@ -7,6 +7,7 @@ using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Escalation;
 
@@ -48,6 +49,13 @@ namespace Infrastructure.AI.Escalation;
 /// attacker defeat the seal by deleting it.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Governance-state SQLite (off unless escalations are durable): escalation requests with tool arguments, approver names, decisions, reasons and instructions. Resolved rows are deleted after DurableState:RetentionDays (90); pending ones are kept.",
+    PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Configured,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class EfCoreEscalationStateStore : IEscalationStateStore
 {
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;

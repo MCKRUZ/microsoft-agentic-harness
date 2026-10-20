@@ -4,6 +4,7 @@ using Domain.AI.Budget;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Application.AI.Common.Services.AI;
 
@@ -43,6 +44,13 @@ namespace Application.AI.Common.Services.AI;
 /// cannot, and both are reached through <see cref="IConversationBudgetTracker"/>.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "In-memory token budget per conversation: a conversation id and a running token total, released when the conversation ends and lost at restart. An operational counter, so export does not apply.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Volatile,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotApplicable)]
 public sealed class InProcessConversationBudgetTracker : IConversationBudgetTracker
 {
     /// <summary>Maximum number of keys tracked before least-recently-used eviction kicks in.</summary>

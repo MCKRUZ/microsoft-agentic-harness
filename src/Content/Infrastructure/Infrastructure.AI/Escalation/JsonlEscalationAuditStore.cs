@@ -9,6 +9,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Escalation;
 
@@ -25,6 +26,13 @@ namespace Infrastructure.AI.Escalation;
 /// <c>EscalationConfig.AuditStoragePath</c> directory, after <c>escalations.jsonl</c> where a log written before
 /// that split continues (see <see cref="DatedAuditSegments"/>). Files are created lazily on first write.
 /// </remarks>
+[PersonalDataStore(
+    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests with tool arguments, approver names, decisions, reasons, outcomes and executions. Kept by design: deleting records would break the chain.",
+    PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()

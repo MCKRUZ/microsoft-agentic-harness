@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.InMemory;
 
@@ -16,6 +17,13 @@ namespace Infrastructure.AI.KnowledgeGraph.InMemory;
 /// for development environments. For production, use <c>"postgresql"</c> or <c>"neo4j"</c>.
 /// Thread-safe for concurrent reads and writes within a single process.
 /// </remarks>
+[PersonalDataStore(
+    "The default knowledge graph, held in process memory: extracted entities, facts and per-user memories with owner and tenant ids. Lost at restart. Owner erasure and owner lookup work as on the durable graph stores.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed class InMemoryGraphStore : IKnowledgeGraphStore
 {
     private readonly ConcurrentDictionary<string, GraphNode> _nodes = new();

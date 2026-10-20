@@ -4,6 +4,7 @@ using Azure.Search.Documents;
 using Azure.Search.Documents.Models;
 using Domain.AI.RAG.Models;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.RAG.Retrieval;
 
@@ -39,6 +40,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// Azure requires per-tenant index provisioning, which is an infrastructure concern.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "An Azure AI Search index holding ingested document chunk text, embeddings, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Nothing queries or deletes by those stamps; deletion is by document id only.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotSupported)]
 public sealed class AzureAISearchVectorStore : IVectorStore
 {
     private readonly SearchClient _searchClient;

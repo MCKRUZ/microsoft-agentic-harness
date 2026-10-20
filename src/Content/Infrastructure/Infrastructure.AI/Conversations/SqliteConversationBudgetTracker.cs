@@ -5,6 +5,7 @@ using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Conversations;
 
@@ -50,6 +51,13 @@ namespace Infrastructure.AI.Conversations;
 /// silently reset the very ceiling this class exists to enforce (issue #253).
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Budget rows in the conversations database: a conversation id and a running token total. A row is swept 30 days after its conversation no longer exists. An operational counter, so export does not apply.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Configured,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotApplicable)]
 public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
 {
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;

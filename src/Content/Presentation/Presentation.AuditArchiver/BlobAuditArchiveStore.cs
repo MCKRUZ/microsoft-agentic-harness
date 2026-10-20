@@ -4,6 +4,7 @@ using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Domain.AI.Audit;
+using Domain.Common.Compliance;
 
 namespace Presentation.AuditArchiver;
 
@@ -17,6 +18,13 @@ namespace Presentation.AuditArchiver;
 /// application's identity must have no role that can write here, and no control-plane role on the account that could
 /// read its keys; turn off shared-key access on the account.
 /// </remarks>
+[PersonalDataStore(
+    "Write-once Azure Blob archive of the audit day-files under a locked time-based retention policy, so the hash chains stay tamper-evident; nothing deletes or rewrites them. Kept by design, so erasure is exempt.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 internal sealed class BlobAuditArchiveStore : IAuditArchiveStore
 {
     private const int SingleUploadLimit = 256 * 1024 * 1024;

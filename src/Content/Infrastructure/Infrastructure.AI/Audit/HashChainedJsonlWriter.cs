@@ -7,6 +7,7 @@ using Domain.AI.Audit;
 using Domain.Common;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Audit;
 
@@ -94,6 +95,7 @@ namespace Infrastructure.AI.Audit;
 /// scans it in full. Both are O(records).
 /// </para>
 /// </remarks>
+[PersonalDataChannel("Appends hash-chained JSONL lines for the audit stores that call it; each caller describes what its lines hold.")]
 public sealed partial class HashChainedJsonlWriter : IDisposable
 {
     /// <summary>The 64-character all-zero hash that precedes the first record in a chain.</summary>
