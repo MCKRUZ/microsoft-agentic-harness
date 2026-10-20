@@ -52,18 +52,7 @@ public sealed partial class AuditArchiver
             .Select(i => new ArchivedFile($"{folder}/{i.Name}", i.Name, i.LastModified)));
 
         var tail = await TailAsync(files, cancellationToken).ConfigureAwait(false);
-        var witnessed = new Dictionary<long, string>();
-        foreach (var item in await _store.ListAsync($"{folder}/{AuditWitness.Folder}", cancellationToken).ConfigureAwait(false))
-        {
-            if (!AuditWitness.IsFileName(item.Name) || long.Parse(item.Name[..19], System.Globalization.CultureInfo.InvariantCulture) <= tail.Sequence)
-                continue;
-
-            var bytes = await _store.ReadAsync($"{folder}/{AuditWitness.Folder}/{item.Name}", cancellationToken).ConfigureAwait(false);
-            var witness = bytes is null ? null : AuditWitness.From(bytes);
-            if (witness is null || AuditWitness.FileName(witness.Sequence) != item.Name)
-                throw new IOException($"Witness {item.Name} in {folder} is not one this archiver wrote.");
-            witnessed[witness.Sequence] = witness.Hash;
-        }
+        var witnessed = await ReadWitnessesAsync(chain, tail.Sequence, cancellationToken).ConfigureAwait(false);
 
         var accepted = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in await _store.ListAsync($"{folder}/{AuditAcceptance.Folder}", cancellationToken).ConfigureAwait(false))
@@ -74,6 +63,30 @@ public sealed partial class AuditArchiver
         }
 
         return new ArchiveState(files, tail, witnessed, accepted);
+    }
+
+    /// <summary>A log's witnesses above <paramref name="aboveSequence"/>, by sequence (<c>-1</c> for all of them).</summary>
+    private async Task<IReadOnlyDictionary<long, string>> ReadWitnessesAsync(
+        AuditChainLocation chain, long aboveSequence, CancellationToken cancellationToken)
+    {
+        var folder = $"{FolderOf(chain)}/{AuditWitness.Folder}";
+        var witnessed = new Dictionary<long, string>();
+        foreach (var item in await _store.ListAsync(folder, cancellationToken).ConfigureAwait(false))
+        {
+            if (!AuditWitness.IsFileName(item.Name)
+                || long.Parse(item.Name[..19], System.Globalization.CultureInfo.InvariantCulture) <= aboveSequence)
+            {
+                continue;
+            }
+
+            var bytes = await _store.ReadAsync($"{folder}/{item.Name}", cancellationToken).ConfigureAwait(false);
+            var witness = bytes is null ? null : AuditWitness.From(bytes);
+            if (witness is null || AuditWitness.FileName(witness.Sequence) != item.Name)
+                throw new IOException($"Witness {item.Name} in {folder} is not one this archiver wrote.");
+            witnessed[witness.Sequence] = witness.Hash;
+        }
+
+        return witnessed;
     }
 
     /// <summary>The newest self-consistent archived record, skipping files with none; (-1, genesis) when there is none.</summary>
@@ -98,18 +111,38 @@ public sealed partial class AuditArchiver
     /// </summary>
     private async Task<byte[]> ReadLiveAsync(string path, CancellationToken cancellationToken)
     {
+        RefuseLinks(path);
+
+        // One handle, read to the limit and one byte more: a file swapped or grown after any check, or something that
+        // never ends, is caught by what is actually read, not by what a path said a moment earlier.
+        var limit = (long)_config.MaxFileMegabytes * 1024 * 1024;
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[64 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, limit + 1 - buffer.Length)), cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            buffer.Write(chunk, 0, read);
+            if (buffer.Length > limit)
+                throw new IOException($"{path} is larger than {_config.MaxFileMegabytes} MB.");
+        }
+
+        return buffer.ToArray();
+    }
+
+    /// <summary>Refuses a live file, or its folder, that is a link: the application's identity could point it elsewhere.</summary>
+    private static void RefuseLinks(string path)
+    {
         var file = new FileInfo(path);
         var folder = file.Directory!;
+        if (!file.Exists)
+            throw new FileNotFoundException($"{path} is gone.", path); // a missing file reads as every attribute set
+
         if (folder.LinkTarget is not null || folder.Attributes.HasFlag(FileAttributes.ReparsePoint)
             || file.LinkTarget is not null || file.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
             throw new IOException($"{path} or its folder is a link; refusing to follow it.");
         }
-
-        if (file.Length > (long)_config.MaxFileMegabytes * 1024 * 1024)
-            throw new IOException($"{path} is larger than {_config.MaxFileMegabytes} MB.");
-
-        return await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

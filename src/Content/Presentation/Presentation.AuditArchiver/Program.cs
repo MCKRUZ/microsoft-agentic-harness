@@ -74,6 +74,12 @@ public static class Program
             logger.LogCritical("The audit archiver gave up after {Timeout}.", command.Timeout);
             return ExitCodes.Stopped;
         }
+        catch (Exception ex)
+        {
+            // Anything else (a store that cannot be reached, credentials refused): still exit 1, so someone is paged.
+            logger.LogCritical(ex, "The audit archiver failed.");
+            return ExitCodes.Stopped;
+        }
     }
 
     private static AppConfig LoadConfig(string? configFile)

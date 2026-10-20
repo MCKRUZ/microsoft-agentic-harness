@@ -147,6 +147,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             lockPath,
             logger)
     {
+        _legacyFileName = segments.LegacyFile is null ? null : Path.GetFileName(segments.LegacyFile);
         if (!string.IsNullOrWhiteSpace(archivePath))
         {
             _archiveRoot = archivePath;
@@ -464,6 +465,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         {
             if (!File.Exists(segment.Path))
                 return state.Break(state.ExpectedSequence, $"Segment {Path.GetFileName(segment.Path)} disappeared during verification.");
+
+            // With an archive, lines written before the chain began are allowed only in the earlier single file: in a
+            // day-file they would be records no hash or witness covers, served to readers all the same (#416).
+            if (_archive is not null && !string.Equals(Path.GetFileName(segment.Path), _legacyFileName, StringComparison.Ordinal))
+                state.ChainStarted = true;
 
             try
             {

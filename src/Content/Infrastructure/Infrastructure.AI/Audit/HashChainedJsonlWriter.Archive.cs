@@ -46,6 +46,9 @@ public sealed partial class HashChainedJsonlWriter
     private readonly DatedAuditSegments? _archive;
     private readonly string? _archiveRoot;
 
+    /// <summary>The earlier single file's name, the only file that may hold lines written before the chain began.</summary>
+    private readonly string? _legacyFileName;
+
     /// <summary>The probe file that showed the archive accepts writes from this application, once one has.</summary>
     private volatile string? _archiveAcceptedWrite;
 
@@ -287,10 +290,14 @@ public sealed partial class HashChainedJsonlWriter
     /// <param name="headHash">Its hash, or the genesis hash.</param>
     /// <param name="allowPreChainLines">Whether lines written before the chain began may come first.</param>
     /// <param name="stepOverBreaks">
-    /// For a file an operator accepted: step over lines that do not chain, as the writer does, instead of failing.
+    /// For a file an operator accepted: step over lines that are not whole, self-consistent records (a line torn by a
+    /// crash) instead of failing. A whole record that does not chain still fails.
     /// </param>
     /// <param name="witnessed">Hashes the archiver witnessed, by sequence: a record at one of them must have that hash.</param>
-    /// <param name="newHead">The newest chaining record once the lines are added.</param>
+    /// <param name="newHead">
+    /// The newest chaining record once the lines are added; on failure, the newest one verified before it (before the
+    /// contradicting record, when a witness was contradicted).
+    /// </param>
     /// <param name="reason">Why they do not continue the chain, when they do not.</param>
     /// <returns>Whether the lines continue the chain.</returns>
     internal static bool ContinuesChain(
@@ -311,9 +318,12 @@ public sealed partial class HashChainedJsonlWriter
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
+            var before = (state.LastValidSequence, state.LastValidHash);
             if (!ApplyLine(line, ref state, out var broken))
             {
-                if (stepOverBreaks)
+                // Only what a crash leaves: a line that is not a whole record. A whole record that hashes right but does
+                // not chain is never stepped over, or it could become the archive's newest record and outrank witnesses.
+                if (stepOverBreaks && LastSelfConsistentRecord([line]) is null)
                     continue;
 
                 newHead = (state.LastValidSequence, state.LastValidHash);
@@ -325,7 +335,8 @@ public sealed partial class HashChainedJsonlWriter
                 && witnessed.TryGetValue(state.LastValidSequence, out var expected)
                 && !string.Equals(expected, state.LastValidHash, StringComparison.Ordinal))
             {
-                newHead = (state.LastValidSequence, state.LastValidHash);
+                // Not the contradicting record: nothing from it on, or before it, is proven to be what was witnessed.
+                newHead = before;
                 reason = $"Record at sequence {state.LastValidSequence} differs from the one the archiver witnessed there " +
                          "(the log was rewritten after it was witnessed).";
                 return false;

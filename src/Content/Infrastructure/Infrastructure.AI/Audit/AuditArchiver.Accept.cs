@@ -48,7 +48,7 @@ public sealed partial class AuditArchiver
                 chain.Name, fileName, actual, reason);
             return AuditArchiveResult.Done(chain.Name);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return Stop(chain, 0, $"{ex.GetType().Name}: {ex.Message}");
         }

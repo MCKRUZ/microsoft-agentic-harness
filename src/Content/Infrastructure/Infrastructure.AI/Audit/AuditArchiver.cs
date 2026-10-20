@@ -86,12 +86,12 @@ public sealed partial class AuditArchiver
     public async Task<AuditArchiveResult> ArchiveAsync(AuditChainLocation chain, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(chain);
-        if (await NotReadyAsync(chain, cancellationToken).ConfigureAwait(false) is { } notReady)
-            return notReady;
-
         var archived = 0;
         try
         {
+            if (await NotReadyAsync(chain, cancellationToken).ConfigureAwait(false) is { } notReady)
+                return notReady;
+
             var state = await ReadArchiveAsync(chain, cancellationToken).ConfigureAwait(false);
             var walk = await WitnessCoreAsync(chain, state, cancellationToken).ConfigureAwait(false);
             if (walk.Problem is not null)
@@ -101,59 +101,82 @@ public sealed partial class AuditArchiver
                 return Stop(chain, 0, copyProblem);
 
             // Exactly the bytes the walk checked, file by file: nothing read later is archived unchecked.
-            var candidates = walk.Files.Select(f => f.Path).ToList();
             // Never the newest file: a writer may still append to it.
-            for (var i = 0; i < walk.Files.Count - 1 && IsFinished(walk.Files[i].Path, candidates); i++)
+            for (var i = 0; i < walk.Files.Count - 1 && IsFinished(walk.Files[i].Path); i++)
             {
-                if (await ArchiveOneAsync(chain, walk.Files[i], cancellationToken).ConfigureAwait(false) is var (problem, copied)
-                    && problem is not null)
-                {
+                var (problem, outcome) = await ArchiveOneAsync(chain, state, walk.Files[i], cancellationToken).ConfigureAwait(false);
+                if (problem is not null)
                     return Stop(chain, archived, problem);
-                }
-
-                if (copied)
+                if (outcome == FileOutcome.Archived)
                     archived++;
+                if (outcome == FileOutcome.Kept)
+                    break; // A later file archived past it would leave it sorting within the archive with no copy.
             }
 
             _logger.LogInformation("Audit log '{Chain}': archived {Count} file(s).", chain.Name, archived);
             return AuditArchiveResult.Done(chain.Name, archived);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Storage, authentication, anything: the log stops and the run exits 1, so the scheduler pages someone.
             return Stop(chain, archived, $"{ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>What happened to one candidate file.</summary>
+    private enum FileOutcome
+    {
+        /// <summary>Copied into the archive.</summary>
+        Archived,
+
+        /// <summary>An empty file left by a crash, deleted rather than archived.</summary>
+        Dropped,
+
+        /// <summary>Neither: left in place, so nothing after it may be archived this run.</summary>
+        Kept,
     }
 
     /// <summary>
     /// Copies one finished, checked file into the archive, or says why not. Its live copy is deleted by a later run,
     /// once the application's mount lists the archived one.
     /// </summary>
-    private async Task<(string? Problem, bool Archived)> ArchiveOneAsync(
-        AuditChainLocation chain, CheckedFile file, CancellationToken cancellationToken)
+    private async Task<(string? Problem, FileOutcome Outcome)> ArchiveOneAsync(
+        AuditChainLocation chain, ArchiveState state, CheckedFile file, CancellationToken cancellationToken)
     {
         var name = Path.GetFileName(file.Path);
         if (file.Bytes.Length == 0)
         {
             // Created by a writer that crashed before writing: no records, nothing to archive.
+            var deleted = false;
             await UnderLockAsync(chain, () =>
             {
+                RefuseLinks(file.Path);
                 if (new FileInfo(file.Path).Length == 0)
+                {
                     File.Delete(file.Path);
+                    deleted = true;
+                }
+
                 return Task.CompletedTask;
             }, cancellationToken).ConfigureAwait(false);
-            return (null, false);
+            return (null, deleted ? FileOutcome.Dropped : FileOutcome.Kept);
         }
+
+        // A witness written since this run read the archive (a witness job running alongside) must hold too.
+        var witnessed = await ReadWitnessesAsync(chain, state.Tail.Sequence, cancellationToken).ConfigureAwait(false);
+        if (Check(file, witnessed, newest: false) is { Problem: { } problem })
+            return (problem, FileOutcome.Kept);
 
         var target = ArchivePathOf(chain, file.Path);
         if (await _store.PutIfAbsentAsync(target, file.Bytes, cancellationToken).ConfigureAwait(false) == AuditArchivePut.Different)
-            return ($"The archive already holds a different {target}; it cannot be replaced.", false);
+            return ($"The archive already holds a different {target}; it cannot be replaced.", FileOutcome.Kept);
 
         var readBack = await _store.ReadAsync(target, cancellationToken).ConfigureAwait(false);
         if (readBack is null || !readBack.AsSpan().SequenceEqual(file.Bytes))
-            return ($"The archived copy of {name} reads back differently from what was written.", false);
+            return ($"The archived copy of {name} reads back differently from what was written.", FileOutcome.Kept);
 
-        _logger.LogInformation("Audit log '{Chain}': archived {File}.", chain.Name, name);
-        return (null, true);
+        _logger.LogInformation("Audit log '{Chain}': archived {File}{Accepted}.", chain.Name, name, file.Accepted ? ", as accepted" : string.Empty);
+        return (null, FileOutcome.Archived);
     }
 
     /// <summary>
@@ -175,31 +198,44 @@ public sealed partial class AuditArchiver
 
             var archivedBytes = await _store.ReadAsync(copy.Path, cancellationToken).ConfigureAwait(false) ?? [];
             string? problem = null;
-            var locked = await UnderLockAsync(chain, async () =>
+            async Task CompareThenDeleteAsync()
             {
                 var liveBytes = await ReadLiveAsync(path, cancellationToken).ConfigureAwait(false);
                 if (!liveBytes.AsSpan().SequenceEqual(archivedBytes))
+                {
                     problem = $"Live file {name} differs from its archived copy.";
+                }
                 else if (_clock.GetUtcNow() - copy.LastModified >= _config.DeleteDelay)
+                {
+                    RefuseLinks(path); // again, just before deleting by path
                     File.Delete(path);
-            }, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            if (!await UnderLockAsync(chain, CompareThenDeleteAsync, cancellationToken).ConfigureAwait(false))
+            {
+                // No lock file, so nothing is deleted; the copy is still compared.
+                var liveBytes = await ReadLiveAsync(path, cancellationToken).ConfigureAwait(false);
+                if (!liveBytes.AsSpan().SequenceEqual(archivedBytes))
+                    problem = $"Live file {name} differs from its archived copy.";
+                _logger.LogWarning("Audit log '{Chain}': no lock file at {Lock}; archived live files are kept.", chain.Name, chain.LockPath);
+            }
 
             if (problem is not null)
                 return problem;
-            if (!locked)
-                _logger.LogWarning("Audit log '{Chain}': no lock file at {Lock}; archived live files are kept.", chain.Name, chain.LockPath);
         }
 
         return null;
     }
 
-    /// <summary>Whether a candidate is old enough: a day-file by its date, the earlier single file by the oldest day-file's.</summary>
-    private bool IsFinished(string path, IReadOnlyList<string> candidates)
+    /// <summary>
+    /// Whether a candidate is old enough: a day-file by its date. The earlier single file is finished as soon as a
+    /// day-file follows it, and archived at once, so the lines before its first record are sealed early.
+    /// </summary>
+    private bool IsFinished(string path)
     {
         var latest = DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime).AddDays(-_config.MinimumAgeDays);
-        var day = DatedAuditSegments.DayOf(path)
-            ?? candidates.Select(DatedAuditSegments.DayOf).FirstOrDefault(d => d is not null);
-        return day is { } date && date <= latest;
+        return DatedAuditSegments.DayOf(path) is not { } day || day <= latest;
     }
 
     private async Task<AuditArchiveResult?> NotReadyAsync(AuditChainLocation chain, CancellationToken cancellationToken) =>

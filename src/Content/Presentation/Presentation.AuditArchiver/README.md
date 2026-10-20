@@ -72,8 +72,13 @@ Every one of these matters; if any is open, the guarantee is gone.
   attribute caching off or short. The application checks every pass that it cannot write there and that the marker
   file is present, and stops ("not verified") otherwise; those checks catch a misconfigured mount, not an attacker.
 - **Live folders:** the archiver reads and deletes the application's day-files and takes each log's lock file. Run it as
-  the application's own operating-system user in its separate workload (on Linux the folders are owner-only); on
-  Windows give its account Modify on the audit folders. It creates nothing in them.
+  the application's own operating-system user, but only in its own container or pod (on Linux the folders are
+  owner-only). On a shared machine, the same user could attach a debugger to the archiver or ask the machine's
+  managed-identity endpoint for the archiver's token; there, use a separate account. On Windows give its account
+  Modify on the audit folders. It creates nothing in them, and refuses a file or folder that is a link.
+- **The earlier single file** (`governance.jsonl` and the like, from before logs were split by day) is the only file that
+  may hold lines written before hash chaining began, and nothing covers those lines. The archiver therefore archives it
+  on its first run, whatever its age. Run `witness` and `run` as soon as the archive is set up.
 - **Program and configuration:** keep both where the application cannot write them.
 - **Rolling out:** start the archiver only after every application host runs this version with the same
   `ArchivePath`. A host without it would start the chain again from the beginning.
@@ -89,8 +94,13 @@ sha256sum governance/2026-10-20.jsonl        # or Get-FileHash -Algorithm SHA256
 audit-archiver accept governance 2026-10-20.jsonl <sha256> "writer crashed at 02:14, see incident 123"
 ```
 
-The acceptance is stored in the archive; within that file only, lines that do not chain are stepped over. If the file
-changes afterwards, the acceptance no longer applies.
+The acceptance is stored in the archive. Within that file only, lines that are not whole records (what a crash leaves)
+are stepped over, and the file is read exactly as the application reads it. A whole record that does not chain still
+stops the run: accepting cannot let a planted record through. Stepped-over lines stay in the file and readers still
+return them, so note them in the reason. If the file changes afterwards, the acceptance no longer applies.
+
+A break also stops new witnesses past it, so the window the witness protects grows until the break is dealt with; the
+records before the break are still witnessed.
 
 ## What the application sees
 
