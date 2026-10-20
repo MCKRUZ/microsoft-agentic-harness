@@ -20,7 +20,7 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </summary>
 public sealed class ToolChainBuilderUnresolvedToolTests
 {
-    private const string Fragment = "is not registered under that key";
+    private const string Fragment = "could not be resolved from keyed DI";
 
     [Fact]
     public void BuildToolsByName_NameWithNoRegistration_IsDroppedAndWarnedAbout()
@@ -52,7 +52,7 @@ public sealed class ToolChainBuilderUnresolvedToolTests
     {
         var logger = new CapturingLogger<ToolChainBuilder>();
         var services = new ServiceCollection();
-        services.AddKeyedSingleton<ITool>("real_tool", Mock.Of<ITool>());
+        services.AddKeyedSingleton<ITool>("real_tool", Mock.Of<ITool>(t => t.Name == "real_tool"));
         var builder = new ToolChainBuilder(logger, services.BuildServiceProvider());
 
         builder.BuildToolsByName(["real_tool"]);

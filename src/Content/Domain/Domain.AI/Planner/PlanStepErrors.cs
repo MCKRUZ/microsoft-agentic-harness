@@ -64,6 +64,14 @@ public static class PlanStepErrors
     /// </summary>
     public const string ToolFailed = "step.tool_failed";
 
+    /// <summary>
+    /// The step names a first-party tool whose published name differs from the key it is registered
+    /// under (#888). A grant or deny names a tool by one string, so a tool answering to two cannot be
+    /// governed reliably and is refused wherever it is built. Which names disagreed stays in the
+    /// structured log; this is a host registration defect, not something the plan author can fix.
+    /// </summary>
+    public const string ToolMisregistered = "step.tool_misregistered";
+
     /// <summary>The step exceeded its per-attempt timeout.</summary>
     public const string Timeout = "step.timeout";
 

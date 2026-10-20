@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
@@ -83,13 +84,10 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// The keyed-DI registration name this tool was resolved under, when it came from
     /// <see cref="ResolveToolByName"/> — <see langword="null"/> for MCP-sourced tools and for tools
     /// handed in pre-resolved (<c>SkillDefinition.Tools</c>, <c>SkillAgentOptions.AdditionalTools</c>).
-    /// A keyed <see cref="Application.AI.Common.Interfaces.Tools.ITool"/> can legitimately report a
-    /// converted <see cref="Tool"/>.Name that disagrees with the key it was registered under
-    /// (<c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> proves this is a real,
-    /// supported shape) — <see cref="ApplyPluginToolBoundary"/> must match a plugin boundary entry
-    /// against this key when it's populated, the same identifier
-    /// <see cref="Plugins.PluginToolBoundaryTracker"/>'s existence check already validates against, or
-    /// a boundary entry naming the key would verify as real but never actually match at filter time.
+    /// <see cref="ApplyPluginToolBoundary"/> matches a plugin boundary entry against this key, the same
+    /// identifier <see cref="Plugins.PluginToolBoundaryTracker"/>'s existence check validates against. A
+    /// keyed tool's converted <see cref="Tool"/>.Name equals this key (case aside): a tool whose name
+    /// differs is refused when built (#888), so matching the key and matching the name agree.
     /// </param>
     private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName, string? SkillId = null, string? ToolKey = null);
 
@@ -942,7 +940,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
         if (resolved is null)
         {
             _logger.LogWarning(
-                "Tool '{ToolName}' is not registered under that key in keyed DI, so it is not part of this agent's tool set",
+                "Tool '{ToolName}' could not be resolved from keyed DI (not registered, not constructible, or " +
+                "refused for a name mismatch — see any earlier error), so it is not part of this agent's tool set",
                 toolName);
         }
 
@@ -951,7 +950,17 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
     private IEnumerable<AITool>? ResolveToolByName(string toolName)
     {
-        var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
+        ITool? tool;
+        try
+        {
+            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName);
+        }
+        catch (ToolNameMismatchException ex)
+        {
+            _logger.LogError(ex, "Tool '{ToolName}' is not part of this agent's tool set: {Reason}", toolName, ex.Message);
+            return null;
+        }
+
         if (tool == null)
             return null;
 

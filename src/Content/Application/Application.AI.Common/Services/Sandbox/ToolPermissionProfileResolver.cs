@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
@@ -191,7 +192,8 @@ public sealed class ToolPermissionProfileResolver
     /// than silently narrowing what gets provisioned. Also forbidden when <paramref name="toolName"/>
     /// is a registered first-party tool and <paramref name="requiredCapabilities"/> under-declares
     /// relative to that tool's own <see cref="ITool.RequiredCapabilities"/> — see the under-declaration
-    /// remarks below. Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
+    /// remarks below. Also forbidden when <paramref name="toolName"/>'s registered tool publishes a
+    /// different name than its key (#888). Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
     /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation set to
     /// <paramref name="defaultIsolationLevel"/><c>.AtLeast(operatorOverride)</c> — never downgraded
     /// below the caller's own floor even when no override is configured.
@@ -247,12 +249,28 @@ public sealed class ToolPermissionProfileResolver
         // ResolveOverride's isolation floor — this used to call Resolve(toolName) (itself a lookup,
         // via ResolveBase) AND a second direct lookup just for RequiredCapabilities (a security-review
         // finding: real keyed-DI resolution, not a dictionary read, paid twice on this dispatch path).
-        // A construction failure (#627) takes the same path as "not first-party" below — logged, since
-        // that's a host misconfiguration rather than an ordinary external-tool answer.
-        var firstPartyTool = _firstPartyLookup.TryResolveLogged(
-            toolName, _logger,
-            "to resolve its sandbox permission profile for ungoverned dispatch — treating it as " +
-            "outside the bounded first-party set");
+        // A misregistered tool (#888) is refused: its own declaration is what the under-declaration
+        // check below compares against, so treating it as "not first-party" would skip that check.
+        // Any other construction failure (#627) takes the same path as "not first-party" below —
+        // logged, since that's a host misconfiguration rather than an ordinary external-tool answer.
+        var firstPartyTool = _firstPartyLookup.TryResolve(toolName, out var constructionError);
+        if (constructionError is ToolNameMismatchException)
+        {
+            _logger.LogError(constructionError,
+                "Refusing ungoverned dispatch of tool '{ToolName}': its published name differs from its " +
+                "registration key.", toolName);
+            LogRefusal(agentId, toolName);
+            return Result<ToolPermissionProfile>.Forbidden(
+                $"Tool '{toolName}' is registered under a key that differs from its published name.");
+        }
+
+        if (constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' to resolve its sandbox permission " +
+                "profile for ungoverned dispatch — treating it as outside the bounded first-party set.",
+                toolName);
+        }
 
         if (firstPartyTool is not null)
         {

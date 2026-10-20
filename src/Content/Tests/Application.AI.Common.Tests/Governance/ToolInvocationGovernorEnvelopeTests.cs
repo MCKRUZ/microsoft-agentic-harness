@@ -76,7 +76,7 @@ public sealed class ToolInvocationGovernorEnvelopeTests
     /// </summary>
     private GovernanceTraceRecorder _trace = null!;
 
-    private ToolInvocationGovernor Build(CapabilityEnvelopeGrantResolver? envelopeGrantResolver = null)
+    private ToolInvocationGovernor Build()
     {
         var governanceMonitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governanceOff);
         _trace = new GovernanceTraceRecorder(governanceMonitor, _riskClassifier);
@@ -89,30 +89,10 @@ public sealed class ToolInvocationGovernorEnvelopeTests
             _trace, governanceMonitor,
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
             Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance,
-            envelopeGrantResolver ?? new CapabilityEnvelopeGrantResolver(
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
-                NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
+            NullLogger<ToolInvocationGovernor>.Instance);
     }
 
     private static CapabilityEnvelope Envelope() => new() { AllowedTools = [Tool] };
-
-    /// <summary>
-    /// A resolver that knows <paramref name="key"/> is a first-party tool whose self-reported
-    /// published name is <paramref name="publishedName"/> — used by the #626 regression tests below to
-    /// prove the governor's independent re-check agrees with the rule layer on a key/published-name
-    /// divergence, not just that the rule layer alone computes the right rules.
-    /// </summary>
-    private static CapabilityEnvelopeGrantResolver ResolverWithDivergentTool(string key, string publishedName)
-    {
-        var services = new ServiceCollection();
-        var mock = new Mock<Application.AI.Common.Interfaces.Tools.ITool>();
-        mock.Setup(t => t.Name).Returns(publishedName);
-        services.AddKeyedSingleton(key, mock.Object);
-        return new CapabilityEnvelopeGrantResolver(
-            new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key }),
-            NullLogger<CapabilityEnvelopeGrantResolver>.Instance);
-    }
 
     [Fact]
     public async Task GlobalOff_NoBundleRun_PassesThroughWithoutEvaluating()
@@ -250,44 +230,22 @@ public sealed class ToolInvocationGovernorEnvelopeTests
         Assert.True(decision.IsAllowed);
     }
 
-    // --- #626 correctness-review regression: a published-name-expansion fix at the rule-provider
-    // layer alone cannot change any invocation outcome, because this governor independently
-    // re-confirms the envelope's raw grant list. These tests exercise the governor's own check
-    // directly, proving CapabilityEnvelopeGrantResolver — not just EnvelopePermissionRuleProvider's
-    // rules — resolves a first-party tool's key/published-name divergence.
+    // --- #888: a grant names a tool by one string, which is both its registration key and its published name
+    // (a tool for which they differ is refused when built). So the governor's re-check is the envelope's own
+    // exact-name test, and no other name is covered by a grant.
 
     [Fact]
-    public async Task EnvelopeGrantsByKey_InvocationUsesDivergentPublishedName_IsAllowed()
+    public async Task EnvelopeGrant_CoversOnlyTheNameItSpells_EvenWhenTheResolverAllowsAnother()
     {
-        // The envelope's operator-authored grant names the tool by its DI registration key, but the
-        // call arrives (as it always does at runtime) under the tool's self-reported published name.
-        _permissions
-            .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(PermissionDecision.Allow("granted by key"));
-        var governor = Build(ResolverWithDivergentTool("tool_key", "published_tool"));
-
-        ToolInvocationDecision decision;
-        using (CapabilityEnvelopeAccessor.Begin(new CapabilityEnvelope { AllowedTools = ["tool_key"] }))
-            decision = await governor.AuthorizeAsync("published_tool", CancellationToken.None);
-
-        Assert.True(decision.IsAllowed);
-    }
-
-    [Fact]
-    public async Task EnvelopeGrantsByKey_InvocationUsesUnrelatedName_IsStillDenied()
-    {
-        // Sanity check for the test above: wiring a divergent-name-aware resolver must not turn into
-        // "allow anything" — a name with no relationship to the grant is still refused.
         _permissions
             .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(PermissionDecision.Allow("resolver arbitration bug"));
-        var governor = Build(ResolverWithDivergentTool("tool_key", "published_tool"));
+        var governor = Build();
 
         ToolInvocationDecision decision;
         using (CapabilityEnvelopeAccessor.Begin(new CapabilityEnvelope { AllowedTools = ["tool_key"] }))
-            decision = await governor.AuthorizeAsync("some_unrelated_tool", CancellationToken.None);
+            decision = await governor.AuthorizeAsync("published_tool", CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
     }

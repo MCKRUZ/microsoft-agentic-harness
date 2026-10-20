@@ -5,6 +5,7 @@ using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Governance;
 using Domain.AI.Sandbox;
+using Domain.Common;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -42,7 +43,11 @@ public sealed class ToolPermissionProfileResolverTests
     {
         var services = new ServiceCollection();
         foreach (var (name, tool) in tools)
+        {
+            // A keyed tool reports its key as its name, or it is refused when built (#888).
+            Mock.Get(tool).Setup(t => t.Name).Returns(name);
             services.AddKeyedSingleton<ITool>(name, (_, _) => tool);
+        }
 
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(config ?? new SandboxConfig());
@@ -128,6 +133,28 @@ public sealed class ToolPermissionProfileResolverTests
 
         result.IsSuccess.Should().BeTrue();
         LogsErrorMentioning(logger, "unbuildable").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_ToolWhoseNameDiffersFromItsKey_IsForbidden()
+    {
+        // #888: a misregistered tool must not be treated as "not first-party" here — that would skip
+        // the under-declaration check against its own declaration, which is this path's only guard.
+        var tool = new Mock<ITool>();
+        tool.Setup(t => t.Name).Returns("published_name");
+        tool.Setup(t => t.RequiredCapabilities).Returns(ToolCapability.FileWrite);
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("registered_key", (_, _) => tool.Object);
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "registered_key" });
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
+
+        var result = resolver.ResolveForUngovernedDispatch("registered_key", ToolCapability.None, []);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Forbidden);
     }
 
     [Fact]

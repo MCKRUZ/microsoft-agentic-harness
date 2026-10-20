@@ -189,21 +189,21 @@ public sealed class ToolCatalogTests
     }
 
     [Fact]
-    public void Catalog_ToolWhoseNameDisagreesWithItsKey_IsAdvertisedUnderTheKeyThatResolves()
+    public void Catalog_ToolWhoseNameDisagreesWithItsKey_IsNotAdvertised()
     {
-        // The harness resolves tools by name, so the name a caller is given must be the one
-        // GetKeyedService answers to. Advertising the tool's self-reported name would publish an
-        // identifier that resolves to nothing — a 404 on a tool the catalog just listed.
+        // #888: a tool whose name differs from its key is refused wherever it is built, so a grant naming it
+        // cannot also mean another tool. The catalog lists only what a caller can actually invoke.
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("registered_key", new FakeTool("self_reported_name"));
+        services.AddKeyedSingleton<ITool>("healthy", new FakeTool("healthy"));
 
         var sut = new ToolCatalog(
             services.BuildServiceProvider(),
-            ["registered_key"],
+            ["registered_key", "healthy"],
             NullLogger<ToolCatalog>.Instance);
 
-        sut.ListGranted(Granting("registered_key")).Should().ContainSingle()
-            .Which.Name.Should().Be("registered_key");
+        sut.ListGranted(Granting("registered_key", "healthy"))
+            .Select(entry => entry.Name).Should().Equal("healthy");
     }
 
     [Fact]

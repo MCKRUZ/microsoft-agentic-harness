@@ -28,8 +28,8 @@ namespace Presentation.Common.Tests.Architecture;
 /// original defect in a new place. Prose cannot catch either; this can.
 /// </para>
 /// <para>
-/// Modelled on <see cref="PublishedToolNameIsPresentationOnlyTests"/>, which guards a comparable
-/// "only these files may touch this" invariant.
+/// <see cref="KeyedToolResolutionIsTheOnlyWayInTests"/> guards a comparable "only this file may do
+/// this" invariant.
 /// </para>
 /// </remarks>
 public sealed class AttributionIsPublishedByTheExecutionContextOnlyTests

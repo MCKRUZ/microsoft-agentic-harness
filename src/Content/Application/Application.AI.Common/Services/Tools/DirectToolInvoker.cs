@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
@@ -158,7 +159,17 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         // own ResourceParametersByOperation declaration — which requires the tool itself. Resolving
         // once and reusing the same reference for both extraction and execution below also removes
         // what used to be a second keyed-DI lookup for the identical tool.
-        var tool = armed.Scope.ServiceProvider.GetKeyedService<ITool>(armed.ToolName);
+        ITool? tool;
+        try
+        {
+            tool = KeyedToolResolution.Resolve(armed.Scope.ServiceProvider, armed.ToolName);
+        }
+        catch (ToolNameMismatchException ex)
+        {
+            _logger.LogError(ex, "Tool {ToolName} was refused for invocation: {Reason}", armed.ToolName, ex.Message);
+            tool = null;
+        }
+
         if (tool is null)
         {
             // The catalog described it, so it resolved once. Losing it here means the host cannot

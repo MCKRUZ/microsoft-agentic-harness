@@ -98,22 +98,14 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     private const int BaselinePriority = 5;
 
     private readonly ILogger<EnvelopePermissionRuleProvider> _logger;
-    private readonly CapabilityEnvelopeGrantResolver _envelopeGrantResolver;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="EnvelopePermissionRuleProvider"/> class.
     /// </summary>
     /// <param name="logger">Logger for rejected wildcard grants in an envelope's allowlist.</param>
-    /// <param name="envelopeGrantResolver">
-    /// Resolves a granted/declared name's self-reported published name for #626, shared with
-    /// <c>ToolInvocationGovernor</c>'s independent runtime re-confirmation so the two agree by
-    /// construction — see <see cref="CapabilityEnvelopeGrantResolver"/>'s remarks.
-    /// </param>
-    public EnvelopePermissionRuleProvider(
-        ILogger<EnvelopePermissionRuleProvider> logger, CapabilityEnvelopeGrantResolver envelopeGrantResolver)
+    public EnvelopePermissionRuleProvider(ILogger<EnvelopePermissionRuleProvider> logger)
     {
         _logger = logger;
-        _envelopeGrantResolver = envelopeGrantResolver;
     }
 
     /// <inheritdoc />
@@ -128,63 +120,36 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
         if (envelope is null)
             return Task.FromResult<IReadOnlyList<ToolPermissionRule>>([]);
 
-        // #626: both the envelope's own grants and a bundle's declared tools are authored the same
-        // DI-key-shaped way #612 found for a plugin's DeniedTools — expanding each name to also
-        // include its resolved, self-reported published name (when it differs) before either loop
-        // below consumes it closes the identical failure shape: without this, an operator-authored
-        // grant naming a tool by its DI key silently never matches at invocation (ThreePhasePermissionResolver.Matches
-        // compares against the published name), so the tool falls through to the closing Deny despite
-        // being "granted" in config — a real functional defect masked as fail-closed-by-accident (see
-        // this type's remarks on the closing Deny).
-        // #652: grouped rather than flattened, so each emitted rule can record the published name its
-        // forms share — the summary in PermissionRulesSectionProvider then reports one line per
-        // logical tool without having to resolve (and therefore construct) tools at prompt time.
-        var grantedForms = _envelopeGrantResolver.ExpandToNameForms(ValidGrants(envelope));
+        // A grant names a tool by the one string that is both its registration key and its published name
+        // (#888: KeyedToolResolution refuses a tool for which they differ), so each grant is one rule.
+        var granted = new HashSet<string>(ValidGrants(envelope), StringComparer.OrdinalIgnoreCase);
 
         var rules = new List<ToolPermissionRule>();
-        AddDeclaredButUngrantedDenyRules(rules, agentId, grantedForms);
-        AddAutonomyCeilingBaselineRules(rules, envelope, grantedForms);
+        AddDeclaredButUngrantedDenyRules(rules, agentId, granted);
+        AddAutonomyCeilingBaselineRules(rules, envelope, granted);
         AddClosingDenyRule(rules);
 
         return Task.FromResult<IReadOnlyList<ToolPermissionRule>>(rules);
     }
 
     /// <summary>
-    /// Bypass-immune Deny for each declared tool the envelope does not grant. Builds the grant set once
-    /// so the membership test is O(1) per declared tool rather than a linear scan of the allowlist.
-    /// #626: each declared tool's key-and-published forms are checked for grant membership TOGETHER
-    /// (a single decision per tool), not independently — checking them independently found a real bug
-    /// during mutation testing: a tool declared by key and granted by its published name (or vice
-    /// versa) was denied under whichever one of its two forms wasn't the literal grant string, even
-    /// though the tool IS genuinely granted under the other form.
+    /// Bypass-immune Deny for each declared tool the envelope does not grant.
     /// </summary>
-    private void AddDeclaredButUngrantedDenyRules(
-        List<ToolPermissionRule> rules, string agentId, IReadOnlyList<ToolNameForms> grantedForms)
+    private static void AddDeclaredButUngrantedDenyRules(
+        List<ToolPermissionRule> rules, string agentId, IReadOnlySet<string> granted)
     {
-        var granted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var grant in grantedForms)
-        {
-            foreach (var form in grant.Forms)
-                granted.Add(form);
-        }
-
         foreach (var declaredName in EnumerateDeclaredTools(agentId))
         {
-            var declared = _envelopeGrantResolver.ExpandOne(declaredName);
-            if (declared.Forms.Any(granted.Contains))
+            if (granted.Contains(declaredName))
                 continue;
 
-            foreach (var form in declared.Forms)
-            {
-                rules.Add(new ToolPermissionRule(
-                    form,
-                    null,
-                    PermissionBehaviorType.Deny,
-                    PermissionRuleSource.CapabilityEnvelope,
-                    Priority: DenyPriority,
-                    IsBypassImmune: true,
-                    PublishedToolName: declared.GroupingName));
-            }
+            rules.Add(new ToolPermissionRule(
+                declaredName,
+                null,
+                PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope,
+                Priority: DenyPriority,
+                IsBypassImmune: true));
         }
     }
 
@@ -198,24 +163,20 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     /// CapabilityEnvelope.AutonomyCeiling; wiring the ceiling into live approval is a follow-up.
     /// </summary>
     private static void AddAutonomyCeilingBaselineRules(
-        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlyList<ToolNameForms> grantedForms)
+        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlySet<string> granted)
     {
         var ceilingBehavior = envelope.AutonomyCeiling.ToDefaultPermissionBehavior();
 
-        foreach (var granted in grantedForms)
+        foreach (var toolName in granted)
         {
-            foreach (var toolName in granted.Forms)
-            {
-                rules.Add(new ToolPermissionRule(
-                    toolName,
-                    null,
-                    ceilingBehavior,
-                    PermissionRuleSource.CapabilityEnvelope,
-                    Priority: BaselinePriority,
-                    IsAuthoritativeBaseline: true,
-                    BaselineTier: PermissionBaselineTier.GrantBoundary,
-                    PublishedToolName: granted.GroupingName));
-            }
+            rules.Add(new ToolPermissionRule(
+                toolName,
+                null,
+                ceilingBehavior,
+                PermissionRuleSource.CapabilityEnvelope,
+                Priority: BaselinePriority,
+                IsAuthoritativeBaseline: true,
+                BaselineTier: PermissionBaselineTier.GrantBoundary));
         }
     }
 

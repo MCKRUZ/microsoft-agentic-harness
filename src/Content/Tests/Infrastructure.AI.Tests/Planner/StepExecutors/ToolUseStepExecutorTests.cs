@@ -174,6 +174,40 @@ public sealed class ToolUseStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ToolWhoseNameDiffersFromItsKey_IsRefusedBeforeAdmissionOrSandbox()
+    {
+        // #888: a plan step dispatches by name and never builds the tool, so without this refusal a
+        // misregistered tool would run with its own declaration silently dropped.
+        var tool = new Mock<Application.AI.Common.Interfaces.Tools.ITool>();
+        tool.Setup(t => t.Name).Returns("published_name");
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
+        services.AddKeyedSingleton<Application.AI.Common.Interfaces.Tools.ITool>("file_system", (_, _) => tool.Object);
+        var sp = services.BuildServiceProvider();
+
+        var sut = new ToolUseStepExecutor(
+            _capabilityEnforcer.Object,
+            BuildAdmissionPipeline(Mock.Of<IToolCallObserverChain>()),
+            sp,
+            _attestationService.Object,
+            _notifier.Object,
+            _context,
+            NullLogger<ToolUseStepExecutor>.Instance,
+            new FirstPartyToolLookup(sp, new HashSet<string> { "file_system" }));
+
+        var result = await sut.ExecuteAsync(
+            CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(PlanStepErrors.ToolMisregistered, result.ErrorMessage);
+        _toolGovernor.Verify(g => g.AuthorizeAsync(
+            It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()), Times.Never);
+        _sandboxExecutor.Verify(s => s.ExecuteAsync(
+            It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_FailedExecution_ReturnsFailed()
     {
         var config = new ToolUseConfig { ToolName = "file_system" };

@@ -66,7 +66,7 @@ public sealed class ToolCapabilityResolverTests
         // over the keyword guess — the declaration is the stronger signal.
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("web_fetch", (_, _) => Mock.Of<ITool>(
-            t => t.Capabilities == ToolCompositionCapability.None));
+            t => t.Name == "web_fetch" && t.Capabilities == ToolCompositionCapability.None));
         var resolver = BuildResolver(services.BuildServiceProvider(), registeredKeys: new HashSet<string> { "web_fetch" });
 
         var profile = resolver.Resolve("web_fetch");

@@ -1,14 +1,11 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
-using Application.AI.Common.Interfaces.Tools;
-using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Skills;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Permissions;
@@ -85,10 +82,9 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     private readonly ILogger<PluginPermissionRuleProvider> _logger;
 
     // #611: GetRulesAsync is called fresh on every tool-permission resolution
-    // (ThreePhasePermissionResolver.CollectRulesAsync), and #612 makes it construct first-party
-    // tools (see TryResolvePublishedName) to learn a name that can disagree with its DI key — doing
-    // that unconditionally on every call turns an unverified-boundary state into unbounded repeated
-    // construction cost for as long as it persists. Cache the computed rule list, keyed on both
+    // (ThreePhasePermissionResolver.CollectRulesAsync), and computing the rules constructs first-party
+    // tools (the own-surface check resolves each declared name) — doing that unconditionally on every
+    // call is repeated construction cost for as long as nothing changes. Cache the computed rule list, keyed on both
     // IPluginRegistry.StateVersion and ISkillMetadataRegistry.Version (issue #709 security-review
     // finding — see below), so recomputation happens only when something that could change the
     // result actually did.
@@ -254,7 +250,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     {
         if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
             foreach (var deniedTool in denied)
-                AddDenyRuleWithPublishedNameCoverage(rules, deniedTool);
+                rules.Add(DenyRule(deniedTool));
     }
 
     /// <summary>
@@ -313,19 +309,8 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// for the per-plugin rules it supplements.
     /// </summary>
     /// <remarks>
-    /// #612 code-review: deliberately key-only here, NOT <see cref="AddDenyRuleWithPublishedNameCoverage"/>.
-    /// That helper resolves (constructs) each tool to compare its published name against the key —
-    /// proportionate for <see cref="EmitPluginRules"/>'s DeniedTools loop (a small,
-    /// explicitly-authored list), but this loop iterates EVERY registered first-party tool: doing the
-    /// same resolution here would construct the host's entire tool set as a side effect of a
-    /// permission check whenever any plugin's boundary is merely unverified, not because anything
-    /// actually invoked those tools. Accepted trade-off (Matt's explicit call): this fallback keeps a
-    /// narrower residual gap — a first-party tool whose published name disagrees with its key would
-    /// still evade this blanket deny under that name — in exchange for never running arbitrary tool
-    /// construction as a side effect of this check. No tool in this codebase has that divergence
-    /// today (see <c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> for the one
-    /// place it's exercised, deliberately synthetic). <see cref="EmitPluginRules"/>'s DeniedTools loop
-    /// still closes the gap for the actually-reported, common case: a plugin's own DeniedTools entry.
+    /// One rule per registration key, without building any tool: a key is also the tool's published name
+    /// (#888: <c>KeyedToolResolution</c> refuses a tool for which they differ), so the key covers it.
     /// </remarks>
     private void EmitUnverifiedBoundaryFailClosedRules(List<ToolPermissionRule> rules)
     {
@@ -334,89 +319,19 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     }
 
     /// <summary>
-    /// Adds a bypass-immune Deny rule for <paramref name="toolKey"/>, and — when it resolves to a
-    /// real first-party tool whose self-reported name disagrees with the key — a second Deny rule
-    /// against that resolved name. Used only by the per-plugin <c>DeniedTools</c> loop above, where
-    /// the set of tools to resolve is small and explicitly authored by the plugin manifest — see the
-    /// unverified-boundary fail-closed loop's own comment for why it deliberately does NOT call this.
-    /// </summary>
-    private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
-    {
-        // The divergence comparison (case-insensitive, as GlobPatternMatcher compares at invocation) and
-        // the #652 grouping name both come from ToolNameForms, the same definitions the envelope grant
-        // resolver uses (#657), so a fix to either lands on both providers. Since #655 the lookup resolves
-        // any casing of a registered key; that is separate from how the resolved published name compares
-        // to the caller's original key, which is what ToolNameForms.For decides.
-        var forms = ToolNameForms.For(toolKey, TryResolvePublishedName(toolKey, out var publishedName), publishedName);
-
-        foreach (var form in forms.Forms)
-            rules.Add(DenyRule(form, forms.GroupingName));
-    }
-
-    /// <summary>
-    /// Resolves <paramref name="toolKey"/>'s converted, self-reported <see cref="ITool.Name"/> —
-    /// the value the runtime permission resolver (<c>ThreePhasePermissionResolver.Matches</c>,
-    /// Infrastructure.AI) actually matches a Deny rule's pattern against at invocation, which can
-    /// legitimately disagree with the DI registration key a plugin's <c>DeniedTools</c> entry names.
-    /// Returns <see langword="false"/>, with <paramref name="publishedName"/> set to
-    /// <paramref name="toolKey"/> itself, when the key names no known first-party tool OR
-    /// constructing it throws.
-    /// </summary>
-    /// <remarks>
-    /// A first-party tool can require a dependency this particular host never wired (the same
-    /// failure mode that made an earlier, unconditional "construct every registered tool" attempt at
-    /// #524's existence check break host boot) — <see cref="FirstPartyToolLookup.TryResolve"/> guards
-    /// against exactly that, catching and reporting a construction failure instead of propagating it,
-    /// so one broken entry in a plugin's <c>DeniedTools</c> can't take down permission-rule
-    /// computation for every tool call. The key-pattern Deny rule for the affected tool still gets
-    /// emitted by the caller regardless of this method's outcome. A failure here is caught inside
-    /// <see cref="ComputeRules"/>, so its result — the narrower, key-only coverage — is what gets
-    /// cached: a tool whose constructor throws stays uncovered by the published-name rule for as long
-    /// as the cached result stands (until the next <see cref="IPluginRegistry"/> mutation triggers a
-    /// recompute), not retried on every call. A dependency-not-wired failure is deterministic, so a
-    /// retry would fail identically anyway. The resolve-or-fall-back-to-key logic itself lives on
-    /// <see cref="FirstPartyToolLookup.TryResolvePublishedName"/> (#626 code-review: was duplicated
-    /// near-verbatim with <c>EnvelopePermissionRuleProvider</c>'s copy) — only the log-on-failure
-    /// message, specific to this caller's DeniedTools context, stays here.
-    /// </remarks>
-    private bool TryResolvePublishedName(string toolKey, out string publishedName)
-    {
-        var resolved = _firstPartyToolLookup.TryResolvePublishedName(
-            toolKey, out publishedName, out var constructionError);
-
-        if (!resolved && constructionError is not null)
-        {
-            // Error, not Warning: this is a bypass-immune security control (a plugin's DeniedTools
-            // backstop) now only partially enforced for this one tool — a level that gets filtered
-            // out of most production log configurations is the wrong fit for that.
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
-                "plugin-boundary Deny rule — the key-pattern rule for it still applies, but a caller " +
-                "invoking it under a self-reported name that disagrees with the key would not be covered.",
-                toolKey);
-        }
-
-        return resolved;
-    }
-
-    /// <summary>
     /// A bypass-immune Deny rule for <paramref name="toolName"/> — the identical shape both the
-    /// per-plugin <c>DeniedTools</c> loop and the unverified-boundary fail-closed response above need.
+    /// per-plugin <c>DeniedTools</c> loop and the unverified-boundary fail-closed response above need. A
+    /// <c>DeniedTools</c> entry naming a first-party tool by its key names it by its published name too
+    /// (#888), so one rule covers it.
     /// </summary>
     /// <param name="toolName">The name this rule matches on.</param>
-    /// <param name="publishedToolName">
-    /// #652: the published name shared by this rule and its sibling when <paramref name="toolName"/>
-    /// is one of two forms covering a single tool; null for a rule that stands alone, including every
-    /// rule from the unverified-boundary loop, which is deliberately key-only.
-    /// </param>
-    private static ToolPermissionRule DenyRule(string toolName, string? publishedToolName = null) => new(
+    private static ToolPermissionRule DenyRule(string toolName) => new(
         toolName,
         null,
         PermissionBehaviorType.Deny,
         PermissionRuleSource.PluginDeclaration,
         Priority: 1,
-        IsBypassImmune: true,
-        PublishedToolName: publishedToolName);
+        IsBypassImmune: true);
 
     /// <summary>
     /// Collects the distinct tool names declared by every skill attributed to
