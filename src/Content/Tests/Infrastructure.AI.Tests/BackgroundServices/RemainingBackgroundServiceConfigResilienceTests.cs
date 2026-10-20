@@ -156,7 +156,7 @@ public sealed class RemainingBackgroundServiceConfigResilienceTests
         var passes = 0;
         chain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
             .Callback(() => Interlocked.Increment(ref passes))
-            .ReturnsAsync(AuditChainVerificationResult.Valid(1));
+            .ReturnsAsync(AuditChainVerificationResult.Valid(0, 1));
         var sut = new AuditChainVerificationService(
             [chain.Object], Mock.Of<IAuditChainCheckpoints>(), new ScriptedOptionsMonitor(config, 1, 2), time,
             NullLogger<AuditChainVerificationService>.Instance);

@@ -34,4 +34,23 @@ public sealed class AuditConfig
     /// Defaults to <c>data/audit/audit-verify</c>.
     /// </summary>
     public string ReceiptPath { get; init; } = Path.Combine("data", "audit", "audit-verify");
+
+    /// <summary>
+    /// Gets the folder where finished audit day-files are archived, or empty (the default) when nothing is archived.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The application never writes here. A separate job, under an identity the application does not hold, copies
+    /// each audit log's finished day-files (never a log's newest file) into <c>{ArchivePath}/{log name}/</c> under
+    /// their own names, checks the copy, and only then deletes the live file. The folder is mounted into the
+    /// application read-only, typically an Azure Blob container under a locked time-based retention policy, mounted
+    /// with <c>blobfuse2 --read-only</c> (#416).
+    /// </para>
+    /// <para>
+    /// With it set, verification reads the archive's newest file of each log plus the live files, so a log whose
+    /// oldest days have been archived still verifies, and readers serve archived and live records together. Must not
+    /// overlap any audit log folder or <see cref="ReceiptPath"/>.
+    /// </para>
+    /// </remarks>
+    public string ArchivePath { get; init; } = string.Empty;
 }

@@ -40,7 +40,6 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     };
 
     private readonly string _auditDirectory;
-    private readonly DatedAuditSegments _segments;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlDriftAuditStore> _logger;
 
@@ -58,14 +57,10 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         var auditPath = config.CurrentValue.AI.DriftDetection.AuditPath;
         ArgumentException.ThrowIfNullOrWhiteSpace(auditPath, "DriftDetection.AuditPath");
 
-        _auditDirectory = Path.Combine(auditPath, "drift-audit");
+        var chain = AuditChains.Drift(config.CurrentValue, timeProvider);
+        _auditDirectory = chain.Segments.Folder;
         _logger = logger;
-        _segments = new DatedAuditSegments(_auditDirectory, legacyFile: null, timeProvider);
-        _chain = new HashChainedJsonlWriter(
-            _segments,
-            // Shared by every process writing these segments; not itself a *.jsonl segment.
-            Path.Combine(_auditDirectory, ".chain.lock"),
-            logger);
+        _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
     }
 
     /// <inheritdoc />
@@ -178,9 +173,9 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         // No upper bound: the writer never appends to a file earlier than the latest one, so once a host whose clock
         // is ahead (or a planted later-dated file) starts a later file, every host's records land there.
         if (query.Start is not { } start)
-            return _segments.Ordered();
+            return _chain.ChainFiles();
 
         var firstDay = DateOnly.FromDateTime(start.Date.AddDays(-1));
-        return _segments.Ordered().Where(f => DatedAuditSegments.DayOf(f) >= firstDay);
+        return _chain.ChainFiles().Where(f => DatedAuditSegments.DayOf(f) >= firstDay);
     }
 }

@@ -134,7 +134,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     /// writer of the chain and must not be one of its segments.
     /// </param>
     /// <param name="logger">Logger for operational diagnostics.</param>
-    public HashChainedJsonlWriter(DatedAuditSegments segments, string lockPath, ILogger logger)
+    /// <param name="archivePath">
+    /// The folder the audit archiver moves every audit log's finished files into (read-only to this application;
+    /// <c>AppConfig:AI:Audit:ArchivePath</c>), or empty when nothing is archived. See <c>HashChainedJsonlWriter.Archive.cs</c>.
+    /// </param>
+    public HashChainedJsonlWriter(DatedAuditSegments segments, string lockPath, ILogger logger, string? archivePath = null)
         : this(
             (segments ?? throw new ArgumentNullException(nameof(segments))).Folder,
             segments.Current,
@@ -143,6 +147,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             lockPath,
             logger)
     {
+        if (!string.IsNullOrWhiteSpace(archivePath))
+        {
+            _archiveRoot = archivePath;
+            _archive = segments.ArchivedUnder(archivePath);
+        }
     }
 
     /// <summary>Initializes a segmented chain spanning an ordered set of JSONL files.</summary>
@@ -205,8 +214,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     public async IAsyncEnumerable<string> ReadAllPayloadsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // The same files the writer appends to and verification reads (#416).
-        foreach (var segmentPath in WithCurrentSegment(_orderedSegments()))
+        // The same files the writer appends to and verification reads, after the archived ones (#416).
+        foreach (var segmentPath in ChainFiles())
         {
             if (!File.Exists(segmentPath))
                 continue;
@@ -313,28 +322,21 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Note how far each segment reaches while no other process is mid-append, then read only that
-            // far, so a half-written line from another writer is never mistaken for tampering.
-            IReadOnlyList<SegmentReach> reach;
-            await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
-            {
-                // Lengths through open handles, not cached directory entries, so another host's appends are seen.
-                // The same files the writer appends to, current segment included, so nothing can be written where
-                // verification does not read (#416).
-                reach = WithCurrentSegment(_orderedSegments())
-                    .Select(p => new SegmentReach(p, LengthOf(p)))
-                    .Where(s => s.Length is not null)
-                    .ToList();
-            }
+            var scan = await VerifyOnceAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
-            var scan = await ScanChainAsync(checkpoint, cancellationToken, reach).ConfigureAwait(false);
+            // With an archive, a break can be a stale listing: a file the archiver moved, seen gone from the live folder
+            // but not yet in the archive. List both sides again and scan once more; a real break breaks again.
+            if (_archive is not null && scan.BreakSequence is not null)
+                scan = await VerifyOnceAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+
             return scan.BreakSequence is { } brokenSequence
-                ? AuditChainVerificationResult.Broken(scan.VerifiedCount, brokenSequence, scan.BreakReason!) with
+                ? AuditChainVerificationResult.Broken(scan.StartSequence, scan.VerifiedCount, brokenSequence, scan.BreakReason!) with
                 {
                     HeadSequence = scan.LastValidSequence,
                     HeadHash = scan.LastValidSequence >= 0 ? scan.LastValidHash : null
                 }
                 : AuditChainVerificationResult.Valid(
+                    scan.StartSequence,
                     scan.VerifiedCount,
                     scan.LastValidSequence,
                     scan.LastValidSequence >= 0 ? scan.LastValidHash : null);
@@ -345,7 +347,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                                    or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to read audit chain at {AuditLocation}", _displayLocation);
-            return AuditChainVerificationResult.Broken(0, 0, $"Failed to read audit chain: {ex.Message}");
+            return AuditChainVerificationResult.Broken(0, 0, 0, $"Failed to read audit chain: {ex.Message}");
         }
         finally
         {
@@ -357,50 +359,122 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     public void Dispose() => _semaphore.Dispose();
 
     /// <summary>
-    /// Single forward pass over all segments shared by verification and head recovery. Validates
-    /// sequence continuity, previous-hash links, and record hashes from genesis, tolerating only
-    /// the leading legacy (pre-chain) lines. With <paramref name="reach"/>, reads exactly those
-    /// segments up to those lengths, and a segment that has gone missing since is a break.
+    /// One verification pass: measures the live files under the lock, then works out where they must continue
+    /// from (genesis, or the archive's newest record) and scans them; see <c>HashChainedJsonlWriter.Archive.cs</c>.
+    /// </summary>
+    private async Task<ChainScan> VerifyOnceAsync(AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
+    {
+        var reach = await MeasureLiveAsync(cancellationToken).ConfigureAwait(false);
+        if (_archive is null)
+            return await ScanChainAsync(checkpoint, cancellationToken, reach).ConfigureAwait(false);
+
+        var archived = ListArchive(probe: true);
+        if (await CompareCopiesAsync(reach, archived, cancellationToken).ConfigureAwait(false) is { } copyBroken)
+            return copyBroken;
+
+        var live = reach.Where(s => archived.Count == 0 || _segmentOrder(s.Path, archived[^1]) > 0).ToList();
+        if (await ArchiveTailAsync(archived, cancellationToken).ConfigureAwait(false) is not { } tail)
+        {
+            return ScanState.Genesis.Break(0,
+                $"Archived file {Path.GetFileName(archived[^1])} does not end with a whole record.");
+        }
+
+        if (checkpoint is not null && archived.Count > 0 && checkpoint.Sequence < tail.LastValidSequence)
+        {
+            var back = await WalkBackAsync(checkpoint, archived, cancellationToken).ConfigureAwait(false);
+            if (back.Broken is { } walkBroken)
+                return walkBroken;
+
+            return await ScanChainAsync(checkpoint, cancellationToken, [.. back.Files, .. live], back.Start).ConfigureAwait(false);
+        }
+
+        return await ScanChainAsync(checkpoint, cancellationToken, live, tail).ConfigureAwait(false);
+    }
+
+    /// <summary>How far each live file reaches, measured while no other process is mid-append.</summary>
+    private async Task<IReadOnlyList<SegmentReach>> MeasureLiveAsync(CancellationToken cancellationToken)
+    {
+        // Note how far each segment reaches while no other process is mid-append, then read only that
+        // far, so a half-written line from another writer is never mistaken for tampering.
+        IReadOnlyList<SegmentReach> reach;
+        await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
+        {
+            // Lengths through open handles, not cached directory entries, so another host's appends are seen.
+            // The same files the writer appends to, current segment included, so nothing can be written where
+            // verification does not read (#416).
+            reach = WithCurrentSegment(_orderedSegments())
+                .Select(p => new SegmentReach(p, LengthOf(p)))
+                .Where(s => s.Length is not null)
+                .ToList();
+        }
+
+        return reach;
+    }
+
+    /// <summary>
+    /// Single forward pass over <paramref name="reach"/>, reading each segment up to its measured length. Validates
+    /// sequence continuity, previous-hash links, and record hashes from <paramref name="start"/> (genesis, tolerating
+    /// only the leading legacy pre-chain lines, unless the chain continues an archive). A segment that has gone missing
+    /// since it was measured is a break; an archived one that cannot be read means not verified.
     /// </summary>
     private async Task<ChainScan> ScanChainAsync(
         AuditChainCheckpoint? checkpoint,
         CancellationToken cancellationToken,
-        IReadOnlyList<SegmentReach>? reach = null)
+        IReadOnlyList<SegmentReach> reach,
+        ScanState? start = null)
     {
-        var state = ScanState.Genesis;
+        var state = start ?? ScanState.Genesis;
+        var scan = await ScanFromAsync(checkpoint, reach, state, cancellationToken).ConfigureAwait(false);
+        return scan with { StartSequence = state.ExpectedSequence };
+    }
 
-        foreach (var segment in reach ?? _orderedSegments().Select(p => new SegmentReach(p, null)).ToList())
+    private async Task<ChainScan> ScanFromAsync(
+        AuditChainCheckpoint? checkpoint, IReadOnlyList<SegmentReach> reach, ScanState state, CancellationToken cancellationToken)
+    {
+        // The checkpoint's record is the archive's newest one: compare it here, as the scan will not pass it.
+        if (checkpoint is not null
+            && state.LastValidSequence == checkpoint.Sequence
+            && !string.Equals(state.LastValidHash, checkpoint.Hash, StringComparison.Ordinal))
+        {
+            return state.Break(checkpoint.Sequence,
+                $"Record at sequence {checkpoint.Sequence} differs from the one last verified there (chain rewritten or regrown).");
+        }
+
+        foreach (var segment in reach)
         {
             if (!File.Exists(segment.Path))
+                return state.Break(state.ExpectedSequence, $"Segment {Path.GetFileName(segment.Path)} disappeared during verification.");
+
+            try
             {
-                if (reach is not null)
-                    return state.Break(state.ExpectedSequence, $"Segment {Path.GetFileName(segment.Path)} disappeared during verification.");
-                continue;
-            }
+                await using var stream = new FileStream(
+                    segment.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(
+                    segment.Length is { } length ? new PrefixStream(stream, length) : stream);
 
-            await using var stream = new FileStream(
-                segment.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(
-                segment.Length is { } length ? new PrefixStream(stream, length) : stream);
-
-            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
-            {
-                state.LineNumber++;
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
-
-                if (!ApplyLine(line, ref state, out var breakScan))
-                    return breakScan;
-
-                // The record the last pass ended on must still be there, unchanged. A different hash at
-                // that sequence means the chain was regrown from somewhere earlier, not appended to.
-                if (checkpoint is not null
-                    && state.LastValidSequence == checkpoint.Sequence
-                    && !string.Equals(state.LastValidHash, checkpoint.Hash, StringComparison.Ordinal))
+                while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
                 {
-                    return state.Break(checkpoint.Sequence,
-                        $"Record at sequence {checkpoint.Sequence} differs from the one last verified there (chain rewritten or regrown).");
+                    state.LineNumber++;
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    if (!ApplyLine(line, ref state, out var breakScan))
+                        return breakScan;
+
+                    // The record the last pass ended on must still be there, unchanged. A different hash at
+                    // that sequence means the chain was regrown from somewhere earlier, not appended to.
+                    if (checkpoint is not null
+                        && state.LastValidSequence == checkpoint.Sequence
+                        && !string.Equals(state.LastValidHash, checkpoint.Hash, StringComparison.Ordinal))
+                    {
+                        return state.Break(checkpoint.Sequence,
+                            $"Record at sequence {checkpoint.Sequence} differs from the one last verified there (chain rewritten or regrown).");
+                    }
                 }
+            }
+            catch (Exception ex) when (segment.Archived && ex is (IOException and not FileNotFoundException) or UnauthorizedAccessException)
+            {
+                throw ArchiveUnreadable(ex);
             }
         }
 
@@ -602,8 +676,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    /// <summary>A segment to scan and, when set, how many bytes of it to read.</summary>
-    private readonly record struct SegmentReach(string Path, long? Length);
+    /// <summary>A segment to scan, how many bytes of it to read when set, and whether it is an archived file.</summary>
+    private readonly record struct SegmentReach(string Path, long? Length, bool Archived = false);
 
     /// <summary>Outcome of a single forward pass over the chain.</summary>
     /// <param name="VerifiedCount">Records that verified cleanly from genesis before any break.</param>
@@ -618,6 +692,9 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         long? BreakSequence,
         string? BreakReason)
     {
+        /// <summary>The sequence the pass started verifying at: 0 from genesis, higher after an archive (#416).</summary>
+        public long StartSequence { get; init; }
+
         public static ChainScan Valid(long verifiedCount, long lastValidSequence, string lastValidHash) =>
             new(verifiedCount, lastValidSequence, lastValidHash, null, null);
 

@@ -32,6 +32,12 @@ namespace Infrastructure.AI.Audit;
 /// folder holding such a name, on every platform: appends fail and verification reports the chain broken until
 /// someone removes or renames the file.
 /// </para>
+/// <para>
+/// <b>A day-file dated after tomorrow stops the chain too.</b> The writer never appends to a file earlier than the
+/// latest one, so a planted <c>2099-12-31.jsonl</c> would take every later record and, being always the newest file,
+/// never be finished or archived. <see cref="Ordered"/> refuses a folder holding a day-file dated more than one day
+/// after today (UTC); one day allows for a host whose clock runs a little ahead.
+/// </para>
 /// </remarks>
 public sealed class DatedAuditSegments
 {
@@ -84,6 +90,21 @@ public sealed class DatedAuditSegments
         return new DatedAuditSegments(folder, legacyFile, clock);
     }
 
+    /// <summary>
+    /// The same chain's files as archived under <paramref name="archiveRoot"/>, laid out as they are live: a folder
+    /// named like this one's day folder (<see cref="AuditChains"/> lists the names) holding the archived day-files,
+    /// and, once archived, the earlier single file beside it under its own name.
+    /// </summary>
+    /// <param name="archiveRoot">The archive folder shared by every audit log (<c>AppConfig:AI:Audit:ArchivePath</c>).</param>
+    /// <returns>The archive's layout for this chain. Its <see cref="Current"/> is never used.</returns>
+    public DatedAuditSegments ArchivedUnder(string archiveRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(archiveRoot);
+        var folder = Path.Combine(archiveRoot, Path.GetFileName(Path.TrimEndingDirectorySeparator(Folder)));
+        var legacy = LegacyFile is null ? null : Path.Combine(archiveRoot, Path.GetFileName(LegacyFile));
+        return new DatedAuditSegments(folder, legacy, _clock);
+    }
+
     /// <summary>Gets the folder holding the day-files.</summary>
     public string Folder { get; }
 
@@ -97,7 +118,9 @@ public sealed class DatedAuditSegments
 
     /// <summary>Every existing file of the chain, in chain order: the earlier single file, then the day-files by date.</summary>
     /// <returns>Full paths in the order the chain runs through them.</returns>
-    /// <exception cref="IOException">The folder holds a day name in the wrong letter case (see the class remarks).</exception>
+    /// <exception cref="AuditFolderRefusedException">
+    /// The folder holds a day name in the wrong letter case, or a day-file dated after tomorrow (see the class remarks).
+    /// </exception>
     public IReadOnlyList<string> Ordered()
     {
         var segments = new List<string>();
@@ -107,11 +130,22 @@ public sealed class DatedAuditSegments
         if (!Directory.Exists(Folder))
             return segments;
 
+        var latestAllowed = DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime).AddDays(1);
         var days = new List<string>();
         foreach (var path in Directory.GetFiles(Folder, "*" + Extension, AnyCase))
         {
-            if (DayOf(path) is not null)
+            if (DayOf(path) is { } day)
+            {
+                if (day > latestAllowed)
+                {
+                    throw new AuditFolderRefusedException(
+                        $"Audit folder {Folder} holds {Path.GetFileName(path)}, dated after tomorrow. Every new record would " +
+                        "go to it and it would never be finished, so the chain is not written or verified until it is " +
+                        "dealt with: if it holds records, a clock was badly wrong; otherwise it was placed there.");
+                }
+
                 days.Add(path);
+            }
             else if (IsMiscasedDay(Path.GetFileName(path)))
                 throw new AuditFolderRefusedException(
                     $"Audit folder {Folder} holds {Path.GetFileName(path)}, a day-file name in the wrong letter case. " +
@@ -123,9 +157,11 @@ public sealed class DatedAuditSegments
         return segments;
     }
 
-    /// <summary>Orders two files of this chain: the earlier single file first, then day-files by date.</summary>
-    /// <param name="first">A file of this chain.</param>
-    /// <param name="second">Another file of this chain.</param>
+    /// <summary>
+    /// Orders two files of this chain, live or archived, by name: the earlier single file first, then day-files by date.
+    /// </summary>
+    /// <param name="first">A file of this chain, or its archived copy.</param>
+    /// <param name="second">Another.</param>
     /// <returns>Negative when <paramref name="first"/> comes first, zero when they are the same file, positive otherwise.</returns>
     public int Compare(string first, string second)
     {
@@ -156,6 +192,16 @@ public sealed class DatedAuditSegments
         name.EndsWith(Extension, StringComparison.OrdinalIgnoreCase)
         && DateOnly.TryParseExact(name[..^Extension.Length], DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
 
+    /// <summary>
+    /// The earlier single file, live or archived: its name, outside a day folder. Archived and live layouts are alike
+    /// (<see cref="ArchivedUnder"/>), so this recognises either copy, while a file of that name inside the day folder is
+    /// not it.
+    /// </summary>
     private bool IsLegacy(string path) =>
-        LegacyFile is not null && string.Equals(Path.GetFullPath(path), Path.GetFullPath(LegacyFile), StringComparison.Ordinal);
+        LegacyFile is not null
+        && string.Equals(Path.GetFileName(path), Path.GetFileName(LegacyFile), StringComparison.Ordinal)
+        && !string.Equals(
+            Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(path))),
+            Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(Folder))),
+            StringComparison.Ordinal);
 }

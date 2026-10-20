@@ -179,6 +179,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<ResilienceConfig, ResilienceConfigValidator>()
             .ValidateOnStart();
 
+        // The audit archive is read alongside the live logs as one chain (#416), so it must not overlap any of the
+        // log folders, which live in four different sections; hence a validator over the whole AI section.
+        services.AddOptions<Domain.Common.Config.AI.AIConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.AIConfig, AuditArchivePathValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:DriftDetection"))
             .ValidateFluentValidation<

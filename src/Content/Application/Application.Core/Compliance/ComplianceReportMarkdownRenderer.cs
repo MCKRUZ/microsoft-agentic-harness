@@ -41,12 +41,17 @@ public static class ComplianceReportMarkdownRenderer
 
         sb.AppendLine("## Chain integrity");
         sb.AppendLine();
-        sb.AppendLine("| Chain | Status | Records verified | Failure reason |");
-        sb.AppendLine("|---|---|---|---|");
+        sb.AppendLine("| Chain | Status | Records verified | From sequence | Failure reason |");
+        sb.AppendLine("|---|---|---|---|---|");
         foreach (var chain in report.ChainIntegrity)
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"| {chain.ChainName} | {(chain.IsValid ? "✅ Intact" : "❌ BROKEN")} | {chain.VerifiedCount} | {chain.FailureReason ?? "—"} |");
+                $"| {chain.ChainName} | {(chain.IsValid ? "✅ Intact" : "❌ BROKEN")} | {chain.VerifiedCount} | {chain.StartSequence} | {chain.FailureReason ?? "—"} |");
         sb.AppendLine();
+        if (report.ChainIntegrity.Any(c => c.StartSequence > 0))
+        {
+            sb.AppendLine("Records before a chain's starting sequence are archived; they were checked when they were archived.");
+            sb.AppendLine();
+        }
 
         sb.AppendLine("## Sessions");
         sb.AppendLine();

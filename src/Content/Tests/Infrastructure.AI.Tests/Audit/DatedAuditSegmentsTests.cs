@@ -100,7 +100,8 @@ public sealed class DatedAuditSegmentsTests : IDisposable
     public async Task AWriterWhoseClockIsBehind_AppendsToTheLatestDay_NotAnEarlierOne()
     {
         using (var ahead = new HashChainedJsonlWriter(
-            DatedAuditSegments.BesideLegacyFile(_legacyFile, new FakeTimeProvider(_clock.GetUtcNow().AddDays(2))),
+            // One day ahead: the most a writer's folder may run ahead of another's before it is refused.
+            DatedAuditSegments.BesideLegacyFile(_legacyFile, new FakeTimeProvider(_clock.GetUtcNow().AddDays(1))),
             _legacyFile + ".lock", NullLogger.Instance))
         {
             (await ahead.AppendAsync("{\"n\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
@@ -109,8 +110,32 @@ public sealed class DatedAuditSegmentsTests : IDisposable
         using var behind = Writer();
         (await behind.AppendAsync("{\"n\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
 
-        Layout().Ordered().Select(Path.GetFileName).Should().Equal("2026-10-21.jsonl");
+        Layout().Ordered().Select(Path.GetFileName).Should().Equal("2026-10-20.jsonl");
         (await behind.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ADayFileDatedAfterTomorrow_StopsAppendsAndFailsVerification()
+    {
+        // #416: every append would go to it, and as the newest file it would never be finished or archived.
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"n\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "governance", "2026-10-21.jsonl"), string.Empty);
+
+        (await sut.AppendAsync("{\"n\":1}", CancellationToken.None)).IsSuccess.Should().BeFalse();
+        var verify = () => sut.VerifyChainAsync(CancellationToken.None);
+        await verify.Should().ThrowAsync<AuditFolderRefusedException>().WithMessage("*after tomorrow*");
+    }
+
+    [Fact]
+    public async Task ADayFileDatedTomorrow_IsAHostWhoseClockIsAhead_AndIsAppendedTo()
+    {
+        using var sut = Writer();
+        Directory.CreateDirectory(Path.Combine(_tempDir, "governance"));
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "governance", "2026-10-20.jsonl"), string.Empty);
+
+        (await sut.AppendAsync("{\"n\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        (await File.ReadAllLinesAsync(Path.Combine(_tempDir, "governance", "2026-10-20.jsonl"))).Should().ContainSingle();
     }
 
     [Fact]

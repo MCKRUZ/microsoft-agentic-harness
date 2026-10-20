@@ -56,11 +56,9 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
         TimeProvider timeProvider,
         ILogger<JsonlEscalationAuditStore> logger)
     {
-        _filePath = Path.Combine(
-            config.CurrentValue.AI.Governance.Escalation.AuditStoragePath,
-            "escalations.jsonl");
-        _chain = new HashChainedJsonlWriter(
-            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
+        var chain = AuditChains.Escalations(config.CurrentValue, timeProvider);
+        _filePath = chain.Segments.LegacyFile!;
+        _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _logger = logger;
     }
 
