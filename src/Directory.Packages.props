@@ -137,6 +137,9 @@
     <!-- Presentation layer -->
     <PackageVersion Include="AspNetCore.HealthChecks.ApplicationStatus" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.Azure.Storage.Blobs" Version="9.0.0" />
+    <!-- Only Presentation.AuditArchiver references this directly (#416); transitive pinning is off, so the
+         health-check package elsewhere keeps the version it brings. -->
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.29.2" />
     <PackageVersion Include="AspNetCore.HealthChecks.AzureKeyVault" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.Publisher.ApplicationInsights" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />

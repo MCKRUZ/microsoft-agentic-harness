@@ -46,6 +46,9 @@ public sealed partial class HashChainedJsonlWriter
     private readonly DatedAuditSegments? _archive;
     private readonly string? _archiveRoot;
 
+    /// <summary>The probe file that showed the archive accepts writes from this application, once one has.</summary>
+    private volatile string? _archiveAcceptedWrite;
+
     /// <summary>Initializes a chain from its shared location (<see cref="AuditChains"/>).</summary>
     /// <param name="chain">The chain's files and lock.</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
@@ -104,6 +107,10 @@ public sealed partial class HashChainedJsonlWriter
     /// </summary>
     private void RefuseWritableArchive(string root)
     {
+        // Once writable, refused until restart without probing again: each probe could leave an undeletable file.
+        if (_archiveAcceptedWrite is { } earlier)
+            throw WritableArchive(root, earlier);
+
         var probe = Path.Combine(root, $".write-probe-{Guid.NewGuid():N}");
         try
         {
@@ -125,12 +132,15 @@ public sealed partial class HashChainedJsonlWriter
             // Expected on write-once storage; the message below says so.
         }
 
-        throw new AuditFolderRefusedException(
-            $"The audit archive at {root} accepts writes from this application, so it could hold files this application " +
-            $"put there. Mount it read-only with a read-only credential. The chain at {_displayLocation} is not written or " +
-            $"verified until then. A test file, {Path.GetFileName(probe)}, was created there and may be undeletable if the " +
-            "archive is write-once.");
+        _archiveAcceptedWrite = Path.GetFileName(probe);
+        throw WritableArchive(root, _archiveAcceptedWrite);
     }
+
+    private AuditFolderRefusedException WritableArchive(string root, string probeName) => new(
+        $"The audit archive at {root} accepts writes from this application, so it could hold files this application " +
+        $"put there. Mount it read-only with a read-only credential, then restart. The chain at {_displayLocation} is not " +
+        $"written or verified until then. A test file, {probeName}, was created there and may be undeletable if the " +
+        "archive is write-once.");
 
     /// <summary>The live files after the archive's newest file: the live chain.</summary>
     private IReadOnlyList<string> AfterArchive(IReadOnlyList<string> live, IReadOnlyList<string> archived) =>
@@ -169,16 +179,47 @@ public sealed partial class HashChainedJsonlWriter
     }
 
     /// <summary>
-    /// Where the live chain continues from: genesis when nothing is archived, otherwise just after the archive's newest
-    /// record. <c>null</c> when the archive's newest file does not end with a whole, self-consistent record.
+    /// Where the live chain continues from: just after the archive's newest self-consistent record, skipping archived
+    /// files that hold none (written before the chain began); genesis when there is none. The archiver uses the same rule.
     /// </summary>
-    private async Task<ScanState?> ArchiveTailAsync(IReadOnlyList<string> archived, CancellationToken cancellationToken)
+    private async Task<ScanState> ArchiveTailAsync(IReadOnlyList<string> archived, CancellationToken cancellationToken)
     {
-        if (archived.Count == 0)
-            return ScanState.Genesis;
+        for (var i = archived.Count - 1; i >= 0; i--)
+        {
+            var path = archived[i];
+            if (await ArchiveReadAsync(() => LastRecordAsync(path, cancellationToken)).ConfigureAwait(false) is { } record)
+                return ScanState.FromHead(record.Sequence, record.Hash);
+        }
 
-        var last = await ArchiveReadAsync(() => LastRecordAsync(archived[^1], cancellationToken)).ConfigureAwait(false);
-        return last is { } record ? ScanState.FromHead(record.Sequence, record.Hash) : null;
+        return ScanState.Genesis;
+    }
+
+    /// <summary>The archiver's newest witness for this chain, as a checkpoint; <c>null</c> when there is none yet.</summary>
+    private async Task<AuditChainCheckpoint?> NewestWitnessAsync(CancellationToken cancellationToken)
+    {
+        var folder = Path.Combine(_archive!.Folder, AuditWitness.Folder);
+        return await ArchiveReadAsync(async () =>
+        {
+            if (!Directory.Exists(folder))
+                return null;
+
+            var newest = Directory.GetFiles(folder)
+                .Select(Path.GetFileName)
+                .Where(n => AuditWitness.IsFileName(n!))
+                .Max(StringComparer.Ordinal);
+            if (newest is null)
+                return null;
+
+            var witness = AuditWitness.From(await File.ReadAllBytesAsync(Path.Combine(folder, newest), cancellationToken).ConfigureAwait(false));
+            if (witness is null || AuditWitness.FileName(witness.Sequence) != newest)
+            {
+                throw new AuditFolderRefusedException(
+                    $"Audit archive witness {newest} for the chain at {_displayLocation} is not a witness the archiver wrote. " +
+                    "The chain is not verified until it is investigated.");
+            }
+
+            return (AuditChainCheckpoint?)new AuditChainCheckpoint(witness.Sequence, witness.Hash);
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -214,10 +255,18 @@ public sealed partial class HashChainedJsonlWriter
             return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
 
         var archived = ListArchive(probe: true);
-        var tail = await ArchiveTailAsync(archived, cancellationToken).ConfigureAwait(false)
-            ?? throw new IOException($"Archived file {Path.GetFileName(archived[^1])} does not end with a whole record.");
+        var tail = await ArchiveTailAsync(archived, cancellationToken).ConfigureAwait(false);
+        var live = AfterArchive(segments, archived);
 
-        var walked = await WalkAsync(AfterArchive(segments, archived), 0, 0, tail, cancellationToken).ConfigureAwait(false);
+        // A clock far enough behind would start a file the archive has already passed, which nothing would read.
+        if (archived.Count > 0 && live.Count == 0 && _segmentOrder(_currentSegment(), archived[^1]) <= 0)
+        {
+            throw new IOException(
+                $"This writer's current file {Path.GetFileName(_currentSegment())} for {_displayLocation} sorts at or before " +
+                $"the archive's newest file {Path.GetFileName(archived[^1])}: its clock is behind. Not appending.");
+        }
+
+        var walked = await WalkAsync(live, 0, 0, tail, cancellationToken).ConfigureAwait(false);
         if (archived.Count > 0 && walked.Head.Sequence == tail.LastValidSequence && walked.NextSequence != tail.ExpectedSequence)
         {
             throw new IOException(
@@ -231,21 +280,26 @@ public sealed partial class HashChainedJsonlWriter
     /// <summary>
     /// Checks that <paramref name="lines"/> continue a chain whose newest record is <paramref name="headSequence"/>
     /// (<c>-1</c> for an empty chain): every record carries the next sequence, points back to the one before and
-    /// hashes to what it claims. Lines that predate the chain are allowed only with <paramref name="allowPreChainLines"/>,
-    /// before its first record. Blank lines are ignored. What the archiver checks before it archives a file.
+    /// hashes to what it claims. What the archiver checks before it archives or witnesses a file.
     /// </summary>
-    /// <param name="lines">The file's lines, in order.</param>
+    /// <param name="lines">The file's lines, in order. Blank lines are ignored.</param>
     /// <param name="headSequence">The newest record already in the chain, or <c>-1</c>.</param>
     /// <param name="headHash">Its hash, or the genesis hash.</param>
     /// <param name="allowPreChainLines">Whether lines written before the chain began may come first.</param>
-    /// <param name="newHead">The newest record once the lines are added.</param>
+    /// <param name="stepOverBreaks">
+    /// For a file an operator accepted: step over lines that do not chain, as the writer does, instead of failing.
+    /// </param>
+    /// <param name="witnessed">Hashes the archiver witnessed, by sequence: a record at one of them must have that hash.</param>
+    /// <param name="newHead">The newest chaining record once the lines are added.</param>
     /// <param name="reason">Why they do not continue the chain, when they do not.</param>
-    /// <returns>Whether every line continues the chain.</returns>
+    /// <returns>Whether the lines continue the chain.</returns>
     internal static bool ContinuesChain(
         IEnumerable<string> lines,
         long headSequence,
         string headHash,
         bool allowPreChainLines,
+        bool stepOverBreaks,
+        IReadOnlyDictionary<long, string>? witnessed,
         out (long Sequence, string Hash) newHead,
         out string? reason)
     {
@@ -259,8 +313,21 @@ public sealed partial class HashChainedJsonlWriter
 
             if (!ApplyLine(line, ref state, out var broken))
             {
+                if (stepOverBreaks)
+                    continue;
+
                 newHead = (state.LastValidSequence, state.LastValidHash);
                 reason = broken.BreakReason;
+                return false;
+            }
+
+            if (witnessed is not null
+                && witnessed.TryGetValue(state.LastValidSequence, out var expected)
+                && !string.Equals(expected, state.LastValidHash, StringComparison.Ordinal))
+            {
+                newHead = (state.LastValidSequence, state.LastValidHash);
+                reason = $"Record at sequence {state.LastValidSequence} differs from the one the archiver witnessed there " +
+                         "(the log was rewritten after it was witnessed).";
                 return false;
             }
         }
@@ -270,27 +337,44 @@ public sealed partial class HashChainedJsonlWriter
         return true;
     }
 
-    /// <summary>The last line of a file, when it is a record whose hash is right for its own content.</summary>
-    internal static async Task<(long Sequence, string Hash)?> LastRecordAsync(string path, CancellationToken cancellationToken)
+    /// <summary>
+    /// The newest record in <paramref name="lines"/> whose hash is right for its own content, or <c>null</c> when none
+    /// is. Not simply the last line: an accepted file can end with a line torn by a crash.
+    /// </summary>
+    /// <param name="lines">A file's lines.</param>
+    /// <returns>The record's sequence and hash.</returns>
+    internal static (long Sequence, string Hash)? LastSelfConsistentRecord(IEnumerable<string> lines)
     {
-        string? last = null;
-        await using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var reader = new StreamReader(stream))
+        (long, string)? last = null;
+        foreach (var line in lines)
         {
-            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            if (TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson)
+                && string.Equals(ComputeRecordHash(sequence, previousHash, payloadJson), recordHash, StringComparison.Ordinal))
             {
-                if (!string.IsNullOrWhiteSpace(line))
-                    last = line;
+                last = (sequence, recordHash);
             }
         }
 
-        if (last is null || !TryParseLine(last, out var sequence, out var recordHash, out var previousHash, out var payloadJson))
-            return null;
-
-        return string.Equals(ComputeRecordHash(sequence, previousHash, payloadJson), recordHash, StringComparison.Ordinal)
-            ? (sequence, recordHash)
-            : null;
+        return last;
     }
+
+    /// <summary>The sequence and previous hash of the first well-formed record in <paramref name="lines"/>, or <c>null</c>.</summary>
+    /// <param name="lines">A file's lines.</param>
+    /// <returns>The record's sequence and the hash it points back to.</returns>
+    internal static (long Sequence, string PreviousHash)? FirstRecord(IEnumerable<string> lines)
+    {
+        foreach (var line in lines)
+        {
+            if (TryParseLine(line, out var sequence, out _, out var previousHash, out _))
+                return (sequence, previousHash);
+        }
+
+        return null;
+    }
+
+    /// <summary>The newest self-consistent record of an archived file read through the mount (see <see cref="LastSelfConsistentRecord"/>).</summary>
+    private static async Task<(long Sequence, string Hash)?> LastRecordAsync(string path, CancellationToken cancellationToken) =>
+        LastSelfConsistentRecord(await File.ReadAllLinesAsync(path, cancellationToken).ConfigureAwait(false));
 
     /// <summary>The sequence and previous hash of a file's first well-formed record, or <c>null</c> when it has none.</summary>
     private static async Task<(long Sequence, string PreviousHash)?> FirstRecordAsync(string path, CancellationToken cancellationToken)

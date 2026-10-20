@@ -40,17 +40,21 @@ public sealed class AuditConfig
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The application never writes here. A separate job, under an identity the application does not hold, copies
-    /// each audit log's finished day-files (never a log's newest file) into <c>{ArchivePath}/{log name}/</c> under
-    /// their own names, checks the copy, and only then deletes the live file. The folder is mounted into the
+    /// The application never writes here. The audit archiver (<c>Presentation.AuditArchiver</c>), run as a separate
+    /// job under an identity the application does not hold, copies each audit log's finished day-files into
+    /// <c>{ArchivePath}/{log folder}/</c> under their own names, but only files that continue the archive exactly, and
+    /// records the log's newest record as a witness the application cannot forge. The folder is mounted into the
     /// application read-only, typically an Azure Blob container under a locked time-based retention policy, mounted
-    /// with <c>blobfuse2 --read-only</c> (#416).
+    /// with <c>blobfuse2 --read-only</c> and a read-only credential (#416).
     /// </para>
     /// <para>
-    /// With it set, verification reads the archive's newest file of each log plus the live files, so a log whose
-    /// oldest days have been archived still verifies, and readers serve archived and live records together. Must not
-    /// overlap any audit log folder or <see cref="ReceiptPath"/>.
+    /// With it set, verification reads the live files from where they continue the archive, against the archiver's
+    /// newest witness, and readers serve archived and live records together. Must not overlap any audit log folder or
+    /// <see cref="ReceiptPath"/>.
     /// </para>
     /// </remarks>
     public string ArchivePath { get; init; } = string.Empty;
+
+    /// <summary>Gets the audit archiver's own settings. Read only by the archiver, never by the application.</summary>
+    public AuditArchiverConfig Archiver { get; init; } = new();
 }

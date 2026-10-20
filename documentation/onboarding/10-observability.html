@@ -152,6 +152,17 @@ docker run -d --name jaeger \
                         you a cheap, file-based tamper-evidence guarantee without a database — useful for governance
                         and compliance trails where "nobody quietly changed the record" needs to be demonstrable.
                     </p>
+                    <p>
+                        The hashes carry no secret key, so on its own the chain shows changes made by someone who
+                        cannot rewrite the folder, not by someone who controls the application's account. To close
+                        that gap, run the <strong>audit archiver</strong> (<code>Presentation.AuditArchiver</code>) as a
+                        separate scheduled job with its own identity. It moves finished days into write-once storage,
+                        but only days that continue the archive exactly, and it regularly records each log's newest
+                        record there as a <em>witness</em> the application cannot rewrite. The application mounts the
+                        archive read-only (<code>AppConfig:AI:Audit:ArchivePath</code>) and verifies its live files
+                        against it. What remains exposed is only what was written since the last witness. Setup:
+                        <code>src/Content/Presentation/Presentation.AuditArchiver/README.md</code>.
+                    </p>
 
                     <h3>Microsoft Agent 365 — putting agents on the tenant's radar</h3>
                     <p>

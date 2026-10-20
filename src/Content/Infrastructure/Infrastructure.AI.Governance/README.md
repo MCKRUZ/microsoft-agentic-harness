@@ -136,8 +136,8 @@ if (result.IsInjection)
 
 **How it works:**
 - `Log(agentId, action, decision)` appends to the chain (synchronous; blocks briefly on the disk write, never throws — a write failure is logged, not propagated to the caller)
-- `VerifyChainIntegrity()` walks the chain from genesis and validates every link
-- `EntryCount` walks the chain and returns its length (no production caller reads this today)
+- `VerifyChainIntegrity()` validates every link from genesis, or, once finished days are archived (`AppConfig:AI:Audit:ArchivePath`), from where the live files continue the archive, against the audit archiver's witness (see `Presentation.AuditArchiver/README.md`)
+- `EntryCount` returns the chain's length (one past its newest sequence, archived records included; no production caller reads this today)
 - Every log emits `GovernanceMetrics.AuditEvents`, counted only when the write actually succeeded
 - Also joins the scheduled `AuditChainVerificationService` job as a fifth `IVerifiableAuditChain` (see `Infrastructure.AI/DependencyInjection.Audit.cs`), so the governance chain is periodically re-verified like its siblings
 

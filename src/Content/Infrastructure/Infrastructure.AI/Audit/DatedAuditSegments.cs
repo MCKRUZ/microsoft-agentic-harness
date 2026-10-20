@@ -141,7 +141,8 @@ public sealed class DatedAuditSegments
                     throw new AuditFolderRefusedException(
                         $"Audit folder {Folder} holds {Path.GetFileName(path)}, dated after tomorrow. Every new record would " +
                         "go to it and it would never be finished, so the chain is not written or verified until it is " +
-                        "dealt with: if it holds records, a clock was badly wrong; otherwise it was placed there.");
+                        "dealt with: if it holds records, a host's clock was ahead (or this host's clock is behind); " +
+                        "otherwise it was placed there.");
                 }
 
                 days.Add(path);

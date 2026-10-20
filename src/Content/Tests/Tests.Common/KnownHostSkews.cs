@@ -61,6 +61,13 @@ public static class KnownHostSkews
             MemberReferenceResolver.Kind.MissingAssembly),
     ];
 
+    /// <summary>
+    /// The entries for the audit archiver host (#416). It references no presentation library, so it ships neither
+    /// HealthChecks.UI nor Microsoft.OpenTelemetry, and those entries would match nothing and fail as stale.
+    /// </summary>
+    public static readonly IReadOnlyList<KnownSkew> AuditArchiver =
+        [.. Shared.Where(s => s.Assembly is not ("HealthChecks.UI" or "Microsoft.OpenTelemetry"))];
+
     /// <summary>The entries for the Foundry hosting host: the shared ones plus its own.</summary>
     public static readonly IReadOnlyList<KnownSkew> FoundryHost =
     [

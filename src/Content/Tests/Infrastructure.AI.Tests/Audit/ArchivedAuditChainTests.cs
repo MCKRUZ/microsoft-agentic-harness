@@ -124,17 +124,20 @@ public sealed class ArchivedAuditChainTests : IDisposable
     }
 
     [Fact]
-    public async Task AnArchivedFileThatDoesNotEndWithAWholeRecord_IsABreak()
+    public async Task AnArchivedFileEndingWithATornLine_IsContinuedFromItsLastWholeRecord()
     {
+        // Only an operator-accepted file reaches the archive torn (a crash mid-write); the writers chained the next
+        // record onto its last whole one, so that is where the live chain must continue from, not a forged later line.
         using var sut = Writer();
         await ThreeDaysAsync(sut);
         Archive("2026-10-19");
-        await File.AppendAllTextAsync(ArchivedDay("2026-10-19"), "{\"torn\":");
+        Archive("2026-10-20");
+        await File.AppendAllTextAsync(ArchivedDay("2026-10-20"), "{\"torn\":");
 
         var verified = await sut.VerifyChainAsync(CancellationToken.None);
 
-        verified.IsValid.Should().BeFalse();
-        verified.FailureReason.Should().Contain("does not end with a whole record");
+        verified.IsValid.Should().BeTrue(verified.FailureReason);
+        verified.StartSequence.Should().Be(2);
     }
 
     [Fact]
@@ -190,6 +193,86 @@ public sealed class ArchivedAuditChainTests : IDisposable
         var regrown = await sut.VerifyChainAsync(new AuditChainCheckpoint(0, new string('a', 64)), CancellationToken.None);
         regrown.IsValid.Should().BeFalse();
         regrown.FailureReason.Should().Contain("differs from the one last verified");
+    }
+
+    [Fact]
+    public async Task ACheckpointTheArchiverHasSinceArchived_IsWalkedBackToAndCompared()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var checkpointLine = (await File.ReadAllLinesAsync(LiveDay("2026-10-19"))).Single().Split('\t');
+        Archive("2026-10-19");
+        Archive("2026-10-20");
+
+        (await sut.VerifyChainAsync(new AuditChainCheckpoint(0, checkpointLine[1]), CancellationToken.None))
+            .IsValid.Should().BeTrue();
+        var rewritten = await sut.VerifyChainAsync(new AuditChainCheckpoint(0, new string('b', 64)), CancellationToken.None);
+        rewritten.IsValid.Should().BeFalse("the record last verified must still be there, archived or not");
+        rewritten.StartSequence.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ACheckpointBeforeEveryArchivedRecord_IsABreak()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        Archive("2026-10-19");
+        Archive("2026-10-20");
+        File.Delete(ArchivedDay("2026-10-19")); // as if expired by retention
+
+        var verified = await sut.VerifyChainAsync(new AuditChainCheckpoint(0, new string('c', 64)), CancellationToken.None);
+
+        verified.IsValid.Should().BeFalse();
+        verified.FailureReason.Should().Contain("comes before every archived record");
+    }
+
+    [Fact]
+    public async Task AnArchiveThisApplicationCanWrite_IsNotVerified_AndIsNotProbedAgain()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        ReadOnlyArchiveRoot.Unlock(_archiveRoot);
+
+        var verify = () => sut.VerifyChainAsync(CancellationToken.None);
+        var first = (await verify.Should().ThrowAsync<AuditFolderRefusedException>().WithMessage("*accepts writes*")).Which.Message;
+        var second = (await verify.Should().ThrowAsync<AuditFolderRefusedException>()).Which.Message;
+
+        second.Should().Be(first, "on write-once storage every new probe would be a file no one can delete");
+    }
+
+    [Fact]
+    public async Task AWriterWhoseClockIsBehindTheArchive_RefusesToAppend()
+    {
+        using (var sut = Writer())
+            await ThreeDaysAsync(sut);
+        Archive("2026-10-19");
+        Archive("2026-10-20");
+        Archive("2026-10-21");
+        File.Delete(_legacyFile + ".lock");
+
+        var behind = new FakeTimeProvider(new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.Zero));
+        using var lagging = new HashChainedJsonlWriter(
+            DatedAuditSegments.BesideLegacyFile(_legacyFile, behind), _legacyFile + ".lock", NullLogger.Instance, _archiveRoot);
+
+        (await lagging.AppendAsync("{\"late\":true}", CancellationToken.None)).IsSuccess.Should().BeFalse(
+            "a record in a file the archive has already passed would never be read");
+        File.Exists(LiveDay("2026-10-20")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AWitnessFileTheArchiverDidNotWrite_MeansNotVerified()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var witnesses = Path.Combine(_archiveRoot, "governance", "witnesses");
+        Directory.CreateDirectory(witnesses);
+        // Well formed, but filed under sequence 1 while it names 7: the newest name would not be the newest witness.
+        var misfiled = new AuditWitness(7, new string('d', 64), "2026-10-21.jsonl", DateTimeOffset.UnixEpoch);
+        await File.WriteAllBytesAsync(Path.Combine(witnesses, AuditWitness.FileName(1)), misfiled.ToBytes());
+
+        var verify = () => sut.VerifyChainAsync(CancellationToken.None);
+
+        await verify.Should().ThrowAsync<AuditFolderRefusedException>().WithMessage("*not a witness*");
     }
 
     [Fact]

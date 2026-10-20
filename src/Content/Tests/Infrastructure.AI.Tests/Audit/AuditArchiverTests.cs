@@ -1,0 +1,380 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using Domain.AI.Audit;
+using Domain.Common.Config.AI.Audit;
+using FluentAssertions;
+using Infrastructure.AI.Audit;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+using Xunit;
+
+namespace Infrastructure.AI.Tests.Audit;
+
+/// <summary>
+/// #416: the audit archiver moves finished day-files into the write-once archive only when they continue it and match
+/// what it witnessed, and the application verifies its live files against the archive and the witnesses.
+/// </summary>
+public sealed class AuditArchiverTests : IDisposable
+{
+    private readonly string _tempDir;
+    private readonly string _legacyFile;
+    private readonly string _archiveRoot;
+    private readonly FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 19, 10, 0, 0, TimeSpan.Zero));
+    private readonly AuditArchiver _archiver;
+
+    public AuditArchiverTests()
+    {
+        _tempDir = Path.Combine(Path.GetTempPath(), $"audit-archiver-{Guid.NewGuid():N}");
+        _legacyFile = Path.Combine(_tempDir, "live", "governance.jsonl");
+        _archiveRoot = Path.Combine(_tempDir, "archive");
+        ReadOnlyArchiveRoot.Create(_archiveRoot, "governance");
+        _archiver = new AuditArchiver(
+            new FileAuditArchiveStore(_archiveRoot), new AuditArchiverConfig(), _clock, NullLogger<AuditArchiver>.Instance);
+    }
+
+    public void Dispose()
+    {
+        ReadOnlyArchiveRoot.Unlock(_archiveRoot);
+        try { Directory.Delete(_tempDir, recursive: true); }
+        catch { /* best effort */ }
+    }
+
+    private AuditChainLocation Chain => new("governance", DatedAuditSegments.BesideLegacyFile(_legacyFile, _clock), _legacyFile + ".lock");
+
+    private HashChainedJsonlWriter Writer() => new(Chain, NullLogger.Instance, _archiveRoot);
+
+    private string LiveDay(string day) => Path.Combine(_tempDir, "live", "governance", day + ".jsonl");
+
+    private string ArchivedDay(string day) => Path.Combine(_archiveRoot, "governance", day + ".jsonl");
+
+    /// <summary>Appends one record on each of 2026-10-19, -20 and -21, leaving the clock on the 22nd.</summary>
+    private async Task ThreeDaysAsync(HashChainedJsonlWriter sut)
+    {
+        for (var day = 0; day < 3; day++)
+        {
+            (await sut.AppendAsync($"{{\"day\":{day}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+            _clock.Advance(TimeSpan.FromDays(1));
+        }
+    }
+
+    /// <summary>A record line as the writer frames it, for a forger who recomputes the unkeyed hashes.</summary>
+    private static (string Line, string Hash) Record(long sequence, string previousHash, string json)
+    {
+        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
+            string.Concat(sequence.ToString(CultureInfo.InvariantCulture), "\n", previousHash, "\n", json))));
+        return ($"{json}\t{hash}\t{previousHash}\t{sequence}", hash);
+    }
+
+    /// <summary>Dates every archived day-file as written at <paramref name="when"/>, on the fake clock's timeline.</summary>
+    private void ArchivedAt(DateTimeOffset when)
+    {
+        foreach (var file in Directory.GetFiles(Path.Combine(_archiveRoot, "governance"), "*.jsonl"))
+            File.SetLastWriteTimeUtc(file, when.UtcDateTime);
+    }
+
+    private static async Task<List<string>> PayloadsAsync(HashChainedJsonlWriter sut)
+    {
+        var payloads = new List<string>();
+        await foreach (var payload in sut.ReadAllPayloadsAsync(CancellationToken.None))
+            payloads.Add(payload);
+        return payloads;
+    }
+
+    [Fact]
+    public async Task Run_ArchivesOnlyFinishedDays_AndTheApplicationVerifiesAcrossTheArchive()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        (await sut.AppendAsync("{\"day\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
+        result.FilesArchived.Should().Be(2, "the 21st is a day old, so a host whose clock lags may still append to it");
+        File.Exists(ArchivedDay("2026-10-20")).Should().BeTrue();
+        File.Exists(ArchivedDay("2026-10-21")).Should().BeFalse();
+
+        var verified = await sut.VerifyChainAsync(CancellationToken.None);
+        verified.IsValid.Should().BeTrue(verified.FailureReason);
+        verified.StartSequence.Should().Be(2, "the archive's earlier records were checked when they were archived");
+        (await PayloadsAsync(sut)).Should().Equal("{\"day\":0}", "{\"day\":1}", "{\"day\":2}", "{\"day\":3}");
+    }
+
+    [Fact]
+    public async Task Run_DeletesALiveCopyOnlyOnceItHasBeenArchivedForTheDelay()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+        ArchivedAt(_clock.GetUtcNow().AddMinutes(-5));
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        File.Exists(LiveDay("2026-10-19")).Should().BeTrue("archived five minutes ago, the application's mount may not list the copy yet");
+
+        ArchivedAt(_clock.GetUtcNow().AddMinutes(-16));
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+
+        File.Exists(LiveDay("2026-10-19")).Should().BeFalse();
+        File.Exists(LiveDay("2026-10-20")).Should().BeFalse();
+        (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue();
+        (await PayloadsAsync(sut)).Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task Run_StopsAtADayDeletedBeforeArchiving_AndArchivesNothingAfterIt()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        (await sut.AppendAsync("{\"day\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+        File.Delete(LiveDay("2026-10-19"));
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        Directory.GetFiles(Path.Combine(_archiveRoot, "governance"), "*.jsonl").Should().BeEmpty(
+            "a gap sealed into write-once storage could never be reported again");
+    }
+
+    [Fact]
+    public async Task Witness_StopsWhenTheLiveChainWasRebuiltAfterItWasWitnessed()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        (await _archiver.WitnessAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+
+        await RebuildLiveChainAsync();
+
+        var result = await _archiver.WitnessAsync(Chain, CancellationToken.None);
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("witnessed");
+    }
+
+    [Fact]
+    public async Task Verification_BreaksOnARebuiltChain_EvenWhenItsOwnCheckpointWasRewrittenToMatch()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.WitnessAsync(Chain, CancellationToken.None);
+
+        var forgedHead = await RebuildLiveChainAsync();
+
+        var verified = await sut.VerifyChainAsync(new AuditChainCheckpoint(2, forgedHead), CancellationToken.None);
+        verified.IsValid.Should().BeFalse("the archiver's witness is a checkpoint this host cannot rewrite");
+        verified.FailureReason.Should().Contain("differs from the one last verified");
+    }
+
+    [Fact]
+    public async Task Witness_StopsWhenRecordsWereCutFromTheEnd()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.WitnessAsync(Chain, CancellationToken.None);
+
+        File.Delete(LiveDay("2026-10-21"));
+
+        var result = await _archiver.WitnessAsync(Chain, CancellationToken.None);
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("before the witnessed sequence 2");
+    }
+
+    [Fact]
+    public async Task Witness_LeavesOutAnAppendInProgressInTheNewestFile()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await File.AppendAllTextAsync(LiveDay("2026-10-21"), "{\"half\":");
+
+        (await _archiver.WitnessAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        Directory.GetFiles(Path.Combine(_archiveRoot, "governance", "witnesses")).Select(Path.GetFileName)
+            .Should().Equal(AuditWitness.FileName(2));
+    }
+
+    [Fact]
+    public async Task Run_RefusesAFileTheApplicationWouldReadDifferently()
+    {
+        // A carriage return splits a line for the application's reader but not for a reader that splits on \n alone,
+        // so archiving it would seal a break the application reports for ever. The writer never writes one.
+        using var sut = Writer();
+        var first = Record(0, HashChainedJsonlWriter.GenesisHash, "{\"a\":\"x\ry\"}");
+        Directory.CreateDirectory(Path.GetDirectoryName(LiveDay("2026-10-19"))!);
+        await File.WriteAllTextAsync(LiveDay("2026-10-19"), first.Line + "\n");
+        await File.WriteAllTextAsync(LiveDay("2026-10-20"), Record(1, first.Hash, "{\"b\":1}").Line + "\n");
+        await File.WriteAllTextAsync(_legacyFile + ".lock", string.Empty);
+        _clock.Advance(TimeSpan.FromDays(3));
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("carriage return");
+        File.Exists(ArchivedDay("2026-10-19")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Run_StopsAtADayTornByACrash_UntilAnOperatorAcceptsExactlyThoseBytes()
+    {
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"day\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+        (await sut.AppendAsync("{\"day\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"torn\":");
+        _clock.Advance(TimeSpan.FromDays(1));
+        (await sut.AppendAsync("{\"day\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Stopped);
+
+        var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
+        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash mid-write", CancellationToken.None))
+            .Status.Should().Be(AuditArchiveStatus.Done);
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
+        result.FilesArchived.Should().Be(2);
+        (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue("the live chain continues the accepted file's last record");
+    }
+
+    [Fact]
+    public async Task Accept_RefusesBytesThatChangedSinceTheyWereInspected()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"planted\":");
+
+        var result = await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash", CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        Directory.Exists(Path.Combine(_archiveRoot, "governance", "accepted")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Run_DeletesAnEmptyDayLeftByACrash_InsteadOfArchivingIt()
+    {
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"day\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.WriteAllTextAsync(LiveDay("2026-10-20"), string.Empty);
+        _clock.Advance(TimeSpan.FromDays(2));
+        (await sut.AppendAsync("{\"day\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
+        File.Exists(LiveDay("2026-10-20")).Should().BeFalse();
+        File.Exists(ArchivedDay("2026-10-20")).Should().BeFalse();
+        (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Run_IgnoresAnAcceptanceOnceTheFileHasChangedSince()
+    {
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"day\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+        (await sut.AppendAsync("{\"day\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"torn\":");
+        var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
+        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash", CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "\n{\"slipped in\":true}\n");
+        _clock.Advance(TimeSpan.FromDays(1));
+        (await sut.AppendAsync("{\"day\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        File.Exists(ArchivedDay("2026-10-20")).Should().BeFalse("the acceptance covers only the bytes that were inspected");
+    }
+
+    [Fact]
+    public async Task Run_StopsWhenALiveCopyOfAnArchivedFileWasChanged()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+        await File.AppendAllTextAsync(LiveDay("2026-10-19"), "{\"planted\":1}\n");
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("differs from its archived copy");
+        File.Exists(LiveDay("2026-10-19")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Run_StopsAtALiveFileSortingWithinTheArchiveThatItNeverHeld()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+        await File.WriteAllTextAsync(LiveDay("2026-10-18"), "{\"planted\":1}\n");
+
+        var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("has no copy");
+    }
+
+    [Fact]
+    public async Task Run_RefusesAFileLargerThanTheLimit()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var tiny = new AuditArchiver(
+            new FileAuditArchiveStore(_archiveRoot), new AuditArchiverConfig { MaxFileMegabytes = 0 }, _clock,
+            NullLogger<AuditArchiver>.Instance);
+
+        var result = await tiny.ArchiveAsync(Chain, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("larger than");
+    }
+
+    [Fact]
+    public async Task Run_WithoutTheArchiveMarker_IsNotReady_AndTouchesNothing()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        var unmounted = new AuditArchiver(
+            new FileAuditArchiveStore(Path.Combine(_tempDir, "not-mounted")), new AuditArchiverConfig(), _clock,
+            NullLogger<AuditArchiver>.Instance);
+
+        (await unmounted.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.NotReady);
+        Directory.Exists(Path.Combine(_tempDir, "not-mounted")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Verify_ReportsAnArchivedFileChangedAfterArchiving()
+    {
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+        (await _archiver.VerifyAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+
+        var lines = await File.ReadAllLinesAsync(ArchivedDay("2026-10-19"));
+        await File.WriteAllTextAsync(ArchivedDay("2026-10-19"), lines[0].Replace("\"day\":0", "\"day\":9") + "\n");
+
+        (await _archiver.VerifyAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Stopped);
+    }
+
+    /// <summary>
+    /// What someone in control of the live folder can do, the hashes being unkeyed: replace every live record with a
+    /// self-consistent chain of their own. Returns the forged head's hash.
+    /// </summary>
+    private async Task<string> RebuildLiveChainAsync()
+    {
+        var previous = HashChainedJsonlWriter.GenesisHash;
+        string[] days = ["2026-10-19", "2026-10-20", "2026-10-21"];
+        for (var i = 0; i < days.Length; i++)
+        {
+            var record = Record(i, previous, $"{{\"forged\":{i}}}");
+            await File.WriteAllTextAsync(LiveDay(days[i]), record.Line + "\n");
+            previous = record.Hash;
+        }
+
+        File.Delete(_legacyFile + ".lock");
+        await File.WriteAllTextAsync(_legacyFile + ".lock", string.Empty);
+        return previous;
+    }
+}

@@ -123,6 +123,11 @@
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug-Dashboard" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug-WebUI" />
     </Project>
+    <Project Path="Content/Presentation/Presentation.AuditArchiver/Presentation.AuditArchiver.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
@@ -216,6 +221,11 @@
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
     <Project Path="Content/Tests/Presentation.EvalRunner.Tests/Presentation.EvalRunner.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Presentation.AuditArchiver.Tests/Presentation.AuditArchiver.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
