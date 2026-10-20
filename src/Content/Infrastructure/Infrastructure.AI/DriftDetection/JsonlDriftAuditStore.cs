@@ -96,8 +96,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         {
             // Through the chain's own reader, which never serves a line after the chain's first record that is not a
             // record (#416).
-            var files = ResolveFilePaths(query).ToHashSet(StringComparer.Ordinal);
-            await foreach (var json in _chain.ReadPayloadsAsync(files.Contains, ct).ConfigureAwait(false))
+            await foreach (var json in _chain.ReadPayloadsAsync(IncludesFile(query), ct).ConfigureAwait(false))
             {
                 try
                 {
@@ -122,7 +121,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         // Files are partitioned by append time, which is ~equal to RecordedAt in practice but can
         // differ (a back-dated record, or an append that crosses midnight). Filter precisely on
         // RecordedAt so the date-range query means "records recorded in range" regardless of which
-        // file they physically landed in (ResolveFilePaths widens the file set by a day to match).
+        // file they physically landed in (IncludesFile widens the file set by a day to match).
         if (query.Start.HasValue)
             filtered = filtered.Where(r => r.RecordedAt >= query.Start.Value);
 
@@ -148,19 +147,19 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     public void Dispose() => _chain.Dispose();
 
     /// <summary>
-    /// The chain's own day-files that can hold a record from the query's start onwards. Only the chain's files: a
-    /// file the chain does not list is never verified, so it is never served either (#416).
+    /// Which of the chain's own files can hold a record from the query's start onwards: decided by each file's day, so
+    /// a file archived while the query runs is still matched in the archive (#416). The chain reads only its own files.
     /// </summary>
-    private IEnumerable<string> ResolveFilePaths(DriftAuditQuery query)
+    private static Func<string, bool> IncludesFile(DriftAuditQuery query)
     {
         // A day earlier than the start: a record lands in the file for its append time, which can differ from
         // RecordedAt by clock skew or a midnight crossing; the precise RecordedAt filter trims the extra back out.
         // No upper bound: the writer never appends to a file earlier than the latest one, so once a host whose clock
         // is ahead (or a planted later-dated file) starts a later file, every host's records land there.
         if (query.Start is not { } start)
-            return _chain.ChainFiles();
+            return static _ => true;
 
         var firstDay = DateOnly.FromDateTime(start.Date.AddDays(-1));
-        return _chain.ChainFiles().Where(f => DatedAuditSegments.DayOf(f) >= firstDay);
+        return f => DatedAuditSegments.DayOf(f) >= firstDay;
     }
 }

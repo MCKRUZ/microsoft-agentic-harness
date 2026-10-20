@@ -323,7 +323,7 @@ public sealed partial class HashChainedJsonlWriter
             {
                 // Only what a crash leaves: a line that is not a whole record. A whole record that hashes right but does
                 // not chain is never stepped over, or it could become the archive's newest record and outrank witnesses.
-                if (stepOverBreaks && LastSelfConsistentRecord([line]) is null)
+                if (stepOverBreaks && !IsSelfConsistentRecord(line))
                     continue;
 
                 newHead = (state.LastValidSequence, state.LastValidHash);
@@ -359,15 +359,22 @@ public sealed partial class HashChainedJsonlWriter
         (long, string)? last = null;
         foreach (var line in lines)
         {
-            if (TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson)
-                && string.Equals(ComputeRecordHash(sequence, previousHash, payloadJson), recordHash, StringComparison.Ordinal))
-            {
+            if (TryParseLine(line, out var sequence, out var recordHash, out _, out _) && IsSelfConsistentRecord(line))
                 last = (sequence, recordHash);
-            }
         }
 
         return last;
     }
+
+    /// <summary>
+    /// Whether <paramref name="line"/> is a whole record whose hash is right for its own content: what readers serve
+    /// once a chain has begun, and the only kind of line an accepted file may not step over.
+    /// </summary>
+    /// <param name="line">A line.</param>
+    /// <returns>Whether it is such a record.</returns>
+    internal static bool IsSelfConsistentRecord(string line) =>
+        TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson)
+        && string.Equals(ComputeRecordHash(sequence, previousHash, payloadJson), recordHash, StringComparison.Ordinal);
 
     /// <summary>The sequence and previous hash of the first well-formed record in <paramref name="lines"/>, or <c>null</c>.</summary>
     /// <param name="lines">A file's lines.</param>

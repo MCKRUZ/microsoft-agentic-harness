@@ -77,10 +77,14 @@ Every one of these matters; if any is open, the guarantee is gone.
   managed-identity endpoint for the archiver's token; there, use a separate account. On Windows give its account
   Modify on the audit folders. It creates nothing in them, and refuses a file or folder that is a link.
 - **Lines from before hash chaining** are covered by no hash or witness. A log may hold them only before its first
-  record: in its earlier single file (`governance.jsonl` and the like, from before logs were split by day), or, for the
-  drift log, which has no such file, in its first day-files. The archiver archives those files on its first run,
-  whatever their age; until then someone controlling the live folder could add such lines. Run `witness` and `run` as
-  soon as the archive is set up, and before that, keep a copy of those files' hashes if you need proof of them.
+  record, in its earlier single file (`governance.jsonl` and the like, from before logs were split by day); the
+  archiver archives that file on its first run, whatever its age. Until then someone controlling the live folder could
+  add such lines, so run `witness` and `run` as soon as the archive is set up, and keep a copy of that file's hash
+  before then if you need proof of it.
+- **Drift logs from before chaining** (drift day-files written before its records were chained) hold such lines in
+  day-files, which nothing allows. Once `ArchivePath` is set, the application reports those logs as broken and the
+  archiver stops on them. Inspect each such file and accept it (`accept drift <file> <sha256> 0 "<reason>"`; the count
+  is of lines after the file's first record, so 0 for a file of old lines only). It is then archived as it stands.
 - **Program and configuration:** keep both where the application cannot write them.
 - **Rolling out:** start the archiver only after every application host runs this version with the same
   `ArchivePath`. A host without it would start the chain again from the beginning.
@@ -96,9 +100,10 @@ sha256sum governance/2026-10-20.jsonl        # or Get-FileHash -Algorithm SHA256
 audit-archiver accept governance 2026-10-20.jsonl <sha256> 1 "writer crashed at 02:14, see incident 123"
 ```
 
-The number is how many lines in the file are not whole records, which you counted while inspecting it; if it does not
-match, the acceptance is refused and the line numbers are printed, so a planted line cannot slip through with a torn
-one. The acceptance is stored in the archive. Within that file only, those lines are stepped over, and the file is read
+The number is how many lines after the file's first record are not whole records, which you counted while inspecting
+it; if it does not match, the acceptance is refused and the line numbers are printed, so a planted line cannot slip
+through with a torn one. Lines before the file's first record are accepted as they are, pinned by the hash: check them
+too. The acceptance is stored in the archive. Within that file only, those lines are stepped over, and the file is read
 exactly as the application reads it. A whole record that does not chain still stops the run: accepting cannot let a
 planted record through. Readers never return a line that is not a record once a log's records have begun. If the file
 changes afterwards, the acceptance no longer applies.

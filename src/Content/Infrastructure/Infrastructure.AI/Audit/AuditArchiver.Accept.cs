@@ -11,8 +11,9 @@ public sealed partial class AuditArchiver
     /// lines in it are not records: for a break someone has investigated and found honest, typically a line torn by a
     /// crash mid-write. Covers only the file's bytes as they are now, named by <paramref name="sha256"/>, which the
     /// operator copies from the file they inspected, and only when <paramref name="linesSteppedOver"/> is exactly how
-    /// many lines will be stepped over, so lines placed there cannot slip through with a crash's. It covers nothing
-    /// written or changed afterwards.
+    /// many lines after its first record are not records, so lines placed there cannot slip through with a crash's.
+    /// Lines before its first record (the drift log's oldest day-files hold only such lines) are taken as history from
+    /// before hash chaining, pinned by the SHA-256. It covers nothing written or changed afterwards.
     /// </summary>
     /// <param name="chain">The log.</param>
     /// <param name="fileName">The live file's name.</param>
@@ -46,8 +47,9 @@ public sealed partial class AuditArchiver
             if (skipped.Count != linesSteppedOver)
             {
                 return Stop(chain, 0,
-                    $"{fileName} has {skipped.Count} line(s) that are not records (line {string.Join(", ", skipped)}), not " +
-                    $"{linesSteppedOver}. Inspect every one; readers would not serve them, but nothing records why they are there.");
+                    $"{fileName} has {skipped.Count} line(s) after its first record that are not records " +
+                    $"(line {string.Join(", ", skipped)}), not {linesSteppedOver}. Inspect every one: readers do not serve " +
+                    "them, but a line placed there means records may have been tampered with.");
             }
 
             var acceptance = new AuditAcceptance(fileName, actual, skipped, reason, _clock.GetUtcNow());
@@ -66,14 +68,24 @@ public sealed partial class AuditArchiver
         }
     }
 
-    /// <summary>The line numbers (from 1), as the application reads the file, of non-blank lines that are not whole records.</summary>
+    /// <summary>
+    /// The line numbers (from 1), as the application reads the file, of non-blank lines after its first record that are
+    /// not whole records: what readers drop and the archiver steps over. Lines before the first record are history
+    /// from before hash chaining, pinned by the file's SHA-256 and served as they are.
+    /// </summary>
     private static IReadOnlyList<int> NotRecords(byte[] bytes)
     {
         var lines = ReadLikeTheApplication(bytes);
         var numbers = new List<int>();
+        var recordsBegun = false;
         for (var i = 0; i < lines.Count; i++)
         {
-            if (!string.IsNullOrWhiteSpace(lines[i]) && HashChainedJsonlWriter.LastSelfConsistentRecord([lines[i]]) is null)
+            if (string.IsNullOrWhiteSpace(lines[i]))
+                continue;
+
+            var isRecord = HashChainedJsonlWriter.IsSelfConsistentRecord(lines[i]);
+            recordsBegun |= isRecord;
+            if (recordsBegun && !isRecord)
                 numbers.Add(i + 1);
         }
 

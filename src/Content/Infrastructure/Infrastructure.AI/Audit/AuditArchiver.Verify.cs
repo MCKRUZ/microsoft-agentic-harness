@@ -65,7 +65,7 @@ public sealed partial class AuditArchiver
                 ?? throw new IOException($"Archived file {archived.Path} is listed but cannot be read.");
             var file = new CheckedFile(
                 archived.Path, bytes, head,
-                AllowPreChainLines: AllowsPreChainLines(chain, archived.Name, head),
+                AllowPreChainLines: AllowsPreChainLines(archived.Name, head),
                 Accepted: state.Accepted.TryGetValue(archived.Name, out var sha) && sha == Sha256Of(bytes));
             if (LinesOf(file) is not { } lines)
                 return $"Archived file {archived.Path}: {StrictProblem(bytes)}.";

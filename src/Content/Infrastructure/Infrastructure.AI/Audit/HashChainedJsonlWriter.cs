@@ -247,10 +247,16 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 
-                var isRecord = TryParseLine(line, out _, out _, out _, out _);
+                // The same test the archiver steps over by: a whole record whose hash is right for its own content.
+                var isRecord = IsSelfConsistentRecord(line);
                 chainStarted |= isRecord;
-                if (!included && chainStarted)
-                    break; // read only to find where the chain starts
+                if (!included)
+                {
+                    if (chainStarted)
+                        break; // read only to find where the chain starts
+                    continue;
+                }
+
                 if (isRecord || !chainStarted)
                     yield return ExtractPayload(line);
             }
@@ -488,15 +494,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             if (!File.Exists(segment.Path))
                 return state.Break(state.ExpectedSequence, $"Segment {Path.GetFileName(segment.Path)} disappeared during verification.");
 
-            // With an archive, a log that has an earlier single file may hold lines written before the chain began only
-            // there: in a day-file they would be records no hash or witness covers, served to readers all the same
-            // (#416). A log split by day from the start (drift) keeps them in its first day-files, which the archiver
-            // archives on its first run.
-            if (_archive is not null && _legacyFileName is not null
-                && !string.Equals(Path.GetFileName(segment.Path), _legacyFileName, StringComparison.Ordinal))
-            {
+            // With an archive, lines written before the chain began are allowed only in the earlier single file: in a
+            // day-file they would be lines no hash or witness covers (#416). A day-file holding some (the drift log's
+            // oldest) breaks here until the archiver archives it under an operator's acceptance of its exact bytes.
+            if (_archive is not null && !string.Equals(Path.GetFileName(segment.Path), _legacyFileName, StringComparison.Ordinal))
                 state.ChainStarted = true;
-            }
 
             try
             {

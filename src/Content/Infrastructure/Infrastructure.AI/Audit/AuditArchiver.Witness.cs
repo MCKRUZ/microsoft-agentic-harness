@@ -112,7 +112,7 @@ public sealed partial class AuditArchiver
             var bytes = await ReadLiveAsync(live[i], cancellationToken).ConfigureAwait(false);
             var file = new CheckedFile(
                 live[i], bytes, head,
-                AllowPreChainLines: AllowsPreChainLines(chain, name, head),
+                AllowPreChainLines: AllowsPreChainLines(name, head),
                 Accepted: state.Accepted.TryGetValue(name, out var sha) && sha == Sha256Of(bytes));
             var (reached, problem) = Check(file, state.Witnessed, newest: i == live.Count - 1);
             if (reached.Sequence > head.Sequence)
@@ -185,16 +185,16 @@ public sealed partial class AuditArchiver
     }
 
     /// <summary>
-    /// Whether a file may hold lines written before hash chaining began: only before the chain's first record, and,
-    /// for a log with an earlier single file, only in that file. A log split by day from the start (drift) has its
-    /// older lines in its first day-files instead; those are archived on the first run (see <see cref="FinishedEarly"/>).
+    /// Whether a file may hold lines written before hash chaining began: only the earlier single file, before the
+    /// chain's first record. A day-file holding such lines (the drift log's oldest, written before it was chained)
+    /// passes only once an operator accepts its exact bytes, which pins those lines in the archive.
     /// </summary>
-    private static bool AllowsPreChainLines(AuditChainLocation chain, string name, (long Sequence, string Hash) head) =>
-        head.Sequence < 0 && (chain.Segments.LegacyFile is null || DatedAuditSegments.DayOf(name) is null);
+    private static bool AllowsPreChainLines(string name, (long Sequence, string Hash) head) =>
+        head.Sequence < 0 && DatedAuditSegments.DayOf(name) is null;
 
     /// <summary>
-    /// Whether a checked file is archived at once, whatever its age: one that may hold lines written before hash
-    /// chaining began, which nothing covers until they are sealed in the archive.
+    /// Whether a checked file is archived at once, whatever its age: the earlier single file, whose lines from before
+    /// hash chaining nothing covers until they are sealed in the archive.
     /// </summary>
     private static bool FinishedEarly(CheckedFile file) => file.AllowPreChainLines;
 
