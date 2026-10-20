@@ -264,8 +264,10 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
         (await second.AppendAsync("{\"a\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
 
         var newLine = (await File.ReadAllLinesAsync(_filePath)).Last();
-        newLine.Should().EndWith("\t3"); // sequence = lastValidSequence (2) + 1
-        newLine.Split('\t')[2].Should().Be(lastValidHash); // previousHash links to seq 2, not the forged line
+        // Sequence steps past the forged line's 99 (#416: no sequence on disk is handed out twice), but the
+        // previousHash links to seq 2, not the forged line.
+        newLine.Should().EndWith("\t100");
+        newLine.Split('\t')[2].Should().Be(lastValidHash);
 
         // The forged line is still surfaced as a break by verification.
         var verification = await second.VerifyChainAsync(CancellationToken.None);
@@ -574,6 +576,88 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
         var sequences = (await File.ReadAllLinesAsync(_filePath))
             .Select(l => l.Split('\t')).Where(p => p.Length == 4).Select(p => p[3]).ToList();
         sequences.Should().Equal("0", "1", "2", "3", "4", "5", "6");
+    }
+
+    private IReadOnlyList<string> AllSequencesOnDisk() =>
+        Directory.GetFiles(_tempDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal)
+            .SelectMany(File.ReadAllLines)
+            .Select(l => l.Split('\t')).Where(p => p.Length == 4).Select(p => p[3]).ToList();
+
+    [Fact]
+    public async Task Segmented_AfterAMiddleSegmentIsDeletedAndTheHintLost_NoSequenceIsReused()
+    {
+        // A resumed walk and a walk from the start disagree once the chain breaks in the middle; the next
+        // sequence must still be past every one already on disk.
+        using var sut = NewSegmentedWriter();
+        foreach (var segment in new[] { "a.jsonl", "b.jsonl", "c.jsonl" })
+        {
+            _segment = segment;
+            (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        File.Delete(Path.Combine(_tempDir, "b.jsonl"));
+        (await sut.AppendAsync("{\"a\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        File.Delete(Path.Combine(_tempDir, ".chain.lock"));
+        (await sut.AppendAsync("{\"a\":4}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        AllSequencesOnDisk().Should().OnlyHaveUniqueItems().And.Equal("0", "2", "3", "4");
+    }
+
+    [Fact]
+    public async Task Segmented_AfterTheOldestSegmentIsDeletedAndTheHintLost_TheChainDoesNotRestartAtZero()
+    {
+        using var sut = NewSegmentedWriter();
+        _segment = "a.jsonl";
+        (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _segment = "b.jsonl";
+        (await sut.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        File.Delete(Path.Combine(_tempDir, "a.jsonl"));
+        File.Delete(Path.Combine(_tempDir, ".chain.lock"));
+        (await sut.AppendAsync("{\"a\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        AllSequencesOnDisk().Should().Equal("1", "2");
+    }
+
+    [Fact]
+    public async Task Append_WithAHintNamingALineWhoseHashIsWrong_ChainsOntoTheRealHead()
+    {
+        using var sut = NewWriter();
+        (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var realHead = (await File.ReadAllLinesAsync(_filePath))[0].Split('\t')[1];
+
+        // A line that claims a hash it does not have, and a hint pointing at it.
+        var claimed = new string('c', 64);
+        await File.AppendAllTextAsync(_filePath, $"{{\"x\":1}}\t{claimed}\t{new string('p', 64)}\t1\n");
+        await File.WriteAllTextAsync(_filePath + ".lock", System.Text.Json.JsonSerializer.Serialize(
+            new { Segment = "audit.jsonl", Length = new FileInfo(_filePath).Length, Sequence = 1L, Hash = claimed }));
+
+        (await sut.AppendAsync("{\"a\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var last = (await File.ReadAllLinesAsync(_filePath))[^1].Split('\t');
+        last[2].Should().Be(realHead, "the hint must not promote a line that does not hash to what it claims");
+        last[3].Should().Be("2", "sequence 1 is already on disk");
+    }
+
+    [Fact]
+    public async Task Segmented_WhenTheListingLagsBehindANewSegment_TheWriterStillSeesIt()
+    {
+        // A directory listing on a network share can miss a file another host created seconds ago.
+        using var listsEverything = NewSegmentedWriter();
+        using var listingLags = new HashChainedJsonlWriter(
+            _tempDir,
+            () => Path.Combine(_tempDir, _segment),
+            () => Directory.GetFiles(_tempDir, "*.jsonl").Where(f => !f.EndsWith("b.jsonl", StringComparison.Ordinal))
+                .OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            Path.Combine(_tempDir, ".chain.lock"),
+            NullLogger.Instance);
+
+        _segment = "b.jsonl";
+        (await listsEverything.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        (await listingLags.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        AllSequencesOnDisk().Should().Equal("0", "1");
+        (await listsEverything.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue();
     }
 
     [Theory]

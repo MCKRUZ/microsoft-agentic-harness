@@ -218,10 +218,9 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         {
             // Across processes: no other writer appends between reading the head and recording the new one.
             await using var chainLock = await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false);
-            var segments = _orderedSegments();
-            var head = await LoadHeadAsync(chainLock, segments, cancellationToken).ConfigureAwait(false);
+            var segments = WithCurrentSegment(_orderedSegments());
+            var (head, sequence) = await LoadHeadAsync(chainLock, segments, cancellationToken).ConfigureAwait(false);
 
-            var sequence = head.Sequence + 1;
             var previousHash = head.Hash;
             var recordHash = ComputeRecordHash(sequence, previousHash, payloadJson);
             var line = string.Concat(
@@ -238,7 +237,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
 
             var lengthAfterWrite = AppendLine(segmentPath, line);
-            WriteHint(chainLock,new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
+            WriteHint(chainLock, new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
             return Result.Success();
         }
         catch (AuditChainBusyException ex)
@@ -398,6 +397,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         }
 
         state.ChainStarted = true;
+        if (sequence > state.HighestSequenceSeen)
+            state.HighestSequenceSeen = sequence;
 
         if (sequence != state.ExpectedSequence)
         {
@@ -464,6 +465,12 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         public bool ChainStarted;
         public int LineNumber;
 
+        /// <summary>
+        /// The highest sequence on any well-formed line, chaining or not. A writer never assigns a sequence at
+        /// or below it, so a record stepped over (after a deleted segment, say) is never given a twin.
+        /// </summary>
+        public long HighestSequenceSeen;
+
         /// <summary>State that continues an already-validated chain whose newest record is <paramref name="headSequence"/>.</summary>
         public static ScanState FromHead(long headSequence, string headHash) => headSequence < 0
             ? Genesis
@@ -475,7 +482,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                 LastValidSequence = headSequence,
                 LastValidHash = headHash,
                 ChainStarted = true,
-                LineNumber = 0
+                LineNumber = 0,
+                HighestSequenceSeen = headSequence
             };
 
         public static ScanState Genesis => new()
@@ -486,8 +494,18 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             LastValidSequence = -1,
             LastValidHash = GenesisHash,
             ChainStarted = false,
-            LineNumber = 0
+            LineNumber = 0,
+            HighestSequenceSeen = -1
         };
+
+        /// <summary>
+        /// The sequence for the next record: one past the newest chaining record, or one past the highest seen
+        /// when that is higher. A sequence too large to step past is ignored rather than wrapped.
+        /// </summary>
+        public readonly long NextSequence =>
+            HighestSequenceSeen > LastValidSequence && HighestSequenceSeen < long.MaxValue
+                ? HighestSequenceSeen + 1
+                : LastValidSequence + 1;
 
         public void Advance(long sequence, string recordHash)
         {

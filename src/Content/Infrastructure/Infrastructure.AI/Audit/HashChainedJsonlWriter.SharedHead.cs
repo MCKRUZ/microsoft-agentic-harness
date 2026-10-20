@@ -15,9 +15,14 @@ namespace Infrastructure.AI.Audit;
 /// <para>
 /// <strong>One rule decides the head.</strong> Every writer walks the chain the same way: it tolerates
 /// legacy lines before the chain starts, skips (and logs) any later line that does not chain, and takes the
-/// last record that does. Because every writer applies the same rule to the same files under the same
-/// lock, they all reach the same head and cannot hand out a sequence twice, whatever torn or forged lines
-/// the files hold. Verification reports those lines; the writers only step over them.
+/// last record that does. Verification reports the skipped lines; the writers only step over them.
+/// </para>
+/// <para>
+/// <strong>No sequence is handed out twice.</strong> A walk resumed from the hint and a walk from the start
+/// agree on the head only while the chain has no break in the middle. Once it does (a deleted segment, an
+/// edited record), the two can differ. So the next sequence is never just "head plus one": it is one past
+/// the highest sequence on any well-formed line the walk passed, chaining or not. Whichever way a writer
+/// walked, it cannot give a new record a sequence an existing line already carries.
 /// </para>
 /// <para>
 /// <strong>The lock file holds a hint, never an authority.</strong> After each append the writer records in
@@ -88,7 +93,7 @@ public sealed partial class HashChainedJsonlWriter
     /// Works out the head to append after, inside the lock: resumes the walk from the hint when it checks
     /// out against the files, otherwise walks the whole chain.
     /// </summary>
-    private async Task<SharedHead> LoadHeadAsync(
+    private async Task<(SharedHead Head, long NextSequence)> LoadHeadAsync(
         FileStream lockFile, IReadOnlyList<string> segments, CancellationToken cancellationToken)
     {
         var hint = await ReadHintAsync(lockFile, cancellationToken).ConfigureAwait(false);
@@ -96,26 +101,62 @@ public sealed partial class HashChainedJsonlWriter
             return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
 
         var index = IndexOfSegment(segments, hint.Segment);
-        if (index >= 0 && await EndsWithRecordAsync(segments[index], hint, cancellationToken).ConfigureAwait(false))
+        var check = index < 0
+            ? HintCheck.DoesNotMatch
+            : await CheckHintAsync(segments[index], hint, cancellationToken).ConfigureAwait(false);
+
+        if (check == HintCheck.Matches)
         {
             return await WalkAsync(
                 segments, index, hint.Length, ScanState.FromHead(hint.Sequence, hint.Hash), cancellationToken).ConfigureAwait(false);
         }
 
-        _logger.LogCritical(
-            "Audit chain at {AuditLocation}: its newest recorded record (sequence {Sequence} in {Segment}) is no longer " +
-            "where it was written. Records may have been removed or a segment deleted. Walking the whole chain to find " +
-            "its head; verification against the last checkpoint reports any records removed.",
-            _displayLocation, hint.Sequence, hint.Segment);
+        if (check == HintCheck.CannotCheck)
+        {
+            _logger.LogWarning(
+                "Audit chain at {AuditLocation}: its newest record is too long to check quickly; walking the whole chain.",
+                _displayLocation);
+        }
+        else
+        {
+            _logger.LogCritical(
+                "Audit chain at {AuditLocation}: its newest recorded record (sequence {Sequence} in {Segment}) is no longer " +
+                "where it was written. Records may have been removed or a segment deleted. Walking the whole chain to find " +
+                "its head; verification against the last checkpoint reports any records removed.",
+                _displayLocation, hint.Sequence, hint.Segment);
+        }
+
         return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The segments to walk, with the caller's current segment added when it exists but the listing missed it.
+    /// A directory listing on a network share can lag behind a file another host just created; walking without
+    /// that file would miss its records and hand their sequence numbers out again. The current segment's path
+    /// comes from the caller, never from the lock file.
+    /// </summary>
+    private IReadOnlyList<string> WithCurrentSegment(IReadOnlyList<string> listed)
+    {
+        var current = _currentSegment();
+        if (IndexOfSegment(listed, Path.GetFileName(current)) >= 0 || LengthOf(current) is null)
+            return listed;
+
+        var name = Path.GetFileName(current);
+        var position = 0;
+        while (position < listed.Count && string.CompareOrdinal(Path.GetFileName(listed[position]), name) < 0)
+            position++;
+
+        return [.. listed.Take(position), current, .. listed.Skip(position)];
     }
 
     /// <summary>
     /// The one rule that decides the head: from <paramref name="state"/> at <paramref name="startOffset"/> in
     /// segment <paramref name="startIndex"/>, read every later line to the end of the chain, skipping and
-    /// logging lines that do not chain, and return the last record that does with the point the walk reached.
+    /// logging lines that do not chain, and return the last record that does with the point the walk reached,
+    /// and the sequence the next record takes (never one any line already carries; see
+    /// <see cref="ScanState.HighestSequenceSeen"/>).
     /// </summary>
-    private async Task<SharedHead> WalkAsync(
+    private async Task<(SharedHead Head, long NextSequence)> WalkAsync(
         IReadOnlyList<string> segments, int startIndex, long startOffset, ScanState state, CancellationToken cancellationToken)
     {
         var reachedSegment = string.Empty;
@@ -157,44 +198,74 @@ public sealed partial class HashChainedJsonlWriter
             }
         }
 
-        return new SharedHead(reachedSegment, reachedLength, state.LastValidSequence, state.LastValidHash);
+        return (new SharedHead(reachedSegment, reachedLength, state.LastValidSequence, state.LastValidHash), state.NextSequence);
+    }
+
+    /// <summary>The outcome of checking a hint against the files.</summary>
+    private enum HintCheck
+    {
+        /// <summary>The line ending at the hint's length is a self-consistent record with the hint's sequence and hash.</summary>
+        Matches,
+
+        /// <summary>It is not: the files changed under the hint, or the hint was edited.</summary>
+        DoesNotMatch,
+
+        /// <summary>The record is longer than the check reads back over; nothing is known either way.</summary>
+        CannotCheck,
     }
 
     /// <summary>
     /// Whether the line ending at the hint's length in <paramref name="path"/> is a record carrying the hint's
-    /// sequence and hash. Reads backward in growing steps, so a check costs about one record, not a megabyte.
+    /// sequence and hash, and whose hash is right for its own content, so a hint cannot promote a line that does
+    /// not hash to what it claims. Reads backward in growing steps, so a check costs about one record.
     /// </summary>
-    private static async Task<bool> EndsWithRecordAsync(string path, SharedHead hint, CancellationToken cancellationToken)
+    private static async Task<HintCheck> CheckHintAsync(string path, SharedHead hint, CancellationToken cancellationToken)
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        if (stream.Length < hint.Length)
-            return false;
-
-        for (var size = HeadCheckFirstReadBytes; ; size *= 4)
+        FileStream stream;
+        try
         {
-            var window = (int)Math.Min(hint.Length, Math.Min(size, HeadCheckMaxBytes));
-            if (window < 2)
-                return false;
+            stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return HintCheck.DoesNotMatch;
+        }
 
-            var buffer = new byte[window];
-            stream.Seek(hint.Length - window, SeekOrigin.Begin);
-            await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (buffer[^1] != (byte)'\n')
-                return false;
+        await using (stream)
+        {
+            if (stream.Length < hint.Length)
+                return HintCheck.DoesNotMatch;
 
-            var lineStart = Array.LastIndexOf(buffer, (byte)'\n', window - 2) + 1;
-            if (lineStart > 0 || window == hint.Length)
+            for (var size = HeadCheckFirstReadBytes; ; size *= 4)
             {
-                var line = Encoding.UTF8.GetString(buffer, lineStart, window - 1 - lineStart);
-                return TryParseLine(line, out var sequence, out var recordHash, out _, out _)
-                    && sequence == hint.Sequence
-                    && string.Equals(recordHash, hint.Hash, StringComparison.Ordinal);
-            }
+                var window = (int)Math.Min(hint.Length, Math.Min(size, HeadCheckMaxBytes));
+                if (window < 2)
+                    return HintCheck.DoesNotMatch;
 
-            if (window >= HeadCheckMaxBytes)
-                return false;
+                var buffer = new byte[window];
+                stream.Seek(hint.Length - window, SeekOrigin.Begin);
+                await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (buffer[^1] != (byte)'\n')
+                    return HintCheck.DoesNotMatch;
+
+                var lineStart = Array.LastIndexOf(buffer, (byte)'\n', window - 2) + 1;
+                if (lineStart > 0 || window == hint.Length)
+                {
+                    var line = Encoding.UTF8.GetString(buffer, lineStart, window - 1 - lineStart);
+                    return IsRecord(line, hint) ? HintCheck.Matches : HintCheck.DoesNotMatch;
+                }
+
+                if (window >= HeadCheckMaxBytes)
+                    return HintCheck.CannotCheck;
+            }
         }
     }
+
+    private static bool IsRecord(string line, SharedHead hint) =>
+        TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson)
+        && sequence == hint.Sequence
+        && string.Equals(recordHash, hint.Hash, StringComparison.Ordinal)
+        && string.Equals(ComputeRecordHash(sequence, previousHash, payloadJson), recordHash, StringComparison.Ordinal);
 
     private static int IndexOfSegment(IReadOnlyList<string> segments, string fileName)
     {
