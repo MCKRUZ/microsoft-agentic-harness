@@ -208,6 +208,18 @@ public sealed class GenerateComplianceReportQueryHandler
                 });
                 continue;
             }
+            catch (AuditFolderRefusedException ex)
+            {
+                // Not verified, and not certified intact: a file in the chain's folder has to be dealt with first.
+                results.Add(new ComplianceChainIntegrity
+                {
+                    ChainName = chain.AuditName,
+                    IsValid = false,
+                    VerifiedCount = 0,
+                    FailureReason = $"Not verified: {ex.Message}",
+                });
+                continue;
+            }
 
             results.Add(new ComplianceChainIntegrity
             {

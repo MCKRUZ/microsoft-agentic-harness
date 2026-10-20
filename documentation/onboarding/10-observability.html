@@ -146,7 +146,9 @@ docker run -d --name jaeger \
                         <strong>hash-chained JSONL</strong> log via <code>HashChainedJsonlWriter</code>: each entry
                         carries a hash over its own content plus the previous entry's hash, so any retroactive edit or
                         deletion breaks the chain. <code>AuditChainVerificationService</code> (behind
-                        <code>IVerifiableAuditChain</code>) walks the file and reports the first broken link. This gives
+                        <code>IVerifiableAuditChain</code>) walks the log and reports the first broken link. Each log is
+                        stored one file per day, and the chain runs across the files, so deleting a whole day breaks it
+                        just as deleting one entry would. This gives
                         you a cheap, file-based tamper-evidence guarantee without a database — useful for governance
                         and compliance trails where "nobody quietly changed the record" needs to be demonstrable.
                     </p>

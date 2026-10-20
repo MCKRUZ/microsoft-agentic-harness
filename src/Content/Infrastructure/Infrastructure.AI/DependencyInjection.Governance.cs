@@ -13,6 +13,7 @@ using Infrastructure.AI.Permissions;
 using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Security;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI;
@@ -72,6 +73,7 @@ public static partial class DependencyInjection
         // it occurs with the durability toggles off. Only the retention prune is toggle-gated.
         services.AddHostedService<EscalationReconciliationService>();
 
+        services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IEscalationAuditStore, JsonlEscalationAuditStore>();
         services.AddSingleton<IEscalationNotifier, CompositeEscalationNotifier>();
         services.AddSingleton<IEscalationNotificationChannel, NoOpSlackNotifier>();

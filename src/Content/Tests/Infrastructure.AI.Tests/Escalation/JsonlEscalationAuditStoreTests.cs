@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
@@ -40,7 +41,7 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
             }
         };
         var options = Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config);
-        _store = new JsonlEscalationAuditStore(options, Mock.Of<ILogger<JsonlEscalationAuditStore>>());
+        _store = new JsonlEscalationAuditStore(options, TimeProvider.System, Mock.Of<ILogger<JsonlEscalationAuditStore>>());
     }
 
     public void Dispose()
@@ -190,7 +191,7 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
             _store.RecordRequestAsync(r, CancellationToken.None)));
 
         var filePath = Path.Combine(_tempDir, "escalations.jsonl");
-        var lines = await File.ReadAllLinesAsync(filePath);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(filePath);
         lines.Where(l => !string.IsNullOrWhiteSpace(l)).Should().HaveCount(20);
 
         foreach (var request in requests)

@@ -33,7 +33,8 @@ namespace Infrastructure.AI.Audit;
 /// the previous one, so deleting an entire middle segment file breaks the chain exactly as
 /// deleting a single record would. Segments must be appended in non-decreasing order (the
 /// caller's segment selector should pick by append time, not by back-dated record time) so
-/// sequence numbers stay monotonic across files.
+/// sequence numbers stay monotonic across files. The caller defines that order; every sink stores
+/// its chain one file per day through <see cref="DatedAuditSegments"/> (#416).
 /// </para>
 /// <para>
 /// <b>Framing safety.</b> The framing is line- and tab-delimited. <c>System.Text.Json</c>
@@ -106,6 +107,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
 
     private readonly Func<string> _currentSegment;
     private readonly Func<IReadOnlyList<string>> _orderedSegments;
+    private readonly Comparison<string> _segmentOrder;
     private readonly string _displayLocation;
     private readonly string _lockPath;
     private readonly ILogger _logger;
@@ -119,7 +121,26 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             filePath,
             () => filePath,
             () => File.Exists(filePath) ? [filePath] : [],
+            (_, _) => 0,
             filePath + ".lock",
+            logger)
+    {
+    }
+
+    /// <summary>Initializes a chain stored one file per day (#416).</summary>
+    /// <param name="segments">The chain's day-files, and the single file that preceded them, if any.</param>
+    /// <param name="lockPath">
+    /// The file every process writing this chain locks while appending. Must be the same path for every
+    /// writer of the chain and must not be one of its segments.
+    /// </param>
+    /// <param name="logger">Logger for operational diagnostics.</param>
+    public HashChainedJsonlWriter(DatedAuditSegments segments, string lockPath, ILogger logger)
+        : this(
+            (segments ?? throw new ArgumentNullException(nameof(segments))).Folder,
+            segments.Current,
+            segments.Ordered,
+            segments.Compare,
+            lockPath,
             logger)
     {
     }
@@ -128,6 +149,10 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     /// <param name="displayLocation">A directory or label used in diagnostic log messages.</param>
     /// <param name="currentSegment">Selects the segment file the next record is appended to (by append time).</param>
     /// <param name="orderedSegments">Returns all existing segment files in chain (append) order.</param>
+    /// <param name="segmentOrder">
+    /// Orders two segment paths in chain order, consistently with <paramref name="orderedSegments"/>. Decides
+    /// whether this writer's current segment comes after the latest one on disk.
+    /// </param>
     /// <param name="lockPath">
     /// The file every process writing this chain locks while appending. Must be the same path for every
     /// writer of the chain and must not be one of its segments.
@@ -137,18 +162,21 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         string displayLocation,
         Func<string> currentSegment,
         Func<IReadOnlyList<string>> orderedSegments,
+        Comparison<string> segmentOrder,
         string lockPath,
         ILogger logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayLocation);
         ArgumentNullException.ThrowIfNull(currentSegment);
         ArgumentNullException.ThrowIfNull(orderedSegments);
+        ArgumentNullException.ThrowIfNull(segmentOrder);
         ArgumentException.ThrowIfNullOrWhiteSpace(lockPath);
         ArgumentNullException.ThrowIfNull(logger);
 
         _displayLocation = displayLocation;
         _currentSegment = currentSegment;
         _orderedSegments = orderedSegments;
+        _segmentOrder = segmentOrder;
         _lockPath = lockPath;
         _logger = logger;
     }
@@ -177,7 +205,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     public async IAsyncEnumerable<string> ReadAllPayloadsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        foreach (var segmentPath in _orderedSegments())
+        // The same files the writer appends to and verification reads (#416).
+        foreach (var segmentPath in WithCurrentSegment(_orderedSegments()))
         {
             if (!File.Exists(segmentPath))
                 continue;
@@ -245,6 +274,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             _logger.LogError(ex, "Audit record not written to {AuditLocation}: the chain is busy", _displayLocation);
             return Result.Fail("Failed to persist audit record: the audit chain is busy. Retry the operation.");
         }
+        catch (AuditFolderRefusedException ex)
+        {
+            _logger.LogCritical(ex, "Audit record not written to {AuditLocation}: the folder is refused", _displayLocation);
+            return Result.Fail($"Failed to persist audit record: {ex.Message}");
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to append audit record to {AuditLocation}", _displayLocation);
@@ -285,7 +319,9 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
             {
                 // Lengths through open handles, not cached directory entries, so another host's appends are seen.
-                reach = _orderedSegments()
+                // The same files the writer appends to, current segment included, so nothing can be written where
+                // verification does not read (#416).
+                reach = WithCurrentSegment(_orderedSegments())
                     .Select(p => new SegmentReach(p, LengthOf(p)))
                     .Where(s => s.Length is not null)
                     .ToList();
@@ -303,8 +339,10 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                     scan.LastValidSequence,
                     scan.LastValidSequence >= 0 ? scan.LastValidHash : null);
         }
-        // A busy chain is not a broken one: let it propagate rather than report a tamper break at 0.
-        catch (Exception ex) when (ex is (IOException and not AuditChainBusyException) or UnauthorizedAccessException)
+        // A busy chain, or a folder refused before anything was read, is not a broken one: let it propagate rather
+        // than report a tamper break at 0 that a re-baseline would seem to fix.
+        catch (Exception ex) when (ex is (IOException and not (AuditChainBusyException or AuditFolderRefusedException))
+                                   or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to read audit chain at {AuditLocation}", _displayLocation);
             return AuditChainVerificationResult.Broken(0, 0, $"Failed to read audit chain: {ex.Message}");

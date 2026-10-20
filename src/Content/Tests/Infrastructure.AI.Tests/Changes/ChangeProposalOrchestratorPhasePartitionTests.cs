@@ -30,7 +30,7 @@ public sealed class ChangeProposalOrchestratorPhasePartitionTests : IDisposable
         _tempDir = dir;
         _monitor = monitor;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
     }
 
     public void Dispose()

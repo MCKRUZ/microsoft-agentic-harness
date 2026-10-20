@@ -194,6 +194,13 @@ public sealed class AuditChainVerificationService : BackgroundService
 
                 await WriteReceiptAsync(receiptPath, chain.AuditName, result, cancellationToken).ConfigureAwait(false);
             }
+            catch (AuditFolderRefusedException ex)
+            {
+                // Nothing was verified, and re-baselining would not help: the file has to be dealt with (#416).
+                GovernanceMetrics.AuditChainBreaks.Add(1,
+                    new KeyValuePair<string, object?>(GovernanceConventions.AuditChainNameTag, chain.AuditName));
+                _logger.LogCritical(ex, "Audit chain '{AuditName}' NOT VERIFIED: {Reason}", chain.AuditName, ex.Message);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Failed to verify audit chain '{AuditName}'.", chain.AuditName);

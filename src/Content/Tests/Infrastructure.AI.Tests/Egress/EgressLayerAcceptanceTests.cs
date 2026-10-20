@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using System.Net.Sockets;
 using Application.AI.Common.Interfaces.Egress;
 using Domain.AI.Egress;
@@ -26,7 +27,7 @@ public sealed class EgressLayerAcceptanceTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _audit = new JsonlEgressAuditWriter(monitor, NullLogger<JsonlEgressAuditWriter>.Instance);
+        _audit = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance);
         _auditFile = Path.Combine(dir, "audit", "egress.jsonl");
     }
 
@@ -175,7 +176,7 @@ public sealed class EgressLayerAcceptanceTests : IDisposable
             () => client.GetAsync("https://denied.example.com/"));
 
         // Flush — JsonlEgressAuditWriter writes synchronously per call.
-        var lines = await File.ReadAllLinesAsync(_auditFile);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(_auditFile);
         lines.Should().HaveCount(2);
         lines.Should().Contain(l => l.Contains("\"allowed\":true"));
         lines.Should().Contain(l => l.Contains("\"allowed\":false"));

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
@@ -41,7 +40,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     };
 
     private readonly string _auditDirectory;
-    private readonly TimeProvider _timeProvider;
+    private readonly DatedAuditSegments _segments;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlDriftAuditStore> _logger;
 
@@ -60,14 +59,10 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         ArgumentException.ThrowIfNullOrWhiteSpace(auditPath, "DriftDetection.AuditPath");
 
         _auditDirectory = Path.Combine(auditPath, "drift-audit");
-        _timeProvider = timeProvider;
         _logger = logger;
+        _segments = new DatedAuditSegments(_auditDirectory, legacyFile: null, timeProvider);
         _chain = new HashChainedJsonlWriter(
-            _auditDirectory,
-            () => GetFilePath(_timeProvider.GetUtcNow()),
-            () => Directory.Exists(_auditDirectory)
-                ? Directory.GetFiles(_auditDirectory, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray()
-                : [],
+            _segments,
             // Shared by every process writing these segments; not itself a *.jsonl segment.
             Path.Combine(_auditDirectory, ".chain.lock"),
             logger);
@@ -100,15 +95,11 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     public async Task<Result<IReadOnlyList<DriftAuditRecord>>> GetRecordsAsync(
         DriftAuditQuery query, CancellationToken ct)
     {
-        if (!Directory.Exists(_auditDirectory))
-            return Result<IReadOnlyList<DriftAuditRecord>>.Success([]);
-
-        var filePaths = ResolveFilePaths(query);
         var records = new List<DriftAuditRecord>();
 
         try
         {
-            foreach (var filePath in filePaths)
+            foreach (var filePath in ResolveFilePaths(query))
             {
                 if (!File.Exists(filePath))
                     continue;
@@ -140,7 +131,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
                 }
             }
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to read drift audit records");
             return Result<IReadOnlyList<DriftAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
@@ -176,53 +167,20 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();
 
-    private string GetFilePath(DateTimeOffset recordedAt) =>
-        Path.Combine(_auditDirectory, recordedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
-
-    private IReadOnlyList<string> ResolveFilePaths(DriftAuditQuery query)
+    /// <summary>
+    /// The chain's own day-files that can hold a record from the query's start onwards. Only the chain's files: a
+    /// file the chain does not list is never verified, so it is never served either (#416).
+    /// </summary>
+    private IEnumerable<string> ResolveFilePaths(DriftAuditQuery query)
     {
-        // Widen the file window by a day on each side: a record can land in the segment for its
-        // append time, which may differ from RecordedAt by a clock skew / midnight crossing. The
-        // precise RecordedAt filter in GetRecordsAsync trims the extra records back out.
-        //
-        // Files named after the window are read too. The writer never appends to a segment earlier than
-        // the latest one (#416), so once a host whose clock is ahead (or a planted later-dated file) starts
-        // a later segment, every host's records land there, whatever their RecordedAt.
-        if (query.Start.HasValue && query.End.HasValue)
-        {
-            var upper = query.End.Value.Date.AddDays(1);
-            return [.. EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), upper), .. ExistingFilesDatedAfter(upper)];
-        }
+        // A day earlier than the start: a record lands in the file for its append time, which can differ from
+        // RecordedAt by clock skew or a midnight crossing; the precise RecordedAt filter trims the extra back out.
+        // No upper bound: the writer never appends to a file earlier than the latest one, so once a host whose clock
+        // is ahead (or a planted later-dated file) starts a later file, every host's records land there.
+        if (query.Start is not { } start)
+            return _segments.Ordered();
 
-        if (query.Start.HasValue)
-        {
-            var upper = _timeProvider.GetUtcNow().Date;
-            return [.. EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), upper), .. ExistingFilesDatedAfter(upper)];
-        }
-
-        // End-only, or no window: any file can hold a record from before the end, for the reason above.
-        return Directory.Exists(_auditDirectory)
-            ? Directory.GetFiles(_auditDirectory, "*.jsonl")
-            : [];
-    }
-
-    private IEnumerable<string> ExistingFilesDatedAfter(DateTime upper) =>
-        Directory.Exists(_auditDirectory)
-            ? Directory.GetFiles(_auditDirectory, "*.jsonl").Where(f => ParseDateFromFileName(f) > upper)
-            : [];
-
-    private IReadOnlyList<string> EnumerateDatePaths(DateTime start, DateTime end)
-    {
-        var paths = new List<string>();
-        for (var date = start; date <= end; date = date.AddDays(1))
-            paths.Add(Path.Combine(_auditDirectory, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl"));
-        return paths;
-    }
-
-    private static DateTime ParseDateFromFileName(string filePath)
-    {
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
-        return DateTime.TryParseExact(fileName, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var date) ? date : DateTime.MaxValue;
+        var firstDay = DateOnly.FromDateTime(start.Date.AddDays(-1));
+        return _segments.Ordered().Where(f => DatedAuditSegments.DayOf(f) >= firstDay);
     }
 }

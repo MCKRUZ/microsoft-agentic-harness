@@ -5,6 +5,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Audit;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -212,13 +213,14 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
         public int Calls { get; private set; }
         public AuditChainVerificationResult Result { get; set; } = result;
         public List<AuditChainCheckpoint?> CheckpointsSeen { get; } = [];
+        public Exception? Refusal { get; set; }
 
         public Task<AuditChainVerificationResult> VerifyChainAsync(
             AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken)
         {
             Calls++;
             CheckpointsSeen.Add(checkpoint);
-            return Task.FromResult(Result);
+            return Refusal is null ? Task.FromResult(Result) : Task.FromException<AuditChainVerificationResult>(Refusal);
         }
     }
 
@@ -235,6 +237,39 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
             LastResult = await Writer.VerifyChainAsync(checkpoint, cancellationToken);
             return LastResult;
         }
+    }
+
+    [Fact]
+    public async Task VerifyAllChains_ARefusedFolder_IsReportedCritical_WithoutAdvisingARebaseline()
+    {
+        // #416: re-baselining (deleting the checkpoint) would not clear a refused folder and would throw away
+        // truncation detection, so the alert must not suggest it, and must not read as a tamper break at 0.
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var logger = new RecordingLogger();
+        var sut = new AuditChainVerificationService([chain],
+            new AuditChainCheckpointStore(Config(_receiptDir), NullLogger<AuditChainCheckpointStore>.Instance),
+            Config(_receiptDir), _timeProvider, logger);
+        await sut.VerifyAllChainsAsync(CancellationToken.None); // leaves a checkpoint behind
+        logger.Entries.Clear();
+
+        chain.Refusal = new AuditFolderRefusedException("folder holds 2026-10-21.JSONL");
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Critical && e.Message.Contains("NOT VERIFIED")
+            && e.Message.Contains("folder holds 2026-10-21.JSONL"));
+        logger.Entries.Should().NotContain(e => e.Message.Contains("re-baseline") || e.Message.Contains("INTEGRITY BROKEN"));
+    }
+
+    private sealed class RecordingLogger : ILogger<AuditChainVerificationService>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private sealed class ThrowingChain(string name) : IVerifiableAuditChain

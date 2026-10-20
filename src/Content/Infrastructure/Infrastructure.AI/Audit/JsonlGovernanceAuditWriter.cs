@@ -75,16 +75,20 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
 
     /// <summary>Initializes a new instance of <see cref="JsonlGovernanceAuditWriter"/>.</summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
+    /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
     public JsonlGovernanceAuditWriter(
         IOptionsMonitor<AppConfig> config,
+        TimeProvider timeProvider,
         ILogger<JsonlGovernanceAuditWriter> logger)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _filePath = Path.Combine(config.CurrentValue.AI.Governance.AuditStoragePath, "governance.jsonl");
-        _chain = new HashChainedJsonlWriter(_filePath, logger);
+        _chain = new HashChainedJsonlWriter(
+            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
         _logger = logger;
     }
 

@@ -21,8 +21,9 @@ namespace Infrastructure.AI.Escalation;
 /// </summary>
 /// <remarks>
 /// snake_case JSON, enum-as-string, <c>FileShare.ReadWrite</c> for concurrent reads.
-/// The file is created lazily on first write in the configured
-/// <c>EscalationConfig.AuditStoragePath</c> directory.
+/// Records go to one file per day, <c>escalations/yyyy-MM-dd.jsonl</c> in the configured
+/// <c>EscalationConfig.AuditStoragePath</c> directory, after <c>escalations.jsonl</c> where a log written before
+/// that split continues (see <see cref="DatedAuditSegments"/>). Files are created lazily on first write.
 /// </remarks>
 public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiableAuditChain, IDisposable
 {
@@ -48,15 +49,18 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     /// Initializes a new instance of <see cref="JsonlEscalationAuditStore"/>.
     /// </summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
+    /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
     public JsonlEscalationAuditStore(
         IOptionsMonitor<AppConfig> config,
+        TimeProvider timeProvider,
         ILogger<JsonlEscalationAuditStore> logger)
     {
         _filePath = Path.Combine(
             config.CurrentValue.AI.Governance.Escalation.AuditStoragePath,
             "escalations.jsonl");
-        _chain = new HashChainedJsonlWriter(_filePath, logger);
+        _chain = new HashChainedJsonlWriter(
+            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
         _logger = logger;
     }
 
@@ -171,41 +175,25 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     }
 
     /// <summary>
-    /// Reads every record from the chain, across the whole file, tolerating corrupt lines by
+    /// Reads every record from the chain, across every file it is stored in, tolerating corrupt lines by
     /// skipping them with a warning. Shared by <see cref="GetHistoryAsync"/> (which then filters
     /// to one escalation) and <see cref="QueryAsync"/> (which applies the caller's filters).
     /// </summary>
     private async Task<List<EscalationAuditRecord>> ReadAllRecordsAsync(CancellationToken ct)
     {
-        if (!File.Exists(_filePath))
-            return [];
-
         var records = new List<EscalationAuditRecord>();
 
-        await using var stream = new FileStream(
-            _filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        var lineNumber = 0;
-        while (await reader.ReadLineAsync(ct) is { } line)
+        await foreach (var json in _chain.ReadAllPayloadsAsync(ct).ConfigureAwait(false))
         {
-            lineNumber++;
-
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-
             try
             {
-                var json = HashChainedJsonlWriter.ExtractPayload(line);
                 var record = JsonSerializer.Deserialize<EscalationAuditRecord>(json, DeserializeOptions);
                 if (record is not null)
                     records.Add(record);
             }
             catch (JsonException)
             {
-                _logger.LogWarning(
-                    "Skipped corrupted audit record at {FilePath}:{LineNumber}",
-                    _filePath, lineNumber);
+                _logger.LogWarning("Skipped corrupted escalation audit record in {FilePath}", _filePath);
             }
         }
 

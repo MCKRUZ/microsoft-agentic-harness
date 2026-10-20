@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using FluentAssertions;
@@ -19,7 +20,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _sut = new JsonlChangeAuditWriter(monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _sut = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         _expectedFile = Path.Combine(dir, "audit", "changes.jsonl");
     }
 
@@ -40,7 +41,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
         await _sut.AppendAsync(proposal, d1, proposal.SubmittedBy, OrchestratorMode.Live, "corr-1", CancellationToken.None);
         await _sut.AppendAsync(proposal, d2, proposal.SubmittedBy, OrchestratorMode.Live, "corr-1", CancellationToken.None);
 
-        var lines = await File.ReadAllLinesAsync(_expectedFile);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(_expectedFile);
         lines.Should().HaveCount(2);
     }
 
@@ -52,7 +53,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
 
         await _sut.AppendAsync(proposal, d1, proposal.SubmittedBy, OrchestratorMode.Shadow, "corr-1", CancellationToken.None);
 
-        var line = (await File.ReadAllLinesAsync(_expectedFile))[0];
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
         line.Should().Contain("\"proposal_id\":");
         line.Should().Contain("\"gate_key\":\"policy\"");
         line.Should().Contain("\"decision\":\"Pass\"");
@@ -71,7 +72,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
         var proposal = TestProposals.NewProposal();
         await _sut.AppendAsync(proposal, NewDecision("x", GateAction.Pass), proposal.SubmittedBy, OrchestratorMode.Shadow, "c", CancellationToken.None);
 
-        var line = (await File.ReadAllLinesAsync(_expectedFile))[0];
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
         line.Should().Contain("\"mode\":\"Shadow\"");
     }
 
@@ -149,7 +150,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
     {
         var proposal = TestProposals.NewProposal();
         await _sut.AppendAsync(proposal, NewDecision("good", GateAction.Pass), proposal.SubmittedBy, OrchestratorMode.Live, "c1", CancellationToken.None);
-        await File.AppendAllTextAsync(_expectedFile, "not-valid-json\tabc\tdef\t999\n");
+        await File.AppendAllTextAsync(AuditTrailFiles.OnlyDayFile(_expectedFile), "not-valid-json\tabc\tdef\t999\n");
 
         var result = await _sut.GetRecordsAsync(new ChangeAuditQuery(), CancellationToken.None);
 

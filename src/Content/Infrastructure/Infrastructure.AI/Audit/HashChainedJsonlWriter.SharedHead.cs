@@ -141,9 +141,8 @@ public sealed partial class HashChainedJsonlWriter
         if (IndexOfSegment(listed, Path.GetFileName(current)) >= 0 || LengthOf(current) is null)
             return listed;
 
-        var name = Path.GetFileName(current);
         var position = 0;
-        while (position < listed.Count && string.CompareOrdinal(Path.GetFileName(listed[position]), name) < 0)
+        while (position < listed.Count && _segmentOrder(listed[position], current) < 0)
             position++;
 
         return [.. listed.Take(position), current, .. listed.Skip(position)];
@@ -291,7 +290,7 @@ public sealed partial class HashChainedJsonlWriter
             return current;
 
         var last = segments[^1];
-        if (string.CompareOrdinal(Path.GetFileName(last), Path.GetFileName(current)) <= 0)
+        if (_segmentOrder(last, current) <= 0)
             return current;
 
         _logger.LogWarning(

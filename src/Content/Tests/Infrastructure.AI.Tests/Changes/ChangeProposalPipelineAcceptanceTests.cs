@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
@@ -86,7 +87,7 @@ public sealed class ChangeProposalPipelineAcceptanceTests : IDisposable
             GateResult validatorResult)
     {
         var store = new InMemoryChangeProposalStore();
-        var audit = new JsonlChangeAuditWriter(_monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        var audit = new JsonlChangeAuditWriter(_monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         var applier = new TrackingApplier(targetKind, applyResult);
         var router = new RecordingRouter();
 
@@ -145,8 +146,8 @@ public sealed class ChangeProposalPipelineAcceptanceTests : IDisposable
         // Audit captures every transition.
         audit.Dispose();
         var auditFile = Path.Combine(_tempDir, "audit", "changes.jsonl");
-        File.Exists(auditFile).Should().BeTrue();
-        var auditLines = await File.ReadAllLinesAsync(auditFile);
+        File.Exists(AuditTrailFiles.OnlyDayFile(auditFile)).Should().BeTrue();
+        var auditLines = await AuditTrailFiles.ReadAllLinesAsync(auditFile);
         auditLines.Length.Should().BeGreaterThanOrEqualTo(5);
         // Every line carries proposal_id + mode + agent.
         foreach (var line in auditLines)
@@ -175,7 +176,7 @@ public sealed class ChangeProposalPipelineAcceptanceTests : IDisposable
         result!.Status.Should().Be(ChangeProposalStatus.Merged);
         applier.InvocationCount.Should().Be(0); // Shadow mode short-circuit
         audit.Dispose();
-        var auditLines = await File.ReadAllLinesAsync(Path.Combine(_tempDir, "audit", "changes.jsonl"));
+        var auditLines = await AuditTrailFiles.ReadAllLinesAsync(Path.Combine(_tempDir, "audit", "changes.jsonl"));
         auditLines.Should().AllSatisfy(line => line.Should().Contain("\"mode\":\"Shadow\""));
     }
 
@@ -296,7 +297,7 @@ public sealed class ChangeProposalPipelineAcceptanceTests : IDisposable
         await orchestrator.ProcessAsync(proposal.Id, OrchestratorMode.Live, CancellationToken.None);
 
         audit.Dispose();
-        var lines = await File.ReadAllLinesAsync(Path.Combine(_tempDir, "audit", "changes.jsonl"));
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(Path.Combine(_tempDir, "audit", "changes.jsonl"));
         foreach (var line in lines)
         {
             line.Should().Contain("\"timestamp\":");

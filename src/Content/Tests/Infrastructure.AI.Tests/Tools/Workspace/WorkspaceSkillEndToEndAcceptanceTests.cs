@@ -85,7 +85,7 @@ public sealed class WorkspaceSkillEndToEndAcceptanceTests : IDisposable
         // PR-2 surface
         services.AddSingleton<IChangeProposalStore>(store);
         services.AddSingleton<IChangeAuditWriter>(sp => new JsonlChangeAuditWriter(
-            _config, NullLogger<JsonlChangeAuditWriter>.Instance));
+            _config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance));
         services.AddSingleton(_config);
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IChangeProposalGateResolver>(new FixedGateResolver(

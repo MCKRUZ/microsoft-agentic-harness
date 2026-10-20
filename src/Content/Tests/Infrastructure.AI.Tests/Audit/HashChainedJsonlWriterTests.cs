@@ -300,11 +300,15 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
 
     private string _segment = "a.jsonl";
 
+    private static int ByFileName(string first, string second) =>
+        string.CompareOrdinal(Path.GetFileName(first), Path.GetFileName(second));
+
     private HashChainedJsonlWriter NewSegmentedWriter() =>
         new(
             _tempDir,
             () => Path.Combine(_tempDir, _segment),
             () => Directory.GetFiles(_tempDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            ByFileName,
             Path.Combine(_tempDir, ".chain.lock"),
             NullLogger.Instance);
 
@@ -649,6 +653,7 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
             () => Path.Combine(_tempDir, _segment),
             () => Directory.GetFiles(_tempDir, "*.jsonl").Where(f => !f.EndsWith("b.jsonl", StringComparison.Ordinal))
                 .OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            ByFileName,
             Path.Combine(_tempDir, ".chain.lock"),
             NullLogger.Instance);
 
@@ -658,6 +663,15 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
 
         AllSequencesOnDisk().Should().Equal("0", "1");
         (await listsEverything.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue();
+
+        // #416: verification and readers see the same files the writer appends to, listed or not.
+        var seenByTheLaggingWriter = await listingLags.VerifyChainAsync(CancellationToken.None);
+        seenByTheLaggingWriter.IsValid.Should().BeTrue();
+        seenByTheLaggingWriter.VerifiedCount.Should().Be(2);
+        var payloads = new List<string>();
+        await foreach (var payload in listingLags.ReadAllPayloadsAsync(CancellationToken.None))
+            payloads.Add(payload);
+        payloads.Should().Equal("{\"a\":0}", "{\"a\":1}");
     }
 
     [Theory]
