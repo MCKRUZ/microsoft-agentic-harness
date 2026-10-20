@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.Interfaces.Egress;
 using Domain.AI.Egress;
 using FluentAssertions;
@@ -18,7 +19,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _sut = new JsonlEgressAuditWriter(monitor, NullLogger<JsonlEgressAuditWriter>.Instance);
+        _sut = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance);
         _expectedFile = Path.Combine(dir, "audit", "egress.jsonl");
     }
 
@@ -38,7 +39,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
         await _sut.AppendAsync(d1, TestIdentity.Default, CancellationToken.None);
         await _sut.AppendAsync(d2, TestIdentity.Default, CancellationToken.None);
 
-        var lines = await File.ReadAllLinesAsync(_expectedFile);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(_expectedFile);
         lines.Should().HaveCount(2);
     }
 
@@ -49,7 +50,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
 
         await _sut.AppendAsync(decision, TestIdentity.Default, CancellationToken.None);
 
-        var line = (await File.ReadAllLinesAsync(_expectedFile))[0];
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
         line.Should().Contain("\"allowed\":true");
         line.Should().Contain("\"host\":\"api.github.com\"");
         line.Should().Contain("\"scheme\":\"https\"");
@@ -66,7 +67,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
 
         await _sut.AppendAsync(decision, TestIdentity.Default, CancellationToken.None);
 
-        var line = (await File.ReadAllLinesAsync(_expectedFile))[0];
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
         line.Should().Contain("\"allowed\":false");
         line.Should().Contain("\"reason\":\"No allowlist entry matched (host, scheme, port).\"");
     }
@@ -80,7 +81,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
 
         await Task.WhenAll(tasks);
 
-        var lines = await File.ReadAllLinesAsync(_expectedFile);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(_expectedFile);
         lines.Should().HaveCount(20);
         lines.Should().OnlyContain(l => l.Contains("\"allowed\":true"));
     }
@@ -149,7 +150,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
     public async Task GetRecords_CorruptLine_IsSkippedNotFailed()
     {
         await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
-        await File.AppendAllTextAsync(_expectedFile, "not-json-and-not-chained\n");
+        await File.AppendAllTextAsync(AuditTrailFiles.OnlyDayFile(_expectedFile), "not-json-and-not-chained\n");
         await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
 
         var result = await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None);

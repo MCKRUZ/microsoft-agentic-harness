@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
@@ -42,6 +41,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
 
     private readonly string _auditDirectory;
     private readonly TimeProvider _timeProvider;
+    private readonly DatedAuditSegments _segments;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlDriftAuditStore> _logger;
 
@@ -62,12 +62,9 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         _auditDirectory = Path.Combine(auditPath, "drift-audit");
         _timeProvider = timeProvider;
         _logger = logger;
+        _segments = new DatedAuditSegments(_auditDirectory, legacyFile: null, timeProvider);
         _chain = new HashChainedJsonlWriter(
-            _auditDirectory,
-            () => GetFilePath(_timeProvider.GetUtcNow()),
-            () => Directory.Exists(_auditDirectory)
-                ? Directory.GetFiles(_auditDirectory, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray()
-                : [],
+            _segments,
             // Shared by every process writing these segments; not itself a *.jsonl segment.
             Path.Combine(_auditDirectory, ".chain.lock"),
             logger);
@@ -176,9 +173,6 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();
 
-    private string GetFilePath(DateTimeOffset recordedAt) =>
-        Path.Combine(_auditDirectory, recordedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
-
     private IReadOnlyList<string> ResolveFilePaths(DriftAuditQuery query)
     {
         // Widen the file window by a day on each side: a record can land in the segment for its
@@ -201,28 +195,18 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         }
 
         // End-only, or no window: any file can hold a record from before the end, for the reason above.
-        return Directory.Exists(_auditDirectory)
-            ? Directory.GetFiles(_auditDirectory, "*.jsonl")
-            : [];
+        return _segments.Ordered();
     }
 
+    // Only the chain's own day-files: a file of any other name is not part of the chain and is never verified.
     private IEnumerable<string> ExistingFilesDatedAfter(DateTime upper) =>
-        Directory.Exists(_auditDirectory)
-            ? Directory.GetFiles(_auditDirectory, "*.jsonl").Where(f => ParseDateFromFileName(f) > upper)
-            : [];
+        _segments.Ordered().Where(f => DatedAuditSegments.DayOf(f) > DateOnly.FromDateTime(upper));
 
     private IReadOnlyList<string> EnumerateDatePaths(DateTime start, DateTime end)
     {
         var paths = new List<string>();
         for (var date = start; date <= end; date = date.AddDays(1))
-            paths.Add(Path.Combine(_auditDirectory, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl"));
+            paths.Add(_segments.PathFor(DateOnly.FromDateTime(date)));
         return paths;
-    }
-
-    private static DateTime ParseDateFromFileName(string filePath)
-    {
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
-        return DateTime.TryParseExact(fileName, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var date) ? date : DateTime.MaxValue;
     }
 }

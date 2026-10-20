@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using FluentAssertions;
@@ -35,7 +36,7 @@ public sealed class ChangeProposalOrchestratorSolutionReviewFixTests : IDisposab
         _tempDir = dir;
         _monitor = monitor;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
     }
 
     public void Dispose()
@@ -89,7 +90,7 @@ public sealed class ChangeProposalOrchestratorSolutionReviewFixTests : IDisposab
         await sut.ProcessAsync(proposal.Id, OrchestratorMode.Live, CancellationToken.None);
 
         var auditPath = Path.Combine(_tempDir, "audit", "changes.jsonl");
-        var auditContent = await File.ReadAllTextAsync(auditPath);
+        var auditContent = string.Join('\n', await AuditTrailFiles.ReadAllLinesAsync(auditPath));
         auditContent.Should().NotContain(LeakySecret);
         auditContent.Should().Contain(ChangeProposalOrchestrator.GateExceptionReasonCode);
     }

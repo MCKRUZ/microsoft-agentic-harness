@@ -130,7 +130,7 @@ if (result.IsInjection)
 
 ### Audit Logging
 
-**What it is:** A durable, tamper-evident (hash-chained) log of all governance decisions, persisted to `governance.jsonl`.
+**What it is:** A durable, tamper-evident (hash-chained) log of all governance decisions, persisted one file per day to `governance/yyyy-MM-dd.jsonl` under `AuditStoragePath`. A `governance.jsonl` written before logs were split by day (#416) stays in place as the start of the same chain.
 
 **Why it exists:** Compliance requires proving what decisions were made, by whom, and that the log hasn't been modified after the fact — and that the log itself survives a process restart. The original implementation wrapped AGT's `AuditLogger`, whose hash chain is in-memory only; #407 replaced it with `JsonlGovernanceAuditWriter` (`Infrastructure.AI/Audit/`), which reuses `HashChainedJsonlWriter` — the same tamper-evident JSONL primitive already backing the escalation, drift, change, and egress audit sinks. Each entry's hash still includes the previous entry's hash; it now also lands on disk.
 

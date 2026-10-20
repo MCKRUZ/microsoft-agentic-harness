@@ -6,6 +6,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -38,6 +39,7 @@ public static partial class DependencyInjection
     private static void RegisterEgressServices(IServiceCollection services)
     {
         // --- Audit ---
+        services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IEgressAuditWriter, JsonlEgressAuditWriter>();
 
         // --- Default policy (configuration-bound) + resolver ---

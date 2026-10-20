@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.CQRS.Changes.ApproveChangeProposal;
 using Application.AI.Common.CQRS.Changes.RejectChangeProposal;
 using Application.AI.Common.Interfaces.Changes;
@@ -64,7 +65,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         var sut = new ApproveChangeProposalCommandHandler(
             store,
             new NoOpDispatchQueue(),
@@ -84,7 +85,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
 
         result.IsSuccess.Should().BeTrue();
 
-        var lines = await File.ReadAllLinesAsync(AuditFilePath);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(AuditFilePath);
         lines.Should().ContainSingle("one decision produces exactly one audit line");
         var line = lines[0];
         line.Should().Contain("\"reviewer_id\":\"alice@contoso.com\"",
@@ -106,7 +107,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         var sut = new RejectChangeProposalCommandHandler(
             store,
             audit,
@@ -125,7 +126,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
 
         result.IsSuccess.Should().BeTrue();
 
-        var lines = await File.ReadAllLinesAsync(AuditFilePath);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(AuditFilePath);
         lines.Should().ContainSingle();
         lines[0].Should().Contain("\"reviewer_id\":\"carol@contoso.com\"");
         lines[0].Should().Contain("\"decision\":\"Fail\"");
@@ -141,7 +142,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         var sut = new ApproveChangeProposalCommandHandler(
             store,
             new NoOpDispatchQueue(),

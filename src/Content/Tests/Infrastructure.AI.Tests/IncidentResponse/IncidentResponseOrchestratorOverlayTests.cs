@@ -32,7 +32,7 @@ public sealed class IncidentResponseOrchestratorOverlayTests : IDisposable
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         _monitor = monitor;
     }
 

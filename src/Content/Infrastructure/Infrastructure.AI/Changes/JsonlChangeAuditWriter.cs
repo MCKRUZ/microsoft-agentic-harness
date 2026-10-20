@@ -48,16 +48,22 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
     private readonly ILogger<JsonlChangeAuditWriter> _logger;
 
     /// <summary>Initializes a new <see cref="JsonlChangeAuditWriter"/>.</summary>
+    /// <param name="config">Application configuration providing the audit storage path.</param>
+    /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
+    /// <param name="logger">Logger for operational diagnostics.</param>
     public JsonlChangeAuditWriter(
         IOptionsMonitor<AppConfig> config,
+        TimeProvider timeProvider,
         ILogger<JsonlChangeAuditWriter> logger)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         var dir = config.CurrentValue.AI.Changes.AuditStoragePath;
         _filePath = Path.Combine(dir, "changes.jsonl");
-        _chain = new HashChainedJsonlWriter(_filePath, logger);
+        _chain = new HashChainedJsonlWriter(
+            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
         _logger = logger;
     }
 

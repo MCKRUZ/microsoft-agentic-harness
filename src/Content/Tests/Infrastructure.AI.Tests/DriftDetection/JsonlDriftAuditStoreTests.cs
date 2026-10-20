@@ -168,6 +168,26 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
         result.Value!.Should().Contain(r => r.RecordId == ours.RecordId);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetRecords_IgnoresAFileThatIsNotADay(bool withStart)
+    {
+        // #416: only day-files belong to the chain, so only they are verified; a record in any other file is not served.
+        var ours = BuildRecord();
+        (await _store.RecordAsync(ours, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var planted = BuildRecord();
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "drift-audit", "notes.jsonl"),
+            JsonSerializer.Serialize(planted, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower }) + "\n");
+
+        var query = new DriftAuditQuery { Start = withStart ? new DateTimeOffset(2025, 6, 15, 0, 0, 0, TimeSpan.Zero) : null };
+        var result = await _store.GetRecordsAsync(query, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Select(r => r.RecordId).Should().Equal(ours.RecordId);
+    }
+
     [Fact]
     public async Task GetRecords_FiltersByRecordType()
     {

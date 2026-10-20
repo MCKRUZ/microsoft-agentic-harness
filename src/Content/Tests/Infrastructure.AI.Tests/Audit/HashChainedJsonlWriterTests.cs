@@ -300,11 +300,15 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
 
     private string _segment = "a.jsonl";
 
+    private static int ByFileName(string first, string second) =>
+        string.CompareOrdinal(Path.GetFileName(first), Path.GetFileName(second));
+
     private HashChainedJsonlWriter NewSegmentedWriter() =>
         new(
             _tempDir,
             () => Path.Combine(_tempDir, _segment),
             () => Directory.GetFiles(_tempDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            ByFileName,
             Path.Combine(_tempDir, ".chain.lock"),
             NullLogger.Instance);
 
@@ -649,6 +653,7 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
             () => Path.Combine(_tempDir, _segment),
             () => Directory.GetFiles(_tempDir, "*.jsonl").Where(f => !f.EndsWith("b.jsonl", StringComparison.Ordinal))
                 .OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            ByFileName,
             Path.Combine(_tempDir, ".chain.lock"),
             NullLogger.Instance);
 

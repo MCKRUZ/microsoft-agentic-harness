@@ -11,6 +11,7 @@ using Infrastructure.AI.Audit;
 using Infrastructure.AI.Governance.Adapters;
 using Infrastructure.AI.Governance.Classification;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Governance;
@@ -165,12 +166,13 @@ public static class DependencyInjection
     /// Backed by <see cref="JsonlGovernanceAuditWriter"/> (#407) — a durable, hash-chained JSONL sink
     /// that survives a process restart, replacing the previous <c>AgtAuditAdapter</c> wrapper over
     /// <c>Microsoft.AgentGovernance.Audit.AuditLogger</c>'s in-memory-only chain. Registered
-    /// unconditionally, exactly as before: every host now creates <c>governance.jsonl</c> on first
-    /// write, even one with every other governance feature off — the same "wants an audit trail even
+    /// unconditionally, exactly as before: every host now writes the governance audit log (one file per
+    /// day under <c>governance/</c>, #416) on first write, even one with every other governance feature off — the same "wants an audit trail even
     /// with governance disabled" intent this method already existed to serve.
     /// </remarks>
     private static void RegisterAudit(IServiceCollection services)
     {
+        services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<JsonlGovernanceAuditWriter>();
         services.AddSingleton<IGovernanceAuditService>(sp =>
             sp.GetRequiredService<JsonlGovernanceAuditWriter>());

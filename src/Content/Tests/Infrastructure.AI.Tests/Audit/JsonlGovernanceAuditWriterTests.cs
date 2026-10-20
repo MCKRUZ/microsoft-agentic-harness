@@ -36,7 +36,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
     }
 
     private JsonlGovernanceAuditWriter NewWriter(string? storagePathOverride = null) =>
-        new(Monitor(storagePathOverride ?? _tempDir), NullLogger<JsonlGovernanceAuditWriter>.Instance);
+        new(Monitor(storagePathOverride ?? _tempDir), TimeProvider.System, NullLogger<JsonlGovernanceAuditWriter>.Instance);
 
     private static IOptionsMonitor<AppConfig> Monitor(string storagePath)
     {
@@ -58,7 +58,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         sut.Log("agent-1", "run_tests", "allowed");
         sut.Log("agent-1", "iac_plan", "denied");
 
-        File.ReadAllLines(_expectedFile).Should().HaveCount(2);
+        AuditTrailFiles.ReadAllLines(_expectedFile).Should().HaveCount(2);
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
 
         sut.Log("agent-1", "run_tests", "allowed");
 
-        var line = File.ReadAllLines(_expectedFile)[0];
+        var line = AuditTrailFiles.ReadAllLines(_expectedFile)[0];
         line.Should().Contain("\"agent_id\":\"agent-1\"");
         line.Should().Contain("\"action\":\"run_tests\"");
         line.Should().Contain("\"decision\":\"allowed\"");
@@ -121,8 +121,8 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
             sut.Log("agent-1", "run_tests", "allowed");
         }
 
-        var tampered = File.ReadAllText(_expectedFile).Replace("\"allowed\"", "\"denied\"");
-        File.WriteAllText(_expectedFile, tampered);
+        var tampered = File.ReadAllText(AuditTrailFiles.OnlyDayFile(_expectedFile)).Replace("\"allowed\"", "\"denied\"");
+        File.WriteAllText(AuditTrailFiles.OnlyDayFile(_expectedFile), tampered);
 
         using var reopened = NewWriter();
         reopened.VerifyChainIntegrity().Should().BeFalse(
@@ -247,8 +247,8 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
 
         // Corrupt the JSON payload in place while keeping the tab-delimited chain framing intact,
         // so the line still parses as a chain record but fails to deserialize as GovernanceAuditRecord.
-        var corrupted = File.ReadAllText(_expectedFile).Replace("\"agent_id\":\"agent-1\"", "not json{{{");
-        File.WriteAllText(_expectedFile, corrupted);
+        var corrupted = File.ReadAllText(AuditTrailFiles.OnlyDayFile(_expectedFile)).Replace("\"agent_id\":\"agent-1\"", "not json{{{");
+        File.WriteAllText(AuditTrailFiles.OnlyDayFile(_expectedFile), corrupted);
 
         using var reopened = NewWriter();
         var result = await reopened.GetRecordsAsync(new GovernanceAuditQuery(), CancellationToken.None);

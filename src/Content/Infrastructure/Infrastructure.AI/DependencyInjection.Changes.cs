@@ -3,6 +3,7 @@ using Domain.AI.Changes;
 using Infrastructure.AI.Changes;
 using Infrastructure.AI.Changes.Gates;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Infrastructure.AI;
 
@@ -54,6 +55,7 @@ public static partial class DependencyInjection
                 .CurrentValue.AI.Governance.DurableState.ChangeProposalsEnabled
                 ? sp.GetRequiredService<EfCoreChangeProposalStore>()
                 : sp.GetRequiredService<InMemoryChangeProposalStore>());
+        services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IChangeAuditWriter, JsonlChangeAuditWriter>();
         services.AddSingleton<IEvidenceStore, FileSystemEvidenceStore>();
 

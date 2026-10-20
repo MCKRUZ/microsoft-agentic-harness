@@ -1,3 +1,4 @@
+using Infrastructure.AI.Tests.Audit;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
@@ -28,7 +29,7 @@ public sealed class ChangeProposalOrchestratorTests : IDisposable
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
         _monitor = monitor;
     }
 
@@ -322,7 +323,7 @@ public sealed class ChangeProposalOrchestratorTests : IDisposable
         await sut.ProcessAsync(proposal.Id, OrchestratorMode.Live, CancellationToken.None);
 
         var auditPath = Path.Combine(_tempDir, "audit", "changes.jsonl");
-        var lines = await File.ReadAllLinesAsync(auditPath);
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(auditPath);
         // Expected entries: Draft→Validating, self_validation Pass, validation phase done,
         // Approved→Merging, merge Pass, merge phase done. That's 6.
         lines.Length.Should().BeGreaterThanOrEqualTo(5);
