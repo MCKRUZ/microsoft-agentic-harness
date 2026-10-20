@@ -43,7 +43,7 @@ public sealed partial class AuditArchiver
                 chain.Name, walk.Head.Sequence, state.Files.Count);
             return AuditArchiveResult.Done(chain.Name);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return StopVerify(chain, $"{ex.GetType().Name}: {ex.Message}");
         }
@@ -65,7 +65,7 @@ public sealed partial class AuditArchiver
                 ?? throw new IOException($"Archived file {archived.Path} is listed but cannot be read.");
             var file = new CheckedFile(
                 archived.Path, bytes, head,
-                AllowPreChainLines: i == 0 && DatedAuditSegments.DayOf(archived.Name) is null,
+                AllowPreChainLines: AllowsPreChainLines(chain, archived.Name, head),
                 Accepted: state.Accepted.TryGetValue(archived.Name, out var sha) && sha == Sha256Of(bytes));
             if (LinesOf(file) is not { } lines)
                 return $"Archived file {archived.Path}: {StrictProblem(bytes)}.";

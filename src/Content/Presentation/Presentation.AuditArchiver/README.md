@@ -30,7 +30,7 @@ audit-archiver init                    # once, after the archive exists: write i
 audit-archiver witness                 # every 15-60 minutes
 audit-archiver run                     # hourly or daily: witness, delete archived live copies, archive finished days
 audit-archiver verify                  # daily: every log end to end
-audit-archiver accept <log> <file> <sha256> <reason...>
+audit-archiver accept <log> <file> <sha256> <lines-stepped-over> <reason...>
     [--config <file>] [--timeout-minutes <n>]   # default timeout 30 minutes
 ```
 
@@ -76,9 +76,11 @@ Every one of these matters; if any is open, the guarantee is gone.
   owner-only). On a shared machine, the same user could attach a debugger to the archiver or ask the machine's
   managed-identity endpoint for the archiver's token; there, use a separate account. On Windows give its account
   Modify on the audit folders. It creates nothing in them, and refuses a file or folder that is a link.
-- **The earlier single file** (`governance.jsonl` and the like, from before logs were split by day) is the only file that
-  may hold lines written before hash chaining began, and nothing covers those lines. The archiver therefore archives it
-  on its first run, whatever its age. Run `witness` and `run` as soon as the archive is set up.
+- **Lines from before hash chaining** are covered by no hash or witness. A log may hold them only before its first
+  record: in its earlier single file (`governance.jsonl` and the like, from before logs were split by day), or, for the
+  drift log, which has no such file, in its first day-files. The archiver archives those files on its first run,
+  whatever their age; until then someone controlling the live folder could add such lines. Run `witness` and `run` as
+  soon as the archive is set up, and before that, keep a copy of those files' hashes if you need proof of them.
 - **Program and configuration:** keep both where the application cannot write them.
 - **Rolling out:** start the archiver only after every application host runs this version with the same
   `ArchivePath`. A host without it would start the chain again from the beginning.
@@ -91,13 +93,15 @@ record) is honest but cannot be repaired. Inspect the file, then let exactly tho
 
 ```
 sha256sum governance/2026-10-20.jsonl        # or Get-FileHash -Algorithm SHA256
-audit-archiver accept governance 2026-10-20.jsonl <sha256> "writer crashed at 02:14, see incident 123"
+audit-archiver accept governance 2026-10-20.jsonl <sha256> 1 "writer crashed at 02:14, see incident 123"
 ```
 
-The acceptance is stored in the archive. Within that file only, lines that are not whole records (what a crash leaves)
-are stepped over, and the file is read exactly as the application reads it. A whole record that does not chain still
-stops the run: accepting cannot let a planted record through. Stepped-over lines stay in the file and readers still
-return them, so note them in the reason. If the file changes afterwards, the acceptance no longer applies.
+The number is how many lines in the file are not whole records, which you counted while inspecting it; if it does not
+match, the acceptance is refused and the line numbers are printed, so a planted line cannot slip through with a torn
+one. The acceptance is stored in the archive. Within that file only, those lines are stepped over, and the file is read
+exactly as the application reads it. A whole record that does not chain still stops the run: accepting cannot let a
+planted record through. Readers never return a line that is not a record once a log's records have begun. If the file
+changes afterwards, the acceptance no longer applies.
 
 A break also stops new witnesses past it, so the window the witness protects grows until the break is dealt with; the
 records before the break are still witnessed.

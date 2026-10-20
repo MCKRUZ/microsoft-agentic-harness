@@ -4,7 +4,7 @@ namespace Presentation.AuditArchiver;
 
 /// <summary>A parsed command line for the audit archiver.</summary>
 /// <param name="Verb">init, witness, run, verify or accept.</param>
-/// <param name="Arguments">The verb's own arguments (for accept: log, file, SHA-256, reason).</param>
+/// <param name="Arguments">The verb's own arguments (for accept: log, file, SHA-256, lines stepped over, reason).</param>
 /// <param name="Timeout">How long the whole command may take before it gives up and exits 1.</param>
 /// <param name="ConfigFile">An extra configuration file to read, or <c>null</c>.</param>
 internal sealed record ArchiverCommand(string Verb, IReadOnlyList<string> Arguments, TimeSpan Timeout, string? ConfigFile)
@@ -46,10 +46,12 @@ internal sealed record ArchiverCommand(string Verb, IReadOnlyList<string> Argume
 
         var verb = positional[0];
         var rest = positional.Skip(1).ToList();
-        if (verb == "accept" ? rest.Count < 4 : rest.Count > 0)
+        if (verb == "accept"
+                ? rest.Count < 5 || !int.TryParse(rest[3], NumberStyles.None, CultureInfo.InvariantCulture, out _)
+                : rest.Count > 0)
         {
             throw new ArgumentException(verb == "accept"
-                ? "accept needs: <log> <file> <sha256> <reason...>"
+                ? "accept needs: <log> <file> <sha256> <lines-stepped-over> <reason...>"
                 : $"{verb} takes no arguments.");
         }
 

@@ -51,9 +51,7 @@ public sealed partial class AuditArchiver
             .OrderBy(i => i.Name, StringComparer.Ordinal)
             .Select(i => new ArchivedFile($"{folder}/{i.Name}", i.Name, i.LastModified)));
 
-        var tail = await TailAsync(files, cancellationToken).ConfigureAwait(false);
-        var witnessed = await ReadWitnessesAsync(chain, tail.Sequence, cancellationToken).ConfigureAwait(false);
-
+        // Acceptances first: an accepted archived file is read as the application reads it, not strictly.
         var accepted = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in await _store.ListAsync($"{folder}/{AuditAcceptance.Folder}", cancellationToken).ConfigureAwait(false))
         {
@@ -62,6 +60,8 @@ public sealed partial class AuditArchiver
                 accepted[acceptance.File] = acceptance.Sha256;
         }
 
+        var tail = await TailAsync(files, accepted, cancellationToken).ConfigureAwait(false);
+        var witnessed = await ReadWitnessesAsync(chain, tail.Sequence, cancellationToken).ConfigureAwait(false);
         return new ArchiveState(files, tail, witnessed, accepted);
     }
 
@@ -90,14 +90,17 @@ public sealed partial class AuditArchiver
     }
 
     /// <summary>The newest self-consistent archived record, skipping files with none; (-1, genesis) when there is none.</summary>
-    private async Task<(long Sequence, string Hash)> TailAsync(IReadOnlyList<ArchivedFile> files, CancellationToken cancellationToken)
+    private async Task<(long Sequence, string Hash)> TailAsync(
+        IReadOnlyList<ArchivedFile> files, IReadOnlyDictionary<string, string> accepted, CancellationToken cancellationToken)
     {
         for (var i = files.Count - 1; i >= 0; i--)
         {
             var bytes = await _store.ReadAsync(files[i].Path, cancellationToken).ConfigureAwait(false)
                 ?? throw new IOException($"Archived file {files[i].Path} is listed but cannot be read.");
-            if (!StrictAuditBytes.TryRead(bytes, out var lines, out var problem))
-                throw new IOException($"Archived file {files[i].Path}: {problem}.");
+            var file = new CheckedFile(files[i].Path, bytes, (-1, HashChainedJsonlWriter.GenesisHash), false,
+                Accepted: accepted.TryGetValue(files[i].Name, out var sha) && sha == Sha256Of(bytes));
+            if (LinesOf(file) is not { } lines)
+                throw new IOException($"Archived file {files[i].Path}: {StrictProblem(bytes)}.");
             if (HashChainedJsonlWriter.LastSelfConsistentRecord(lines) is { } record)
                 return record;
         }

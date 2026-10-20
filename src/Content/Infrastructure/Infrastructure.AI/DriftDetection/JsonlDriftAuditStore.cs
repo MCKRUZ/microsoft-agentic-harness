@@ -94,35 +94,20 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
 
         try
         {
-            foreach (var filePath in ResolveFilePaths(query))
+            // Through the chain's own reader, which never serves a line after the chain's first record that is not a
+            // record (#416).
+            var files = ResolveFilePaths(query).ToHashSet(StringComparer.Ordinal);
+            await foreach (var json in _chain.ReadPayloadsAsync(files.Contains, ct).ConfigureAwait(false))
             {
-                if (!File.Exists(filePath))
-                    continue;
-
-                await using var stream = new FileStream(
-                    filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                using var reader = new StreamReader(stream);
-
-                var lineNumber = 0;
-                while (await reader.ReadLineAsync(ct) is { } line)
+                try
                 {
-                    lineNumber++;
-                    if (string.IsNullOrWhiteSpace(line))
-                        continue;
-
-                    try
-                    {
-                        var json = HashChainedJsonlWriter.ExtractPayload(line);
-                        var record = JsonSerializer.Deserialize<DriftAuditRecord>(json, DeserializeOptions);
-                        if (record is not null)
-                            records.Add(record);
-                    }
-                    catch (JsonException)
-                    {
-                        _logger.LogWarning(
-                            "Skipped corrupted drift audit record at {FilePath}:{LineNumber}",
-                            filePath, lineNumber);
-                    }
+                    var record = JsonSerializer.Deserialize<DriftAuditRecord>(json, DeserializeOptions);
+                    if (record is not null)
+                        records.Add(record);
+                }
+                catch (JsonException)
+                {
+                    _logger.LogWarning("Skipped a corrupted drift audit record in {AuditLocation}", _auditDirectory);
                 }
             }
         }

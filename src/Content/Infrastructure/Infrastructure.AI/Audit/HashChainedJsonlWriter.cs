@@ -207,18 +207,35 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     /// <summary>
     /// Reads every payload in the chain, across all segments in append order, without verifying
     /// hash links — use <see cref="VerifyChainAsync(CancellationToken)"/> for integrity checking. Blank lines are
-    /// skipped. Does not take the append semaphore (matching the two hand-written readers this
-    /// primitive replaces), so a concurrent append may or may not be visible in a given pass.
+    /// skipped, and so is any line after the chain's first record that is not a record (see
+    /// <see cref="ReadPayloadsAsync"/>). Does not take the append semaphore (matching the two hand-written readers
+    /// this primitive replaces), so a concurrent append may or may not be visible in a given pass.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The payload JSON of every persisted line, in append order.</returns>
-    public async IAsyncEnumerable<string> ReadAllPayloadsAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    /// <returns>The payload JSON of every record, and of every line before the first, in append order.</returns>
+    public IAsyncEnumerable<string> ReadAllPayloadsAsync(CancellationToken cancellationToken) =>
+        ReadPayloadsAsync(static _ => true, cancellationToken);
+
+    /// <summary>
+    /// Reads the payloads of the chain's files that <paramref name="includeFile"/> selects, in append order, as
+    /// <see cref="ReadAllPayloadsAsync"/> does. Lines written before the chain's first record are returned as they are;
+    /// after it, only records are: a line that is not one (a line torn by a crash, or one placed there) is no record of
+    /// anything and is skipped, so a reader never serves what no hash covers (#416).
+    /// </summary>
+    /// <param name="includeFile">Selects the files, by full path, whose payloads to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The payloads, in append order.</returns>
+    public async IAsyncEnumerable<string> ReadPayloadsAsync(
+        Func<string, bool> includeFile, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(includeFile);
+        var chainStarted = false;
+
         // The same files the writer appends to and verification reads, after the archived ones (#416).
         foreach (var segmentPath in ChainFiles())
         {
-            if (!File.Exists(segmentPath))
+            var included = includeFile(segmentPath);
+            if ((!included && chainStarted) || !File.Exists(segmentPath))
                 continue;
 
             await using var stream = new FileStream(
@@ -230,7 +247,12 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 
-                yield return ExtractPayload(line);
+                var isRecord = TryParseLine(line, out _, out _, out _, out _);
+                chainStarted |= isRecord;
+                if (!included && chainStarted)
+                    break; // read only to find where the chain starts
+                if (isRecord || !chainStarted)
+                    yield return ExtractPayload(line);
             }
         }
     }
@@ -466,10 +488,15 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             if (!File.Exists(segment.Path))
                 return state.Break(state.ExpectedSequence, $"Segment {Path.GetFileName(segment.Path)} disappeared during verification.");
 
-            // With an archive, lines written before the chain began are allowed only in the earlier single file: in a
-            // day-file they would be records no hash or witness covers, served to readers all the same (#416).
-            if (_archive is not null && !string.Equals(Path.GetFileName(segment.Path), _legacyFileName, StringComparison.Ordinal))
+            // With an archive, a log that has an earlier single file may hold lines written before the chain began only
+            // there: in a day-file they would be records no hash or witness covers, served to readers all the same
+            // (#416). A log split by day from the start (drift) keeps them in its first day-files, which the archiver
+            // archives on its first run.
+            if (_archive is not null && _legacyFileName is not null
+                && !string.Equals(Path.GetFileName(segment.Path), _legacyFileName, StringComparison.Ordinal))
+            {
                 state.ChainStarted = true;
+            }
 
             try
             {

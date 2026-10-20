@@ -10,14 +10,15 @@ public sealed class ArchiverCommandTests
     [Fact]
     public void Accept_TakesTheLogFileHashAndAReasonOfSeveralWords()
     {
-        var command = ArchiverCommand.Parse(["accept", "governance", "2026-10-20.jsonl", new string('a', 64), "crash", "at", "02:00"]);
+        var command = ArchiverCommand.Parse(["accept", "governance", "2026-10-20.jsonl", new string('a', 64), "1", "crash", "at", "02:00"]);
 
         command.Verb.Should().Be("accept");
-        command.Arguments.Should().HaveCount(6);
+        command.Arguments.Should().HaveCount(7);
     }
 
     [Theory]
     [InlineData("accept", "governance", "file")]
+    [InlineData("accept", "governance", "file", "sha", "crash", "at", "02:00")]
     [InlineData("run", "extra")]
     [InlineData("archive")]
     public void AnIncompleteOrUnknownCommand_IsRefused(params string[] args)

@@ -10,9 +10,10 @@ namespace Infrastructure.AI.Audit;
 /// </summary>
 /// <param name="File">The live file's name.</param>
 /// <param name="Sha256">The lowercase hex SHA-256 of its bytes.</param>
+/// <param name="SkippedLines">The line numbers (from 1) stepped over, which the operator confirmed by count.</param>
 /// <param name="Reason">Why it was accepted, for the record.</param>
 /// <param name="AcceptedAt">When.</param>
-internal sealed record AuditAcceptance(string File, string Sha256, string Reason, DateTimeOffset AcceptedAt)
+internal sealed record AuditAcceptance(string File, string Sha256, IReadOnlyList<int> SkippedLines, string Reason, DateTimeOffset AcceptedAt)
 {
     /// <summary>The folder, inside a log's archive folder, holding its acceptances.</summary>
     public const string Folder = "accepted";

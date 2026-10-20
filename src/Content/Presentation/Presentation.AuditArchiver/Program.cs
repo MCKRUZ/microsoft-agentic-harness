@@ -20,7 +20,7 @@ namespace Presentation.AuditArchiver;
 /// audit-archiver witness                       # every 15-60 minutes: pin each log's newest record
 /// audit-archiver run                           # hourly or daily: witness, then archive finished days
 /// audit-archiver verify                        # daily: check every log end to end
-/// audit-archiver accept &lt;log&gt; &lt;file&gt; &lt;sha256&gt; &lt;reason...&gt;   # let an investigated torn file through
+/// audit-archiver accept &lt;log&gt; &lt;file&gt; &lt;sha256&gt; &lt;lines-stepped-over&gt; &lt;reason...&gt;   # let an investigated torn file through
 ///   [--config &lt;file&gt;] [--timeout-minutes &lt;n&gt;]
 /// </code>
 /// <para>

@@ -225,7 +225,7 @@ public sealed class AuditArchiverTests : IDisposable
         (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Stopped);
 
         var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
-        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash mid-write", CancellationToken.None))
+        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, 1, "crash mid-write", CancellationToken.None))
             .Status.Should().Be(AuditArchiveStatus.Done);
         var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
 
@@ -242,7 +242,7 @@ public sealed class AuditArchiverTests : IDisposable
         var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
         await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"planted\":");
 
-        var result = await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash", CancellationToken.None);
+        var result = await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, 1, "crash", CancellationToken.None);
 
         result.Status.Should().Be(AuditArchiveStatus.Stopped);
         Directory.Exists(Path.Combine(_archiveRoot, "governance", "accepted")).Should().BeFalse();
@@ -275,7 +275,7 @@ public sealed class AuditArchiverTests : IDisposable
         (await sut.AppendAsync("{\"day\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
         await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"torn\":");
         var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
-        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash", CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        (await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, 1, "crash", CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
         await File.AppendAllTextAsync(LiveDay("2026-10-20"), "\n{\"slipped in\":true}\n");
         _clock.Advance(TimeSpan.FromDays(1));
         (await sut.AppendAsync("{\"day\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
@@ -363,7 +363,7 @@ public sealed class AuditArchiverTests : IDisposable
         var planted = Record(9_000_000_000_000, new string('e', 64), "{\"planted\":true}");
         await File.AppendAllTextAsync(LiveDay("2026-10-20"), planted.Line + "\n");
         var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
-        await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, "crash", CancellationToken.None);
+        await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, 1, "crash", CancellationToken.None);
 
         var result = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
 
@@ -466,7 +466,7 @@ public sealed class AuditArchiverTests : IDisposable
 
         (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Stopped);
         var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(_legacyFile)));
-        (await _archiver.AcceptAsync(Chain, "governance.jsonl", sha, "written before chaining", CancellationToken.None))
+        (await _archiver.AcceptAsync(Chain, "governance.jsonl", sha, 1, "written before chaining", CancellationToken.None))
             .Status.Should().Be(AuditArchiveStatus.Done);
 
         // The archiver, with its own credential, may write the archive's root; the application, below, may not.
@@ -478,6 +478,90 @@ public sealed class AuditArchiverTests : IDisposable
         File.Exists(Path.Combine(_archiveRoot, "governance.jsonl")).Should().BeTrue();
         var verified = await sut.VerifyChainAsync(CancellationToken.None);
         verified.IsValid.Should().BeTrue(verified.FailureReason);
+    }
+
+    [Fact]
+    public async Task AnAcceptedSingleFileAsTheArchivesNewest_KeepsEveryLaterStepWorking()
+    {
+        // Archived alone (its day-files are still young), it is the archive's newest file on every later run, and must
+        // be read the way it was accepted, not strictly, or the log would stop for good.
+        Directory.CreateDirectory(Path.GetDirectoryName(_legacyFile)!);
+        await File.WriteAllTextAsync(_legacyFile, "{\"before\":\"chaining\"}\r\n");
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"day\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _clock.Advance(TimeSpan.FromDays(1));
+        (await sut.AppendAsync("{\"day\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(_legacyFile)));
+        await _archiver.AcceptAsync(Chain, "governance.jsonl", sha, 1, "written before chaining", CancellationToken.None);
+
+        ReadOnlyArchiveRoot.Unlock(_archiveRoot);
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).FilesArchived.Should().Be(1);
+        var again = await _archiver.ArchiveAsync(Chain, CancellationToken.None);
+        var witness = await _archiver.WitnessAsync(Chain, CancellationToken.None);
+        var verify = await _archiver.VerifyAsync(Chain, CancellationToken.None);
+        ReadOnlyArchiveRoot.Lock(_archiveRoot);
+
+        again.Status.Should().Be(AuditArchiveStatus.Done, again.Problem);
+        witness.Status.Should().Be(AuditArchiveStatus.Done, witness.Problem);
+        verify.Status.Should().Be(AuditArchiveStatus.Done, verify.Problem);
+    }
+
+    [Fact]
+    public async Task ADriftLogWithDayFilesFromBeforeChaining_StillVerifies_AndIsArchivedFromItsFirstFile()
+    {
+        // The drift log was split by day from the start and has no earlier single file: its oldest day-files hold
+        // lines from before hash chaining, which must stay readable and verifiable once an archive is set.
+        var folder = Path.Combine(_tempDir, "live", "drift-audit");
+        Directory.CreateDirectory(folder);
+        await File.WriteAllTextAsync(Path.Combine(folder, "2026-10-17.jsonl"), "{\"unchained\":1}\n");
+        var drift = new AuditChainLocation("drift", new DatedAuditSegments(folder, legacyFile: null, _clock), Path.Combine(folder, ".chain.lock"));
+        ReadOnlyArchiveRoot.Unlock(_archiveRoot);
+        Directory.CreateDirectory(Path.Combine(_archiveRoot, "drift-audit"));
+        ReadOnlyArchiveRoot.Lock(_archiveRoot);
+        using var sut = new HashChainedJsonlWriter(drift, NullLogger.Instance, _archiveRoot);
+        await ThreeDaysAsync(sut);
+
+        (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue("lines before the first record are tolerated");
+        // Nothing is old enough by age here: only the files that may hold lines from before chaining go in at once.
+        var patient = new AuditArchiver(
+            new FileAuditArchiveStore(_archiveRoot), new AuditArchiverConfig { MinimumAgeDays = 30 }, _clock,
+            NullLogger<AuditArchiver>.Instance);
+        var result = await patient.ArchiveAsync(drift, CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
+        File.Exists(Path.Combine(_archiveRoot, "drift-audit", "2026-10-17.jsonl")).Should().BeTrue();
+        File.Exists(Path.Combine(_archiveRoot, "drift-audit", "2026-10-20.jsonl")).Should().BeFalse();
+        var verified = await sut.VerifyChainAsync(CancellationToken.None);
+        verified.IsValid.Should().BeTrue(verified.FailureReason);
+        (await _archiver.VerifyAsync(drift, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+    }
+
+    [Fact]
+    public async Task Accept_RefusesWhenTheOperatorCountedADifferentNumberOfLinesToStepOver()
+    {
+        // A line placed beside a torn one would otherwise slip through with it.
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"torn\":\n{\"decision\":\"allow\"}\n");
+        var sha = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(LiveDay("2026-10-20"))));
+
+        var result = await _archiver.AcceptAsync(Chain, "2026-10-20.jsonl", sha, 1, "crash", CancellationToken.None);
+
+        result.Status.Should().Be(AuditArchiveStatus.Stopped);
+        result.Problem.Should().Contain("line 2, 3");
+    }
+
+    [Fact]
+    public async Task Readers_SkipALineThatIsNotARecordOnceTheRecordsHaveBegun()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_legacyFile)!);
+        await File.WriteAllTextAsync(_legacyFile, "{\"before\":\"chaining\"}\n");
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        await File.AppendAllTextAsync(LiveDay("2026-10-20"), "{\"decision\":\"allow\"}\n");
+
+        (await PayloadsAsync(sut)).Should().Equal(
+            "{\"before\":\"chaining\"}", "{\"day\":0}", "{\"day\":1}", "{\"day\":2}");
     }
 
     /// <summary>A store whose writes fail the way an unreachable or unauthorised Blob container's do.</summary>

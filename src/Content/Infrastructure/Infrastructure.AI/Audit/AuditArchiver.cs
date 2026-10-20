@@ -102,7 +102,7 @@ public sealed partial class AuditArchiver
 
             // Exactly the bytes the walk checked, file by file: nothing read later is archived unchecked.
             // Never the newest file: a writer may still append to it.
-            for (var i = 0; i < walk.Files.Count - 1 && IsFinished(walk.Files[i].Path); i++)
+            for (var i = 0; i < walk.Files.Count - 1 && (FinishedEarly(walk.Files[i]) || IsFinished(walk.Files[i].Path)); i++)
             {
                 var (problem, outcome) = await ArchiveOneAsync(chain, state, walk.Files[i], cancellationToken).ConfigureAwait(false);
                 if (problem is not null)
@@ -116,7 +116,7 @@ public sealed partial class AuditArchiver
             _logger.LogInformation("Audit log '{Chain}': archived {Count} file(s).", chain.Name, archived);
             return AuditArchiveResult.Done(chain.Name, archived);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Storage, authentication, anything: the log stops and the run exits 1, so the scheduler pages someone.
             return Stop(chain, archived, $"{ex.GetType().Name}: {ex.Message}");
@@ -230,7 +230,7 @@ public sealed partial class AuditArchiver
 
     /// <summary>
     /// Whether a candidate is old enough: a day-file by its date. The earlier single file is finished as soon as a
-    /// day-file follows it, and archived at once, so the lines before its first record are sealed early.
+    /// day-file follows it; it, and any file that may hold lines from before hash chaining, is archived at once.
     /// </summary>
     private bool IsFinished(string path)
     {

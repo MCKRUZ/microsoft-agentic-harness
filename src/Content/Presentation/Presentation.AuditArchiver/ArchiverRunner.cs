@@ -36,8 +36,10 @@ internal static class ArchiverRunner
                 return ExitCodes.Usage;
             }
 
-            var reason = string.Join(' ', command.Arguments.Skip(3));
-            return ExitCodeOf([await archiver.AcceptAsync(chain, command.Arguments[1], command.Arguments[2], reason, cancellationToken).ConfigureAwait(false)]);
+            var linesSteppedOver = int.Parse(command.Arguments[3], System.Globalization.CultureInfo.InvariantCulture);
+            var reason = string.Join(' ', command.Arguments.Skip(4));
+            return ExitCodeOf([await archiver.AcceptAsync(
+                chain, command.Arguments[1], command.Arguments[2], linesSteppedOver, reason, cancellationToken).ConfigureAwait(false)]);
         }
 
         var results = new List<AuditArchiveResult>();
