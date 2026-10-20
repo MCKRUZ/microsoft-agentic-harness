@@ -189,6 +189,19 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRecords_WithADayNameInTheWrongLetterCase_FailsRatherThanServingIt()
+    {
+        // #416: a date-range read must never serve a file verification does not read.
+        (await _store.RecordAsync(BuildRecord(), CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "drift-audit", "2025-06-16.JSONL"), string.Empty);
+
+        var result = await _store.GetRecordsAsync(
+            new DriftAuditQuery { Start = new DateTimeOffset(2025, 6, 15, 0, 0, 0, TimeSpan.Zero) }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task GetRecords_FiltersByRecordType()
     {
         await _store.RecordAsync(BuildRecord(recordType: DriftAuditRecordType.Detected), CancellationToken.None);

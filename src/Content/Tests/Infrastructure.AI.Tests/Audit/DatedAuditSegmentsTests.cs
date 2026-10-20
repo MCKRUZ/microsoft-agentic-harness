@@ -113,6 +113,45 @@ public sealed class DatedAuditSegmentsTests : IDisposable
     }
 
     [Fact]
+    public async Task ADayNameInTheWrongLetterCase_StopsAppendsAndFailsVerification_BeforeItsDayArrives()
+    {
+        // On a file system that ignores case the writer would append to 2026-10-21.JSONL as if it were the day-file,
+        // while verification, which only reads exact day names, never looked at it: a whole day hidden.
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"n\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "governance", "2026-10-21.JSONL"), string.Empty);
+
+        (await sut.AppendAsync("{\"n\":1}", CancellationToken.None)).IsSuccess.Should().BeFalse();
+
+        var verified = await sut.VerifyChainAsync(CancellationToken.None);
+        verified.IsValid.Should().BeFalse();
+        verified.FailureReason.Should().Contain("wrong letter case");
+
+        var read = async () => { await foreach (var _ in sut.ReadAllPayloadsAsync(CancellationToken.None)) { } };
+        await read.Should().ThrowAsync<IOException>();
+    }
+
+    [Fact]
+    public void Compare_PutsOnlyTheSingleFileItselfFirst_NotAFileOfTheSameNameInTheDayFolder()
+    {
+        var layout = Layout();
+        var day = Path.Combine(layout.Folder, "2026-10-20.jsonl");
+
+        layout.Compare(_legacyFile, day).Should().BeNegative();
+        layout.Compare(day, _legacyFile).Should().BePositive();
+        layout.Compare(Path.Combine(layout.Folder, "governance.jsonl"), day).Should().BePositive();
+    }
+
+    [Fact]
+    public void BesideLegacyFile_WithoutAnExtension_IsRefused()
+    {
+        // The day folder would have the same path as the file, and every append would fail.
+        var act = () => DatedAuditSegments.BesideLegacyFile(Path.Combine(_tempDir, "governance"), _clock);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public async Task AFileInTheFolderThatIsNotADay_IsNeitherWrittenNorReadAsPartOfTheChain()
     {
         using var sut = Writer();

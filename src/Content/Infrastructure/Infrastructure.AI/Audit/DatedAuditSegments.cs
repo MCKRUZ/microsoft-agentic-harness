@@ -20,14 +20,25 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// <para>
 /// <b>Only day-files belong to the chain.</b> Any other file in the folder is ignored: it is neither read nor
-/// verified, and the writer never appends to it. Renaming a day-file to something else removes it from the chain,
-/// which verification reports as missing records.
+/// verified, and the writer never appends to it. Renaming a day-file to something else removes it from the chain:
+/// verification reports the missing records when the file was not the newest, or when the last checkpoint covers
+/// them; the newest records since the last check are lost silently, as with any cut from the end of a chain.
+/// </para>
+/// <para>
+/// <b>A day name in the wrong letter case stops the chain.</b> On a file system that ignores case, a planted
+/// <c>2026-10-21.JSONL</c> is the same file as <c>2026-10-21.jsonl</c> to the writer but is not a day-file to
+/// verification, so a whole day could be written where no check reads it. <see cref="Ordered"/> therefore refuses a
+/// folder holding such a name, on every platform: appends fail and verification reports the chain broken until
+/// someone removes or renames the file.
 /// </para>
 /// </remarks>
 public sealed class DatedAuditSegments
 {
     private const string DateFormat = "yyyy-MM-dd";
     private const string Extension = ".jsonl";
+
+    /// <summary>Lists names in any letter case on every platform, so a mis-cased day name is seen everywhere.</summary>
+    private static readonly EnumerationOptions AnyCase = new() { MatchCasing = MatchCasing.CaseInsensitive };
 
     private readonly TimeProvider _clock;
 
@@ -56,6 +67,9 @@ public sealed class DatedAuditSegments
     public static DatedAuditSegments BesideLegacyFile(string legacyFile, TimeProvider clock)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(legacyFile);
+        if (!Path.HasExtension(legacyFile))
+            throw new ArgumentException("The single file needs an extension, so its day-file folder has a different path.", nameof(legacyFile));
+
         var folder = Path.Combine(Path.GetDirectoryName(legacyFile) ?? string.Empty, Path.GetFileNameWithoutExtension(legacyFile));
         return new DatedAuditSegments(folder, legacyFile, clock);
     }
@@ -68,29 +82,33 @@ public sealed class DatedAuditSegments
 
     /// <summary>The day-file a record appended now goes to.</summary>
     /// <returns>The path of today's (UTC) day-file, whether or not it exists yet.</returns>
-    public string Current() => PathFor(DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime));
-
-    /// <summary>The day-file for <paramref name="day"/>.</summary>
-    /// <param name="day">A UTC calendar day.</param>
-    /// <returns>Its path, whether or not it exists.</returns>
-    public string PathFor(DateOnly day) =>
-        Path.Combine(Folder, day.ToString(DateFormat, CultureInfo.InvariantCulture) + Extension);
+    public string Current() =>
+        Path.Combine(Folder, DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime).ToString(DateFormat, CultureInfo.InvariantCulture) + Extension);
 
     /// <summary>Every existing file of the chain, in chain order: the earlier single file, then the day-files by date.</summary>
     /// <returns>Full paths in the order the chain runs through them.</returns>
+    /// <exception cref="IOException">The folder holds a day name in the wrong letter case (see the class remarks).</exception>
     public IReadOnlyList<string> Ordered()
     {
         var segments = new List<string>();
         if (LegacyFile is not null && File.Exists(LegacyFile))
             segments.Add(LegacyFile);
 
-        if (Directory.Exists(Folder))
+        if (!Directory.Exists(Folder))
+            return segments;
+
+        var days = new List<string>();
+        foreach (var path in Directory.GetFiles(Folder, "*" + Extension, AnyCase))
         {
-            segments.AddRange(Directory.GetFiles(Folder, "*" + Extension)
-                .Where(path => DayOf(path) is not null)
-                .OrderBy(Path.GetFileName, StringComparer.Ordinal));
+            if (DayOf(path) is not null)
+                days.Add(path);
+            else if (IsMiscasedDay(Path.GetFileName(path)))
+                throw new IOException(
+                    $"Audit folder {Folder} holds {Path.GetFileName(path)}, a day-file name in the wrong letter case. " +
+                    "The chain will not be written or verified until it is removed or renamed.");
         }
 
+        segments.AddRange(days.OrderBy(Path.GetFileName, StringComparer.Ordinal));
         return segments;
     }
 
@@ -123,6 +141,10 @@ public sealed class DatedAuditSegments
             : null;
     }
 
+    private static bool IsMiscasedDay(string name) =>
+        name.EndsWith(Extension, StringComparison.OrdinalIgnoreCase)
+        && DateOnly.TryParseExact(name[..^Extension.Length], DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
+
     private bool IsLegacy(string path) =>
-        LegacyFile is not null && string.Equals(Path.GetFileName(path), Path.GetFileName(LegacyFile), StringComparison.Ordinal);
+        LegacyFile is not null && string.Equals(Path.GetFullPath(path), Path.GetFullPath(LegacyFile), StringComparison.Ordinal);
 }
