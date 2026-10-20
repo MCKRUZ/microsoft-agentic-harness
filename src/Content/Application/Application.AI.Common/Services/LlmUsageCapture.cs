@@ -145,7 +145,8 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
         if (callId is null)
             return; // can't pair without an id; leave as-is
 
-        callId = ToolCallIdentifierSanitizer.SanitizeOrNull(callId);
+        // Non-null here (checked above), so the plain form keeps the compiler able to see that.
+        callId = ToolCallIdentifierSanitizer.Sanitize(callId).Value.Value;
 
         lock (_lock)
         {
