@@ -77,7 +77,6 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly IOptionsMonitor<PermissionsConfig> _permissionsConfig;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
     private readonly ILogger<ToolInvocationGovernor> _logger;
-    private readonly CapabilityEnvelopeGrantResolver _envelopeGrantResolver;
 
     public ToolInvocationGovernor(
         IAgentExecutionContext executionContext,
@@ -94,8 +93,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         IOptionsMonitor<GovernanceConfig> governanceConfig,
         IOptionsMonitor<PermissionsConfig> permissionsConfig,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
-        ILogger<ToolInvocationGovernor> logger,
-        CapabilityEnvelopeGrantResolver envelopeGrantResolver)
+        ILogger<ToolInvocationGovernor> logger)
     {
         _executionContext = executionContext;
         _toolPermissionService = toolPermissionService;
@@ -112,7 +110,6 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         _permissionsConfig = permissionsConfig;
         _sandboxConfig = sandboxConfig;
         _logger = logger;
-        _envelopeGrantResolver = envelopeGrantResolver;
     }
 
     /// <summary>
@@ -142,21 +139,17 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     /// costs a blocked call rather than an unauthorized one.
     /// </para>
     /// <para>
-    /// The two must agree by construction — the envelope's own rules are built from the same
-    /// <c>AllowedTools</c> list this reads, matched through the same
-    /// <see cref="CapabilityEnvelopeGrantResolver"/> that resolves a first-party tool's
-    /// key/published-name divergence (#626), not a raw <see cref="CapabilityEnvelope.GrantsTool"/>
-    /// check — a mismatch there previously meant a rule-layer Allow enabled by that resolution could
-    /// still be silently re-blocked here, and a rule-layer Deny it correctly skipped was not actually
-    /// covered here either. A disagreement after routing both sides through the shared resolver means
-    /// the resolver reached Allow by a path that did not consult the envelope, which is precisely the
-    /// condition worth failing closed on.
+    /// The two agree by construction: the envelope's own rules are built from the same
+    /// <c>AllowedTools</c> list this reads, each entry an exact tool name, and a first-party tool's
+    /// registration key is its published name (#888: <c>KeyedToolResolution</c> refuses a tool for which
+    /// they differ), so no translation sits between them. A disagreement means the resolver reached Allow
+    /// by a path that did not consult the envelope, which is precisely the condition worth failing closed on.
     /// </para>
     /// </remarks>
     /// <param name="toolName">The tool the resolver has authorized.</param>
     /// <returns>True when no envelope is armed, or when the armed envelope grants the tool.</returns>
-    private bool EnvelopeGrantsToolWhenArmed(string toolName)
-        => CapabilityEnvelopeAccessor.Current is not { } envelope || _envelopeGrantResolver.Grants(envelope, toolName);
+    private static bool EnvelopeGrantsToolWhenArmed(string toolName)
+        => CapabilityEnvelopeAccessor.Current is not { } envelope || envelope.GrantsTool(toolName);
 
     /// <inheritdoc />
     public async ValueTask<ToolInvocationDecision> AuthorizeAsync(

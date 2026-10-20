@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -117,7 +117,16 @@ public sealed class ToolBehaviorRegistry : IToolBehaviorRegistry
     /// </remarks>
     private ToolBehavior? ResolveFirstParty(string toolName)
     {
-        var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
+        ITool? tool;
+        try
+        {
+            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName);
+        }
+        catch (ToolNameMismatchException)
+        {
+            return null; // refused wherever it is built, and reported there; no behaviour to state for it
+        }
+
         if (tool is null)
             return null;
 

@@ -112,13 +112,7 @@ public sealed class ToolInvocationGovernorTests
             governanceMonitor,
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
             Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance,
-            // No ambient envelope in this suite (see ToolInvocationGovernorEnvelopeTests for that), so
-            // EnvelopeGrantsToolWhenArmed short-circuits true without ever consulting this — an empty
-            // lookup is fine.
-            new CapabilityEnvelopeGrantResolver(
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
-                NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
+            NullLogger<ToolInvocationGovernor>.Instance);
     }
 
     [Fact]

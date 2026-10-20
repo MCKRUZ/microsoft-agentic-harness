@@ -42,7 +42,11 @@ public sealed class ToolPermissionProfileResolverTests
     {
         var services = new ServiceCollection();
         foreach (var (name, tool) in tools)
+        {
+            // A keyed tool reports its key as its name, or it is refused when built (#888).
+            Mock.Get(tool).Setup(t => t.Name).Returns(name);
             services.AddKeyedSingleton<ITool>(name, (_, _) => tool);
+        }
 
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(config ?? new SandboxConfig());

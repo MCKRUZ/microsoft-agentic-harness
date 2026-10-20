@@ -52,7 +52,7 @@ public sealed class ToolChainBuilderUnresolvedToolTests
     {
         var logger = new CapturingLogger<ToolChainBuilder>();
         var services = new ServiceCollection();
-        services.AddKeyedSingleton<ITool>("real_tool", Mock.Of<ITool>());
+        services.AddKeyedSingleton<ITool>("real_tool", Mock.Of<ITool>(t => t.Name == "real_tool"));
         var builder = new ToolChainBuilder(logger, services.BuildServiceProvider());
 
         builder.BuildToolsByName(["real_tool"]);

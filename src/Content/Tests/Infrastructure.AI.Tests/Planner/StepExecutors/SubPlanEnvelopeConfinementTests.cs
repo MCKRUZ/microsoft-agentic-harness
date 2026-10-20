@@ -158,20 +158,12 @@ public sealed class SubPlanEnvelopeConfinementTests
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
-        // Shared with both the rule provider and the real governor below (registered into the
-        // container so the governor's independent re-check, CapabilityEnvelopeGrantResolver, agrees
-        // with the rule layer by construction — #626).
-        var envelopeGrantResolver = new CapabilityEnvelopeGrantResolver(
-            new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
-            NullLogger<CapabilityEnvelopeGrantResolver>.Instance);
-
         var services = new ServiceCollection();
         services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(decisions);
-        services.AddSingleton(envelopeGrantResolver);
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton<IToolPermissionService>(new ThreePhasePermissionResolver(
-            [new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance, envelopeGrantResolver)],
+            [new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance)],
             safetyGates.Object,
             new GlobPatternMatcher(),
             new Mock<IDenialTracker>().Object,

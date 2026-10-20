@@ -177,34 +177,11 @@ public sealed class PermissionRulesSectionProviderTests
         act.Should().Throw<ArgumentNullException>();
     }
 
-    // --- #652: the rule providers deliberately emit one rule per name-form for a first-party tool
-    // whose DI registration key disagrees with its published name, so enforcement covers it either
-    // way. Rendered verbatim that told the model two tools were restricted, one of them under a key
-    // it can never invoke. Each rule of such a pair carries the published name they share, and the
-    // summary groups on it — deliberately WITHOUT resolving tools here, which on the prompt path
-    // would construct the host's entire tool set (see the type's remarks).
-
     [Fact]
-    public async Task GetSectionAsync_KeyAndPublishedNameRules_RenderOnceUnderThePublishedName()
+    public async Task GetSectionAsync_ARule_RendersUnderItsOwnPattern()
     {
-        var ruleProvider = CreateRuleProvider(
-            PermissionRuleSource.CapabilityEnvelope,
-            DenyPairedForm("registered_key", "self_reported_name"),
-            DenyPairedForm("self_reported_name", "self_reported_name"));
-
-        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
-
-        var denied = DeniedLines(section!.Content);
-        denied.Should().ContainSingle("the two name-forms are one tool from the agent's perspective");
-        denied[0].Should().Be("- self_reported_name", "the agent invokes by published name, never by DI key");
-    }
-
-    [Fact]
-    public async Task GetSectionAsync_UntaggedKeyOnlyRule_RendersItsOwnPatternUnchanged()
-    {
-        // PluginPermissionRuleProvider's unverified-boundary fallback emits key-only rules with no
-        // pairing tag, precisely so this summary never claims a restriction under a name the resolver
-        // would not match. Such a rule must render as itself.
+        // A rule's pattern is the name the agent invokes the tool by: a first-party tool's registration key is
+        // its published name (#888).
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.PluginDeclaration, Deny("registered_key"));
 
         var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
@@ -271,37 +248,16 @@ public sealed class PermissionRulesSectionProviderTests
         DeniedLines(section.Content).Should().ContainSingle().Which.Should().Be("- file_system");
     }
 
-    // --- End-to-end over the REAL EnvelopePermissionRuleProvider. Every test above hand-builds its
-    // rules, so none of them can tell whether a provider actually stamps the pairing: deleting
-    // `PublishedToolName:` from an emission site left the whole suite green with the defect fully
-    // restored (code-review finding). These drive the real provider into the real summary, so the
-    // stamping is covered by something that fails when it is gone.
-
-    /// <summary>
-    /// A real <see cref="EnvelopePermissionRuleProvider"/> over a real
-    /// <see cref="CapabilityEnvelopeGrantResolver"/>, with one first-party tool registered under
-    /// <paramref name="key"/> that reports <paramref name="publishedName"/> as its own name.
-    /// </summary>
-    private static IPermissionRuleProvider RealEnvelopeProvider(string key, string publishedName)
-    {
-        var services = new ServiceCollection();
-        services.AddKeyedSingleton<ITool>(key, (_, _) => Mock.Of<ITool>(t => t.Name == publishedName));
-        var lookup = new FirstPartyToolLookup(
-            services.BuildServiceProvider(), new HashSet<string> { key });
-
-        return new EnvelopePermissionRuleProvider(
-            NullLogger<EnvelopePermissionRuleProvider>.Instance,
-            new CapabilityEnvelopeGrantResolver(
-                lookup, NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
-    }
+    // --- End-to-end over the REAL EnvelopePermissionRuleProvider, so a provider that emitted a tool twice
+    // would show here and not only in hand-built rules.
 
     [Fact]
-    public async Task GetSectionAsync_RealProvider_GrantByKey_SummarisesTheToolOnce()
+    public async Task GetSectionAsync_RealProvider_AToolGrantedUnderTwoCasings_SummarisesOnce()
     {
-        var provider = RealEnvelopeProvider("registered_key", "self_reported_name");
+        var provider = new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance);
         var envelope = new CapabilityEnvelope
         {
-            AllowedTools = ["registered_key"],
+            AllowedTools = ["file_system", "FILE_SYSTEM"],
             AutonomyCeiling = AutonomyLevel.Supervised,
         };
 
@@ -309,32 +265,7 @@ public sealed class PermissionRulesSectionProviderTests
         {
             var section = await Sut(provider).GetSectionAsync("bundle");
 
-            ApprovalLines(section!.Content).Should().ContainSingle(
-                "the key and published forms of one granted tool must summarise once")
-                .Which.Should().Be("- self_reported_name");
-        }
-    }
-
-    [Fact]
-    public async Task GetSectionAsync_RealProvider_GrantedUnderBothNames_StillSummarisesOnce()
-    {
-        // The case the form-count heuristic got wrong: the published name is contributed by the first
-        // grant entry, so the divergent second entry survives dedup holding a single form. Tagging
-        // must key off divergence, not off how many forms survived.
-        var provider = RealEnvelopeProvider("registered_key", "self_reported_name");
-        var envelope = new CapabilityEnvelope
-        {
-            AllowedTools = ["self_reported_name", "registered_key"],
-            AutonomyCeiling = AutonomyLevel.Supervised,
-        };
-
-        using (CapabilityEnvelopeAccessor.Begin(envelope))
-        {
-            var section = await Sut(provider).GetSectionAsync("bundle");
-
-            ApprovalLines(section!.Content).Should().ContainSingle(
-                "granting a tool under both of its names still restricts one tool")
-                .Which.Should().Be("- self_reported_name");
+            ApprovalLines(section!.Content).Should().ContainSingle("one granted tool is one restriction");
         }
     }
 
@@ -344,14 +275,6 @@ public sealed class PermissionRulesSectionProviderTests
 
     private static ToolPermissionRule Deny(string toolPattern) =>
         new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1);
-
-    /// <summary>
-    /// One form of a name-pair: a rule matching <paramref name="toolPattern"/> that records the
-    /// published name it shares with its sibling, exactly as the emitting providers stamp it.
-    /// </summary>
-    private static ToolPermissionRule DenyPairedForm(string toolPattern, string publishedToolName) =>
-        new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1,
-            PublishedToolName: publishedToolName);
 
     private const string DeniedHeading = "The following tools are denied:";
 

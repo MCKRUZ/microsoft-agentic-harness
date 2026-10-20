@@ -45,11 +45,10 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         _services.AddKeyedSingleton<ITool>(toolName, (_, _) => Mock.Of<ITool>());
 
     /// <summary>
-    /// Registers a first-party tool under <paramref name="key"/> whose self-reported
-    /// <see cref="ITool.Name"/> disagrees with that key — the real, supported shape
-    /// <c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> proves exists.
+    /// Registers a first-party tool under <paramref name="key"/> reporting <paramref name="publishedName"/>; a
+    /// name that differs from the key is a tool that is refused wherever it is built (#888).
     /// </summary>
-    private void GivenKeyedToolWithDivergentName(string key, string publishedName)
+    private void GivenKeyedTool(string key, string publishedName)
     {
         var mock = new Mock<ITool>();
         mock.Setup(t => t.Name).Returns(publishedName);
@@ -456,26 +455,8 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         rules.Should().NotContain(r => r.ToolPattern == "shell");
     }
 
-    // --- #612: rule.ToolPattern is matched against a tool's PUBLISHED (self-reported) name at
-    // invocation (ThreePhasePermissionResolver.Matches), but a plugin declares DeniedTools against
-    // the DI registration key (the identifier ApplyPluginToolBoundary's existence check uses) — and
-    // a keyed ITool can legitimately report a Name that disagrees with its own key
-    // (ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...). Without also emitting a rule
-    // against the resolved published name, the deny silently never fires for such a tool.
-
-    [Fact]
-    public async Task GetRulesAsync_DeniedToolNameDisagreesWithItsKey_AlsoEmitsDenyForThePublishedName()
-    {
-        var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["registered_key"] };
-        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
-        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
-
-        var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
-
-        rules.Should().Contain(r => r.ToolPattern == "registered_key" && r.Behavior == PermissionBehaviorType.Deny);
-        rules.Should().Contain(r => r.ToolPattern == "self_reported_name"
-            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
-    }
+    // --- #888: a DeniedTools entry names a tool by one string, its registration key and published name alike
+    // (a tool for which they differ is refused when built), so each entry is exactly one Deny rule.
 
     [Fact]
     public async Task GetRulesAsync_DeniedToolNameMatchesItsKey_EmitsOnlyOneDenyRule()
@@ -483,7 +464,7 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         // No divergence: must not double-emit a redundant rule for the common case.
         var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["bash"] };
         _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
-        GivenKeyedToolWithDivergentName("bash", "bash");
+        GivenKeyedTool("bash", "bash");
 
         var rules = await CreateProvider("bash").GetRulesAsync("any-agent");
 
@@ -512,17 +493,12 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
     [Fact]
     public async Task GetRulesAsync_UnverifiedBoundary_BlanketDenyStaysKeyOnly_DoesNotResolveEveryToolsName()
     {
-        // #612 code-review: the blanket unverified-boundary deny deliberately does NOT resolve
-        // published names for the whole first-party registry — doing so would construct every
-        // registered tool as a side effect of a permission check whenever any plugin's boundary is
-        // merely unverified, not because anything invoked those tools (narrowed after review; see
-        // AddDenyRuleWithPublishedNameCoverage's remarks). Only the per-plugin DeniedTools loop
-        // (above) resolves published names, for its small, explicitly-authored list. This is a pin
-        // for the accepted trade-off, not a gap this PR still owns.
+        // The blanket unverified-boundary deny names each registration key without building any tool: the key
+        // is the tool's published name (#888), so no second rule is needed or emitted.
         var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
         _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
         _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Faulted);
-        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
+        GivenKeyedTool("registered_key", "self_reported_name");
 
         var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
 

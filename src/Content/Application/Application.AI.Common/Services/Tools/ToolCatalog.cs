@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Bundles;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Tools;
@@ -134,7 +134,12 @@ public sealed class ToolCatalog : IToolCatalog
 
         try
         {
-            tool = serviceProvider.GetKeyedService<ITool>(key);
+            tool = KeyedToolResolution.Resolve(serviceProvider, key);
+        }
+        catch (ToolNameMismatchException ex)
+        {
+            logger.LogError(ex, "Tool '{ToolKey}' is omitted from the tool catalog: {Reason}", key, ex.Message);
+            return null;
         }
         catch (Exception ex)
         {
@@ -152,15 +157,6 @@ public sealed class ToolCatalog : IToolCatalog
 
         if (tool is null)
             return null;
-
-        if (!string.Equals(tool.Name, key, StringComparison.OrdinalIgnoreCase))
-        {
-            logger.LogWarning(
-                "Tool registered under key '{ToolKey}' reports its name as '{ToolName}'. The harness "
-                + "resolves tools by name, so the catalog advertises the key. Align the two.",
-                key,
-                tool.Name);
-        }
 
         return new ToolDescriptor(
             key,

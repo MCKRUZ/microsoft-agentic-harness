@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -71,7 +72,7 @@ public class ToolConverterExample
         {
             try
             {
-                var tool = _serviceProvider.GetKeyedService<ITool>(key);
+                var tool = KeyedToolResolution.Resolve(_serviceProvider, key);
                 if (tool is not null)
                     tools.Add(tool);
             }

@@ -271,17 +271,11 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
-    public async Task BuildToolsAsync_DeniedToolNamesTheDiKeyButItsAitoolNameDisagrees_StillRemovesIt()
+    public async Task BuildToolsAsync_ADeclaredToolWhoseNameDiffersFromItsKey_IsNotGivenToTheAgent()
     {
-        // Code-review finding on #524: a keyed ITool can legitimately report a converted AITool.Name
-        // that disagrees with its own DI registration key (ToolCatalogTests.
-        // Catalog_ToolWhoseNameDisagreesWithItsKey_... proves this is a real, supported shape). A
-        // plugin author writes DeniedTools against the DI key — the same identifier
-        // PluginToolBoundaryTracker's existence check validates against — because that's the name a
-        // skill's ToolDeclaration resolves by. Before the fix, ApplyPluginToolBoundary matched only
-        // against AITool.Name, so a DeniedTools entry naming the key was "verified" as real by the
-        // existence check but silently never matched anything here — the exact no-op #524 exists to
-        // close, just reopened one layer down.
+        // #888: grants and deny rules name a tool by one string. A tool registered as "registered_key" that
+        // calls itself "self_reported_name" would let a rule written for one name reach the other, so it is
+        // refused when built and never reaches the agent.
         var toolMock = new Mock<ITool>();
         toolMock.Setup(t => t.Name).Returns("self_reported_name");
 
@@ -289,28 +283,22 @@ public class ToolChainBuilderTests
         converter.Setup(c => c.Convert(toolMock.Object, null))
             .Returns(AIFunctionFactory.Create(() => "converted", "self_reported_name"));
 
-        var pluginRegistry = new Mock<IPluginRegistry>();
-        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
-            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
-                PluginLoadStatus.Loaded, [], ["p:server"],
-                new PluginDeclaration { Name = "p", DeniedTools = ["registered_key"] }));
-
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("registered_key", toolMock.Object);
-        services.AddSingleton(pluginRegistry.Object);
 
         var builder = CreateBuilder(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
 
         var skill = new SkillDefinition
         {
-            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Id = "s", Name = "s", Instructions = "Test",
             ToolDeclarations = [new ToolDeclaration { Name = "registered_key" }]
         };
 
-        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+        // Required, so the agent is not built at all rather than built without it.
+        var act = () => builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
-        tools.Should().BeEmpty("the plugin's DeniedTools entry names the DI key, which must still " +
-            "match even though the converted tool's own Name disagrees with it");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*registered_key*");
+        converter.Verify(c => c.Convert(It.IsAny<ITool>(), It.IsAny<IReadOnlyList<string>?>()), Times.Never);
     }
 
     [Fact]

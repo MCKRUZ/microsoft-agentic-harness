@@ -30,7 +30,10 @@ tool starts new work, not when it needs to read the calling request's own identi
 
 ## Tool Schema Requirements
 Every tool must have:
-- Clear name (snake_case): `"file_system"`, `"document_search"`
+- Clear name (snake_case): `"file_system"`, `"document_search"`, **identical (case aside) to its keyed-DI
+  registration key**. Grants, deny rules and manifests name a tool by one string; a tool whose `Name` differs
+  from its key is refused wherever it is built (`KeyedToolResolution`, #888). Build a keyed tool only through
+  `KeyedToolResolution.Resolve` — `KeyedToolResolutionIsTheOnlyWayInTests` fails on any other way.
 - Description suitable for LLM consumption (what it does, when to use it)
 - JSON schema for parameters with types, descriptions, required fields
 - Defined fallback behavior in ToolDeclaration

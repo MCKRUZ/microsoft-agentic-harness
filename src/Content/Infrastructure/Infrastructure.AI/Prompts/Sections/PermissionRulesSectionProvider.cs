@@ -13,29 +13,9 @@ namespace Infrastructure.AI.Prompts.Sections;
 /// Cacheable because permission rules are typically static within a session.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <strong>One line per logical tool, under the name the agent actually invokes (#652).</strong> The
-/// rule providers deliberately emit <em>two</em> rules for a first-party tool whose DI registration
-/// key disagrees with its self-reported published name — one per form — so enforcement covers the
-/// tool whichever name a caller uses (#612, #626). That is right for enforcement and wrong for this
-/// summary: rendered verbatim it told the model that two distinct tools were restricted, one of them
-/// under a registration key the model can never call, since
-/// <c>ThreePhasePermissionResolver.Matches</c> matches on the published name at invocation.
-/// </para>
-/// <para>
-/// Grouping therefore reads <see cref="ToolPermissionRule.PublishedToolName"/>, which the emitting
-/// provider stamps on both rules of such a pair. <strong>This provider deliberately does NOT resolve
-/// tool names itself.</strong> Doing so was tried and reverted: <c>PluginPermissionRuleProvider</c>'s
-/// unverified-boundary fallback emits one rule per <em>every</em> registered first-party tool, so
-/// resolving each rule's pattern here would construct the host's entire tool set as a side effect of
-/// composing a system prompt — the precise trade-off that method's own remarks record as deliberately
-/// refused, and the shape that broke host boot at #524. A name-form pairing is only knowable at
-/// emission anyway; recovering it later necessarily means resolving the tool again.
-/// </para>
-/// <para>
-/// Identical lines are also merged, which costs nothing and covers duplication the pairing tag cannot
-/// see — two independent providers restricting the same tool under the same name.
-/// </para>
+/// One line per tool, under the name the agent invokes it by: a rule's pattern is that name, since a
+/// first-party tool's registration key and published name are the same (#888). Identical lines are
+/// merged, which covers two providers restricting the same tool.
 /// </remarks>
 public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
 {
@@ -129,10 +109,7 @@ public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
             if (rule.Behavior != behavior)
                 continue;
 
-            // The published name when this rule is one form of a name-pair, else the pattern itself —
-            // which is the right answer for a glob (*, bash:*), an MCP tool, and the ordinary case
-            // where a tool's key and published name already agree.
-            var toolName = rule.PublishedToolName ?? rule.ToolPattern;
+            var toolName = rule.ToolPattern;
             var operation = rule.OperationPattern is not null ? $" (operation: {rule.OperationPattern})" : "";
             var line = $"{toolName}{operation}";
 
