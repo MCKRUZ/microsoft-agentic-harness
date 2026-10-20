@@ -47,8 +47,8 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_VerifiesEveryChainOnce()
     {
-        var a = new FakeChain("a", AuditChainVerificationResult.Valid(3));
-        var b = new FakeChain("b", AuditChainVerificationResult.Valid(5));
+        var a = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3));
+        var b = new FakeChain("b", AuditChainVerificationResult.Valid(0, 5));
         var sut = NewService(_receiptDir, a, b);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -60,8 +60,8 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_WritesOneReceiptLinePerChain()
     {
-        var a = new FakeChain("a", AuditChainVerificationResult.Valid(3));
-        var b = new FakeChain("b", AuditChainVerificationResult.Broken(2, 2, "Record-hash mismatch at sequence 2."));
+        var a = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3));
+        var b = new FakeChain("b", AuditChainVerificationResult.Broken(0, 2, 2, "Record-hash mismatch at sequence 2."));
         var sut = NewService(_receiptDir, a, b);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -79,7 +79,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     {
         // #660, following #640/#527's precedent: a receipt reports which audit chains verified
         // clean or broken, including a failure reason -- confidentiality-relevant on a shared host.
-        var a = new FakeChain("a", AuditChainVerificationResult.Valid(1));
+        var a = new FakeChain("a", AuditChainVerificationResult.Valid(0, 1));
         var sut = NewService(_receiptDir, a);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -90,7 +90,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_WhenReceiptPathEmpty_DoesNotWriteButStillVerifies()
     {
-        var a = new FakeChain("a", AuditChainVerificationResult.Valid(1));
+        var a = new FakeChain("a", AuditChainVerificationResult.Valid(0, 1));
         var sut = NewService(string.Empty, a);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -103,7 +103,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     public async Task VerifyAllChains_WhenOneChainThrows_StillVerifiesTheOthers()
     {
         var throwing = new ThrowingChain("bad");
-        var healthy = new FakeChain("good", AuditChainVerificationResult.Valid(2));
+        var healthy = new FakeChain("good", AuditChainVerificationResult.Valid(0, 2));
         var sut = NewService(_receiptDir, throwing, healthy);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -117,7 +117,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_CleanPass_HandsItsHeadToTheNextPassAsTheCheckpoint()
     {
-        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3, headSequence: 2, headHash: "hash-2"));
         var sut = NewService(_receiptDir, chain);
 
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -129,11 +129,11 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_BrokenPass_KeepsThePreviousCheckpoint()
     {
-        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3, headSequence: 2, headHash: "hash-2"));
         var sut = NewService(_receiptDir, chain);
         await sut.VerifyAllChainsAsync(CancellationToken.None);
 
-        chain.Result = AuditChainVerificationResult.Broken(1, 1, "truncated") with { HeadSequence = 0, HeadHash = "hash-0" };
+        chain.Result = AuditChainVerificationResult.Broken(0, 1, 1, "truncated") with { HeadSequence = 0, HeadHash = "hash-0" };
         await sut.VerifyAllChainsAsync(CancellationToken.None);
         await sut.VerifyAllChainsAsync(CancellationToken.None);
 
@@ -180,7 +180,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_LogMovedToANewLocation_StartsAFreshBaselineInsteadOfAlarming()
     {
-        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3, headSequence: 2, headHash: "hash-2"));
         var sut = NewService(_receiptDir, chain);
         await sut.VerifyAllChainsAsync(CancellationToken.None);
 
@@ -193,7 +193,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_CheckpointFileDeletedWhileRunning_StillUsesTheOneHeldInMemory()
     {
-        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3, headSequence: 2, headHash: "hash-2"));
         var store = new AuditChainCheckpointStore(Config(_receiptDir), NullLogger<AuditChainCheckpointStore>.Instance);
         var sut = NewService(store, _receiptDir, chain);
         await sut.VerifyAllChainsAsync(CancellationToken.None);
@@ -244,7 +244,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     {
         // #416: re-baselining (deleting the checkpoint) would not clear a refused folder and would throw away
         // truncation detection, so the alert must not suggest it, and must not read as a tamper break at 0.
-        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(3, headSequence: 2, headHash: "hash-2"));
+        var chain = new FakeChain("a", AuditChainVerificationResult.Valid(0, 3, headSequence: 2, headHash: "hash-2"));
         var logger = new RecordingLogger();
         var sut = new AuditChainVerificationService([chain],
             new AuditChainCheckpointStore(Config(_receiptDir), NullLogger<AuditChainCheckpointStore>.Instance),

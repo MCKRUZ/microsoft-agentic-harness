@@ -131,7 +131,13 @@ public sealed record ComplianceChainIntegrity
     /// <summary>Whether the chain verified intact end-to-end.</summary>
     public required bool IsValid { get; init; }
 
-    /// <summary>Records verified cleanly from genesis before any break (or the full count, if intact).</summary>
+    /// <summary>
+    /// The sequence number verification started at: <c>0</c> from genesis, higher when the earlier records are
+    /// archived and were checked when they were archived (#416).
+    /// </summary>
+    public required long StartSequence { get; init; }
+
+    /// <summary>Records verified cleanly from <see cref="StartSequence"/> before any break (or to the head, if intact).</summary>
     public required long VerifiedCount { get; init; }
 
     /// <summary>Explanation of the break, when <see cref="IsValid"/> is <see langword="false"/>.</summary>

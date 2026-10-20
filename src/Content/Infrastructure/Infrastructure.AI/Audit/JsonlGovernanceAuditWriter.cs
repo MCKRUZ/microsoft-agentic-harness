@@ -86,9 +86,9 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _filePath = Path.Combine(config.CurrentValue.AI.Governance.AuditStoragePath, "governance.jsonl");
-        _chain = new HashChainedJsonlWriter(
-            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
+        var chain = AuditChains.Governance(config.CurrentValue, timeProvider);
+        _filePath = chain.Segments.LegacyFile!;
+        _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _logger = logger;
     }
 
@@ -163,9 +163,11 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     }
 
     /// <summary>
-    /// Gets the total number of audit entries in the chain, computed by walking it end to end. No
-    /// production caller reads this today (verified — see #407's implementation notes); the full-chain
-    /// scan is acceptable only because of that.
+    /// Gets the total number of audit entries in the chain: one past the sequence of its newest verified record,
+    /// since sequences run from 0 without gaps. Archived records count (#416) although a verification pass reads
+    /// only from the archive's newest record on, so this is not the pass's <c>VerifiedCount</c>. No production
+    /// caller reads this today (verified — see #407's implementation notes); the verification pass it runs is
+    /// acceptable only because of that.
     /// </summary>
     public int EntryCount
     {
@@ -173,7 +175,7 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
         {
             try
             {
-                return (int)_chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().VerifiedCount;
+                return (int)(_chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().HeadSequence + 1);
             }
             catch (Exception ex)
             {

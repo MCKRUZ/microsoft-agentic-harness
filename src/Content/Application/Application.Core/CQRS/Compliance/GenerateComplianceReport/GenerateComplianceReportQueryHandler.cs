@@ -203,6 +203,7 @@ public sealed class GenerateComplianceReportQueryHandler
                 {
                     ChainName = chain.AuditName,
                     IsValid = false,
+                    StartSequence = 0,
                     VerifiedCount = 0,
                     FailureReason = "Not verified: another writer held the chain's lock. Generate the report again.",
                 });
@@ -215,6 +216,7 @@ public sealed class GenerateComplianceReportQueryHandler
                 {
                     ChainName = chain.AuditName,
                     IsValid = false,
+                    StartSequence = 0,
                     VerifiedCount = 0,
                     FailureReason = $"Not verified: {ex.Message}",
                 });
@@ -225,6 +227,7 @@ public sealed class GenerateComplianceReportQueryHandler
             {
                 ChainName = chain.AuditName,
                 IsValid = verification.IsValid,
+                StartSequence = verification.StartSequence,
                 VerifiedCount = verification.VerifiedCount,
                 FailureReason = verification.FailureReason,
             });

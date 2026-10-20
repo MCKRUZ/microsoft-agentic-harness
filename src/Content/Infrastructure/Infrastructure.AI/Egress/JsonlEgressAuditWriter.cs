@@ -67,10 +67,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var dir = config.CurrentValue.AI.Egress.AuditStoragePath;
-        _filePath = Path.Combine(dir, "egress.jsonl");
-        _chain = new HashChainedJsonlWriter(
-            DatedAuditSegments.BesideLegacyFile(_filePath, timeProvider), _filePath + ".lock", logger);
+        var chain = AuditChains.Egress(config.CurrentValue, timeProvider);
+        _filePath = chain.Segments.LegacyFile!;
+        _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _logger = logger;
     }
 

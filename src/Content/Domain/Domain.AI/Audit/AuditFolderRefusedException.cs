@@ -1,9 +1,9 @@
 namespace Domain.AI.Audit;
 
 /// <summary>
-/// An audit chain's folder holds a file that would let records be written where verification does not read them,
-/// so the chain is neither written nor verified until someone deals with the file (#416). Not a broken chain:
-/// nothing has been verified, and deleting the verification checkpoint does not clear it.
+/// An audit chain cannot be written or verified as its storage stands (#416): its folder holds a file that would let
+/// records be written where verification does not read them, or its archive is configured but not there. Not a
+/// broken chain: nothing has been verified, and deleting the verification checkpoint does not clear it.
 /// </summary>
 public sealed class AuditFolderRefusedException : IOException
 {

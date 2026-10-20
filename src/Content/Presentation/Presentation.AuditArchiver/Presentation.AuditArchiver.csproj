@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Presentation.AuditArchiver</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Presentation.AuditArchiver.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Only this host writes the archive. The Blob client lives here, not in Infrastructure.AI, so no application
+         host ships code that can write it (#416). -->
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Azure.Storage.Blobs" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\Application.Core\Application.Core.csproj" />
+    <ProjectReference Include="..\..\Domain\Domain.Common\Domain.Common.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI\Infrastructure.AI.csproj" />
+  </ItemGroup>
+
+</Project>

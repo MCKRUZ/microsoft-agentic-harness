@@ -76,7 +76,7 @@ public sealed class ComplianceReportMarkdownRendererTests
             [
                 new ComplianceChainIntegrity
                 {
-                    ChainName = "governance", IsValid = false, VerifiedCount = 10,
+                    ChainName = "governance", IsValid = false, StartSequence = 0, VerifiedCount = 10,
                     FailureReason = "record-hash mismatch",
                 },
             ],

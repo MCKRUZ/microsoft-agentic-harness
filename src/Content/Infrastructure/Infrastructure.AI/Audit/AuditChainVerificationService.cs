@@ -155,8 +155,8 @@ public sealed class AuditChainVerificationService : BackgroundService
                 if (result.IsValid)
                 {
                     _logger.LogInformation(
-                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s), head sequence {HeadSequence}.",
-                        chain.AuditName, result.VerifiedCount, result.HeadSequence);
+                        "Audit chain '{AuditName}' verified intact: {VerifiedCount} record(s) from sequence {StartSequence}, head sequence {HeadSequence}.",
+                        chain.AuditName, result.VerifiedCount, result.StartSequence, result.HeadSequence);
 
                     if (result is { HeadSequence: >= 0, HeadHash: { } headHash })
                     {
@@ -222,6 +222,7 @@ public sealed class AuditChainVerificationService : BackgroundService
                 VerifiedAt = now,
                 AuditName = auditName,
                 IsValid = result.IsValid,
+                StartSequence = result.StartSequence,
                 VerifiedCount = result.VerifiedCount,
                 FirstBrokenSequence = result.FirstBrokenSequence,
                 FailureReason = result.FailureReason,
@@ -254,6 +255,7 @@ public sealed class AuditChainVerificationService : BackgroundService
         public required DateTimeOffset VerifiedAt { get; init; }
         public required string AuditName { get; init; }
         public required bool IsValid { get; init; }
+        public required long StartSequence { get; init; }
         public required long VerifiedCount { get; init; }
         public long? FirstBrokenSequence { get; init; }
         public string? FailureReason { get; init; }

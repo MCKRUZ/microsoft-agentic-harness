@@ -98,7 +98,7 @@ public sealed partial class HashChainedJsonlWriter
     {
         var hint = await ReadHintAsync(lockFile, cancellationToken).ConfigureAwait(false);
         if (hint is null)
-            return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
+            return await WalkFromStartAsync(segments, cancellationToken).ConfigureAwait(false);
 
         var index = IndexOfSegment(segments, hint.Segment);
         var check = index < 0
@@ -126,7 +126,7 @@ public sealed partial class HashChainedJsonlWriter
                 _displayLocation, hint.Sequence, hint.Segment);
         }
 
-        return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
+        return await WalkFromStartAsync(segments, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

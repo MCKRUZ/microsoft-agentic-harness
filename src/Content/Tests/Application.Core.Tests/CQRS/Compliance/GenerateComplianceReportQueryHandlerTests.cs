@@ -198,12 +198,12 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         var intactChain = new Mock<IVerifiableAuditChain>();
         intactChain.SetupGet(c => c.AuditName).Returns("drift");
         intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AuditChainVerificationResult.Valid(42));
+            .ReturnsAsync(AuditChainVerificationResult.Valid(0, 42));
 
         var brokenChain = new Mock<IVerifiableAuditChain>();
         brokenChain.SetupGet(c => c.AuditName).Returns("governance");
         brokenChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AuditChainVerificationResult.Broken(10, 11, "record-hash mismatch"));
+            .ReturnsAsync(AuditChainVerificationResult.Broken(0, 10, 11, "record-hash mismatch"));
 
         var sut = CreateSut([intactChain.Object, brokenChain.Object]);
 
@@ -240,7 +240,7 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         var chain = new Mock<IVerifiableAuditChain>();
         chain.SetupGet(c => c.AuditName).Returns("drift");
         chain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AuditChainVerificationResult.Valid(42));
+            .ReturnsAsync(AuditChainVerificationResult.Valid(0, 42));
         _checkpoints.Setup(c => c.ReadAsync(chain.Object, It.IsAny<CancellationToken>())).ReturnsAsync(checkpoint);
 
         await CreateSut([chain.Object]).Handle(NewQuery(), CancellationToken.None);
@@ -267,7 +267,7 @@ public sealed class GenerateComplianceReportQueryHandlerTests
         var intactChain = new Mock<IVerifiableAuditChain>();
         intactChain.SetupGet(c => c.AuditName).Returns("drift");
         intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AuditChainVerificationResult.Valid(42));
+            .ReturnsAsync(AuditChainVerificationResult.Valid(0, 42));
 
         var result = await CreateSut([busyChain.Object, intactChain.Object]).Handle(NewQuery(), CancellationToken.None);
 

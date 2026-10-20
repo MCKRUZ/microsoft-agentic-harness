@@ -142,9 +142,9 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
     [InlineData(false)]
     public async Task GetRecords_FindsARecordThatLandedInALaterDatedSegment(bool withEnd)
     {
-        // #416: a host whose clock is ahead starts 2025-06-20's segment; the writer never appends to an
+        // #416: a host whose clock is ahead starts 2025-06-16's segment; the writer never appends to an
         // earlier segment than the latest, so this host's 2025-06-15 record lands there too.
-        var aheadClock = new FakeTimeProvider(new DateTimeOffset(2025, 6, 20, 10, 0, 0, TimeSpan.Zero));
+        var aheadClock = new FakeTimeProvider(new DateTimeOffset(2025, 6, 16, 10, 0, 0, TimeSpan.Zero));
         var config = new AppConfig { AI = new AIConfig { DriftDetection = new DriftDetectionConfig { AuditPath = _tempDir } } };
         using (var ahead = new JsonlDriftAuditStore(
             Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config), aheadClock, Mock.Of<ILogger<JsonlDriftAuditStore>>()))
