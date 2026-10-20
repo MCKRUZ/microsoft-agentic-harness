@@ -177,7 +177,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     public void Dispose() => _chain.Dispose();
 
     private string GetFilePath(DateTimeOffset recordedAt) =>
-        Path.Combine(_auditDirectory, $"{recordedAt:yyyy-MM-dd}.jsonl");
+        Path.Combine(_auditDirectory, recordedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
 
     private IReadOnlyList<string> ResolveFilePaths(DriftAuditQuery query)
     {
@@ -209,7 +209,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
     {
         var paths = new List<string>();
         for (var date = start; date <= end; date = date.AddDays(1))
-            paths.Add(Path.Combine(_auditDirectory, $"{date:yyyy-MM-dd}.jsonl"));
+            paths.Add(Path.Combine(_auditDirectory, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl"));
         return paths;
     }
 

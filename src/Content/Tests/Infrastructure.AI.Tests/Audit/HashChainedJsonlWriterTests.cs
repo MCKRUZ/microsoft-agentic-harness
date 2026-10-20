@@ -418,7 +418,10 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
         using (var sut = NewWriter())
             checkpoint = await AppendAndCheckpointAsync(sut, 3);
 
+        // Deleting the lock file too drops the recorded head, so the new chain starts again from genesis and
+        // is internally consistent: only the checkpoint can tell.
         File.Delete(_filePath);
+        File.Delete(_filePath + ".lock");
         using var regrown = NewWriter();
         for (var i = 0; i < 5; i++)
             (await regrown.AppendAsync($"{{\"forged\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
@@ -511,5 +514,123 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
         var result = await sut.VerifyChainAsync(CancellationToken.None);
         result.IsValid.Should().BeFalse("the forged line must still be reported");
         result.FirstBrokenSequence.Should().Be(1);
+    }
+
+    // #416 security review of the cross-process lock: every writer must agree on the head, whatever the
+    // files look like, and a chain that got shorter must stay visibly shorter.
+
+    [Fact]
+    public async Task TwoWriters_AfterACrashLeftATornLine_DoNotReuseASequence()
+    {
+        using var first = NewWriter();
+        using var second = NewWriter();
+        (await first.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        // A writer died half-way through a line: no newline, not a record.
+        await File.AppendAllTextAsync(_filePath, "{\"torn\":");
+
+        (await second.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        (await first.AppendAsync("{\"a\":2}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var records = (await File.ReadAllLinesAsync(_filePath)).Where(l => l.Split('\t').Length == 4).ToList();
+        records.Select(l => l.Split('\t')[3]).Should().Equal("0", "1", "2");
+        records[2].Split('\t')[2].Should().Be(records[1].Split('\t')[1], "the third record chains onto the second");
+        (await File.ReadAllLinesAsync(_filePath)).Should().Contain("{\"torn\":", "the torn line stays on its own line");
+    }
+
+    [Fact]
+    public async Task Append_AfterRecordsWereCutFromTheEnd_KeepsTheGapVisible()
+    {
+        using var sut = NewWriter();
+        for (var i = 0; i < 3; i++)
+            (await sut.AppendAsync($"{{\"a\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var firstLine = (await File.ReadAllLinesAsync(_filePath))[0];
+        await File.WriteAllTextAsync(_filePath, firstLine + "\n");
+
+        (await sut.AppendAsync("{\"a\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeFalse("an append must not paper over records cut from the end");
+        result.FirstBrokenSequence.Should().Be(1);
+        result.FailureReason.Should().Contain("Sequence gap");
+    }
+
+    [Fact]
+    public async Task Append_OnRestart_ContinuesFromTheRecordedHeadWithoutRescanning()
+    {
+        using (var before = NewWriter())
+        {
+            for (var i = 0; i < 3; i++)
+                (await before.AppendAsync($"{{\"a\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        // Tamper with the first record. A rescan would stop there and restart the chain at sequence 0;
+        // the recorded head carries on from sequence 2. Same length, so the head's position still holds.
+        var lines = await File.ReadAllLinesAsync(_filePath);
+        var parts = lines[0].Split('\t');
+        lines[0] = string.Join('\t', "{\"a\":9}", parts[1], parts[2], parts[3]);
+        await File.WriteAllTextAsync(_filePath, string.Join('\n', lines) + "\n");
+
+        using var after = NewWriter();
+        (await after.AppendAsync("{\"a\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        (await File.ReadAllLinesAsync(_filePath))[^1].Should().EndWith("\t3");
+    }
+
+    [Fact]
+    public async Task Append_WithAnUnreadableRecordedHead_RescansAndStillChains()
+    {
+        using (var before = NewWriter())
+            (await before.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        await File.WriteAllTextAsync(_filePath + ".lock", "not json");
+
+        using var after = NewWriter();
+        (await after.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var result = await after.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeTrue(result.FailureReason);
+        result.VerifiedCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Segmented_WriterWhoseClockIsBehind_AppendsToTheLatestSegment()
+    {
+        using var ahead = NewSegmentedWriter();
+        using var behind = NewSegmentedWriter();
+
+        _segment = "b.jsonl";
+        (await ahead.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        _segment = "a.jsonl"; // the other host still thinks it is yesterday
+        (await behind.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        File.Exists(Path.Combine(_tempDir, "a.jsonl")).Should().BeFalse("an earlier segment would put sequence numbers out of order");
+        var result = await ahead.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeTrue(result.FailureReason);
+        result.VerifiedCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task LockHeldPastTheTimeout_AppendFailsAndVerifyReportsBusyNotBroken()
+    {
+        using var sut = NewWriter();
+        (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        using var other = NewWriter();
+
+        Domain.Common.Result append;
+        Func<Task> verify;
+        await using (new FileStream(_filePath + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var appendTask = sut.AppendAsync("{\"a\":1}", CancellationToken.None);
+            var verifyTask = other.VerifyChainAsync(CancellationToken.None);
+            append = await appendTask;
+            verify = () => verifyTask;
+            await verify.Should().ThrowAsync<AuditChainBusyException>();
+        }
+
+        append.IsSuccess.Should().BeFalse();
+        append.Errors.Should().ContainSingle().Which.Should().Contain("busy");
+        (await sut.VerifyChainAsync(CancellationToken.None)).VerifiedCount.Should().Be(1);
     }
 }

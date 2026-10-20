@@ -143,9 +143,9 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     [Fact]
     public async Task VerifyAllChains_AgainstARealChain_ReportsTheLogBeingDeletedAndRegrown()
     {
-        // End to end with the real primitive: three records, a pass, then the file is deleted and a
-        // new chain of the same length grows in its place. Internally consistent, so only the checkpoint
-        // can tell.
+        // End to end with the real primitive: three records, a pass, then the file and its lock file (which
+        // records the head) are deleted and a new chain of the same length grows in their place. Internally
+        // consistent, so only the checkpoint can tell.
         var logPath = Path.Combine(_receiptDir, "chain", "audit.jsonl");
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
         var writer = new HashChainedJsonlWriter(logPath, NullLogger.Instance);
@@ -159,6 +159,7 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
 
         writer.Dispose();
         File.Delete(logPath);
+        File.Delete(logPath + ".lock");
         var regrown = new HashChainedJsonlWriter(logPath, NullLogger.Instance);
         for (var i = 0; i < 3; i++)
             (await regrown.AppendAsync($"{{\"forged\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
