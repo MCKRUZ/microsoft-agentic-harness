@@ -276,4 +276,21 @@ public sealed class GenerateComplianceReportQueryHandlerTests
             c => c.ChainName == "governance" && !c.IsValid && c.FailureReason!.StartsWith("Not verified"));
         result.Value.ChainIntegrity.Should().ContainSingle(c => c.ChainName == "drift" && c.IsValid);
     }
+
+    [Fact]
+    public async Task Handle_ARefusedAuditFolder_IsReportedAsNotVerifiedWithTheReason()
+    {
+        // #416: a file planted in the chain's folder stops it being verified; the report says why, not "intact".
+        SetUpAllSourcesEmpty();
+        var refused = new Mock<IVerifiableAuditChain>();
+        refused.SetupGet(c => c.AuditName).Returns("governance");
+        refused.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AuditFolderRefusedException("folder holds 2026-10-21.JSONL"));
+
+        var result = await CreateSut([refused.Object]).Handle(NewQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.ChainIntegrity.Should().ContainSingle(c =>
+            c.ChainName == "governance" && !c.IsValid && c.FailureReason == "Not verified: folder holds 2026-10-21.JSONL");
+    }
 }

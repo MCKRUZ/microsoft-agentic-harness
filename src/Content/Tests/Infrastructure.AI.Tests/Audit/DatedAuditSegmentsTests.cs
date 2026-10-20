@@ -1,3 +1,4 @@
+using Domain.AI.Audit;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -123,12 +124,37 @@ public sealed class DatedAuditSegmentsTests : IDisposable
 
         (await sut.AppendAsync("{\"n\":1}", CancellationToken.None)).IsSuccess.Should().BeFalse();
 
-        var verified = await sut.VerifyChainAsync(CancellationToken.None);
-        verified.IsValid.Should().BeFalse();
-        verified.FailureReason.Should().Contain("wrong letter case");
+        // Not a tamper break a re-baseline would seem to clear: nothing was verified.
+        var verify = () => sut.VerifyChainAsync(CancellationToken.None);
+        (await verify.Should().ThrowAsync<AuditFolderRefusedException>()).WithMessage("*wrong letter case*");
 
         var read = async () => { await foreach (var _ in sut.ReadAllPayloadsAsync(CancellationToken.None)) { } };
         await read.Should().ThrowAsync<IOException>();
+    }
+
+    [Fact]
+    public async Task AHiddenDayFile_IsStillPartOfTheChain()
+    {
+        // Directory listings skip hidden and system files by default. A hidden earlier day must stay in the chain
+        // for the writer and for verification alike, not drop out and let its sequence numbers be handed out again.
+        if (!OperatingSystem.IsWindows())
+            return; // the hidden attribute is a Windows file attribute
+
+        using var sut = Writer();
+        (await sut.AppendAsync("{\"n\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var firstDay = Path.Combine(_tempDir, "governance", "2026-10-19.jsonl");
+        File.SetAttributes(firstDay, File.GetAttributes(firstDay) | FileAttributes.Hidden);
+        _clock.Advance(TimeSpan.FromHours(1)); // the next record goes to the next day's file
+
+        (await sut.AppendAsync("{\"n\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var verified = await sut.VerifyChainAsync(CancellationToken.None);
+        verified.IsValid.Should().BeTrue();
+        verified.VerifiedCount.Should().Be(2);
+        var payloads = new List<string>();
+        await foreach (var payload in sut.ReadAllPayloadsAsync(CancellationToken.None))
+            payloads.Add(payload);
+        payloads.Should().Equal("{\"n\":0}", "{\"n\":1}");
     }
 
     [Fact]

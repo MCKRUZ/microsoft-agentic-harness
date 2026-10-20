@@ -205,7 +205,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     public async IAsyncEnumerable<string> ReadAllPayloadsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        foreach (var segmentPath in _orderedSegments())
+        // The same files the writer appends to and verification reads (#416).
+        foreach (var segmentPath in WithCurrentSegment(_orderedSegments()))
         {
             if (!File.Exists(segmentPath))
                 continue;
@@ -273,6 +274,11 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             _logger.LogError(ex, "Audit record not written to {AuditLocation}: the chain is busy", _displayLocation);
             return Result.Fail("Failed to persist audit record: the audit chain is busy. Retry the operation.");
         }
+        catch (AuditFolderRefusedException ex)
+        {
+            _logger.LogCritical(ex, "Audit record not written to {AuditLocation}: the folder is refused", _displayLocation);
+            return Result.Fail($"Failed to persist audit record: {ex.Message}");
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to append audit record to {AuditLocation}", _displayLocation);
@@ -313,7 +319,9 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
             {
                 // Lengths through open handles, not cached directory entries, so another host's appends are seen.
-                reach = _orderedSegments()
+                // The same files the writer appends to, current segment included, so nothing can be written where
+                // verification does not read (#416).
+                reach = WithCurrentSegment(_orderedSegments())
                     .Select(p => new SegmentReach(p, LengthOf(p)))
                     .Where(s => s.Length is not null)
                     .ToList();
@@ -331,8 +339,10 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                     scan.LastValidSequence,
                     scan.LastValidSequence >= 0 ? scan.LastValidHash : null);
         }
-        // A busy chain is not a broken one: let it propagate rather than report a tamper break at 0.
-        catch (Exception ex) when (ex is (IOException and not AuditChainBusyException) or UnauthorizedAccessException)
+        // A busy chain, or a folder refused before anything was read, is not a broken one: let it propagate rather
+        // than report a tamper break at 0 that a re-baseline would seem to fix.
+        catch (Exception ex) when (ex is (IOException and not (AuditChainBusyException or AuditFolderRefusedException))
+                                   or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to read audit chain at {AuditLocation}", _displayLocation);
             return AuditChainVerificationResult.Broken(0, 0, $"Failed to read audit chain: {ex.Message}");

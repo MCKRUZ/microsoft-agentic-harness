@@ -1,4 +1,5 @@
 using System.Globalization;
+using Domain.AI.Audit;
 
 namespace Infrastructure.AI.Audit;
 
@@ -37,8 +38,17 @@ public sealed class DatedAuditSegments
     private const string DateFormat = "yyyy-MM-dd";
     private const string Extension = ".jsonl";
 
-    /// <summary>Lists names in any letter case on every platform, so a mis-cased day name is seen everywhere.</summary>
-    private static readonly EnumerationOptions AnyCase = new() { MatchCasing = MatchCasing.CaseInsensitive };
+    /// <summary>
+    /// Lists every file the writer could open: names in any letter case on every platform, so a mis-cased day name is
+    /// seen everywhere, and hidden or system files too, which the defaults skip although the writer can still append
+    /// to them. An unreadable folder fails rather than listing as empty.
+    /// </summary>
+    private static readonly EnumerationOptions AnyCase = new()
+    {
+        MatchCasing = MatchCasing.CaseInsensitive,
+        AttributesToSkip = FileAttributes.None,
+        IgnoreInaccessible = false
+    };
 
     private readonly TimeProvider _clock;
 
@@ -103,9 +113,10 @@ public sealed class DatedAuditSegments
             if (DayOf(path) is not null)
                 days.Add(path);
             else if (IsMiscasedDay(Path.GetFileName(path)))
-                throw new IOException(
+                throw new AuditFolderRefusedException(
                     $"Audit folder {Folder} holds {Path.GetFileName(path)}, a day-file name in the wrong letter case. " +
-                    "The chain will not be written or verified until it is removed or renamed.");
+                    "The chain is not written or verified until it is renamed to lower case (yyyy-MM-dd.jsonl); " +
+                    "remove it only if it is empty, since it may hold audit records.");
         }
 
         segments.AddRange(days.OrderBy(Path.GetFileName, StringComparer.Ordinal));
