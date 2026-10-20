@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.Scoping;
 
@@ -50,6 +51,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Scoping;
 /// preserve (never null-clobber) an existing owner/tenant on re-write.
 /// </para>
 /// </remarks>
+[PersonalDataChannel("Decorates the configured knowledge-graph store with tenant isolation and writes through to it; the inner store describes the data.")]
 public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
 {
     private readonly IKnowledgeGraphStore _inner;

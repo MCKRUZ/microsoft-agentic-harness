@@ -1,5 +1,6 @@
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -21,6 +22,7 @@ namespace Infrastructure.AI.Persistence;
 /// it is now a style choice rather than a constraint.
 /// </para>
 /// </remarks>
+[PersonalDataChannel("The conversations SQLite database; the conversation store, budget tracker and turn lease describe their own tables.")]
 public sealed class ConversationDbContext : DbContext
 {
     /// <summary>Conversation headers.</summary>

@@ -4,6 +4,7 @@ using Infrastructure.AI.Persistence.Entities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Governance;
 
@@ -21,6 +22,13 @@ namespace Infrastructure.AI.Governance;
 /// <see cref="SqliteErrorCodes"/> value: which one SQLite reports depends on how the key is
 /// declared, not on anything the caller controls.
 /// </remarks>
+[PersonalDataStore(
+    "The call-once ledger in governance-state SQLite (off unless call-once enforcement is durable): one row per conversation or run id, tool name and time. Never pruned on purpose, since deleting a row re-arms a call-once tool. Operational, so not exported.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotApplicable)]
 public sealed class EfCoreToolCallLedger : IToolCallLedger
 {
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;

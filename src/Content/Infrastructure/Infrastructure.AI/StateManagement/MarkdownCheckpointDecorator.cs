@@ -6,6 +6,7 @@ using Infrastructure.AI.StateManagement.Checkpoints;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.StateManagement;
 
@@ -33,6 +34,13 @@ namespace Infrastructure.AI.StateManagement;
 /// - Save: Saves via inner, then generates markdown
 /// - Others: Delegate to inner
 /// </remarks>
+[PersonalDataStore(
+    "A markdown rendering of each workflow's state at {StateManagement:BasePath}/{workflowId}/inputs/workflow-state.md, on by default. Records carry a workflow id, not an owner. Removed with its workflow.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotSupported)]
 public class MarkdownCheckpointDecorator : IStateManager
 {
     private readonly IStateManager _inner;

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Changes;
 
@@ -15,6 +16,13 @@ namespace Infrastructure.AI.Changes;
 /// on duplicate saves (last-write-wins on the same id). Registered as singleton
 /// because state must survive across MediatR scopes within a host process.
 /// </remarks>
+[PersonalDataStore(
+    "The default change-proposal store, held in process memory: agent-proposed skill, prompt or config diffs and gate history with reviewer ids and reasons. Lost at restart; nothing deletes a proposal before then.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Volatile,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class InMemoryChangeProposalStore : IChangeProposalStore
 {
     private readonly ConcurrentDictionary<string, ChangeProposal> _byId =

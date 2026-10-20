@@ -7,6 +7,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Agents;
 
@@ -30,6 +31,13 @@ namespace Infrastructure.AI.Agents;
 /// <see cref="DelegationRecord.DelegationId"/>, which represents the latest state.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Append-only JSONL of subagent delegations under {Subagent:DelegationStoragePath} (default .agent-sessions/delegations), holding model-written task descriptions and failure reasons. Records carry no user or conversation id; nothing deletes them.",
+    PersonalDataCategories.ConversationContent | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
 {
     private const int MaxLockCacheEntries = 100;

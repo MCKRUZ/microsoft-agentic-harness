@@ -1,6 +1,7 @@
 using Infrastructure.AI.Persistence.Configurations;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -9,6 +10,7 @@ namespace Infrastructure.AI.Persistence;
 /// edges, execution state, and audit logs. Targets SQLite with WAL mode
 /// for read concurrency and stores enums as strings for resilience.
 /// </summary>
+[PersonalDataChannel("The planner SQLite database; the plan-state and attestation stores describe their own tables.")]
 public sealed class PlannerDbContext : DbContext
 {
     /// <summary>Plan graph roots.</summary>

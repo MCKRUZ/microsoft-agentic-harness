@@ -1,5 +1,6 @@
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Prompts.Persistence;
 
@@ -8,6 +9,7 @@ namespace Infrastructure.AI.Prompts.Persistence;
 /// append-only writes and read-side indexes on (TraceId, CaseId, RecordedAtUtc)
 /// so trace-replay queries can efficiently recover historical prompt assignments.
 /// </summary>
+[PersonalDataChannel("The prompt-usage SQLite database; the prompt-usage store describes its table.")]
 public sealed class PromptUsageDbContext : DbContext
 {
     /// <summary>Append-only prompt usage events.</summary>

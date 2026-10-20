@@ -2,6 +2,7 @@ using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Prompts.Persistence;
 
@@ -11,6 +12,13 @@ namespace Infrastructure.AI.Prompts.Persistence;
 /// for short-lived contexts so the store can be a singleton without leaking a
 /// shared DbContext across threads.
 /// </summary>
+[PersonalDataStore(
+    "The prompt-usage SQLite table: each rendered prompt's name, version and hash with trace ids and a case id that fact extraction sets to {conversationId}:{turn}. No owner column; operational telemetry, so not exported. Nothing deletes rows.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotApplicable)]
 public sealed class EfCorePromptUsageStore : IPromptUsageStore
 {
     private readonly IDbContextFactory<PromptUsageDbContext> _contextFactory;

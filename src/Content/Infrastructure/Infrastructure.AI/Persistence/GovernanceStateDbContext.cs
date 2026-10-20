@@ -1,5 +1,6 @@
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -33,6 +34,7 @@ namespace Infrastructure.AI.Persistence;
 /// <c>IChangeProposalStore.ListAsync</c>, including the <c>BlastRadius</c> range predicate.
 /// </para>
 /// </remarks>
+[PersonalDataChannel("The durable governance-state SQLite database; the escalation, change-proposal and call-once ledger stores describe their own tables.")]
 public sealed class GovernanceStateDbContext : DbContext
 {
     /// <summary>Durably persisted escalation state records.</summary>

@@ -6,6 +6,7 @@ using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.RAG.GraphRag;
 
@@ -32,6 +33,13 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// they are simply removed from the cache. Background sync only pushes surviving dirty entries.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Cross-session memory records cached in process and synced to the graph database backend, stamped with their owner. Owner erasure purges them. The decay scheduler that would prune them is off by default, so nothing deletes them otherwise.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.NotSupported)]
 public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposable
 {
     private static readonly ActivitySource _activitySource =

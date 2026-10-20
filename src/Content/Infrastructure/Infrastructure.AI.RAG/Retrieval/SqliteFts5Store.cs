@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.RAG.Retrieval;
 
@@ -45,6 +46,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// copy → drop); legacy rows land in the default collection with null stamps.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "A full-text SQLite table in a shared in-memory database (DI never passes a file path) holding chunk text, document id, collection and owner and tenant stamps; lost at restart. Deletion is by document id only, never by owner.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.ItemDeleteOnly,
+    ExportSupport.NotSupported)]
 public sealed class SqliteFts5Store : IBm25Store
 {
     private const string DefaultCollection = "default";

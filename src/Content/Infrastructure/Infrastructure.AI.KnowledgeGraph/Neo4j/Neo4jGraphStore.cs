@@ -8,6 +8,7 @@ using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Neo4j.Driver;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.Neo4j;
 
@@ -20,6 +21,13 @@ namespace Infrastructure.AI.KnowledgeGraph.Neo4j;
 /// <c>bolt://host:7687</c> with credentials in <c>AppConfig.AI.Rag.GraphRag.ConnectionString</c>
 /// formatted as <c>bolt://user:password@host:7687</c>.
 /// </remarks>
+[PersonalDataStore(
+    "Knowledge-graph nodes and edges in Neo4j: extracted entities, facts and per-user memories with owner and tenant ids. Expiry is stamped per entity type (Fact 365d, Concept 730d) and swept daily, but unlisted types, including learnings and work episodes, never expire. Export returns nodes only.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.KnowledgeGraph.Neo4j");

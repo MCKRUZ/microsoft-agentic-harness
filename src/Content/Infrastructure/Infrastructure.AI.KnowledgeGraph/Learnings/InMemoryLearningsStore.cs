@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Learnings;
 using Domain.AI.Learnings;
 using Domain.Common;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 
@@ -9,6 +10,13 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// Simple in-memory implementation of <see cref="ILearningsStore"/> for testing.
 /// Registered with keyed DI key <c>"in_memory"</c>.
 /// </summary>
+[PersonalDataStore(
+    "Learnings held in process memory, recalled into every user's agent turns; lost at restart. Entries carry no owner, and deletion is a soft delete that keeps the entry.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Volatile,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class InMemoryLearningsStore : ILearningsStore
 {
     private readonly ConcurrentDictionary<Guid, LearningEntry> _entries = new();

@@ -1,6 +1,7 @@
 using Infrastructure.AI.Persistence.Configurations;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -12,6 +13,7 @@ namespace Infrastructure.AI.Persistence;
 /// (a training run's checkpoints are worth keeping or deleting independently of a plan's), and a separate
 /// file lets each be backed up, pruned or moved without touching the others.
 /// </remarks>
+[PersonalDataChannel("The skill-training SQLite database; the checkpoint store and run lease describe their own tables.")]
 public sealed class SkillTrainingDbContext : DbContext
 {
     /// <summary>The longest run id stored.</summary>

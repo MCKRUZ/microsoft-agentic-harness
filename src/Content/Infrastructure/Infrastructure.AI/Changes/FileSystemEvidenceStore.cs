@@ -5,6 +5,7 @@ using Domain.Common.Helpers;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Changes;
 
@@ -29,6 +30,13 @@ namespace Infrastructure.AI.Changes;
 /// bytes, honoring the <c>IEvidenceStore</c> idempotency contract without ever
 /// throwing.
 /// </remarks>
+[PersonalDataStore(
+    "Content-addressed change-gate evidence blobs under {Changes:EvidenceStoragePath} (default .agent-sessions/changes/evidence), never deleted. Registered, but nothing in production writes to it today.",
+    PersonalDataCategories.DocumentContent | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class FileSystemEvidenceStore : IEvidenceStore
 {
     private const string HashPrefix = "sha256:";

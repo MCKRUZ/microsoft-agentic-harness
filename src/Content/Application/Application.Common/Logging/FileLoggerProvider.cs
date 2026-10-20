@@ -5,6 +5,7 @@ using Domain.Common.Config;
 using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Application.Common.Logging;
 
@@ -33,6 +34,13 @@ namespace Application.Common.Logging;
 /// </code>
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Free-form log text in {Logging:LogsBasePath}/{runId}/log.txt and console.txt, never deleted. Only written once a run is started (StartNewRun), which nothing in production calls today. Redaction masks emails, phones and keys, not names or ids.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class FileLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new();

@@ -9,6 +9,7 @@ using Domain.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Audit;
 
@@ -55,6 +56,13 @@ namespace Infrastructure.AI.Audit;
 /// tailing logs ever gets that the audit trail has gone dark.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Hash-chained JSONL under {Governance:AuditStoragePath} (default .agent-sessions/governance): agent id, action and decision, including approver names and reasons and memory-write keys. Kept by design: deleting records would break the chain.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.PeopleNames | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()

@@ -10,6 +10,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Egress;
 
@@ -28,6 +29,13 @@ namespace Infrastructure.AI.Egress;
 /// surface area over time.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: full target URI with query string, host, resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain.",
+    PersonalDataCategories.NetworkTargets | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Tenant,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IDisposable
 {
     /// <inheritdoc />

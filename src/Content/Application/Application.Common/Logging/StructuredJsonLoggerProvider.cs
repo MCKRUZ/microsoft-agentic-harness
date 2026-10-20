@@ -4,6 +4,7 @@ using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Application.Common.Logging;
 
@@ -18,6 +19,13 @@ namespace Application.Common.Logging;
 /// <see cref="CompleteRun"/> flushes and closes it.
 /// A background thread drains a bounded queue (capacity 1000).
 /// </remarks>
+[PersonalDataStore(
+    "JSONL log entries with scope properties in {Logging:LogsBasePath}/{runId}/structured.jsonl, never deleted. Only written once a run is started (StartNewRun), which nothing in production calls today.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed class StructuredJsonLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, StructuredJsonLogger> _loggers = new();

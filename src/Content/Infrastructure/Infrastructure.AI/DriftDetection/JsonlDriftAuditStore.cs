@@ -9,6 +9,7 @@ using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.DriftDetection;
 
@@ -23,6 +24,13 @@ namespace Infrastructure.AI.DriftDetection;
 /// breaks the chain exactly as deleting a single record would. Date partitioning is preserved for
 /// efficient range queries; <see cref="GetRecordsAsync"/> resolves only the files in range.
 /// </remarks>
+[PersonalDataStore(
+    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller's identity. Kept by design: deleting records would break the chain.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.KeptByDesign,
+    ErasureSupport.Exempt,
+    ExportSupport.NotSupported)]
 public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()

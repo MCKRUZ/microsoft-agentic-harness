@@ -5,6 +5,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 
@@ -23,6 +24,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 /// <see cref="CurrentUserId"/> is <see langword="null"/>, and the existing <c>?? "system"</c>
 /// / <c>?? ownerId</c> fallbacks attribute the operation to the system actor.
 /// </remarks>
+[PersonalDataChannel("Decorates the configured knowledge-graph store, stamping retention and provenance before writing through to it; the inner store describes the data.")]
 public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
 {
     private readonly IKnowledgeGraphStore _inner;

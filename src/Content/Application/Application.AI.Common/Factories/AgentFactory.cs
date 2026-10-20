@@ -12,6 +12,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Domain.Common.Compliance;
 
 namespace Application.AI.Common.Factories;
 
@@ -32,6 +33,13 @@ namespace Application.AI.Common.Factories;
 ///   <item><c>AgentFactory.FromSkills.cs</c> — the entry points that start from skill ids, prerequisite validation, and batch discovery.</item>
 /// </list>
 /// </remarks>
+[PersonalDataStore(
+    "Turns on the chat response cache: model responses, including tool-call arguments, cached as JSON under a hash of the request. Process memory by default; Redis when CacheType is RedisCache, with no expiry set. Not tied to any user.",
+    PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public partial class AgentFactory : IAgentFactory
 {
     /// <summary>

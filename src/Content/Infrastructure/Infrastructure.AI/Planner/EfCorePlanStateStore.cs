@@ -8,6 +8,7 @@ using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Planner;
 
@@ -33,6 +34,13 @@ namespace Infrastructure.AI.Planner;
 /// constructor dependency so it stays visible to <c>ValidateOnBuild</c>.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "The planner SQLite database: plan graphs, step configurations (including LLM-call prompts), step outputs, error messages, attestations and an execution log, each plan stamped with the caller's owner and tenant. Nothing deletes plans.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Owner,
+    RetentionBasis.Unbounded,
+    ErasureSupport.NotSupported,
+    ExportSupport.NotSupported)]
 public sealed partial class EfCorePlanStateStore : IPlanStateStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
