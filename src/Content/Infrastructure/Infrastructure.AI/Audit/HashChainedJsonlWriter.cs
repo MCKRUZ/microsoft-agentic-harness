@@ -43,10 +43,13 @@ namespace Infrastructure.AI.Audit;
 /// chain by splitting one logical record across physical lines.
 /// </para>
 /// <para>
-/// <b>Trusted head.</b> The head an append chains onto is always a <i>cryptographically
-/// valid</i> record, never an unverified tail. A forged or torn line appended out of band
-/// therefore cannot seed the head; legitimate records continue to chain onto verified state,
-/// and the forged/torn line is still surfaced by <see cref="VerifyChainAsync(CancellationToken)"/>.
+/// <b>Choosing the head.</b> An append chains onto the last record that links to the chain
+/// before it, found by walking the chain and stepping over any line that does not link. A
+/// forged or torn line appended out of band therefore cannot seed the head; legitimate records
+/// continue past it, and the forged/torn line is still surfaced by
+/// <see cref="VerifyChainAsync(CancellationToken)"/>. The hashes are not keyed, so a forged
+/// line that <i>does</i> link is indistinguishable from a real record; tamper-evidence covers
+/// changes to records already written, not appends by someone who can write the folder.
 /// </para>
 /// <para>
 /// <b>Brownfield rollout.</b> When pointed at files that already contain un-chained lines
@@ -57,7 +60,8 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// <para>
 /// <b>Several processes, one chain (#416).</b> Every append and every verification takes a lock file
-/// beside the chain, held across processes, and the lock file also records the chain's head (see
+/// beside the chain, held across processes, and the lock file also records where the last append left
+/// the chain, as a hint the next append checks before resuming from it (see
 /// <c>HashChainedJsonlWriter.SharedHead.cs</c>). So scaled-out copies of the host sharing one storage
 /// location write one valid chain instead of interleaved ones that verify as tampering. Verification holds
 /// the lock only long enough to note how far each segment reaches, then reads up to there, so a line
@@ -83,9 +87,10 @@ namespace Infrastructure.AI.Audit;
 /// truncation.
 /// </para>
 /// <para>
-/// <b>Cost note.</b> An append reads the recorded head and one line, so its cost does not grow with
-/// the chain. Only the first append against a chain with no recorded head (a new deployment, or files
-/// written before #416) scans the whole chain. Verification scans it in full. Both scans are O(records).
+/// <b>Cost note.</b> An append checks the hint against one record and reads only what was written
+/// since, so its cost does not grow with the chain. Without a usable hint (a new deployment, files
+/// written before #416, or a hint that no longer matches) it walks the whole chain once. Verification
+/// scans it in full. Both are O(records).
 /// </para>
 /// </remarks>
 public sealed partial class HashChainedJsonlWriter : IDisposable
@@ -213,7 +218,8 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         {
             // Across processes: no other writer appends between reading the head and recording the new one.
             await using var chainLock = await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false);
-            var head = await LoadHeadAsync(chainLock, cancellationToken).ConfigureAwait(false);
+            var segments = _orderedSegments();
+            var head = await LoadHeadAsync(chainLock, segments, cancellationToken).ConfigureAwait(false);
 
             var sequence = head.Sequence + 1;
             var previousHash = head.Hash;
@@ -224,7 +230,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
                 previousHash, FieldSeparator,
                 sequence.ToString(CultureInfo.InvariantCulture), "\n");
 
-            var segmentPath = ChooseTargetSegment(_orderedSegments(), head);
+            var segmentPath = ChooseTargetSegment(segments);
             // Owner-only (#640, following #527's precedent): this is the tamper-evident audit log
             // covering governance/escalation/drift/change/egress events -- the most security-relevant
             // of the stores #640 migrated, since its tamper-evidence hash chain protects integrity but
@@ -232,7 +238,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
 
             var lengthAfterWrite = AppendLine(segmentPath, line);
-            WriteRecordedHead(chainLock, new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
+            WriteHint(chainLock,new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
             return Result.Success();
         }
         catch (AuditChainBusyException ex)
@@ -279,9 +285,10 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
             IReadOnlyList<SegmentReach> reach;
             await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
             {
+                // Lengths through open handles, not cached directory entries, so another host's appends are seen.
                 reach = _orderedSegments()
-                    .Where(File.Exists)
-                    .Select(p => new SegmentReach(p, new FileInfo(p).Length))
+                    .Select(p => new SegmentReach(p, LengthOf(p)))
+                    .Where(s => s.Length is not null)
                     .ToList();
             }
 

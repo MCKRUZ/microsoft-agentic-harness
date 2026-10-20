@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Domain.AI.Audit;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 
@@ -8,33 +9,31 @@ namespace Infrastructure.AI.Audit;
 
 /// <summary>
 /// The cross-process half of <see cref="HashChainedJsonlWriter"/> (#416): the lock every writer of a chain
-/// takes, and the chain head every writer reads from and writes back to inside that lock.
+/// takes, and how a writer works out the head to append after while holding it.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>One shared head, kept in the lock file.</strong> Each writer used to keep its own head in
-/// memory and re-derive it by scanning the files. With several processes, that let two writers disagree:
-/// a host whose clock put it in an earlier day's segment, a stale file size cached by an SMB client, or a
-/// torn line left by a crashed writer each led two writers to the same sequence number. Now the head
-/// (segment, length, sequence, hash) is written into the lock file by whoever appended last, and read
-/// back from it, through the locked handle, by whoever appends next. Every writer starts from the same
-/// state, so they cannot fork.
+/// <strong>One rule decides the head.</strong> Every writer walks the chain the same way: it tolerates
+/// legacy lines before the chain starts, skips (and logs) any later line that does not chain, and takes the
+/// last record that does. Because every writer applies the same rule to the same files under the same
+/// lock, they all reach the same head and cannot hand out a sequence twice, whatever torn or forged lines
+/// the files hold. Verification reports those lines; the writers only step over them.
 /// </para>
 /// <para>
-/// <strong>What a writer still checks.</strong> That the record the head names really ends the chain where
-/// the head says (a cheap read of one line); that the chain did not get shorter than the head (a shrink is
-/// never legitimate for an append-only log, so it is reported at Critical and the head is never lowered,
-/// leaving the gap visible to verification); and, link by link, anything written past the head by a
-/// writer that crashed before recording it. A line that does not chain is skipped, logged, and left for
-/// verification to report, and every writer skips it identically. Only with no usable head (first run,
-/// or after an upgrade) does a writer scan the whole chain; that is also what keeps a restart from paying
-/// for a full scan on every first append.
+/// <strong>The lock file holds a hint, never an authority.</strong> After each append the writer records in
+/// the lock file where the walk got to (segment, length, sequence, hash), so the next append resumes the
+/// walk from there instead of from the start. A writer resumes only when the hint names a listed segment
+/// and the record that ends at the recorded length really carries the recorded sequence and hash. Anything
+/// else (no hint, an unreadable one, a segment that is gone or shorter, a different record at that point)
+/// means a full walk. So editing or deleting the lock file can cost a writer time, but cannot choose what it
+/// chains onto or where it writes.
 /// </para>
 /// <para>
-/// <strong>Trust.</strong> The head in the lock file is not a security boundary: whoever can write the
-/// chain's folder can write it, and could equally append records that chain (the hashes are not keyed).
-/// A forged head makes later records chain onto the forgery, which verification reports; it cannot make
-/// a tampered chain verify.
+/// <strong>Records cut from the end.</strong> A chain that got shorter is logged at Critical and the walk
+/// takes the shorter chain's head, so the next record reuses the removed records' sequence numbers. The
+/// chain itself then looks whole; what catches it is the verification checkpoint (#416), which fails when
+/// the record it last verified is gone or different. Records added after one verification pass and removed
+/// before the next are not caught by either; that needs storage that refuses deletes (WORM).
 /// </para>
 /// </remarks>
 public sealed partial class HashChainedJsonlWriter
@@ -45,10 +44,13 @@ public sealed partial class HashChainedJsonlWriter
     /// <summary>How long to wait between attempts to take the lock.</summary>
     private static readonly TimeSpan LockRetryDelay = TimeSpan.FromMilliseconds(15);
 
-    /// <summary>How far back from a recorded length to look for the record that ends there.</summary>
-    private const int HeadCheckWindowBytes = 1024 * 1024;
+    /// <summary>The first read size when looking back for the record a hint names.</summary>
+    private const int HeadCheckFirstReadBytes = 4 * 1024;
 
-    /// <summary>The chain's head as the last writer recorded it.</summary>
+    /// <summary>The longest record the hint check will look back over before giving up and walking.</summary>
+    private const int HeadCheckMaxBytes = 1024 * 1024;
+
+    /// <summary>Where the last append left the chain: the hint the next append resumes from.</summary>
     /// <param name="Segment">The file name (not the path) of the segment the newest record is in.</param>
     /// <param name="Length">That segment's length just after the newest record was written.</param>
     /// <param name="Sequence">The newest record's sequence, or -1 for an empty chain.</param>
@@ -83,121 +85,115 @@ public sealed partial class HashChainedJsonlWriter
     }
 
     /// <summary>
-    /// Works out the head to append after, inside the lock: the recorded one when it still matches the files,
-    /// extended past anything a crashed writer left unrecorded; a full scan when there is no usable record.
+    /// Works out the head to append after, inside the lock: resumes the walk from the hint when it checks
+    /// out against the files, otherwise walks the whole chain.
     /// </summary>
-    private async Task<SharedHead> LoadHeadAsync(FileStream lockFile, CancellationToken cancellationToken)
+    private async Task<SharedHead> LoadHeadAsync(
+        FileStream lockFile, IReadOnlyList<string> segments, CancellationToken cancellationToken)
     {
-        var segments = _orderedSegments();
-        var recorded = await ReadRecordedHeadAsync(lockFile, cancellationToken).ConfigureAwait(false);
+        var hint = await ReadHintAsync(lockFile, cancellationToken).ConfigureAwait(false);
+        if (hint is null)
+            return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
 
-        if (recorded is not null && recorded.Sequence >= 0)
+        var index = IndexOfSegment(segments, hint.Segment);
+        if (index >= 0 && await EndsWithRecordAsync(segments[index], hint, cancellationToken).ConfigureAwait(false))
         {
-            var recordedIndex = IndexOfSegment(segments, recorded.Segment);
-            if (recordedIndex < 0)
-            {
-                _logger.LogCritical(
-                    "Audit chain at {AuditLocation}: segment {Segment}, which holds its newest record, is missing. " +
-                    "Continuing after the recorded head so verification reports the gap.",
-                    _displayLocation, recorded.Segment);
-                return recorded;
-            }
-
-            var length = new FileInfo(segments[recordedIndex]).Length;
-            if (length < recorded.Length)
-            {
-                _logger.LogCritical(
-                    "Audit chain at {AuditLocation}: segment {Segment} is {Length} bytes, shorter than the {Recorded} its " +
-                    "newest record ended at. Continuing after the recorded head so verification reports the gap.",
-                    _displayLocation, recorded.Segment, length, recorded.Length);
-                return recorded;
-            }
-
-            if (await EndsWithRecordAsync(segments[recordedIndex], recorded, cancellationToken).ConfigureAwait(false))
-                return await ExtendPastRecordedAsync(segments, recordedIndex, recorded, cancellationToken).ConfigureAwait(false);
-
-            _logger.LogWarning(
-                "Audit chain at {AuditLocation}: the recorded head does not match the record at its position; rescanning the chain.",
-                _displayLocation);
+            return await WalkAsync(
+                segments, index, hint.Length, ScanState.FromHead(hint.Sequence, hint.Hash), cancellationToken).ConfigureAwait(false);
         }
 
-        var scan = await ScanChainAsync(checkpoint: null, cancellationToken).ConfigureAwait(false);
-        var last = segments.Count > 0 ? segments[^1] : null;
-        return new SharedHead(
-            last is null ? string.Empty : Path.GetFileName(last),
-            last is null || !File.Exists(last) ? 0 : new FileInfo(last).Length,
-            scan.LastValidSequence,
-            scan.LastValidHash);
+        _logger.LogCritical(
+            "Audit chain at {AuditLocation}: its newest recorded record (sequence {Sequence} in {Segment}) is no longer " +
+            "where it was written. Records may have been removed or a segment deleted. Walking the whole chain to find " +
+            "its head; verification against the last checkpoint reports any records removed.",
+            _displayLocation, hint.Sequence, hint.Segment);
+        return await WalkAsync(segments, 0, 0, ScanState.Genesis, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Validates anything written after the recorded head (the rest of its segment, then any later segment)
-    /// link by link from it. Only a writer that crashed after writing a record but before recording it, or
-    /// a writer that takes no lock, leaves anything here. Lines that do not chain are skipped and logged;
-    /// every writer skips the same ones, so they still agree on the head.
+    /// The one rule that decides the head: from <paramref name="state"/> at <paramref name="startOffset"/> in
+    /// segment <paramref name="startIndex"/>, read every later line to the end of the chain, skipping and
+    /// logging lines that do not chain, and return the last record that does with the point the walk reached.
     /// </summary>
-    private async Task<SharedHead> ExtendPastRecordedAsync(
-        IReadOnlyList<string> segments, int recordedIndex, SharedHead recorded, CancellationToken cancellationToken)
+    private async Task<SharedHead> WalkAsync(
+        IReadOnlyList<string> segments, int startIndex, long startOffset, ScanState state, CancellationToken cancellationToken)
     {
-        var state = ScanState.FromHead(recorded.Sequence, recorded.Hash);
-        var head = recorded;
+        var reachedSegment = string.Empty;
+        long reachedLength = 0;
 
-        for (var i = recordedIndex; i < segments.Count; i++)
+        for (var i = startIndex; i < segments.Count; i++)
         {
-            var path = segments[i];
-            var start = i == recordedIndex ? recorded.Length : 0;
-            var end = new FileInfo(path).Length;
-            if (end <= start)
+            FileStream stream;
+            try
             {
-                head = head with { Segment = Path.GetFileName(path), Length = Math.Max(end, start) };
+                stream = new FileStream(segments[i], FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
                 continue;
             }
 
-            await using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            await using (stream)
             {
+                // The open handle's length, not a cached directory entry's, so another host's appends are seen.
+                var end = stream.Length;
+                var start = i == startIndex ? Math.Min(startOffset, end) : 0;
                 stream.Seek(start, SeekOrigin.Begin);
                 using var reader = new StreamReader(new PrefixStream(stream, end - start));
                 while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
                 {
                     state.LineNumber++;
-                    if (string.IsNullOrWhiteSpace(line))
-                        continue;
-
-                    if (!ApplyLine(line, ref state, out var breakScan))
+                    if (!string.IsNullOrWhiteSpace(line) && !ApplyLine(line, ref state, out var skipped))
                     {
                         _logger.LogError(
-                            "Audit chain at {AuditLocation}: skipping a line past the recorded head that does not chain ({Reason}); " +
-                            "verification will report it.",
-                            _displayLocation, breakScan.BreakReason);
+                            "Audit chain at {AuditLocation}: stepping over a line in {Segment} that does not chain ({Reason}); " +
+                            "verification reports it.",
+                            _displayLocation, Path.GetFileName(segments[i]), skipped.BreakReason);
                     }
                 }
-            }
 
-            head = new SharedHead(Path.GetFileName(path), end, state.LastValidSequence, state.LastValidHash);
+                reachedSegment = Path.GetFileName(segments[i]);
+                reachedLength = end;
+            }
         }
 
-        return head;
+        return new SharedHead(reachedSegment, reachedLength, state.LastValidSequence, state.LastValidHash);
     }
 
-    /// <summary>Whether the record the head names is the one that ends its segment at the recorded length.</summary>
-    private static async Task<bool> EndsWithRecordAsync(string path, SharedHead head, CancellationToken cancellationToken)
+    /// <summary>
+    /// Whether the line ending at the hint's length in <paramref name="path"/> is a record carrying the hint's
+    /// sequence and hash. Reads backward in growing steps, so a check costs about one record, not a megabyte.
+    /// </summary>
+    private static async Task<bool> EndsWithRecordAsync(string path, SharedHead hint, CancellationToken cancellationToken)
     {
-        if (head.Length <= 0)
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        if (stream.Length < hint.Length)
             return false;
 
-        var window = (int)Math.Min(head.Length, HeadCheckWindowBytes);
-        var buffer = new byte[window];
-        await using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        for (var size = HeadCheckFirstReadBytes; ; size *= 4)
         {
-            stream.Seek(head.Length - window, SeekOrigin.Begin);
-            await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-        }
+            var window = (int)Math.Min(hint.Length, Math.Min(size, HeadCheckMaxBytes));
+            if (window < 2)
+                return false;
 
-        var text = Encoding.UTF8.GetString(buffer).TrimEnd('\n');
-        var lastLine = text[(text.LastIndexOf('\n') + 1)..];
-        return TryParseLine(lastLine, out var sequence, out var recordHash, out _, out _)
-            && sequence == head.Sequence
-            && string.Equals(recordHash, head.Hash, StringComparison.Ordinal);
+            var buffer = new byte[window];
+            stream.Seek(hint.Length - window, SeekOrigin.Begin);
+            await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (buffer[^1] != (byte)'\n')
+                return false;
+
+            var lineStart = Array.LastIndexOf(buffer, (byte)'\n', window - 2) + 1;
+            if (lineStart > 0 || window == hint.Length)
+            {
+                var line = Encoding.UTF8.GetString(buffer, lineStart, window - 1 - lineStart);
+                return TryParseLine(line, out var sequence, out var recordHash, out _, out _)
+                    && sequence == hint.Sequence
+                    && string.Equals(recordHash, hint.Hash, StringComparison.Ordinal);
+            }
+
+            if (window >= HeadCheckMaxBytes)
+                return false;
+        }
     }
 
     private static int IndexOfSegment(IReadOnlyList<string> segments, string fileName)
@@ -212,51 +208,65 @@ public sealed partial class HashChainedJsonlWriter
     }
 
     /// <summary>
-    /// The segment to append to: the latest by name of the caller's current segment, the head's segment and
-    /// the last existing one. Never an earlier one, so a host whose clock is behind cannot write into a
-    /// segment the chain has already moved past, which would put sequence numbers out of order on disk.
+    /// The segment to append to: the caller's current segment, or the last listed segment when that sorts
+    /// later. Never an earlier one than the chain has reached, which would put sequence numbers out of order
+    /// on disk. Following a later segment means some writer's clock (or a planted file) is ahead of this
+    /// one's; that is logged, and the drift store's date-range reads include later-dated files for it.
     /// </summary>
-    private string ChooseTargetSegment(IReadOnlyList<string> segments, SharedHead head)
+    private string ChooseTargetSegment(IReadOnlyList<string> segments)
     {
-        var target = _currentSegment();
-        var directory = Path.GetDirectoryName(target)!;
+        var current = _currentSegment();
+        if (segments.Count == 0)
+            return current;
 
-        foreach (var candidate in new[] { segments.Count > 0 ? segments[^1] : null, head.Segment.Length > 0 ? Path.Combine(directory, head.Segment) : null })
-        {
-            if (candidate is not null
-                && string.CompareOrdinal(Path.GetFileName(candidate), Path.GetFileName(target)) > 0)
-            {
-                target = candidate;
-            }
-        }
+        var last = segments[^1];
+        if (string.CompareOrdinal(Path.GetFileName(last), Path.GetFileName(current)) <= 0)
+            return current;
 
-        return target;
+        _logger.LogWarning(
+            "Audit chain at {AuditLocation}: appending to {Segment}, which sorts after this writer's current segment " +
+            "{Current}. Another writer's clock is ahead of this one, or a later-dated file was placed in the folder.",
+            _displayLocation, Path.GetFileName(last), Path.GetFileName(current));
+        return last;
     }
 
     /// <summary>
-    /// Appends <paramref name="line"/> to <paramref name="path"/> in one write, first ending any line a crashed
+    /// Appends <paramref name="line"/> to <paramref name="path"/> in append mode, first ending any line a crashed
     /// writer left unterminated so the new record never glues onto it. Not cancellable once started: a record
     /// written halfway is exactly the torn line this guards against. Returns the segment's new length.
     /// </summary>
     private static long AppendLine(string path, string line)
     {
         var bytes = Encoding.UTF8.GetBytes(line);
-        using var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+        var needsNewline = EndsUnterminated(path);
 
-        if (stream.Length > 0)
-        {
-            stream.Seek(-1, SeekOrigin.End);
-            if (stream.ReadByte() != '\n')
-                stream.WriteByte((byte)'\n');
-        }
-
-        stream.Seek(0, SeekOrigin.End);
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        if (needsNewline)
+            stream.WriteByte((byte)'\n');
         stream.Write(bytes);
         stream.Flush(flushToDisk: true);
         return stream.Length;
     }
 
-    private static async Task<SharedHead?> ReadRecordedHeadAsync(FileStream lockFile, CancellationToken cancellationToken)
+    private static bool EndsUnterminated(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (stream.Length == 0)
+                return false;
+
+            stream.Seek(-1, SeekOrigin.End);
+            return stream.ReadByte() != '\n';
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The hint in the lock file, or <c>null</c> when there is none or it is not well formed.</summary>
+    private static async Task<SharedHead?> ReadHintAsync(FileStream lockFile, CancellationToken cancellationToken)
     {
         if (lockFile.Length == 0)
             return null;
@@ -264,8 +274,10 @@ public sealed partial class HashChainedJsonlWriter
         try
         {
             lockFile.Seek(0, SeekOrigin.Begin);
-            var head = await JsonSerializer.DeserializeAsync<SharedHead>(lockFile, cancellationToken: cancellationToken).ConfigureAwait(false);
-            return head is { Hash.Length: > 0, Segment: not null } ? head : null;
+            var hint = await JsonSerializer.DeserializeAsync<SharedHead>(lockFile, cancellationToken: cancellationToken).ConfigureAwait(false);
+            // The segment name is only ever compared with listed segments' names, never combined into a path,
+            // so a name with separators in it simply matches nothing.
+            return hint is { Segment.Length: > 0, Length: > 0, Sequence: >= 0, Hash.Length: 64 } ? hint : null;
         }
         catch (JsonException)
         {
@@ -273,27 +285,25 @@ public sealed partial class HashChainedJsonlWriter
         }
     }
 
-    private static void WriteRecordedHead(FileStream lockFile, SharedHead head)
+    private static void WriteHint(FileStream lockFile, SharedHead head)
     {
         lockFile.Seek(0, SeekOrigin.Begin);
         lockFile.SetLength(0);
         JsonSerializer.Serialize(lockFile, head);
         lockFile.Flush(flushToDisk: true);
     }
-}
 
-/// <summary>
-/// Another process held an audit chain's lock for longer than the writer waits. Not tampering, and not
-/// reported as a broken chain: the chain is busy, and the operation can be retried.
-/// </summary>
-public sealed class AuditChainBusyException : IOException
-{
-    /// <summary>Initializes the exception.</summary>
-    /// <param name="location">The chain's location, for the message.</param>
-    /// <param name="waited">How long the writer waited.</param>
-    /// <param name="inner">The last failure to take the lock.</param>
-    public AuditChainBusyException(string location, TimeSpan waited, Exception inner)
-        : base($"The audit chain at {location} is busy: another writer held its lock for more than {waited.TotalSeconds:0} seconds.", inner)
+    /// <summary>The length of <paramref name="path"/> read through an open handle, or <c>null</c> if it is gone.</summary>
+    private static long? LengthOf(string path)
     {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            return stream.Length;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 }

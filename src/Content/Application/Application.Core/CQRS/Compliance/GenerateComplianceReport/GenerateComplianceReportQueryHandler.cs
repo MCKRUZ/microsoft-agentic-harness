@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Audit;
 using Domain.AI.Compliance;
 using Domain.AI.Observability.Models;
 using Domain.Common;
@@ -190,7 +191,24 @@ public sealed class GenerateComplianceReportQueryHandler
             // Against the scheduled verifier's last checkpoint, read but never advanced: a report must not
             // certify as intact a log the verifier reports truncated (#416).
             var checkpoint = await _checkpoints.ReadAsync(chain, cancellationToken).ConfigureAwait(false);
-            var verification = await chain.VerifyChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+            AuditChainVerificationResult verification;
+            try
+            {
+                verification = await chain.VerifyChainAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AuditChainBusyException)
+            {
+                // Not verified, so not certified intact; but not reported as tampering either.
+                results.Add(new ComplianceChainIntegrity
+                {
+                    ChainName = chain.AuditName,
+                    IsValid = false,
+                    VerifiedCount = 0,
+                    FailureReason = "Not verified: another writer held the chain's lock. Generate the report again.",
+                });
+                continue;
+            }
+
             results.Add(new ComplianceChainIntegrity
             {
                 ChainName = chain.AuditName,

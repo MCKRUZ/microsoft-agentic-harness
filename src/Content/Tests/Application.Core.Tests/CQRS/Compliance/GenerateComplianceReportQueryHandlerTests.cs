@@ -251,4 +251,29 @@ public sealed class GenerateComplianceReportQueryHandlerTests
             Times.Never,
             "a report reads the checkpoint; only the scheduled verifier advances it");
     }
+
+    /// <summary>
+    /// #416: a chain whose lock another writer holds past the timeout is not verified. The report must
+    /// neither certify it intact nor fail as a whole; the other chains are still reported.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ABusyChain_IsReportedAsNotVerifiedAndTheRestStillRun()
+    {
+        SetUpAllSourcesEmpty();
+        var busyChain = new Mock<IVerifiableAuditChain>();
+        busyChain.SetupGet(c => c.AuditName).Returns("governance");
+        busyChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AuditChainBusyException("governance", TimeSpan.FromSeconds(10), new IOException("locked")));
+        var intactChain = new Mock<IVerifiableAuditChain>();
+        intactChain.SetupGet(c => c.AuditName).Returns("drift");
+        intactChain.Setup(c => c.VerifyChainAsync(It.IsAny<AuditChainCheckpoint?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AuditChainVerificationResult.Valid(42));
+
+        var result = await CreateSut([busyChain.Object, intactChain.Object]).Handle(NewQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.ChainIntegrity.Should().ContainSingle(
+            c => c.ChainName == "governance" && !c.IsValid && c.FailureReason!.StartsWith("Not verified"));
+        result.Value.ChainIntegrity.Should().ContainSingle(c => c.ChainName == "drift" && c.IsValid);
+    }
 }

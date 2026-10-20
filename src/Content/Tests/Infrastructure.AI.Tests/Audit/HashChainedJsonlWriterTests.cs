@@ -539,21 +539,65 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
     }
 
     [Fact]
-    public async Task Append_AfterRecordsWereCutFromTheEnd_KeepsTheGapVisible()
+    public async Task Append_AfterRecordsWereCutFromTheEnd_IsCaughtByTheCheckpoint()
     {
+        // The writer takes the shorter chain's head (the lock file's hint is not trusted over the files), so
+        // the chain itself looks whole again; the checkpoint from the last pass is what reports the cut.
         using var sut = NewWriter();
-        for (var i = 0; i < 3; i++)
-            (await sut.AppendAsync($"{{\"a\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var checkpoint = await AppendAndCheckpointAsync(sut, 3);
 
         var firstLine = (await File.ReadAllLinesAsync(_filePath))[0];
         await File.WriteAllTextAsync(_filePath, firstLine + "\n");
 
         (await sut.AppendAsync("{\"a\":3}", CancellationToken.None)).IsSuccess.Should().BeTrue();
 
+        (await sut.VerifyChainAsync(CancellationToken.None)).IsValid.Should().BeTrue("the cut is invisible to the chain alone");
+        var result = await sut.VerifyChainAsync(checkpoint, CancellationToken.None);
+        result.IsValid.Should().BeFalse("the record last verified at the checkpoint is gone");
+    }
+
+    [Fact]
+    public async Task Append_WithATornLineAndAnUnusableHint_DoesNotReuseASequence()
+    {
+        // The full walk taken when the hint is unusable must step over the torn line exactly as the
+        // resumed walk did, or it would stop there and hand out sequence 1 a second time.
+        using var sut = NewWriter();
+        (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+        await File.AppendAllTextAsync(_filePath, "{\"torn\":");
+        for (var i = 1; i <= 5; i++)
+            (await sut.AppendAsync($"{{\"a\":{i}}}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        await File.WriteAllTextAsync(_filePath + ".lock", "{\"Segment\":");
+
+        (await sut.AppendAsync("{\"a\":6}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var sequences = (await File.ReadAllLinesAsync(_filePath))
+            .Select(l => l.Split('\t')).Where(p => p.Length == 4).Select(p => p[3]).ToList();
+        sequences.Should().Equal("0", "1", "2", "3", "4", "5", "6");
+    }
+
+    [Theory]
+    [InlineData("zzz.log")]
+    [InlineData("../escaped.jsonl")]
+    [InlineData("ABSOLUTE")]
+    public async Task Append_WithAForgedSegmentInTheHint_WritesToTheChainAndNowhereElse(string segment)
+    {
+        using var sut = NewWriter();
+        (await sut.AppendAsync("{\"a\":0}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var outside = Path.Combine(Path.GetTempPath(), $"audit-escape-{Guid.NewGuid():N}", "escaped.jsonl");
+        var forged = segment == "ABSOLUTE" ? outside : segment;
+        await File.WriteAllTextAsync(_filePath + ".lock", System.Text.Json.JsonSerializer.Serialize(
+            new { Segment = forged, Length = 10L, Sequence = 41L, Hash = new string('a', 64) }));
+
+        (await sut.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        Directory.GetFiles(_tempDir).Select(Path.GetFileName).Should().BeEquivalentTo("audit.jsonl", "audit.jsonl.lock");
+        File.Exists(Path.Combine(Path.GetDirectoryName(_tempDir)!, "escaped.jsonl")).Should().BeFalse();
+        File.Exists(outside).Should().BeFalse();
         var result = await sut.VerifyChainAsync(CancellationToken.None);
-        result.IsValid.Should().BeFalse("an append must not paper over records cut from the end");
-        result.FirstBrokenSequence.Should().Be(1);
-        result.FailureReason.Should().Contain("Sequence gap");
+        result.IsValid.Should().BeTrue(result.FailureReason);
+        result.VerifiedCount.Should().Be(2, "the record chains onto the real head, not the forged one");
     }
 
     [Fact]

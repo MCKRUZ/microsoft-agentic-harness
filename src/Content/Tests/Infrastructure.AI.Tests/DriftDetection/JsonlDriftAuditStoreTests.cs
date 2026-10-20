@@ -137,6 +137,37 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
         result.Value[0].RecordedAt.Should().Be(backDated);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetRecords_FindsARecordThatLandedInALaterDatedSegment(bool withEnd)
+    {
+        // #416: a host whose clock is ahead starts 2025-06-20's segment; the writer never appends to an
+        // earlier segment than the latest, so this host's 2025-06-15 record lands there too.
+        var aheadClock = new FakeTimeProvider(new DateTimeOffset(2025, 6, 20, 10, 0, 0, TimeSpan.Zero));
+        var config = new AppConfig { AI = new AIConfig { DriftDetection = new DriftDetectionConfig { AuditPath = _tempDir } } };
+        using (var ahead = new JsonlDriftAuditStore(
+            Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config), aheadClock, Mock.Of<ILogger<JsonlDriftAuditStore>>()))
+        {
+            await ahead.RecordAsync(BuildRecord(recordedAt: aheadClock.GetUtcNow()), CancellationToken.None);
+        }
+
+        var ours = BuildRecord();
+        (await _store.RecordAsync(ours, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        File.Exists(Path.Combine(_tempDir, "drift-audit", "2025-06-15.jsonl")).Should().BeFalse();
+
+        var query = new DriftAuditQuery
+        {
+            Start = new DateTimeOffset(2025, 6, 15, 0, 0, 0, TimeSpan.Zero),
+            End = withEnd ? new DateTimeOffset(2025, 6, 15, 23, 59, 59, TimeSpan.Zero) : null
+        };
+
+        var result = await _store.GetRecordsAsync(query, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Should().Contain(r => r.RecordId == ours.RecordId);
+    }
+
     [Fact]
     public async Task GetRecords_FiltersByRecordType()
     {
