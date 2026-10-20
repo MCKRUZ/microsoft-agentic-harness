@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -93,7 +95,36 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // parameters alone would hide anything an upstream step fed into this one.
         var arguments = BuildToolArguments(config, upstreamOutputs);
 
-        var (admission, refusal) = await AdmitToolAsync(config.ToolName, step.Name, arguments, sw, ct);
+        // A plan step dispatches the tool by name into a sandbox and never builds the ITool itself, so
+        // this lookup is the one place on this path a misregistered tool (#888) can be caught. Refused
+        // before admission: nothing is queued for approval that could never be honoured.
+        var firstPartyTool = _firstPartyToolLookup.TryResolve(config.ToolName, out var constructionError);
+        if (constructionError is ToolNameMismatchException)
+        {
+            sw.Stop();
+            _logger.LogError(constructionError,
+                "Refusing tool {Tool} in step {Step}: its published name differs from its registration key",
+                config.ToolName, step.Name);
+            return new StepExecutionResult
+            {
+                Status = StepExecutionStatus.Failed,
+                ErrorMessage = PlanStepErrors.ToolMisregistered,
+                Duration = sw.Elapsed
+            };
+        }
+
+        // Any other construction failure (#627) is treated as "no declaration": CapabilityEnforcer
+        // refuses a tool with path/host scoping configured when the resource request stays unset, so
+        // this still fails closed rather than silently bypassing scoping.
+        if (constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' to resolve its resource-parameter " +
+                "declaration — treating it as undeclared.", config.ToolName);
+        }
+
+        var (admission, refusal) = await AdmitToolAsync(
+            config.ToolName, firstPartyTool, step.Name, arguments, sw, ct);
         if (refusal is not null)
             return refusal;
 
@@ -344,13 +375,14 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// </remarks>
     private async Task<(ToolCallAdmission Admission, StepExecutionResult? Refusal)> AdmitToolAsync(
         string toolName,
+        ITool? firstPartyTool,
         string stepName,
         IReadOnlyDictionary<string, object?> arguments,
         Stopwatch sw,
         CancellationToken ct)
     {
         var admission = await _admissionPipeline
-            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments, ResourceRequest: ExtractResourceRequest(toolName, arguments)), ct);
+            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments, ResourceRequest: ExtractResourceRequest(firstPartyTool, arguments)), ct);
         if (admission.IsAllowed)
             return (admission, null);
 
@@ -403,20 +435,12 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// detect and refuse such a collision themselves; #595 moved the fix to its actual source.)
     /// </para>
     /// </remarks>
-    private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
-        string toolName, IReadOnlyDictionary<string, object?> arguments)
+    private static Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
+        ITool? tool, IReadOnlyDictionary<string, object?> arguments)
     {
-        // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
-        // first-party set) skips the normalization pass below entirely — Extract would return null anyway.
-        // A tool whose constructor throws (#627) takes the identical null path: CapabilityEnforcer's
-        // fail-closed design (see this method's own remarks) refuses a scoped tool when the resource
-        // request stays unset, so treating "could not construct" like "no declaration" here still
-        // fails closed rather than silently bypassing scoping.
-        var tool = _firstPartyToolLookup.TryResolveLogged(
-            toolName, _logger,
-            "to resolve its resource-parameter declaration — treating it as undeclared, which " +
-            "CapabilityEnforcer refuses if the tool has path/host scoping configured");
-
+        // A tool with no resource-parameter declaration, one outside the bounded first-party set, or one
+        // that could not be constructed (null here) skips the normalization pass below entirely —
+        // Extract would return null anyway.
         if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
             return null;
 

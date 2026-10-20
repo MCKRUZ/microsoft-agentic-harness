@@ -1,4 +1,4 @@
-using Application.AI.Common.Exceptions;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Tests.Common;
 using Xunit;
@@ -18,17 +18,35 @@ namespace Presentation.Common.Tests.Architecture;
 /// </remarks>
 public sealed class KeyedToolResolutionIsTheOnlyWayInTests
 {
-    /// <summary>The spellings that build a keyed tool: the generic resolution methods, typed as <c>ITool</c>.</summary>
-    private static readonly string[] Forbidden = ["KeyedService<ITool>", "KeyedServices<ITool>"];
+    /// <summary>
+    /// The spellings that build a keyed tool: the generic resolution methods (any whitespace, namespace-qualified or
+    /// not), the non-generic overloads taking <c>typeof(ITool)</c>, and constructor injection with
+    /// <c>[FromKeyedServices]</c>.
+    /// </summary>
+    private static readonly Regex[] Forbidden =
+    [
+        new(@"KeyedServices?\s*<\s*([\w.]+\.)?ITool\s*>", RegexOptions.Compiled),
+        new(@"KeyedServices?\s*\(\s*typeof\s*\(\s*([\w.]+\.)?ITool\s*\)", RegexOptions.Compiled),
+        new(@"FromKeyedServices\s*\([^)]*\)\s*\]\s*([\w.]+\.)?ITool\b", RegexOptions.Compiled),
+    ];
 
     /// <summary>The one file allowed to resolve a keyed tool directly.</summary>
     private const string TheResolution = "Application/Application.AI.Common/Services/Tools/KeyedToolResolution.cs";
+
+    [Theory]
+    [InlineData("sp.GetKeyedService<ITool>(key)")]
+    [InlineData("sp.GetRequiredKeyedService< Application.AI.Common.Interfaces.Tools.ITool >(key)")]
+    [InlineData("sp.GetKeyedServices<ITool>(key)")]
+    [InlineData("sp.GetRequiredKeyedService(typeof(ITool), key)")]
+    [InlineData("public Foo([FromKeyedServices(\"bash\")] ITool bash)")]
+    public void TheGuard_RecognisesEverySpellingThatBuildsAKeyedTool(string code) =>
+        Forbidden.Should().Contain(r => r.IsMatch(code), "an unrecognised spelling is a way past this guard");
 
     [Fact]
     public void AKeyedTool_IsResolvedOnlyThroughKeyedToolResolution()
     {
         var violations = ReadProductionSources()
-            .Where(s => Forbidden.Any(f => s.Code.Contains(f, StringComparison.Ordinal)))
+            .Where(s => Forbidden.Any(f => f.IsMatch(s.Code)))
             .Select(s => s.Path.Replace(Path.DirectorySeparatorChar, '/'))
             .Where(path => !path.EndsWith("/" + TheResolution, StringComparison.Ordinal))
             .ToList();
@@ -46,18 +64,16 @@ public sealed class KeyedToolResolutionIsTheOnlyWayInTests
     }
 
     /// <summary>
-    /// The other direction: the one allowed file must still check the name. Without this, deleting the check leaves
-    /// the guard above green while nothing enforces what it exists for.
+    /// The exemption must point at a real file: if the resolution moved, the exemption would silently cover nothing
+    /// and the next file to resolve a tool would be flagged for the wrong reason. That the file still checks the name
+    /// is proven by behaviour, in <c>KeyedToolResolutionTests</c>, not by reading its text.
     /// </summary>
     [Fact]
-    public void KeyedToolResolution_StillRefusesAMismatchedName()
+    public void TheExemptFile_StillExists()
     {
-        var resolution = ReadProductionSources()
-            .Where(s => s.Path.Replace(Path.DirectorySeparatorChar, '/').EndsWith("/" + TheResolution, StringComparison.Ordinal))
-            .ToList();
-
-        resolution.Should().ContainSingle($"{TheResolution} is where keyed tools are built; if it moved, update this guard");
-        resolution[0].Code.Should().Contain(nameof(ToolNameMismatchException));
+        ReadProductionSources()
+            .Count(s => s.Path.Replace(Path.DirectorySeparatorChar, '/').EndsWith("/" + TheResolution, StringComparison.Ordinal))
+            .Should().Be(1, $"{TheResolution} is where keyed tools are built; if it moved, update this guard");
     }
 
     private static IReadOnlyList<(string Path, string Code)> ReadProductionSources()

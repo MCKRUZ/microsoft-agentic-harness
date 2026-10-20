@@ -42,6 +42,11 @@ namespace Application.AI.Common.Interfaces.Tools;
 public interface ITool
 {
     /// <summary>Gets the unique tool name matching the keyed DI registration and SKILL.md declaration.</summary>
+    /// <remarks>
+    /// Must equal the key the tool is registered under (case aside). Grants, deny rules and manifests name a tool by
+    /// one string, so a tool answering to two is refused wherever it is built: <c>KeyedToolResolution</c> throws
+    /// <see cref="Exceptions.ToolNameMismatchException"/>, and the tool is treated as unavailable (#888).
+    /// </remarks>
     string Name { get; }
 
     /// <summary>Gets a human-readable description of what the tool does, used for LLM tool schema generation.</summary>

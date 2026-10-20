@@ -940,7 +940,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
         if (resolved is null)
         {
             _logger.LogWarning(
-                "Tool '{ToolName}' is not registered under that key in keyed DI, so it is not part of this agent's tool set",
+                "Tool '{ToolName}' could not be resolved from keyed DI (not registered, not constructible, or " +
+                "refused for a name mismatch — see any earlier error), so it is not part of this agent's tool set",
                 toolName);
         }
 
