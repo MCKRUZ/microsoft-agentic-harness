@@ -103,14 +103,26 @@ public static class SqliteSecureDelete
     /// <exception cref="InvalidOperationException">The log was busy and was not emptied.</exception>
     public static async Task TruncateWriteAheadLogAsync(DbConnection connection, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(connection);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (await reader.ReadAsync(cancellationToken) && reader.GetInt64(0) != 0)
+        if (!await TryTruncateWriteAheadLogAsync(connection, cancellationToken))
         {
             throw new InvalidOperationException(
                 "The write-ahead log could not be emptied because another connection was using it; erased rows may remain in it.");
         }
+    }
+
+    /// <summary>
+    /// As <see cref="TruncateWriteAheadLogAsync"/>, but reports a busy log as <see langword="false"/> instead of throwing,
+    /// for a caller that must not fail a delete it has already committed.
+    /// </summary>
+    /// <param name="connection">An open connection to the database just erased from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> when the log was emptied or there was none.</returns>
+    public static async Task<bool> TryTruncateWriteAheadLogAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return !await reader.ReadAsync(cancellationToken) || reader.GetInt64(0) == 0;
     }
 }

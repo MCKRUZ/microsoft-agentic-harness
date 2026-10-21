@@ -55,7 +55,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
     RetentionBasis.Volatile,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
-public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
+public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc />
     public string ErasureStoreName => "document index (SQLite full text)";
@@ -78,10 +78,16 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = "DELETE FROM chunks_fts WHERE owner_id = @ownerId";
         cmd.Parameters.AddWithValue("@ownerId", subject.OwnerId);
-        var removed = await cmd.ExecuteNonQueryAsync(cancellationToken);
-        if (removed > 0)
-            await SqliteSecureDelete.TruncateWriteAheadLogAsync(connection, cancellationToken);
-        return removed;
+        return await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await SqliteSecureDelete.TruncateWriteAheadLogAsync(connection, cancellationToken);
     }
 
     private const string DefaultCollection = "default";

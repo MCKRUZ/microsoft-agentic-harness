@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Conversations;
 
-public sealed partial class EfCoreConversationStore : IPersonalDataEraser
+public sealed partial class EfCoreConversationStore : IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc/>
     public string ErasureStoreName => "conversations";
@@ -32,11 +32,15 @@ public sealed partial class EfCoreConversationStore : IPersonalDataEraser
 
         var ids = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        var removed = await context.Conversations
+        return await context.Conversations
             .Where(c => ids.Contains(c.Id) && c.UserId == subject.OwnerId)
             .ExecuteDeleteAsync(cancellationToken);
-        if (removed > 0)
-            await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
-        return removed;
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 }

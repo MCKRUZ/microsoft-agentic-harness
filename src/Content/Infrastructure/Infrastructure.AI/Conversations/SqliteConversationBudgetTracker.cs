@@ -60,7 +60,7 @@ namespace Infrastructure.AI.Conversations;
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser
+public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc />
     public string ErasureStoreName => "conversation token budgets";
@@ -82,12 +82,16 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
 
         var keys = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        var removed = await context.ConversationBudgets
+        return await context.ConversationBudgets
             .Where(e => keys.Contains(e.BudgetKey))
             .ExecuteDeleteAsync(cancellationToken);
-        if (removed > 0)
-            await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
-        return removed;
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;

@@ -18,7 +18,8 @@ namespace Application.AI.Common.Services.Compliance;
 /// stores carry only a conversation id. Then the knowledge graph and every <see cref="ErasureStage.BeforeConversations"/>
 /// store run. The conversations are erased next, only when every earlier store succeeded: deleting them after a failure
 /// would leave the failed store's data with nothing left that leads to it. <see cref="ErasureStage.AfterConversations"/>
-/// stores run last, only when the conversations are gone.
+/// stores run last, only when the conversations are gone. Every <see cref="IPersonalDataScrubber"/> then clears the bytes
+/// its deletes left in its files, on every request, so a store whose files are busy fails only its own line.
 /// </para>
 /// <para>
 /// <strong>What <c>Full</c> means.</strong> Every store that can find the subject's data removed it, and no store the host
@@ -48,6 +49,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private const string FailedReason = "the store could not be erased; the failure has been logged";
     private const string StartedMeanwhileReason =
         "the person started a conversation while erasure ran; it and what it produced were kept, so run erasure again";
+    private const string ScrubFailedReason =
+        "the records were deleted, but their bytes could not yet be cleared from the store's files; the failure has been logged, so run erasure again";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
@@ -138,6 +141,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
 
+        await ScrubAsync(outcomes);
+
         outcomes.AddRange(_retained
             .Select(r => r.ToOutcome())
             .OfType<StoreErasureOutcome>()
@@ -161,6 +166,32 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         {
             outcomes.Add(new StoreErasureOutcome(
                 "conversations started during erasure", StoreErasureStatus.Skipped, 0, StartedMeanwhileReason));
+        }
+    }
+
+    /// <summary>
+    /// Clears the deleted bytes every store left in its files, once every stage has run. Kept apart from the deletes: a
+    /// delete is committed before its bytes can be cleared, so a clear that fails must not mark that store as failed and
+    /// hold back the stages after it. It runs on every request, including one that found nothing to delete, so a retry
+    /// clears what an earlier request could not. A failure is its own line and makes the receipt <c>Partial</c>.
+    /// </summary>
+    private async Task ScrubAsync(List<StoreErasureOutcome> outcomes)
+    {
+        foreach (var eraser in _erasers)
+        {
+            if (eraser is not IPersonalDataScrubber scrubber)
+                continue;
+
+            try
+            {
+                await scrubber.ScrubAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                var store = $"{eraser.ErasureStoreName} (deleted bytes)";
+                _logger.LogError(ex, "Erasure failed in store {Store}.", store);
+                outcomes.Add(new StoreErasureOutcome(store, StoreErasureStatus.Failed, 0, ScrubFailedReason));
+            }
         }
     }
 

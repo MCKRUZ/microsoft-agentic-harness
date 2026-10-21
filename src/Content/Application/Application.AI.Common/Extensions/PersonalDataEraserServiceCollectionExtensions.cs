@@ -61,7 +61,8 @@ public static class PersonalDataEraserServiceCollectionExtensions
     /// Call it beside the store's own registration. The receipt line is read from the resolved instance's
     /// <c>[PersonalDataStore]</c> descriptor, so a store switched off (a null object) is not listed, and the line says how
     /// long the store keeps what it holds. <c>EveryRetainedStoreIsOnTheReceiptTests</c> proves in the real composition that
-    /// every such store the host resolves is listed.
+    /// every such store the host resolves is listed. A decorator registered over one of these services must carry the
+    /// descriptor of what it wraps: one without it reads as switched off, and the line drops from the receipt.
     /// </remarks>
     /// <typeparam name="TService">The service the store is registered as.</typeparam>
     /// <param name="services">The service collection.</param>

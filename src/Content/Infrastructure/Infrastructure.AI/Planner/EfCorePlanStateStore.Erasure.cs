@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Planner;
 
-public sealed partial class EfCorePlanStateStore : IPersonalDataEraser
+public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc/>
     public string ErasureStoreName => "plans";
@@ -48,8 +48,14 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser
         await context.PlanSteps.Where(s => planIds.Contains(s.PlanGraphId)).ExecuteDeleteAsync(cancellationToken);
         var removed = await context.PlanGraphs.Where(p => planIds.Contains(p.Id)).ExecuteDeleteAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
 
         return removed;
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _factory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 }

@@ -22,7 +22,7 @@ namespace Infrastructure.AI.Prompts.Persistence;
     RetentionBasis.Unbounded,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser
+public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser, IPersonalDataScrubber
 {
     private readonly IDbContextFactory<PromptUsageDbContext> _contextFactory;
 
@@ -63,12 +63,16 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
                 .Select(c => c.Id));
         }
 
-        if (rowIds.Count == 0)
-            return 0;
+        return rowIds.Count == 0
+            ? 0
+            : await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+    }
 
-        var removed = await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+    /// <inheritdoc />
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
         await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
-        return removed;
     }
 
     /// <summary>Initializes a new instance.</summary>

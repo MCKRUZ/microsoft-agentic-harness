@@ -649,9 +649,12 @@
                         <code>UseSqliteWithSecureDelete</code>, and the full-text index also sets FTS5's own
                         <code>secure-delete</code> option so deleted words leave its index immediately. The databases run
                         in write-ahead-log mode, where a deletion first lands in a side log and the old page stays in the
-                        main file until a checkpoint, so each SQLite store empties its log right after an erasure
-                        (<code>wal_checkpoint(TRUNCATE)</code>); when another connection is mid-read and the log cannot be
-                        emptied, that store's line reads <code>Failed</code> and the erasure should be retried. A test
+                        main file until a checkpoint, so once every store has deleted, each SQLite store empties its log
+                        (<code>wal_checkpoint(TRUNCATE)</code>, through <code>IPersonalDataScrubber</code>). This is a
+                        separate pass, on every request: when another connection is mid-read and a log cannot be emptied,
+                        the receipt gets its own <code>Failed</code> "(deleted bytes)" line without marking the delete
+                        itself failed or holding back the stores after it, and a retry empties the log even though there
+                        is nothing left to delete. A test
                         erases a person and scans the database files and their logs for their text while the host's
                         connections are still open. Limits:
                     </p>

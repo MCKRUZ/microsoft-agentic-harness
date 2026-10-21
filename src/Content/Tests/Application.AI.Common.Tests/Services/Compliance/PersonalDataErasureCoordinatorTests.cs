@@ -53,7 +53,10 @@ public sealed class PersonalDataErasureCoordinatorTests
     private static ConversationRecord Conversation(string id) =>
         new(id, "agent", Owner, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, []);
 
-    private IPersonalDataEraser Eraser(string name, ErasureStage stage, int removed = 1, Exception? failure = null)
+    private IPersonalDataEraser Eraser(string name, ErasureStage stage, int removed = 1, Exception? failure = null) =>
+        EraserMock(name, stage, removed, failure).Object;
+
+    private Mock<IPersonalDataEraser> EraserMock(string name, ErasureStage stage, int removed = 1, Exception? failure = null)
     {
         var eraser = new Mock<IPersonalDataEraser>();
         eraser.SetupGet(e => e.ErasureStoreName).Returns(name);
@@ -63,6 +66,20 @@ public sealed class PersonalDataErasureCoordinatorTests
             {
                 _calls.Add(name);
                 return failure is null ? Task.FromResult(removed) : Task.FromException<int>(failure);
+            });
+        return eraser;
+    }
+
+    private IPersonalDataEraser ScrubbingEraser(
+        string name, ErasureStage stage, int removed = 1, Exception? scrubFailure = null)
+    {
+        var eraser = EraserMock(name, stage, removed);
+        eraser.As<IPersonalDataScrubber>()
+            .Setup(s => s.ScrubAsync(It.IsAny<CancellationToken>()))
+            .Returns<CancellationToken>(_ =>
+            {
+                _calls.Add($"scrub {name}");
+                return scrubFailure is null ? Task.CompletedTask : Task.FromException(scrubFailure);
             });
         return eraser.Object;
     }
@@ -228,6 +245,51 @@ public sealed class PersonalDataErasureCoordinatorTests
             .EraseOwnerAsync(Owner, CancellationToken.None);
 
         _calls.Should().Equal("spills", "conversations", "ledger");
+    }
+
+    [Fact]
+    public async Task DeletedBytesCannotBeCleared_ItIsItsOwnFailedLine_AndNoStageIsHeldBack()
+    {
+        // The delete is already committed when its bytes are cleared. Failing the conversations' own line would hold the
+        // ledger back, and a retry would find no conversations to lead it to the ledger rows.
+        var receipt = await Create(
+                ScrubbingEraser("conversations", ErasureStage.Conversations, removed: 2,
+                    scrubFailure: new InvalidOperationException("C:\\secret\\conversations.db busy")),
+                Eraser("ledger", ErasureStage.AfterConversations, removed: 4))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("conversations", "ledger", "scrub conversations");
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Select(s => (s.Store, s.Status)).Should().Equal(
+            ("conversations", StoreErasureStatus.Erased),
+            ("ledger", StoreErasureStatus.Erased),
+            ("conversations (deleted bytes)", StoreErasureStatus.Failed));
+        receipt.CompletenessReason.Should().NotContain("secret", "receipts are returned to the caller; exception text is not");
+    }
+
+    [Fact]
+    public async Task DeletedBytesAreClearedOnEveryRequest_EvenOneThatDeletesNothing()
+    {
+        // A retry after a failed clear finds nothing left to delete; it must still clear what the first request left.
+        var receipt = await Create(
+                ScrubbingEraser("spills", ErasureStage.BeforeConversations, removed: 0),
+                Eraser("conversations", ErasureStage.Conversations, removed: 0))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("spills", "conversations", "scrub spills");
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+    }
+
+    [Fact]
+    public async Task DeletedBytesAreCleared_EvenWhenAnEarlierStoreFailed()
+    {
+        var receipt = await Create(
+                Eraser("spills", ErasureStage.BeforeConversations, failure: new IOException()),
+                ScrubbingEraser("conversations", ErasureStage.Conversations))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("spills", "scrub conversations");
+        receipt.Stores.Select(s => s.Store).Should().NotContain("conversations (deleted bytes)");
     }
 
     [Fact]

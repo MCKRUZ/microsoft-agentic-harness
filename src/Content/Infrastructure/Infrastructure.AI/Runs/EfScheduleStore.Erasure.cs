@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Runs;
 
-public sealed partial class EfScheduleStore : IPersonalDataEraser
+public sealed partial class EfScheduleStore : IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc/>
     public string ErasureStoreName => "schedules";
@@ -23,11 +23,15 @@ public sealed partial class EfScheduleStore : IPersonalDataEraser
         ArgumentNullException.ThrowIfNull(subject);
 
         await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
-        var removed = await ctx.Schedules
+        return await ctx.Schedules
             .Where(e => e.OwnerId == subject.CanonicalOwnerId)
             .ExecuteDeleteAsync(cancellationToken);
-        if (removed > 0)
-            await ctx.Database.TruncateWriteAheadLogAsync(cancellationToken);
-        return removed;
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await ctx.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 }
