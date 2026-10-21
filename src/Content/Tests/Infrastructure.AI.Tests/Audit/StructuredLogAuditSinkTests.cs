@@ -3,13 +3,14 @@ using FluentAssertions;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Audit;
 
 /// <summary>
 /// Tests for <see cref="StructuredLogAuditSink"/> covering log output formatting
-/// for success, failure, and system-level entries.
+/// for success, failure, and system-level entries, and the correlation id and metadata a record's detail lives in (#900).
 /// </summary>
 public sealed class StructuredLogAuditSinkTests
 {
@@ -134,5 +135,54 @@ public sealed class StructuredLogAuditSinkTests
 
         task.IsCompleted.Should().BeTrue();
         await task;
+    }
+
+    [Fact]
+    public async Task RecordAsync_WritesCorrelationIdAndEveryMetadataPair()
+    {
+        // Without these, the erasure record lost its subject reference, per-store counts and the phase pairing an attempt
+        // with its outcome, and two identical lines proved nothing.
+        var logger = new CapturingLogger<StructuredLogAuditSink>();
+
+        await new StructuredLogAuditSink(logger).RecordAsync(new AuditEntry
+        {
+            RequestType = "EraseSubjectDataCommand",
+            Action = "right_to_erasure",
+            ExecutorId = "operator-9",
+            CorrelationId = "corr-123",
+            Timestamp = DateTimeOffset.UnixEpoch,
+            Outcome = AuditOutcome.Success,
+            Metadata = new Dictionary<string, string>
+            {
+                ["phase"] = "outcome",
+                ["subject_reference"] = "ab12cd",
+                ["completeness"] = "Partial",
+                ["store.conversations"] = "Erased:5",
+            },
+        }, CancellationToken.None);
+
+        var line = logger.Messages.Should().ContainSingle().Subject;
+        line.Should().Contain("corr-123").And.Contain("operator-9").And.Contain("Success");
+        line.Should().Contain("phase=outcome").And.Contain("subject_reference=ab12cd")
+            .And.Contain("completeness=Partial").And.Contain("store.conversations=Erased:5");
+    }
+
+    [Fact]
+    public async Task RecordAsync_ValueWithDelimitersOrLineBreaks_CannotForgeAFieldOrALine()
+    {
+        var logger = new CapturingLogger<StructuredLogAuditSink>();
+
+        await new StructuredLogAuditSink(logger).RecordAsync(new AuditEntry
+        {
+            RequestType = "SomeCommand",
+            Action = "something",
+            Timestamp = DateTimeOffset.UnixEpoch,
+            Outcome = AuditOutcome.Success,
+            Metadata = new Dictionary<string, string> { ["note"] = "x; completeness=Full\nAudit: forged" },
+        }, CancellationToken.None);
+
+        var line = logger.Messages.Should().ContainSingle().Subject;
+        line.Should().NotContain("completeness=Full").And.NotContain("\n");
+        line.Should().Contain("note=x%3B completeness%3DFull%0AAudit: forged");
     }
 }

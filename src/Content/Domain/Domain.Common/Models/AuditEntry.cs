@@ -45,5 +45,10 @@ public enum AuditOutcome
     /// <summary>The action failed due to an error.</summary>
     Failure,
     /// <summary>The action was denied due to insufficient permissions.</summary>
-    Denied
+    Denied,
+    /// <summary>
+    /// The action has started and its outcome is recorded separately. Written before an irreversible action, so a process
+    /// that dies part-way leaves a record that the action began rather than one claiming it succeeded.
+    /// </summary>
+    Attempted
 }

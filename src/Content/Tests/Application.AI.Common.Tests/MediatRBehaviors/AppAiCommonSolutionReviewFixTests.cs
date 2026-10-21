@@ -265,6 +265,13 @@ public sealed class AppAiCommonSolutionReviewFixTests
             return new Token(this, previous);
         }
 
+        public IDisposable SuspendScope()
+        {
+            var previous = Current;
+            Current = null;
+            return new Token(this, previous);
+        }
+
         private sealed class Token : IDisposable
         {
             private readonly TestAmbientRequestScope _owner;

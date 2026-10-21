@@ -181,9 +181,8 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         foreach (var edgeId in edgesToRemove)
             _edges.TryRemove(edgeId, out _);
 
-        _logger.LogDebug(
-            "Deleted node {NodeId} and {EdgeCount} connected edges",
-            nodeId, edgesToRemove.Count);
+        // No node id: memory node ids embed the owner and the memory key, which a deletion log must not keep.
+        _logger.LogDebug("Deleted a node and {EdgeCount} connected edges", edgesToRemove.Count);
         return Task.CompletedTask;
     }
 
@@ -264,7 +263,8 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
                 deleted.Add(edgeId);
         }
 
-        _logger.LogDebug("Deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
+        _logger.LogDebug("Deleted {Count} edges owned by one owner", deleted.Count);
         return Task.FromResult<IReadOnlyList<string>>(deleted);
     }
 

@@ -175,7 +175,7 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
             ActorId = CurrentUserId ?? "system",
             Timestamp = _timeProvider.GetUtcNow(),
             ScopeId = CurrentUserId ?? "system",
-            AffectedNodeIds = [nodeId]
+            AffectedNodeCount = 1
         }, cancellationToken);
     }
 
@@ -193,7 +193,7 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
             ActorId = CurrentUserId ?? "system",
             Timestamp = _timeProvider.GetUtcNow(),
             ScopeId = CurrentUserId ?? "system",
-            AffectedEdgeIds = [edgeId]
+            AffectedEdgeCount = 1
         }, cancellationToken);
     }
 
@@ -206,6 +206,7 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
 
         // Audit what was ACTUALLY deleted, and only when something was: a Forget event for
         // IDs that never existed (or a fully missed batch) would be a false audit record.
+        // Counts, not ids: a deletion record must not keep what it deleted (see MemoryAuditEvent).
         // Mirrors DeleteEdgesByOwnerAsync below.
         if (result.DeletedNodeIds.Count > 0 || result.DeletedEdgeIds.Count > 0)
         {
@@ -216,8 +217,8 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
                 ActorId = CurrentUserId ?? "system",
                 Timestamp = _timeProvider.GetUtcNow(),
                 ScopeId = CurrentUserId ?? "system",
-                AffectedNodeIds = result.DeletedNodeIds,
-                AffectedEdgeIds = result.DeletedEdgeIds
+                AffectedNodeCount = result.DeletedNodeIds.Count,
+                AffectedEdgeCount = result.DeletedEdgeIds.Count
             }, cancellationToken);
         }
 
@@ -231,6 +232,8 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     {
         var deleted = await _inner.DeleteEdgesByOwnerAsync(ownerId, cancellationToken);
 
+        // Deleting by owner is right-to-erasure, so the owner is the person being erased: the record names the scope
+        // the deletion ran in, never the owner, and counts what it removed.
         if (deleted.Count > 0)
         {
             await _auditSink.EmitAsync(new MemoryAuditEvent
@@ -239,8 +242,8 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
                 Action = MemoryAuditAction.Forget,
                 ActorId = CurrentUserId ?? "system",
                 Timestamp = _timeProvider.GetUtcNow(),
-                ScopeId = ownerId,
-                AffectedEdgeIds = deleted
+                ScopeId = CurrentUserId ?? "system",
+                AffectedEdgeCount = deleted.Count
             }, cancellationToken);
         }
 

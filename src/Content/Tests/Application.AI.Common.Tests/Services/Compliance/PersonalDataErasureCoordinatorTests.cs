@@ -2,10 +2,12 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Models.Conversations;
+using Application.AI.Common.Services;
 using Application.AI.Common.Services.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Compliance;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -22,6 +24,7 @@ public sealed class PersonalDataErasureCoordinatorTests
     private readonly Mock<IErasureOrchestrator> _graph = new();
     private readonly Mock<IConversationStore> _conversations = new();
     private readonly List<string> _calls = [];
+    private readonly AmbientRequestScope _ambientScope = new();
 
     public PersonalDataErasureCoordinatorTests()
     {
@@ -65,8 +68,35 @@ public sealed class PersonalDataErasureCoordinatorTests
     }
 
     private PersonalDataErasureCoordinator Create(params IPersonalDataEraser?[] erasers) =>
-        new(_graph.Object, erasers!, TimeProvider.System, NullLogger<PersonalDataErasureCoordinator>.Instance,
-            _conversations.Object);
+        new(_graph.Object, erasers!, _ambientScope, TimeProvider.System,
+            NullLogger<PersonalDataErasureCoordinator>.Instance, _conversations.Object);
+
+    [Fact]
+    public async Task CallerHasARequestScope_EveryStoreRunsSystemScopedAndTheCallersScopeComesBack()
+    {
+        // Scope-filtering stores answer by the ambient caller. An operator's scope would hide the subject's data from them
+        // while the receipt still read Full, so erasure must run with no ambient scope at all, as background work does.
+        var callerScope = new ServiceCollection().BuildServiceProvider();
+        IServiceProvider? seenByGraph = callerScope, seenByStore = callerScope;
+        _graph.Setup(g => g.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => seenByGraph = _ambientScope.Current)
+            .ReturnsAsync(GraphReceipt(ErasureCompleteness.Full));
+        var store = new Mock<IPersonalDataEraser>();
+        store.SetupGet(e => e.ErasureStoreName).Returns("spills");
+        store.SetupGet(e => e.ErasureStage).Returns(ErasureStage.BeforeConversations);
+        store.Setup(e => e.EraseSubjectAsync(It.IsAny<ErasureSubject>(), It.IsAny<CancellationToken>()))
+            .Callback(() => seenByStore = _ambientScope.Current)
+            .ReturnsAsync(1);
+
+        using (_ambientScope.BeginScope(callerScope))
+        {
+            await Create(store.Object).EraseOwnerAsync(Owner, CancellationToken.None);
+            _ambientScope.Current.Should().BeSameAs(callerScope, "the caller's scope is restored afterwards");
+        }
+
+        seenByGraph.Should().BeNull();
+        seenByStore.Should().BeNull();
+    }
 
     [Fact]
     public async Task EveryStoreSucceeds_ReceiptIsFullAndListsEachStore()

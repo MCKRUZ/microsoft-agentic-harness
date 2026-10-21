@@ -38,8 +38,8 @@ public sealed class StructuredLoggingAuditSink : IMemoryAuditSink
         _logger.LogInformation(
             "MemoryAudit: Action={Action} Actor={ActorId} Scope={ScopeId} Nodes={NodeCount} Edges={EdgeCount} EventId={EventId}",
             e.Action, e.ActorId, e.ScopeId,
-            e.AffectedNodeIds?.Count ?? 0,
-            e.AffectedEdgeIds?.Count ?? 0,
+            e.AffectedNodeCount ?? e.AffectedNodeIds?.Count ?? 0,
+            e.AffectedEdgeCount ?? e.AffectedEdgeIds?.Count ?? 0,
             e.EventId);
     }
 }

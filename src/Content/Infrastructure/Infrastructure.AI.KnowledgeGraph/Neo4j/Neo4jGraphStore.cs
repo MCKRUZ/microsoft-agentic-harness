@@ -343,7 +343,8 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
 
             var deleted = await MaterializeIdsAsync(cursor, "rid");
 
-            _logger.LogDebug("Neo4j: deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+            // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
+            _logger.LogDebug("Neo4j: deleted {Count} edges owned by one owner", deleted.Count);
             return (IReadOnlyList<string>)deleted;
         });
     }

@@ -1,0 +1,206 @@
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Services.Compliance;
+using Application.Core.Compliance;
+using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common.Compliance;
+using Domain.Common.Config.AI;
+using Domain.Common.Models;
+using FluentAssertions;
+using Microsoft.Extensions.Options;
+using Moq;
+using Tests.Common;
+using Xunit;
+
+namespace Application.Core.Tests.Compliance;
+
+/// <summary>
+/// The erasure audit record (#900): it proves the request happened, who asked, and what each store removed, and never
+/// keeps the identity the request erased, in the record or in the log.
+/// </summary>
+public sealed class AuditedErasureTests
+{
+    private const string Subject = "Subject-Oid-7f3a";
+    private static readonly string Key = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
+
+    private readonly Mock<IPersonalDataErasure> _erasure = new();
+    private readonly List<AuditEntry> _records = [];
+    private readonly Mock<IAuditSink> _sink = new();
+    private readonly CapturingLogger<AuditedErasure> _logger = new();
+    private readonly ErasureConfig _config = new() { SubjectReferenceKey = Key };
+
+    public AuditedErasureTests()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
+            .Returns(ValueTask.CompletedTask);
+    }
+
+    private HmacErasureSubjectReference Reference() =>
+        new(Mock.Of<IOptionsMonitor<ErasureConfig>>(m => m.CurrentValue == _config));
+
+    private AuditedErasure Create() => new(_erasure.Object, Reference(), _sink.Object, TimeProvider.System, _logger);
+
+    private static ErasureReceipt Receipt() => new()
+    {
+        RequestId = "receipt-1",
+        ScopeId = Subject,
+        RequestedAt = DateTimeOffset.UnixEpoch,
+        CompletedAt = DateTimeOffset.UnixEpoch,
+        NodesDeleted = 3,
+        EdgesDeleted = 2,
+        FeedbackWeightsDeleted = 0,
+        VectorEmbeddingsDeleted = 4,
+        Stores = [StoreErasureOutcome.Erased("conversations", 5)],
+    };
+
+    private string ExpectedReference() => Reference().For(Subject)!;
+
+    [Fact]
+    public async Task EraseAsync_Succeeds_RecordsAttemptAndOutcomeWithCountsAndReference()
+    {
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _records.Select(r => r.Metadata!["phase"]).Should().Equal("attempt", "outcome");
+        _records.Select(r => r.CorrelationId).Distinct().Should().ContainSingle("both phases pair up by correlation id");
+        _records[0].Outcome.Should().Be(AuditOutcome.Attempted,
+            "an erasure that dies part-way must not leave a record claiming it succeeded");
+        var outcome = _records[1];
+        outcome.Outcome.Should().Be(AuditOutcome.Success);
+        outcome.ExecutorId.Should().Be(ErasureActor.DataSubjectExecutor);
+        outcome.Metadata!["subject_reference"].Should().Be(ExpectedReference());
+        outcome.Metadata["receipt_request_id"].Should().Be("receipt-1");
+        outcome.Metadata["completeness"].Should().Be("Full");
+        outcome.Metadata["graph.nodes"].Should().Be("3");
+        outcome.Metadata["store.conversations"].Should().Be("Erased:5");
+    }
+
+    [Fact]
+    public async Task EraseAsync_Succeeds_NoRecordAndNoLogLineCarriesTheSubjectsId()
+    {
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        AllRecordedText().Should().NotContain(t => t.Contains(Subject, StringComparison.OrdinalIgnoreCase));
+        _logger.Messages.Should().NotContain(m => m.Contains(Subject, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task EraseAsync_ByOperator_RecordsTheOperatorAsTheExecutor()
+    {
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().EraseAsync(Subject, ErasureActor.Operator("operator-9"), "EraseSubjectDataCommand", CancellationToken.None);
+
+        _records.Should().OnlyContain(r => r.ExecutorId == "operator-9" && r.Metadata!["initiator"] == "operator");
+        AllRecordedText().Should().NotContain(t => t.Contains(Subject, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task EraseAsync_NoReferenceKey_RecordsNoReferenceAndStillErases()
+    {
+        _config.SubjectReferenceKey = string.Empty;
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("erasure is a legal duty and never waits on audit configuration");
+        _records.Should().OnlyContain(r => !r.Metadata!.ContainsKey("subject_reference"));
+    }
+
+    [Fact]
+    public async Task EraseAsync_StoreThrows_RecordsFailureAndReturnsAScrubbedMessage()
+    {
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException($"Server=db;Password=hunter2 for {Subject}"));
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Equal(AuditedErasure.FailedMessage);
+        var outcome = _records.Should().HaveCount(2).And.Subject.Last();
+        outcome.Outcome.Should().Be(AuditOutcome.Failure);
+        outcome.FailureReason.Should().Be(nameof(InvalidOperationException));
+        AllRecordedText().Should().NotContain(t => t.Contains("hunter2") || t.Contains(Subject));
+    }
+
+    [Fact]
+    public async Task EraseAsync_AuditSinkThrows_ErasureStillRuns()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a broken audit sink must not refuse a person their right to erasure");
+        _erasure.Verify(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task EraseAsync_ReferenceKeyUnusable_ErasesAndRecordsTheReferenceAsUnavailable()
+    {
+        // A key that validated at startup can be replaced by a bad one on reload; that must degrade the record, never the
+        // erasure.
+        _config.SubjectReferenceKey = "AAEC";
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _records.Should().HaveCount(2).And.OnlyContain(r =>
+            r.Metadata!["subject_reference"] == AuditedErasure.ReferenceUnavailable);
+    }
+
+    [Fact]
+    public async Task EraseAsync_CallerCancelsPartWay_StillRecordsTheOutcome()
+    {
+        using var cts = new CancellationTokenSource();
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((_, _) =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            });
+
+        var act = () => Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        var outcome = _records.Should().HaveCount(2).And.Subject.Last();
+        outcome.Outcome.Should().Be(AuditOutcome.Failure);
+        outcome.FailureReason.Should().Be("cancelled");
+        _sink.Verify(s => s.RecordAsync(It.IsAny<AuditEntry>(), cts.Token), Times.Never,
+            "the outcome must be written on a token the caller cannot cancel");
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_WritesADeniedOutcomeWithTheNamedSubjectByReferenceOnly()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.Operator("operator-9"), "EraseSubjectDataCommand", "missing the erasure role", Subject);
+
+        var record = _records.Should().ContainSingle().Subject;
+        record.Outcome.Should().Be(AuditOutcome.Denied);
+        record.FailureReason.Should().Be("missing the erasure role");
+        record.Action.Should().Be(AuditedErasure.AuditAction);
+        record.Metadata!["subject_reference"].Should().Be(ExpectedReference());
+        AllRecordedText().Should().NotContain(t => t.Contains(Subject, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_SubjectLongerThanAnyValidRequest_IsNotHashed()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.Operator("operator-9"), "EraseSubjectDataCommand", "missing the erasure role",
+            new string('x', 100_000));
+
+        _records.Should().ContainSingle().Which.Metadata!["subject_reference"].Should().Be(AuditedErasure.ReferenceInvalid);
+    }
+
+    private IEnumerable<string> AllRecordedText() => _records.SelectMany(r =>
+        new[] { r.ExecutorId ?? "", r.CorrelationId ?? "", r.FailureReason ?? "", r.RequestType }
+            .Concat(r.Metadata?.Keys ?? [])
+            .Concat(r.Metadata?.Values ?? []));
+}

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -25,6 +26,13 @@ namespace Application.AI.Common.Services.Compliance;
 /// receipt, and the personal-data inventory states what each keeps and for how long.
 /// </para>
 /// <para>
+/// <strong>Runs system-scoped.</strong> The ambient request scope is suspended for the whole request, as for background
+/// retention. Scope-filtering stores such as the tenant-isolated graph answer by the caller's identity, so under an
+/// operator's scope they would find none of the subject's data and the receipt would still read <c>Full</c>. Deciding who
+/// may be erased is the caller's job: the self-service handler passes the caller's own id and the operator handler sits
+/// behind a dedicated role.
+/// </para>
+/// <para>
 /// <strong>Failures are contained per store.</strong> One store throwing is recorded as <see cref="StoreErasureStatus.Failed"/>
 /// with a fixed phrase (the exception goes to the log only, because store exceptions carry paths and connection
 /// strings) and the request carries on, so one broken store does not shield the rest of the subject's data.
@@ -42,12 +50,14 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private readonly IErasureOrchestrator _graph;
     private readonly IConversationStore? _conversations;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PersonalDataErasureCoordinator> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="PersonalDataErasureCoordinator"/> class.</summary>
     /// <param name="graph">Erases the subject's knowledge-graph nodes, edges, memories and derived document content.</param>
     /// <param name="erasers">Every registered store that can erase one person.</param>
+    /// <param name="ambientScope">Suspended for the request, so scope-filtering stores see the subject's data.</param>
     /// <param name="timeProvider">Time source for the receipt's completion time.</param>
     /// <param name="logger">Logger for store failures, which never reach the receipt.</param>
     /// <param name="conversations">
@@ -57,18 +67,21 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
+        IAmbientRequestScope ambientScope,
         TimeProvider timeProvider,
         ILogger<PersonalDataErasureCoordinator> logger,
         IConversationStore? conversations = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
+        ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _graph = graph;
         // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser.
         _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        _ambientScope = ambientScope;
         _timeProvider = timeProvider;
         _logger = logger;
         _conversations = conversations;
@@ -78,6 +91,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     public async Task<ErasureReceipt> EraseOwnerAsync(string ownerId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        using var systemScoped = _ambientScope.SuspendScope();
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations are unreachable, and the conversations must not be deleted either.

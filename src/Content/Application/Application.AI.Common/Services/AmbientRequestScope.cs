@@ -21,4 +21,7 @@ public sealed class AmbientRequestScope : IAmbientRequestScope
 
         return AmbientScope.Begin(s_current, requestServices);
     }
+
+    /// <inheritdoc />
+    public IDisposable SuspendScope() => AmbientScope.Begin<IServiceProvider>(s_current, null);
 }

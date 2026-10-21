@@ -186,7 +186,7 @@ public sealed class ComplianceAwareGraphStoreTests
         _auditSink.Verify(s => s.EmitAsync(
             It.Is<MemoryAuditEvent>(e =>
                 e.Action == MemoryAuditAction.Forget &&
-                e.AffectedNodeIds!.Contains("n1")),
+                e.AffectedNodeCount == 1 && e.AffectedNodeIds == null),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -233,7 +233,7 @@ public sealed class ComplianceAwareGraphStoreTests
     }
 
     [Fact]
-    public async Task DeleteNodesAsync_AuditReportsOnlyActuallyDeletedNodeIds()
+    public async Task DeleteNodesAsync_AuditCountsOnlyActuallyDeletedNodes()
     {
         await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "A", Type = "Fact" }]);
 
@@ -242,8 +242,7 @@ public sealed class ComplianceAwareGraphStoreTests
         _auditSink.Verify(s => s.EmitAsync(
             It.Is<MemoryAuditEvent>(e =>
                 e.Action == MemoryAuditAction.Forget &&
-                e.AffectedNodeIds!.Count == 1 &&
-                e.AffectedNodeIds.Contains("n1")),
+                e.AffectedNodeCount == 1),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -257,7 +256,7 @@ public sealed class ComplianceAwareGraphStoreTests
     }
 
     [Fact]
-    public async Task DeleteNodesAsync_DelegatesAndEmitsForgetAuditWithEdgeIds()
+    public async Task DeleteNodesAsync_DelegatesAndEmitsForgetAuditWithCountsNotIds()
     {
         await _innerStore.AddNodesAsync([
             new GraphNode { Id = "n1", Name = "A", Type = "Fact" },
@@ -276,8 +275,8 @@ public sealed class ComplianceAwareGraphStoreTests
         _auditSink.Verify(s => s.EmitAsync(
             It.Is<MemoryAuditEvent>(e =>
                 e.Action == MemoryAuditAction.Forget &&
-                e.AffectedNodeIds!.Contains("n1") &&
-                e.AffectedEdgeIds!.Contains("e1")),
+                e.AffectedNodeCount == 1 && e.AffectedEdgeCount == 1 &&
+                e.AffectedNodeIds == null && e.AffectedEdgeIds == null),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -300,8 +299,8 @@ public sealed class ComplianceAwareGraphStoreTests
         _auditSink.Verify(s => s.EmitAsync(
             It.Is<MemoryAuditEvent>(e =>
                 e.Action == MemoryAuditAction.Forget &&
-                e.ScopeId == "owner-x" &&
-                e.AffectedEdgeIds!.Contains("e1")),
+                e.ScopeId != "owner-x" && e.ActorId != "owner-x" &&
+                e.AffectedEdgeCount == 1 && e.AffectedEdgeIds == null),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

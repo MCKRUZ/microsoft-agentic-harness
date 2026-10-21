@@ -16,6 +16,12 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 /// </summary>
 public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
 {
+    /// <summary>
+    /// The actor and scope the <see cref="MemoryAuditAction.Erasure"/> event records. Erasure runs system-scoped, and the
+    /// subject is the one identity the event must not carry.
+    /// </summary>
+    public const string ErasureAuditScope = "system";
+
     private readonly IKnowledgeGraphStore _graphStore;
     private readonly IFeedbackStore _feedbackStore;
     private readonly IVectorStore? _vectorStore;
@@ -274,19 +280,22 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             CompletenessReason = completenessReason
         };
 
-        // 6. Emit audit event covering everything that was ACTUALLY erased — the deleted
-        //    IDs reported by the stores, never the requested IDs. (The event itself is
-        //    always emitted: it is the proof the erasure REQUEST was processed, receipt
-        //    and all, even when nothing matched.)
+        // 6. Emit audit event covering everything that was ACTUALLY erased — the counts the
+        //    stores reported, never the requested ones. (The event itself is always emitted:
+        //    it is the proof the erasure REQUEST was processed, receipt and all, even when
+        //    nothing matched.) It names neither the subject nor any erased id: node ids embed
+        //    the owner and memory keys, so recording them would keep what was erased (#900).
+        //    The event id is the receipt's request id, which links it to the request's own
+        //    audit record.
         await _auditSink.EmitAsync(new MemoryAuditEvent
         {
             EventId = requestId,
             Action = MemoryAuditAction.Erasure,
-            ActorId = scopeId,
+            ActorId = ErasureAuditScope,
             Timestamp = receipt.CompletedAt,
-            ScopeId = scopeId,
-            AffectedNodeIds = nodeDeletion.DeletedNodeIds,
-            AffectedEdgeIds = deletedEdgeIds
+            ScopeId = ErasureAuditScope,
+            AffectedNodeCount = nodeDeletion.DeletedNodeIds.Count,
+            AffectedEdgeCount = deletedEdgeIds.Count
         }, cancellationToken);
 
         _logger.LogInformation(

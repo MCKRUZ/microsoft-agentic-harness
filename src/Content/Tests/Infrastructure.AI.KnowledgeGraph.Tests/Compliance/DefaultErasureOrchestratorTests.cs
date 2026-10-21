@@ -129,7 +129,7 @@ public sealed class DefaultErasureOrchestratorTests
     }
 
     [Fact]
-    public async Task EraseByOwner_AuditRecordsActualDeletedIds_NotRequested()
+    public async Task EraseByOwner_AuditCountsActualDeletions_NotRequestedAndNamesNoOne()
     {
         _graphStore.Setup(g => g.GetNodesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync([
@@ -146,8 +146,10 @@ public sealed class DefaultErasureOrchestratorTests
         _auditSink.Verify(a => a.EmitAsync(
             It.Is<MemoryAuditEvent>(e =>
                 e.Action == MemoryAuditAction.Erasure &&
-                e.AffectedNodeIds!.Count == 1 && e.AffectedNodeIds.Contains("n1") &&
-                e.AffectedEdgeIds!.Contains("e1")),
+                e.AffectedNodeCount == 1 && e.AffectedEdgeCount == 1 &&
+                e.AffectedNodeIds == null && e.AffectedEdgeIds == null &&
+                e.ActorId == DefaultErasureOrchestrator.ErasureAuditScope &&
+                e.ScopeId == DefaultErasureOrchestrator.ErasureAuditScope),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

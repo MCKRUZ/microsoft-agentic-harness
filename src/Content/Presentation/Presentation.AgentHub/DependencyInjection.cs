@@ -238,6 +238,26 @@ public static class DependencyInjection
                     });
                 }
 
+                // Operator erasure (#900) deletes another person's data, and every request, refused or not,
+                // writes an audit record; cap it per authenticated caller so a token without the role cannot
+                // flood the audit trail and one with it cannot sweep through people faster than a human
+                // working a request queue would. Its own partition, so an operator's own self-service
+                // erasure does not spend this allowance.
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/compliance/erasures"))
+                {
+                    var operatorKey = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"erase-subject:{operatorKey}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
                 // Memory writes run the write gate's prompt-injection scan on every request and
                 // create durable graph nodes; cap them per authenticated user so a scripted caller
                 // cannot flood the graph store or burn gate-scan cycles. Reads (GET search) and

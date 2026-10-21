@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using FluentAssertions;
 using Presentation.AgentHub.Auth;
@@ -28,6 +29,17 @@ public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIn
         // handler's "no user scope" denial.
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await response.Content.ReadAsStringAsync()).Should().Contain("sign-in is bypassed");
+    }
+
+    [Fact]
+    public async Task EraseSubjectData_SelfHostedBypass_IsForbidden()
+    {
+        // Under bypass the operator cannot be told apart from anyone else, so no one may erase anyone.
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/compliance/erasures", new { subjectId = "someone" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [Theory]

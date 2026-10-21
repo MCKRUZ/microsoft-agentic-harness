@@ -281,6 +281,12 @@ public class AIConfig
     /// </summary>
     public ClaimVerificationConfig ClaimVerification { get; set; } = new();
 
+    /// <summary>
+    /// Gets or sets right-to-erasure configuration: the key behind the pseudonymous subject reference in the erasure
+    /// audit trail (#900).
+    /// </summary>
+    public ErasureConfig Erasure { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 

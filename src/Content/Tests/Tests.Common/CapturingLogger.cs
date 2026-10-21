@@ -17,6 +17,9 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public bool Logged(LogLevel level, string fragment) =>
         _entries.Any(e => e.Level == level && e.Message.Contains(fragment, StringComparison.Ordinal));
 
+    /// <summary>Every rendered message written so far, at any level, oldest first.</summary>
+    public IReadOnlyList<string> Messages => _entries.Select(e => e.Message).ToList();
+
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 

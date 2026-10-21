@@ -362,7 +362,8 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         while (await reader.ReadAsync(cancellationToken))
             deleted.Add(reader.GetString(0));
 
-        _logger.LogDebug("PostgreSQL: deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
+        _logger.LogDebug("PostgreSQL: deleted {Count} edges owned by one owner", deleted.Count);
         return deleted;
     }
 
