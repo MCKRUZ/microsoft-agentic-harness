@@ -38,4 +38,18 @@ public sealed partial class EfCoreConversationStore : IIdleConversationSource
         return await context.Conversations
             .AnyAsync(c => c.Id == conversationId && c.UpdatedAt < lastActivityBefore, cancellationToken);
     }
+
+    /// <inheritdoc/>
+    /// <remarks>One statement, so the owner and idle conditions and the delete cannot be separated. Messages go through the cascade.</remarks>
+    public async Task<bool> DeleteIfIdleAsync(
+        string conversationId, string ownerId, DateTimeOffset lastActivityBefore, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        return await context.Conversations
+            .Where(c => c.Id == conversationId && c.UserId == ownerId && c.UpdatedAt < lastActivityBefore)
+            .ExecuteDeleteAsync(cancellationToken) > 0;
+    }
 }

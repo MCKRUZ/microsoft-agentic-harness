@@ -528,6 +528,43 @@
                         per tenant and per dataset, so different customers and datasets can carry different lifetimes.
                     </p>
 
+                    <h3 id="retention-periods">Retention periods outside the graph (#901)</h3>
+                    <p>
+                        GDPR's storage-limitation principle (Article 5(1)(e)) does not allow personal data to be kept with
+                        no end. Every store in the personal-data inventory declares how long it keeps what it holds, and a
+                        guard (<code>EveryPersonalDataStoreIsDeclaredTests</code>) fails the build if a store declares
+                        <code>RetentionBasis.Unbounded</code> without being on a list of known gaps that only shrinks
+                        (<code>KeptForeverGaps</code>). The stores with a period so far:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Conversations.</strong> A conversation with no new message for
+                            <code>AppConfig:AI:Conversations:Retention:IdlePeriod</code> (default 365 days) is deleted
+                            with everything found through it: its messages, observability sessions, spilled tool
+                            results, prompt-usage rows, token budget and call-once ledger rows. Reading a conversation
+                            does not reset the clock; writing to it does. <code>ConversationExpiry</code> deletes in the
+                            same stage order as erasure, under the conversation's turn lease, so a conversation with a
+                            turn running is never touched, and it asks only stores whose
+                            <code>ErasureReach</code> is <code>NamedConversations</code>, so the person's documents,
+                            plans, schedules and memories stay. Deleted bytes are cleared from the database files
+                            afterwards. A period under a day is refused at startup and by the sweep itself.
+                        </li>
+                        <li>
+                            <strong>Prompt-usage records</strong> (when persisted) are deleted after
+                            <code>AppConfig:AI:PromptUsage:Retention:RetainFor</code> (default 90 days).
+                        </li>
+                        <li>
+                            Spilled tool results (7 days), resolved escalations and terminal change proposals (90 days),
+                            orphaned token budgets (30 days) and the knowledge-graph entity types listed above already
+                            had periods.
+                        </li>
+                    </ul>
+                    <p>
+                        The stores still on the gap list, with what will close each one, are in
+                        <code>src/Content/Tests/Presentation.Common.Tests/Architecture/KeptForeverGaps.cs</code>. Until it is
+                        empty, a deployment that must meet storage limitation should set its own periods for them.
+                    </p>
+
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">

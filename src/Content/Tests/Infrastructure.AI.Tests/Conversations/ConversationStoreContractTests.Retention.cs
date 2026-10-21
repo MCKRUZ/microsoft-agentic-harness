@@ -67,6 +67,41 @@ public abstract partial class ConversationStoreContractTests
     }
 
     [Fact]
+    public async Task DeleteIfIdleAsync_DeletesOnlyWhenStillTheOwnersAndStillIdle()
+    {
+        var conversation = await Store.CreateAsync("agent", Owner);
+        await Store.AppendMessageAsync(conversation.Id, Owner, UserMessage("hello"));
+        Clock.Advance(TimeSpan.FromDays(2));
+        var cutoff = Clock.GetUtcNow() - TimeSpan.FromDays(1);
+
+        (await Idle.DeleteIfIdleAsync(conversation.Id, Stranger, cutoff, CancellationToken.None))
+            .Should().BeFalse("a conversation listed under one owner is never deleted for another");
+        (await Idle.DeleteIfIdleAsync(conversation.Id, Owner, Clock.GetUtcNow() - TimeSpan.FromDays(3), CancellationToken.None))
+            .Should().BeFalse("written to after the cutoff, so not idle");
+        (await Store.GetAsync(conversation.Id, Owner)).Should().NotBeNull("both refusals must leave it standing");
+
+        (await Idle.DeleteIfIdleAsync(conversation.Id, Owner, cutoff, CancellationToken.None)).Should().BeTrue();
+        (await Store.GetAsync(conversation.Id, Owner)).Should().BeNull();
+        (await Idle.DeleteIfIdleAsync(conversation.Id, Owner, cutoff, CancellationToken.None))
+            .Should().BeFalse("nothing is left to delete");
+    }
+
+    [Fact]
+    public async Task DeleteIfIdleAsync_AConversationStartedAgainUnderTheSameId_IsNotDeleted()
+    {
+        // The race the conditional delete exists for: the idle conversation was deleted and a new one created with its
+        // id between the sweep's check and its delete.
+        var original = await Store.CreateAsync("agent", Owner);
+        Clock.Advance(TimeSpan.FromDays(2));
+        var cutoff = Clock.GetUtcNow() - TimeSpan.FromDays(1);
+        await Store.DeleteAsync(original.Id, Owner);
+        await Store.CreateAsync("agent", Owner, original.Id);
+
+        (await Idle.DeleteIfIdleAsync(original.Id, Owner, cutoff, CancellationToken.None)).Should().BeFalse();
+        (await Store.GetAsync(original.Id, Owner)).Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task IsIdleAsync_AnswersForTheCutoff_AndIsFalseForAConversationThatIsGone()
     {
         var conversation = await Store.CreateAsync("agent", Owner);

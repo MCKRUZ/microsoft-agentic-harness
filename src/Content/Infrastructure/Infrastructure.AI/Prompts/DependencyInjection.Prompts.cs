@@ -94,8 +94,13 @@ public static class PromptRegistryDependencyInjection
         services.AddDbContextFactory<PromptUsageDbContext>(opts =>
             opts.UseSqliteWithSecureDelete(usageOptions.ConnectionString));
 
-        services.AddSingleton<IPromptUsageStore, EfCorePromptUsageStore>();
+        // Concrete with the interface forwarding to it, so the retention sweep and every caller share one instance.
+        services.AddSingleton<EfCorePromptUsageStore>();
+        services.AddSingleton<IPromptUsageStore>(sp => sp.GetRequiredService<EfCorePromptUsageStore>());
         services.AddPersonalDataEraser<IPromptUsageStore>();
+
+        // Rows past AppConfig:AI:PromptUsage:Retention are deleted (#901); the switch is read live on every tick.
+        services.AddHostedService<PromptUsageRetentionService>();
 
         // Ensure the schema is created the first time the store is needed. Idempotent.
         // SchemaInitializer<TContext> is the shared base — same lifecycle used by

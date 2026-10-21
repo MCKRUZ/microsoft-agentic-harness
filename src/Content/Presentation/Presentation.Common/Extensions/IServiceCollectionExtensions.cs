@@ -125,6 +125,15 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Every configuration section bound to a <see cref="Domain.Common.Config.RetentionPeriodConfig"/> (#901). The sweep
+    /// for each reads it through <c>AppConfig</c>; this list is what makes each one checked at startup.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> RetentionPeriodSections =
+    [
+        "AppConfig:AI:PromptUsage:Retention",
+    ];
+
+    /// <summary>
     /// Binds every AppConfig subsection that has a FluentValidation config validator, attaching
     /// the validator to the options pipeline and enforcing it at host start.
     /// </summary>
@@ -186,6 +195,15 @@ public static class IServiceCollectionExtensions
                 Domain.Common.Config.AI.Conversations.ConversationRetentionConfig,
                 ConversationRetentionConfigValidator>()
             .ValidateOnStart();
+
+        // Every age-based retention period (#901), one named option per section, so each is checked at startup.
+        foreach (var section in RetentionPeriodSections)
+        {
+            services.AddOptions<Domain.Common.Config.RetentionPeriodConfig>(section)
+                .Bind(configuration.GetSection(section))
+                .ValidateFluentValidation<Domain.Common.Config.RetentionPeriodConfig, RetentionPeriodConfigValidator>()
+                .ValidateOnStart();
+        }
 
         services.AddOptions<ResilienceConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Resilience"))

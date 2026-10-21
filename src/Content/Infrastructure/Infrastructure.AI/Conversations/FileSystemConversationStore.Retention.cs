@@ -22,7 +22,9 @@ public sealed partial class FileSystemConversationStore : IIdleConversationSourc
         {
             cancellationToken.ThrowIfCancellationRequested();
             var record = await TryReadAsync(file, cancellationToken);
-            if (record is not null && record.UpdatedAt < lastActivityBefore)
+            // A record with no id or owner cannot be expired safely, so it is left for a person to look at.
+            if (record is not null && record.UpdatedAt < lastActivityBefore
+                && !string.IsNullOrWhiteSpace(record.Id) && !string.IsNullOrWhiteSpace(record.UserId))
                 idle.Add(new IdleConversation(record.Id, record.UserId, record.UpdatedAt));
         }
 
@@ -37,24 +39,47 @@ public sealed partial class FileSystemConversationStore : IIdleConversationSourc
         return record is not null && record.UpdatedAt < lastActivityBefore;
     }
 
+    /// <inheritdoc/>
+    /// <remarks>The read, the conditions and the delete happen under the file's lock, so nothing can change in between.</remarks>
+    public async Task<bool> DeleteIfIdleAsync(
+        string conversationId, string ownerId, DateTimeOffset lastActivityBefore, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        var path = ResolveAndValidatePath(conversationId);
+        using (await _locks.AcquireAsync(path, cancellationToken))
+        {
+            var record = await TryReadLockedAsync(path, cancellationToken);
+            if (record is null || record.UserId != ownerId || record.UpdatedAt >= lastActivityBefore)
+                return false;
+
+            File.Delete(path);
+            return true;
+        }
+    }
+
     /// <summary>Reads one conversation file under its lock, or <see langword="null"/> when it is gone or unreadable.</summary>
     private async Task<ConversationRecord?> TryReadAsync(string path, CancellationToken cancellationToken)
     {
         using (await _locks.AcquireAsync(path, cancellationToken))
-        {
-            if (!File.Exists(path))
-                return null;
+            return await TryReadLockedAsync(path, cancellationToken);
+    }
 
-            try
-            {
-                var json = await File.ReadAllTextAsync(path, cancellationToken);
-                return JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
-            }
-            catch (Exception ex) when (ex is JsonException or IOException)
-            {
-                _logger.LogWarning(ex, "Failed to read conversation file {File} for retention; skipping.", path);
-                return null;
-            }
+    /// <summary>Reads one conversation file the caller already holds the lock for.</summary>
+    private async Task<ConversationRecord?> TryReadLockedAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+            return null;
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(path, cancellationToken);
+            return JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            _logger.LogWarning(ex, "Failed to read conversation file {File} for retention; skipping.", path);
+            return null;
         }
     }
 }

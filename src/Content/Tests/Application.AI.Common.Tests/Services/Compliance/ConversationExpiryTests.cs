@@ -30,8 +30,14 @@ public sealed class ConversationExpiryTests
             .ReturnsAsync([_idle]);
         _source.Setup(s => s.IsIdleAsync(It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-        var handle = new Mock<IConversationTurnLeaseHandle>();
-        handle.Setup(h => h.DisposeAsync()).Returns(() =>
+        _source.Setup(s => s.DeleteIfIdleAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, DateTimeOffset, CancellationToken>((id, owner, _, _) =>
+            {
+                _calls.Add($"conversations {owner} [{id}]");
+                return Task.FromResult(true);
+            });
+        _handle.SetupGet(h => h.LeaseLost).Returns(CancellationToken.None);
+        _handle.Setup(h => h.DisposeAsync()).Returns(() =>
         {
             _calls.Add("release");
             return ValueTask.CompletedTask;
@@ -40,9 +46,11 @@ public sealed class ConversationExpiryTests
             .Returns<string, CancellationToken>((id, _) =>
             {
                 _calls.Add($"lease {id}");
-                return Task.FromResult(handle.Object);
+                return Task.FromResult(_handle.Object);
             });
     }
+
+    private readonly Mock<IConversationTurnLeaseHandle> _handle = new();
 
     private Mock<IPersonalDataEraser> EraserMock(
         string name, ErasureStage stage, ErasureReach reach = ErasureReach.NamedConversations, Exception? failure = null)
@@ -70,7 +78,6 @@ public sealed class ConversationExpiryTests
     private IPersonalDataEraser[] TheUsualStores() =>
     [
         Eraser("ledger", ErasureStage.AfterConversations),
-        Eraser("conversations", ErasureStage.Conversations),
         Eraser("spills", ErasureStage.BeforeConversations),
     ];
 
@@ -134,7 +141,8 @@ public sealed class ConversationExpiryTests
         var sweep = Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
         _time.Advance(TimeSpan.FromSeconds(5));
 
-        (await sweep).Should().Be(0);
+        // Bounded, so an expiry that waits on a held lease forever fails here instead of hanging the run.
+        (await sweep.WaitAsync(TimeSpan.FromSeconds(30))).Should().Be(0);
         _calls.Should().BeEmpty("nothing may be deleted while a turn holds the conversation");
     }
 
@@ -155,7 +163,6 @@ public sealed class ConversationExpiryTests
     {
         var expired = await Create(
                 Eraser("spills", ErasureStage.BeforeConversations, failure: new IOException()),
-                Eraser("conversations", ErasureStage.Conversations),
                 Eraser("ledger", ErasureStage.AfterConversations))
             .ExpireIdleAsync(Year, 10, CancellationToken.None);
 
@@ -164,39 +171,68 @@ public sealed class ConversationExpiryTests
     }
 
     [Fact]
-    public async Task TheConversationStoreFailing_KeepsTheLedger_SoNoOnceOnlyToolIsReArmed()
+    public async Task TheConversationDeleteFailing_KeepsTheLedger_SoNoOnceOnlyToolIsReArmed()
     {
-        var expired = await Create(
-                Eraser("conversations", ErasureStage.Conversations, failure: new IOException()),
-                Eraser("ledger", ErasureStage.AfterConversations))
-            .ExpireIdleAsync(Year, 10, CancellationToken.None);
+        _source.Setup(s => s.DeleteIfIdleAsync("c-1", It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException());
+
+        var expired = await Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
 
         expired.Should().Be(0);
         _calls.Should().NotContain(c => c.StartsWith("ledger", StringComparison.Ordinal));
     }
 
     [Fact]
+    public async Task AConversationRecreatedUnderTheSameIdSinceTheCheck_IsNotDeleted_AndItsLedgerIsKept()
+    {
+        // The owner deleted the idle conversation and someone started a new one under the same id. The conditional
+        // delete finds nothing to remove; the ledger and budget rows now belong to that live conversation.
+        _source.Setup(s => s.DeleteIfIdleAsync("c-1", It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var expired = await Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
+
+        expired.Should().Be(0);
+        _calls.Should().Equal("lease c-1", "spills Owner-1 [c-1]", "release");
+    }
+
+    [Fact]
+    public async Task TheConversationIsDeletedOnlyIfStillTheOwnersAndStillIdle()
+    {
+        await Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
+
+        _source.Verify(s => s.DeleteIfIdleAsync("c-1", "Owner-1", _time.GetUtcNow() - Year, It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task ALostLease_StopsBeforeAnythingIsDeleted()
+    {
+        // A host stalled past the lease expiry may find a turn has taken the conversation over.
+        _handle.SetupGet(h => h.LeaseLost).Returns(new CancellationToken(canceled: true));
+
+        var expired = await Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
+
+        expired.Should().Be(0);
+        _calls.Should().Equal("lease c-1", "release");
+    }
+
+    [Fact]
     public async Task AStoreFailingAfterTheConversationIsDeleted_StillCountsItAsExpired()
     {
-        var expired = await Create(
-                Eraser("conversations", ErasureStage.Conversations),
-                Eraser("ledger", ErasureStage.AfterConversations, failure: new IOException()))
+        var expired = await Create(Eraser("ledger", ErasureStage.AfterConversations, failure: new IOException()))
             .ExpireIdleAsync(Year, 10, CancellationToken.None);
 
         expired.Should().Be(1, "the conversation is gone; claiming otherwise would hide that it was deleted");
     }
 
     [Fact]
-    public async Task NoStoreThatDeletesTheConversation_NothingIsTouched()
+    public async Task TheStoresOwnConversationEraser_IsNeverUsed_BecauseItHasNoIdleCondition()
     {
-        // Emptying what is found through a conversation and leaving the conversation standing helps nobody.
-        var expired = await Create(
-                Eraser("spills", ErasureStage.BeforeConversations),
-                Eraser("conversations", ErasureStage.Conversations, ErasureReach.Owner))
-            .ExpireIdleAsync(Year, 10, CancellationToken.None);
+        var conversations = EraserMock("conversations", ErasureStage.Conversations);
 
-        expired.Should().Be(0);
-        _calls.Should().BeEmpty();
+        await Create([.. TheUsualStores(), conversations.Object]).ExpireIdleAsync(Year, 10, CancellationToken.None);
+
+        conversations.Verify(e => e.EraseSubjectAsync(It.IsAny<ErasureSubject>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -251,16 +287,12 @@ public sealed class ConversationExpiryTests
         var second = new IdleConversation("c-2", "Owner-2", _idle.LastActivityAt);
         _source.Setup(s => s.ListIdleAsync(It.IsAny<DateTimeOffset>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([_idle, second]);
-        var conversations = EraserMock("conversations", ErasureStage.Conversations);
-        conversations.Setup(e => e.EraseSubjectAsync(
-                It.Is<ErasureSubject>(s => s.ConversationIds[0] == "c-1"), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new IOException());
+        _source.Setup(s => s.IsIdleAsync("c-1", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("an unexpected failure outside any store"));
 
-        var expired = await Create(conversations.Object).ExpireIdleAsync(Year, 10, CancellationToken.None);
+        var expired = await Create(TheUsualStores()).ExpireIdleAsync(Year, 10, CancellationToken.None);
 
         expired.Should().Be(1);
-        conversations.Verify(e => e.EraseSubjectAsync(
-            It.Is<ErasureSubject>(s => s.OwnerId == "Owner-2" && s.ConversationIds.SequenceEqual(new[] { "c-2" })),
-            It.IsAny<CancellationToken>()));
+        _calls.Should().Contain("conversations Owner-2 [c-2]");
     }
 }

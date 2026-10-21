@@ -32,4 +32,14 @@ public sealed class PromptUsageOptions
     /// Defaults to <c>Data Source=prompt-usage.db</c> in the process working directory.
     /// </summary>
     public string ConnectionString { get; init; } = "Data Source=prompt-usage.db";
+
+    /// <summary>
+    /// How long a persisted usage row is kept. Defaults to 90 days. Read only when <see cref="PersistenceEnabled"/> is on.
+    /// </summary>
+    /// <remarks>
+    /// A row links a prompt version to a trace and to a conversation turn (<c>{conversationId}:{turn}</c>), which is what
+    /// makes it personal data. Ninety days covers comparing prompt versions across a release and replaying recent traces;
+    /// rows older than that answer questions nobody asks of them.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; init; } = new();
 }

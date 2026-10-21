@@ -23,7 +23,11 @@ namespace Application.AI.Common.Services.Compliance;
 /// <strong>Never a conversation in use.</strong> The sweep takes the conversation's turn lease before touching it, the
 /// same lease every turn takes, so no turn can start while it is being deleted. A conversation whose lease does not come
 /// free within a few seconds has a turn running and is skipped. Holding the lease, the sweep asks again whether the
-/// conversation is still idle, because a turn may have finished between the listing and the lease.
+/// conversation is still idle, because a turn may have finished between the listing and the lease, and it stops if the
+/// lease is lost. The conversation itself is deleted through <see cref="IIdleConversationSource.DeleteIfIdleAsync"/>,
+/// which re-checks the owner and the idle time in the same step as the delete, so a conversation deleted and started again
+/// under the same id is never the one removed; the store's own conversation eraser, written for owner erasure, has no
+/// such condition and is not used here. When that delete removes nothing, the stage after it does not run.
 /// </para>
 /// <para>
 /// <strong>A failure keeps the conversation.</strong> If any store fails before the conversation is deleted, the
@@ -42,8 +46,6 @@ public sealed class ConversationExpiry : IConversationExpiry
 
     /// <summary>How long to wait for a conversation's turn lease before treating it as in use.</summary>
     private static readonly TimeSpan LeaseWait = TimeSpan.FromSeconds(5);
-
-    private static readonly ErasureStage[] StagesBeforeDeletion = [ErasureStage.BeforeConversations, ErasureStage.Conversations];
 
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IIdleConversationSource? _source;
@@ -88,10 +90,14 @@ public sealed class ConversationExpiry : IConversationExpiry
         ArgumentOutOfRangeException.ThrowIfLessThan(idlePeriod, MinimumIdlePeriod);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
 
-        // Without a store that deletes the conversation itself, the stores reached through it would be emptied and the
-        // conversation left standing, so nothing is touched.
-        if (_source is null || !_erasers.Any(e => e.ErasureStage == ErasureStage.Conversations))
+        // The conversation itself is deleted through the source, so without one nothing is touched: the stores reached
+        // through a conversation would be emptied and the conversation left standing.
+        if (_source is null)
+        {
+            _logger.LogWarning(
+                "Conversation retention is enabled, but the conversation store cannot list idle conversations; no conversation will expire.");
             return 0;
+        }
 
         var cutoff = _timeProvider.GetUtcNow() - idlePeriod;
         var expired = 0;
@@ -100,8 +106,16 @@ public sealed class ConversationExpiry : IConversationExpiry
             if (cancellationToken.IsCancellationRequested)
                 break;
 
-            if (await TryExpireAsync(conversation, cutoff, cancellationToken))
-                expired++;
+            try
+            {
+                if (await TryExpireAsync(conversation, cutoff, cancellationToken))
+                    expired++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One conversation failing must not end the sweep for the rest.
+                _logger.LogError(ex, "Expiring conversation {ConversationId} failed; it is kept and retried next sweep.", conversation.Id);
+            }
         }
 
         await ScrubAsync();
@@ -118,15 +132,18 @@ public sealed class ConversationExpiry : IConversationExpiry
         await using (lease)
         {
             // Not cancellable from here on: a conversation half-deleted would leave records nothing leads to.
-            if (!await _source!.IsIdleAsync(conversation.Id, cutoff, CancellationToken.None))
+            if (!await _source!.IsIdleAsync(conversation.Id, cutoff, CancellationToken.None) || lease.LeaseLost.IsCancellationRequested)
                 return false;
 
             var subject = new ErasureSubject(conversation.OwnerId, [conversation.Id]);
-            foreach (var stage in StagesBeforeDeletion)
-            {
-                if (!await RunStageAsync(stage, subject))
-                    return false;
-            }
+            if (!await RunStageAsync(ErasureStage.BeforeConversations, subject) || lease.LeaseLost.IsCancellationRequested)
+                return false;
+
+            // The delete itself re-checks the owner and the idle time in one step, so a conversation deleted and started
+            // again under the same id since the check above is not the one removed. Nothing deleted means the stage after
+            // must not run: those records may belong to a conversation still in use.
+            if (!await DeleteConversationAsync(conversation, cutoff))
+                return false;
 
             if (!await RunStageAsync(ErasureStage.AfterConversations, subject))
             {
@@ -160,6 +177,20 @@ public sealed class ConversationExpiry : IConversationExpiry
         {
             // The durable lease refuses a conversation that no longer exists: someone deleted it first.
             return null;
+        }
+    }
+
+    /// <summary>Deletes the conversation if it is still the owner's and still idle. Returns whether it was deleted.</summary>
+    private async Task<bool> DeleteConversationAsync(IdleConversation conversation, DateTimeOffset cutoff)
+    {
+        try
+        {
+            return await _source!.DeleteIfIdleAsync(conversation.Id, conversation.OwnerId, cutoff, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Expiring conversation {ConversationId} failed in store {Store}.", conversation.Id, "conversations");
+            return false;
         }
     }
 

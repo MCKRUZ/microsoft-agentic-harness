@@ -14,7 +14,6 @@ internal static class KeptForeverGaps
     public static readonly IReadOnlyDictionary<string, string> Entries = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         // On by default.
-        ["Infrastructure.AI.Prompts.Persistence.EfCorePromptUsageStore"] = "age-based sweep by RecordedAtUtc",
         ["Infrastructure.AI.Planner.EfCorePlanStateStore"] = "sweep of finished plans",
         ["Infrastructure.AI.Agents.JsonlDelegationStore"] = "sweep of closed delegation session files",
         ["Application.AI.Common.Factories.AgentFactory"] = "an expiry on every cached chat response",

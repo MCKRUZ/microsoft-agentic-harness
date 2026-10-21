@@ -16,10 +16,10 @@ namespace Infrastructure.AI.Prompts.Persistence;
 /// shared DbContext across threads.
 /// </summary>
 [PersonalDataStore(
-    "The prompt-usage SQLite table: each rendered prompt's name, version and hash with trace ids and a case id that fact extraction sets to {conversationId}:{turn}. No owner column; operational telemetry, so not exported. Nothing ages rows out; owner erasure removes the rows of the person's conversations.",
+    "The prompt-usage SQLite table: each rendered prompt's name, version and hash with trace ids and a case id that fact extraction sets to {conversationId}:{turn}. No owner column; operational telemetry, so not exported. Rows are deleted after PromptUsage:Retention:RetainFor (default 90 days), and with their conversation when it expires; owner erasure removes the rows of the person's conversations.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
 public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser, IPersonalDataScrubber
@@ -69,6 +69,16 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
         return rowIds.Count == 0
             ? 0
             : await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <summary>Deletes every usage row recorded before <paramref name="cutoff"/> (#901).</summary>
+    /// <param name="cutoff">Rows recorded before this instant are deleted; one recorded at it is kept.</param>
+    /// <param name="cancellationToken">Cancels the delete.</param>
+    /// <returns>How many rows were deleted.</returns>
+    public async Task<int> DeleteRecordedBeforeAsync(DateTimeOffset cutoff, CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        return await context.PromptUsages.Where(e => e.RecordedAtUtc < cutoff).ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <inheritdoc />
