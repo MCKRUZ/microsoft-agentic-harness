@@ -43,14 +43,14 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
     {
         // Every database a store opens on resolution lives in this test's own folder. The defaults are relative paths
         // shared with every other composition test running in parallel, and two schema initializers racing on one file
-        // fail with "table already exists".
+        // fail with "table already exists". The governance-state database is left alone: it must sit under the
+        // application directory, and durable governance is off by default, so nothing here opens it.
         var (services, _) = CompositionRootTestHost.ComposeServices(new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
             ["AppConfig:AI:Schedules:DatabasePath"] = Path.Combine(_workingDir, "schedules.db"),
             ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
             ["AppConfig:AI:PromptUsage:ConnectionString"] = $"Data Source={Path.Combine(_workingDir, "prompt-usage.db")}",
-            ["AppConfig:AI:Governance:DurableState:DatabasePath"] = Path.Combine(_workingDir, "governance-state.db"),
             ["AppConfig:AI:ContextManagement:ToolResultStorage:StoragePath"] = Path.Combine(_workingDir, "spills"),
         });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
