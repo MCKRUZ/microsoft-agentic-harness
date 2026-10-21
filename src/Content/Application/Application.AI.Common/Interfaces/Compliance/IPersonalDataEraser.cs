@@ -27,6 +27,12 @@ public interface IPersonalDataEraser
     /// <summary>When this store is erased relative to the subject's conversations.</summary>
     ErasureStage ErasureStage { get; }
 
+    /// <summary>
+    /// Whether this store removes only what the subject's named conversations hold, and so can be used to expire one
+    /// idle conversation without touching the rest of the person's data (#901).
+    /// </summary>
+    ErasureReach ErasureReach { get; }
+
     /// <summary>Removes everything the store holds for <paramref name="subject"/>.</summary>
     /// <param name="subject">The person being erased.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>

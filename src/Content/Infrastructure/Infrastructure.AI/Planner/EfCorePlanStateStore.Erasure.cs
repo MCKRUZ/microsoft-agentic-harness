@@ -13,6 +13,9 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersona
     /// <inheritdoc/>
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
+    /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.Owner;
+
     /// <inheritdoc/>
     /// <remarks>
     /// <para>

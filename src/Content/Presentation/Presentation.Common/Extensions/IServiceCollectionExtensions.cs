@@ -180,6 +180,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<Domain.Common.Config.AI.ErasureConfig, ErasureConfigValidator>()
             .ValidateOnStart();
 
+        services.AddOptions<Domain.Common.Config.AI.Conversations.ConversationRetentionConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Conversations:Retention"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.Conversations.ConversationRetentionConfig,
+                ConversationRetentionConfigValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<ResilienceConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Resilience"))
             .ValidateFluentValidation<ResilienceConfig, ResilienceConfigValidator>()

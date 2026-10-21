@@ -30,7 +30,7 @@ namespace Infrastructure.AI.Tests.Conversations;
 /// sight would still be green if the parameter were ignored entirely.
 /// </para>
 /// </remarks>
-public abstract class ConversationStoreContractTests
+public abstract partial class ConversationStoreContractTests
 {
     /// <summary>The implementation under test. Derived fixtures build and own it.</summary>
     protected abstract IConversationStore Store { get; }

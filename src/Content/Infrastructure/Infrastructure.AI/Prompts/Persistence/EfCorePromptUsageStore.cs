@@ -33,6 +33,9 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>
     /// Fact extraction writes the case id as <c>{conversationId}:{turn}</c>. A row belongs to one of the person's
     /// conversations only when its case id is that conversation id, a colon, and a turn number; a bare prefix match would

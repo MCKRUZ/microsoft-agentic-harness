@@ -12,6 +12,9 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>
     /// <para>
     /// Spills live under <c>{StoragePath}/{conversationId}/tool-results/</c>. Each id goes through the same segment

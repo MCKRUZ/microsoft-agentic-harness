@@ -27,6 +27,9 @@ public sealed class NonErasableStore(string storeName, ErasureStage stage) : IPe
     public ErasureStage ErasureStage { get; } = stage;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.Owner;
+
+    /// <inheritdoc />
     /// <exception cref="NotSupportedException">Always; the coordinator never calls it.</exception>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken) =>
         throw new NotSupportedException(Reason);

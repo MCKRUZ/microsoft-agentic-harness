@@ -163,6 +163,41 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             .Should().BeEmpty("an entry must name a declared store that says PurgeByOwner and does not erase itself");
     }
 
+    /// <summary>
+    /// <c>RetentionBasis.Unbounded</c>'s value, and the descriptor's retention basis is its fourth constructor argument.
+    /// </summary>
+    private const int Unbounded = 3;
+    private const int RetentionArgument = 3;
+
+    private static IEnumerable<string> StoresKeptForever() =>
+        Scanned.Value.Facts.Values
+            .Where(f => f.Attributes.TryGetValue(StoreAttribute, out var args)
+                && args is { Count: > RetentionArgument } && args[RetentionArgument] is Unbounded)
+            .Select(f => f.Name);
+
+    [Fact]
+    public void NoStoreKeepsDataForever_OutsideTheKnownGaps()
+    {
+        StoresKeptForever()
+            .Where(name => !KeptForeverGaps.Entries.ContainsKey(name))
+            .Order(StringComparer.Ordinal)
+            .Should().BeEmpty(
+                "storage limitation (#901): a store needs a retention period enforced by something that deletes expired " +
+                "records (RetentionBasis.Configured), or a written reason to keep it (KeptByDesign). Unbounded is a gap, " +
+                "and a new one is not allowed");
+    }
+
+    [Fact]
+    public void EveryKnownGap_IsStillOne()
+    {
+        var keptForever = StoresKeptForever().ToHashSet(StringComparer.Ordinal);
+
+        KeptForeverGaps.Entries.Keys
+            .Where(name => !keptForever.Contains(name))
+            .Order(StringComparer.Ordinal)
+            .Should().BeEmpty("a gap that has been closed must leave KeptForeverGaps, so the list only ever shrinks");
+    }
+
     [Fact]
     public void EveryDescriptor_SaysWhatItHolds()
     {

@@ -13,6 +13,9 @@ public sealed partial class EfScheduleStore : IPersonalDataEraser, IPersonalData
     /// <inheritdoc/>
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
+    /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.Owner;
+
     /// <inheritdoc/>
     /// <remarks>
     /// Matches <see cref="ErasureSubject.CanonicalOwnerId"/>: schedules are stored canonicalized. Every tenant, because

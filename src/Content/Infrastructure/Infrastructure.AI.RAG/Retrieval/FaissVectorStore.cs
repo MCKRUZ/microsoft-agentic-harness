@@ -44,6 +44,9 @@ public sealed class FaissVectorStore : IVectorStore, IPersonalDataEraser
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.Owner;
+
+    /// <inheritdoc />
     /// <remarks>Matches <see cref="ErasureSubject.OwnerId"/>, the as-issued form ingest stamps.</remarks>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {

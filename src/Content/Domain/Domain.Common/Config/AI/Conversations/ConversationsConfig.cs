@@ -47,6 +47,12 @@ public sealed class ConversationsConfig
     public ConversationBudgetRetentionConfig BudgetRetention { get; set; } = new();
 
     /// <summary>
+    /// Governs the sweep that deletes conversations nobody has used for <see cref="ConversationRetentionConfig.IdlePeriod"/>,
+    /// with everything that belongs to them. Read by both providers.
+    /// </summary>
+    public ConversationRetentionConfig Retention { get; set; } = new();
+
+    /// <summary>
     /// How many of a conversation's most recent messages are replayed to the model when a durable run
     /// continues it. Bounds prompt growth: a conversation's transcript is unbounded, the window sent to
     /// the model is not.
