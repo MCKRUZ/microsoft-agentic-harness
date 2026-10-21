@@ -161,8 +161,6 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
         if (canonical is null)
             return 0;
 
-        activity?.SetTag("memory.owner", canonical);
-
         // 1. Purge the in-memory cache (authoritative for records not yet synced or already
         //    loaded this session). Compare canonically — cached owners are canonicalized on write.
         var cacheVictims = _cache.Values
@@ -193,9 +191,8 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
             .Distinct(StringComparer.Ordinal)
             .Count();
 
-        _logger.LogInformation(
-            "CrossSessionMemoryStore: purged {Count} memory records for owner {Owner}",
-            purged, canonical);
+        // No owner in the log or the trace: purging by owner is right-to-erasure, and the owner is the identity it removes.
+        _logger.LogInformation("CrossSessionMemoryStore: purged {Count} memory records for one owner", purged);
 
         return purged;
     }

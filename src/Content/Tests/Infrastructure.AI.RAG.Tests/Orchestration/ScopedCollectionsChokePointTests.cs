@@ -68,6 +68,8 @@ public sealed class ScopedCollectionsChokePointTests
 
         public IDisposable BeginScope(IServiceProvider requestServices) => new NoOpToken();
 
+        public IDisposable SuspendScope() => new NoOpToken();
+
         private sealed class NoOpToken : IDisposable
         {
             public void Dispose()

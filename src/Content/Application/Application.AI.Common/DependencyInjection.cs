@@ -293,6 +293,10 @@ public static class DependencyInjection
         // request's scoped services (e.g. tenant-aware IKnowledgeMemory) per invocation.
         services.AddSingleton<Interfaces.IAmbientRequestScope, Services.AmbientRequestScope>();
 
+        // The pseudonymous subject reference every erasure audit record carries instead of the erased person's id (#900).
+        services.AddSingleton<
+            Interfaces.Compliance.IErasureSubjectReference, Services.Compliance.HmacErasureSubjectReference>();
+
         // Skill completion tracking — conversation-scoped prerequisite state
         services.AddSingleton<ISkillCompletionTracker, InMemorySkillCompletionTracker>();
 

@@ -44,6 +44,9 @@ public class TestAuthHandler(
     /// </summary>
     public const string ClaimShapeHeader = "x-test-claim-shape";
 
+    /// <summary>HTTP header carrying a tenant id, minted as a <c>tid</c> claim; absent mints none.</summary>
+    public const string TenantHeader = "x-test-tenant";
+
     /// <inheritdoc/>
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
@@ -72,6 +75,9 @@ public class TestAuthHandler(
 
         foreach (var role in roles)
             claims.Add(new Claim(ClaimTypes.Role, role));
+
+        if (Request.Headers[TenantHeader].FirstOrDefault() is { Length: > 0 } tenantId)
+            claims.Add(new Claim("tid", tenantId));
 
         var identity = new ClaimsIdentity(claims, SchemeName);
         var principal = new ClaimsPrincipal(identity);

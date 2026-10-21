@@ -24,6 +24,9 @@ internal sealed class FakeAmbientRequestScope : IAmbientRequestScope
     public IDisposable BeginScope(IServiceProvider requestServices) =>
         throw new NotSupportedException("Test fake does not support nested BeginScope.");
 
+    public IDisposable SuspendScope() =>
+        throw new NotSupportedException("Test fake does not support SuspendScope.");
+
     private sealed class FakeAgentExecutionContext : IAgentExecutionContext
     {
         public FakeAgentExecutionContext(AgentIdentity? identity) { AgentIdentity = identity; }

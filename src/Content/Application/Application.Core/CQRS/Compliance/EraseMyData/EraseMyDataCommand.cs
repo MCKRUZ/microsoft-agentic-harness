@@ -1,4 +1,3 @@
-using Application.Common.Interfaces.MediatR;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using MediatR;
@@ -6,8 +5,8 @@ using MediatR;
 namespace Application.Core.CQRS.Compliance.EraseMyData;
 
 /// <summary>
-/// Right-to-erasure request that deletes <em>only the calling user's own</em> knowledge —
-/// graph nodes/edges, feedback weights, and vector embeddings — across every storage layer.
+/// Right-to-erasure request that deletes <em>only the calling user's own</em> data, across the knowledge graph and every
+/// registered store (#900).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,18 +15,13 @@ namespace Application.Core.CQRS.Compliance.EraseMyData;
 /// <see cref="Application.AI.Common.Interfaces.KnowledgeGraph.IKnowledgeScope"/> (established at the
 /// authenticated entry point from the caller's identity claim). There is deliberately no way for a
 /// caller to direct this at another owner's data — that would be a horizontal-privilege
-/// (IDOR) escalation. An admin "erase arbitrary owner" capability is intentionally out of scope and
-/// must be built as a separate, role-gated command if ever required.
+/// (IDOR) escalation. Erasing someone else on their request is the separate, role-gated
+/// <c>EraseSubjectDataCommand</c>.
 /// </para>
 /// <para>
-/// Implements <see cref="IAuditable"/> so the <c>AuditTrailBehavior</c> records this destructive
-/// compliance action (who / when / outcome) even when it is denied or fails. The handler additionally
-/// logs the erasure receipt with structured detail.
+/// Audited by <see cref="Application.Core.Compliance.AuditedErasure"/>, not by <c>IAuditable</c>: the generic audit
+/// behaviour records an entry per request with no way to say who the subject was without naming them, while the erasure
+/// record carries a pseudonymous reference and per-store counts, and records denials too.
 /// </para>
 /// </remarks>
-public sealed record EraseMyDataCommand : IRequest<Result<ErasureReceipt>>, IAuditable
-{
-    /// <inheritdoc />
-    /// <remarks>Stable, non-sensitive action name for the compliance audit trail.</remarks>
-    public string AuditAction => "RightToErasure.EraseMyData";
-}
+public sealed record EraseMyDataCommand : IRequest<Result<ErasureReceipt>>;

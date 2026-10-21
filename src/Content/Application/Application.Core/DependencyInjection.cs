@@ -50,6 +50,10 @@ public static class DependencyInjection
 		// request-scoped IMediator.
 		services.AddScoped<ILearningRecaller, MediatorLearningRecaller>();
 
+		// Right-to-erasure (#900): runs one request and writes its minimised audit record, for both the self-service and
+		// the operator command. Scoped because the erasure coordinator it drives is scoped.
+		services.AddScoped<Compliance.AuditedErasure>();
+
 		// Evaluation dataset path guard — decides which dataset files a run may read. Registered
 		// unconditionally so the confinement rule is applied by the handler on EVERY dispatch, not
 		// only the ones a caller remembered to route through it. Unconfined until an operator sets

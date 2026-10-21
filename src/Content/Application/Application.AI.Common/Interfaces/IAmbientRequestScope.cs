@@ -38,4 +38,16 @@ public interface IAmbientRequestScope
     /// <param name="requestServices">The current request's scoped service provider.</param>
     /// <returns>A token that clears the ambient scope when disposed.</returns>
     IDisposable BeginScope(IServiceProvider requestServices);
+
+    /// <summary>
+    /// Clears the ambient request scope for the current async execution context until the returned token is disposed,
+    /// so the work inside runs system-scoped, as background work does. Restores the previous value on disposal.
+    /// </summary>
+    /// <remarks>
+    /// For privileged work whose authorization was already decided by its caller and that must reach records the
+    /// caller's own scope would filter out, such as erasing a named person (#900). Never call it on a path whose
+    /// subject comes from untrusted input without a separate authorization check.
+    /// </remarks>
+    /// <returns>A token that restores the previous ambient scope when disposed.</returns>
+    IDisposable SuspendScope();
 }

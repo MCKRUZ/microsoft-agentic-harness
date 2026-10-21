@@ -221,8 +221,9 @@ public sealed class ErasureCompletenessTests
 
         captured.Should().NotBeNull();
         captured!.Action.Should().Be(MemoryAuditAction.Erasure);
-        captured.AffectedNodeIds.Should().BeEquivalentTo(["n1"],
-            "the erasure audit must record the nodes actually deleted, not the requested IDs");
+        captured.AffectedNodeCount.Should().Be(1,
+            "the erasure audit must count the nodes actually deleted, not the requested IDs");
+        captured.AffectedNodeIds.Should().BeNull("an erasure record must not keep the ids it erased");
     }
 
     [Fact]

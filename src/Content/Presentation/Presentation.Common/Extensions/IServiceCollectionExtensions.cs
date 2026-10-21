@@ -174,6 +174,12 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<ToolApprovalConfig, ToolApprovalConfigValidator>()
             .ValidateOnStart();
 
+        // A bad key would otherwise surface on the first erasure, as a failed request for a person exercising a legal right.
+        services.AddOptions<Domain.Common.Config.AI.ErasureConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Erasure"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.ErasureConfig, ErasureConfigValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<ResilienceConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Resilience"))
             .ValidateFluentValidation<ResilienceConfig, ResilienceConfigValidator>()

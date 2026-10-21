@@ -222,7 +222,8 @@ public sealed partial class KuzuGraphBackend
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        _logger.LogDebug("Deleted node {NodeId} and its connected edges/assignments", nodeId);
+        // No node id: memory node ids embed the owner and the memory key, which a deletion log must not keep.
+        _logger.LogDebug("Deleted a node and its connected edges/assignments");
     }
 
     /// <inheritdoc />
@@ -346,7 +347,8 @@ public sealed partial class KuzuGraphBackend
 
         transaction.Commit();
 
-        _logger.LogDebug("Deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
+        _logger.LogDebug("Deleted {Count} edges owned by one owner", deleted.Count);
         return deleted;
     }
 

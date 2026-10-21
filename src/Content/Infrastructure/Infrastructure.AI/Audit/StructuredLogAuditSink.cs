@@ -26,16 +26,43 @@ public sealed class StructuredLogAuditSink : IAuditSink
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Writes the correlation id and the metadata as well: a record whose detail lives in its metadata (the erasure
+    /// record's subject reference and per-store counts, a registry refresh's counts, the phase that pairs an attempt with
+    /// its outcome) is otherwise reduced to a line that proves nothing. Metadata is redacted by its producer, per
+    /// <c>IAuditable.AuditMetadata</c>.
+    /// </remarks>
     public ValueTask RecordAsync(AuditEntry entry, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(entry);
+
         _logger.LogInformation(
-            "Audit: {Action} on {RequestType} by {ExecutorId} — {Outcome}{FailureReason}",
+            "Audit: {Action} on {RequestType} by {ExecutorId} — {Outcome}{FailureReason} [correlation {CorrelationId}] {AuditMetadata}",
             entry.Action,
             entry.RequestType,
             entry.ExecutorId ?? "system",
             entry.Outcome,
-            entry.FailureReason is not null ? $" ({entry.FailureReason})" : string.Empty);
+            entry.FailureReason is not null ? $" ({entry.FailureReason})" : string.Empty,
+            entry.CorrelationId ?? "none",
+            Render(entry.Metadata));
 
         return ValueTask.CompletedTask;
     }
+
+    /// <summary>
+    /// The metadata as <c>key=value</c> pairs in key order, so the same record always renders the same way. The
+    /// delimiters and line breaks are percent-escaped, so a value can never forge another field or a second log line.
+    /// </summary>
+    private static string Render(IReadOnlyDictionary<string, string>? metadata) =>
+        metadata is null || metadata.Count == 0
+            ? string.Empty
+            : string.Join("; ", metadata.OrderBy(m => m.Key, StringComparer.Ordinal)
+                .Select(m => $"{Escape(m.Key)}={Escape(m.Value)}"));
+
+    private static string Escape(string text) =>
+        text.Replace("%", "%25", StringComparison.Ordinal)
+            .Replace(";", "%3B", StringComparison.Ordinal)
+            .Replace("=", "%3D", StringComparison.Ordinal)
+            .Replace("\r", "%0D", StringComparison.Ordinal)
+            .Replace("\n", "%0A", StringComparison.Ordinal);
 }

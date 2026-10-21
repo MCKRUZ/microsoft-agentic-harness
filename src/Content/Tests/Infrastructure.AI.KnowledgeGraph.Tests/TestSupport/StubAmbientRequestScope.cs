@@ -23,6 +23,10 @@ internal sealed class StubAmbientRequestScope : IAmbientRequestScope
     public IDisposable BeginScope(IServiceProvider requestServices)
         => throw new NotSupportedException("Test stub does not support establishing nested scopes.");
 
+    /// <inheritdoc />
+    public IDisposable SuspendScope()
+        => throw new NotSupportedException("Test stub does not support suspending its scope.");
+
     /// <summary>No ambient request scope in flight (background/system context — owner stays null).</summary>
     public static StubAmbientRequestScope None() => new(current: null);
 
