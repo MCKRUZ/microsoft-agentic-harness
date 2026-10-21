@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Infrastructure.AI.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Runs;
@@ -22,8 +23,11 @@ public sealed partial class EfScheduleStore : IPersonalDataEraser
         ArgumentNullException.ThrowIfNull(subject);
 
         await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
-        return await ctx.Schedules
+        var removed = await ctx.Schedules
             .Where(e => e.OwnerId == subject.CanonicalOwnerId)
             .ExecuteDeleteAsync(cancellationToken);
+        if (removed > 0)
+            await ctx.Database.TruncateWriteAheadLogAsync(cancellationToken);
+        return removed;
     }
 }

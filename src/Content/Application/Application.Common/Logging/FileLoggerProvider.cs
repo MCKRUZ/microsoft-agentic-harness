@@ -235,9 +235,18 @@ public sealed class FileLoggerProvider : ILoggerProvider
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Safe to call twice. The container disposes this instance once for each registration that resolved it (the
+    /// <c>ILoggerProvider</c> one and the concrete one that forwards to it), and a second pass over a disposed queue throws.
+    /// </remarks>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            return;
+
         CompleteRun();
         _messageQueue.Dispose();
     }
+
+    private int _disposed;
 }

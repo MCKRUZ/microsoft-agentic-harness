@@ -197,4 +197,17 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
 
         provider.IsRunActive.Should().BeFalse();
     }
+
+    [Fact]
+    public void Dispose_Twice_DoesNotThrow()
+    {
+        // The container disposes the provider once per registration that resolved it: the ILoggerProvider one and the
+        // concrete one forwarding to it. A second pass used to throw on the disposed queue at host shutdown.
+        _provider.StartNewRun("run-dispose");
+
+        _provider.Dispose();
+        var second = () => _provider.Dispose();
+
+        second.Should().NotThrow();
+    }
 }

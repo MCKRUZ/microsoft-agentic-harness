@@ -336,8 +336,9 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
                         <li>
                             <strong>Provenance + compliance</strong> — <code>DefaultProvenanceStamper</code> tags every
                             node and edge with source, pipeline, and timestamp. <code>ComplianceAwareGraphStore</code>
-                            enforces retention; <code>DefaultErasureOrchestrator</code> handles right-to-erasure with
-                            audited <code>ErasureReceipt</code> records.
+                            enforces retention; <code>DefaultErasureOrchestrator</code> erases a person's graph data, as
+                            one step of the right-to-erasure that <code>PersonalDataErasureCoordinator</code> runs across
+                            every store, returning an <code>ErasureReceipt</code> with a line per store.
                         </li>
                         <li>
                             <strong>Multi-tenant isolation</strong> — <code>TenantIsolatedGraphStore</code> enforces

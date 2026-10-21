@@ -24,6 +24,14 @@ internal static class HoldsNoPersonalData
     /// <summary>The entries, by scan key.</summary>
     public static readonly IReadOnlyDictionary<string, Entry> Entries = new Dictionary<string, Entry>(StringComparer.Ordinal)
     {
+        // Secure delete (#900): they set pragmas on connections their callers own and touch no row data.
+        ["Infrastructure.AI/Infrastructure.AI.Persistence.SecureDeleteConnectionInterceptor"] = new(
+            "Turns SQLite secure delete on for each connection an Entity Framework context opens; it reads and writes no rows.",
+            "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
+        ["Infrastructure.AI/Infrastructure.AI.Extensions.SqliteDatabaseFacadeExtensions"] = new(
+            "Runs a write-ahead-log checkpoint after an erasure on the calling store's database; it reads and writes no rows.",
+            "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
+
         // Schema, registration and client construction: they touch a storage API but hold no rows.
         ["Infrastructure.AI/Infrastructure.AI.Persistence.SqliteAdditiveSchemaReconciler"] = new(
             "Schema maintenance only: adds missing tables, columns and indexes to existing SQLite databases and never reads or writes row data.",

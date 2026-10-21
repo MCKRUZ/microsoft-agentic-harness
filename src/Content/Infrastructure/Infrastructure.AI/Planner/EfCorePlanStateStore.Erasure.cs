@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Infrastructure.AI.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Planner;
@@ -47,6 +48,7 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser
         await context.PlanSteps.Where(s => planIds.Contains(s.PlanGraphId)).ExecuteDeleteAsync(cancellationToken);
         var removed = await context.PlanGraphs.Where(p => planIds.Contains(p.Id)).ExecuteDeleteAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
 
         return removed;
     }

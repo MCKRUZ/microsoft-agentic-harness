@@ -45,6 +45,10 @@ public static class PersistenceScan
     /// as their underlying <see cref="int"/>.
     /// </param>
     /// <param name="IsInterface">Whether it is an interface, which declares members but holds nothing.</param>
+    /// <param name="ExternalCalls">
+    /// Every member of a non-production assembly it calls, as <c>Type::Member</c>, persistence or not; for guards that ask
+    /// about one specific call, such as how SQLite connections are opened.
+    /// </param>
     public sealed record TypeFacts(
         string Assembly,
         string Name,
@@ -52,7 +56,8 @@ public static class PersistenceScan
         IReadOnlySet<string> Primitives,
         IReadOnlySet<string> Callees,
         IReadOnlySet<string> Supertypes,
-        IReadOnlyDictionary<string, IReadOnlyList<object?>> Attributes);
+        IReadOnlyDictionary<string, IReadOnlyList<object?>> Attributes,
+        IReadOnlySet<string> ExternalCalls);
 
     /// <summary>
     /// Storage SDK assemblies: any call into one of these, or deriving from one of its types, is persistence.
@@ -183,7 +188,7 @@ public static class PersistenceScan
 
         return builders.ToDictionary(
             b => b.Key,
-            b => new TypeFacts(b.Value.Assembly, b.Value.Name, b.Value.IsInterface, b.Value.Primitives, b.Value.Callees, b.Value.Supertypes, b.Value.Attributes),
+            b => new TypeFacts(b.Value.Assembly, b.Value.Name, b.Value.IsInterface, b.Value.Primitives, b.Value.Callees, b.Value.Supertypes, b.Value.Attributes, b.Value.ExternalCalls),
             StringComparer.Ordinal);
     }
 
@@ -196,6 +201,7 @@ public static class PersistenceScan
         public HashSet<string> Callees { get; } = new(StringComparer.Ordinal);
         public HashSet<string> Supertypes { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, IReadOnlyList<object?>> Attributes { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> ExternalCalls { get; } = new(StringComparer.Ordinal);
     }
 
     private static void AddDeclaration(MetadataReader reader, string self, TypeDefinition definition, Builder builder)
@@ -301,6 +307,7 @@ public static class PersistenceScan
             return;
         }
 
+        builder.ExternalCalls.Add($"{target.Type}::{target.Member}");
         if (IsPrimitive(reader, token, target))
             builder.Primitives.Add($"{target.Type}::{target.Member}");
     }

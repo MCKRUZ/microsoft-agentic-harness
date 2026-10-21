@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.A2A;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
@@ -75,6 +76,7 @@ public static partial class DependencyInjection
 
         services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IEscalationAuditStore, JsonlEscalationAuditStore>();
+        services.AddRetainedPersonalData<IEscalationAuditStore>("escalation audit trail");
         services.AddSingleton<IEscalationNotifier, CompositeEscalationNotifier>();
         services.AddSingleton<IEscalationNotificationChannel, NoOpSlackNotifier>();
         services.AddSingleton<IEscalationNotificationChannel, NoOpTeamsNotifier>();

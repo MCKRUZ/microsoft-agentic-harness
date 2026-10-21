@@ -3,6 +3,7 @@ using Application.AI.Common.Services.AI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Conversations;
 using Infrastructure.AI.Conversations;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -182,7 +183,7 @@ public static partial class DependencyInjection
         Directory.CreateDirectory(directory);
 
         services.AddDbContextFactory<ConversationDbContext>(options => options
-            .UseSqlite($"DataSource={databasePath}"));
+            .UseSqliteWithSecureDelete($"DataSource={databasePath}"));
 
         services.AddSingleton<SchemaInitializer<ConversationDbContext>>();
     }

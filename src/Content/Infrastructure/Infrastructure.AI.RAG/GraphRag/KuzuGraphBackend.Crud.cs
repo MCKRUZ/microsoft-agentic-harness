@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Domain.AI.KnowledgeGraph.Models;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -306,6 +307,11 @@ public sealed partial class KuzuGraphBackend
 
         transaction.Commit();
 
+        // This database runs in write-ahead-log mode, so a deletion's old bytes stay in the log and the file until a
+        // checkpoint; empty it so erased memories leave the disk now (#900).
+        if (deletedNodeIds.Count > 0)
+            await SqliteSecureDelete.TruncateWriteAheadLogAsync(_connection, cancellationToken).ConfigureAwait(false);
+
         _logger.LogDebug(
             "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
             deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
@@ -346,6 +352,8 @@ public sealed partial class KuzuGraphBackend
         }
 
         transaction.Commit();
+        if (deleted.Count > 0)
+            await SqliteSecureDelete.TruncateWriteAheadLogAsync(_connection, cancellationToken).ConfigureAwait(false);
 
         // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
         _logger.LogDebug("Deleted {Count} edges owned by one owner", deleted.Count);

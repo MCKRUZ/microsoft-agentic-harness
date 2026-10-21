@@ -2,6 +2,8 @@ using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
+using Infrastructure.AI.Extensions;
+using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Domain.Common.Compliance;
 
@@ -61,15 +63,27 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
                 .Select(c => c.Id));
         }
 
-        return rowIds.Count == 0
-            ? 0
-            : await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+        if (rowIds.Count == 0)
+            return 0;
+
+        var removed = await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
+        return removed;
     }
 
     /// <summary>Initializes a new instance.</summary>
-    public EfCorePromptUsageStore(IDbContextFactory<PromptUsageDbContext> contextFactory)
+    /// <param name="contextFactory">Creates the short-lived contexts each operation uses.</param>
+    /// <param name="schemaInitializer">
+    /// Taken so the schema exists before any operation, not only once a recorder has been resolved. Without it, an
+    /// erasure or a usage query on a fresh database failed with "no such table", and a failed erasure holds the person's
+    /// conversations back (#900).
+    /// </param>
+    public EfCorePromptUsageStore(
+        IDbContextFactory<PromptUsageDbContext> contextFactory,
+        SchemaInitializer<PromptUsageDbContext> schemaInitializer)
     {
         ArgumentNullException.ThrowIfNull(contextFactory);
+        ArgumentNullException.ThrowIfNull(schemaInitializer);
         _contextFactory = contextFactory;
     }
 

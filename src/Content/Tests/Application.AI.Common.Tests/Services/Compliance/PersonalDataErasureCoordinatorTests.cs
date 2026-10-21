@@ -68,8 +68,110 @@ public sealed class PersonalDataErasureCoordinatorTests
     }
 
     private PersonalDataErasureCoordinator Create(params IPersonalDataEraser?[] erasers) =>
-        new(_graph.Object, erasers!, _ambientScope, TimeProvider.System,
+        new(_graph.Object, erasers!, _retained, _ambientScope, TimeProvider.System,
             NullLogger<PersonalDataErasureCoordinator>.Instance, _conversations.Object);
+
+    private readonly List<RetainedPersonalData> _retained = [];
+
+    [PersonalDataStore("Test log: unkeyed, kept forever.", PersonalDataCategories.ConversationContent,
+        PersonalDataKey.Unkeyed, RetentionBasis.Unbounded, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
+    private sealed class ForeverLog;
+
+    [PersonalDataStore("Test cache: unkeyed, in memory only.", PersonalDataCategories.ConversationContent,
+        PersonalDataKey.Unkeyed, RetentionBasis.Volatile, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
+    private sealed class ExpiringCache;
+
+    [PersonalDataStore("Test state: unkeyed, retention configured.", PersonalDataCategories.ToolInputsAndOutputs,
+        PersonalDataKey.Unkeyed, RetentionBasis.Configured, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
+    private sealed class ConfiguredRetentionStore;
+
+    [PersonalDataStore("Test audit trail: kept on purpose.", PersonalDataCategories.Identifiers | PersonalDataCategories.ToolInputsAndOutputs,
+        PersonalDataKey.Unkeyed, RetentionBasis.KeptByDesign, ErasureSupport.Exempt, ExportSupport.NotSupported)]
+    private sealed class AuditTrail;
+
+    [Fact]
+    public async Task StoreWithConfiguredRetention_IsKeptIndefinitelyAndMakesTheReceiptPartial()
+    {
+        // A configured retention period can be switched off, and such stores keep open items regardless, so "ages out"
+        // would overclaim.
+        _retained.Add(new RetainedPersonalData("escalation state", new ConfiguredRetentionStore()));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Should().ContainSingle(s => s.Store == "escalation state")
+            .Which.Status.Should().Be(StoreErasureStatus.RetainedIndefinitely);
+    }
+
+    [Fact]
+    public async Task AuditTrail_IsListedWithTheKindsOfDataItHolds()
+    {
+        // Kept on purpose, it does not make the receipt Partial, so its line must not imply it holds nothing.
+        _retained.Add(new RetainedPersonalData("escalation audit trail", new AuditTrail()));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Should().ContainSingle(s => s.Store == "escalation audit trail")
+            .Which.Reason.Should().Contain("identifiers").And.Contain("tool inputs and outputs");
+    }
+
+    [PersonalDataStore("Test store keyed to the owner that cannot erase.", PersonalDataCategories.Identifiers,
+        PersonalDataKey.Owner, RetentionBasis.Unbounded, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
+    private sealed class OwnerKeyedStore;
+
+    [Fact]
+    public async Task StoreKeptForever_IsListedAndMakesTheReceiptPartial()
+    {
+        // Choice A (#900): "complete" while a log keeps transcripts with no end date is the overclaim #900 was filed for.
+        _retained.Add(new RetainedPersonalData("application logs", new ForeverLog()));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Should().ContainSingle(s => s.Store == "application logs")
+            .Which.Status.Should().Be(StoreErasureStatus.RetainedIndefinitely);
+        receipt.CompletenessReason.Should().Contain("application logs");
+    }
+
+    [Fact]
+    public async Task StoresThatAgeOutOrAreKeptByObligation_AreListedAndTheReceiptStaysFull()
+    {
+        _retained.Add(new RetainedPersonalData("response cache", new ExpiringCache()));
+        _retained.Add(new RetainedPersonalData("governance audit trail", new AuditTrail()));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+        receipt.Stores.Should().Contain(s => s.Store == "response cache" && s.Status == StoreErasureStatus.RetainedUntilExpiry);
+        receipt.Stores.Should().Contain(s => s.Store == "governance audit trail" && s.Status == StoreErasureStatus.RetainedByObligation);
+    }
+
+    [Fact]
+    public async Task StoreSwitchedOffOrKeyedToTheOwner_IsNotListedAsRetained()
+    {
+        // Switched off: the host resolves a null object (here, nothing). Keyed to the owner: it appears as NotSupported
+        // through its erasure registration instead, so listing it here would count it twice.
+        _retained.Add(new RetainedPersonalData("disabled store", null));
+        _retained.Add(new RetainedPersonalData("owner-keyed store", new OwnerKeyedStore()));
+        _retained.Add(new RetainedPersonalData("plain object", new object()));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Should().NotContain(s => s.Store == "disabled store" || s.Store == "owner-keyed store" || s.Store == "plain object");
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+    }
+
+    [Fact]
+    public async Task SameStoreRegisteredTwice_IsListedOnce()
+    {
+        var log = new ForeverLog();
+        _retained.Add(new RetainedPersonalData("application logs", log));
+        _retained.Add(new RetainedPersonalData("application logs", log));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Count(s => s.Store == "application logs").Should().Be(1);
+    }
 
     [Fact]
     public async Task CallerHasARequestScope_EveryStoreRunsSystemScopedAndTheCallersScopeComesBack()

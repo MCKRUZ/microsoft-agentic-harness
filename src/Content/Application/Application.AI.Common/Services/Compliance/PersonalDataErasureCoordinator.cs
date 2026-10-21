@@ -21,9 +21,13 @@ namespace Application.AI.Common.Services.Compliance;
 /// stores run last, only when the conversations are gone.
 /// </para>
 /// <para>
-/// <strong>What <c>Full</c> means.</strong> Every store that can find the subject's data removed it. Stores that do not
-/// record whose data they hold (logs, traces, the response cache) cannot be searched for one person; they are not on the
-/// receipt, and the personal-data inventory states what each keeps and for how long.
+/// <strong>What <c>Full</c> means.</strong> Every store that can find the subject's data removed it, and no store the host
+/// runs can still hold it with no end date, other than the tamper-evident audit trails. Stores that cannot be searched
+/// for one person (logs, traces, the response cache, the audit trails) are listed on the receipt from their
+/// <see cref="RetainedPersonalData"/> registrations, each with how long it keeps what it holds. One that nothing ages out
+/// (<see cref="StoreErasureStatus.RetainedIndefinitely"/>) makes the receipt <c>Partial</c>; one whose records go away on
+/// their own is listed without doing so, and so is an audit trail kept on purpose, whose line says what kinds of data it
+/// holds so the receipt does not imply it holds nothing.
 /// </para>
 /// <para>
 /// <strong>Runs system-scoped.</strong> The ambient request scope is suspended for the whole request, as for background
@@ -50,6 +54,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private readonly IErasureOrchestrator _graph;
     private readonly IConversationStore? _conversations;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
+    private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PersonalDataErasureCoordinator> _logger;
@@ -57,6 +62,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     /// <summary>Initializes a new instance of the <see cref="PersonalDataErasureCoordinator"/> class.</summary>
     /// <param name="graph">Erases the subject's knowledge-graph nodes, edges, memories and derived document content.</param>
     /// <param name="erasers">Every registered store that can erase one person.</param>
+    /// <param name="retained">Every registered store that keeps personal data it cannot search for one person.</param>
     /// <param name="ambientScope">Suspended for the request, so scope-filtering stores see the subject's data.</param>
     /// <param name="timeProvider">Time source for the receipt's completion time.</param>
     /// <param name="logger">Logger for store failures, which never reach the receipt.</param>
@@ -67,6 +73,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
+        IEnumerable<RetainedPersonalData> retained,
         IAmbientRequestScope ambientScope,
         TimeProvider timeProvider,
         ILogger<PersonalDataErasureCoordinator> logger,
@@ -74,6 +81,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
+        ArgumentNullException.ThrowIfNull(retained);
         ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
@@ -81,6 +89,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         _graph = graph;
         // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser.
         _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -128,6 +137,11 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
 
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
+
+        outcomes.AddRange(_retained
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .DistinctBy(o => o.Store, StringComparer.Ordinal));
 
         return Fold(graphReceipt, outcomes);
     }
@@ -225,7 +239,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             reasons.Add(graphReason);
 
         reasons.AddRange(outcomes
-            .Where(o => o.Status != StoreErasureStatus.Erased)
+            .Where(o => LeavesDataBehind(o.Status))
             .Select(o => $"{o.Store}: {o.Reason}"));
 
         return graphReceipt with
@@ -236,4 +250,20 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             CompletenessReason = reasons.Count == 0 ? null : string.Join("; ", reasons),
         };
     }
+
+    /// <summary>
+    /// Whether a line means the subject's data may remain with no end date. A store whose records age out, or an audit
+    /// trail kept on purpose, is listed on the receipt without making it <c>Partial</c>.
+    /// </summary>
+    private static bool LeavesDataBehind(StoreErasureStatus status) => status switch
+    {
+        StoreErasureStatus.Erased => false,
+        StoreErasureStatus.RetainedUntilExpiry => false,
+        StoreErasureStatus.RetainedByObligation => false,
+        StoreErasureStatus.Failed => true,
+        StoreErasureStatus.Skipped => true,
+        StoreErasureStatus.NotSupported => true,
+        StoreErasureStatus.RetainedIndefinitely => true,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Every erasure status must say whether it leaves data behind."),
+    };
 }

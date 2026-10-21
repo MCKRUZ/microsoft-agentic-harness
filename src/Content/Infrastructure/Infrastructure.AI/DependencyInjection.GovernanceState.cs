@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Domain.Common.Config;
 using Infrastructure.AI.Changes;
 using Infrastructure.AI.Escalation;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Governance;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -57,7 +58,7 @@ public static partial class DependencyInjection
             // to materialize its database context over a missing diagnostic dependency.
             var logger = sp.GetService<ILoggerFactory>()?.CreateLogger(typeof(GovernanceStatePaths).FullName!);
             GovernanceStatePaths.EnsureDirectory(dbPath, logger);
-            options.UseSqlite(connectionString);
+            options.UseSqliteWithSecureDelete(connectionString);
         });
 
         // One registration, because there is now one type. This used to be a pair — a derived
@@ -101,6 +102,7 @@ public static partial class DependencyInjection
                 .CurrentValue.AI.Governance.DurableState.EscalationsEnabled
                 ? sp.GetRequiredService<EfCoreEscalationStateStore>()
                 : sp.GetRequiredService<NullEscalationStateStore>());
+        services.AddRetainedPersonalData<IEscalationStateStore>("escalation state");
 
         // Same toggle-read-once pattern for the call-once ledger. Consumed by CallOnceGate
         // (Application.AI.Common), registered unconditionally there so an unregistered gate and a

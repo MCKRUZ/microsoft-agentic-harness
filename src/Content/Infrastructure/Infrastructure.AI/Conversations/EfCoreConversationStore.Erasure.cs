@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Infrastructure.AI.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Conversations;
@@ -31,8 +32,11 @@ public sealed partial class EfCoreConversationStore : IPersonalDataEraser
 
         var ids = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        return await context.Conversations
+        var removed = await context.Conversations
             .Where(c => ids.Contains(c.Id) && c.UserId == subject.OwnerId)
             .ExecuteDeleteAsync(cancellationToken);
+        if (removed > 0)
+            await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
+        return removed;
     }
 }

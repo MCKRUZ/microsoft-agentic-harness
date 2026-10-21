@@ -855,10 +855,12 @@ return quality.MaxScore switch
                     <h3 id="compliance">Compliance-aware store &amp; right-to-erasure</h3>
                     <p>
                         <code>ComplianceAwareGraphStore</code> wraps any backend with retention enforcement
-                        (<code>ConfigRetentionPolicyProvider</code>) and an erasure surface
-                        (<code>DefaultErasureOrchestrator</code>). Erasure produces a signed <code>ErasureReceipt</code>
-                        you can show to a regulator. <code>RetentionEnforcementService</code> runs as a background
-                        sweep.
+                        (<code>ConfigRetentionPolicyProvider</code>) and an erasure surface for the graph
+                        (<code>DefaultErasureOrchestrator</code>). Right-to-erasure across every store is coordinated by
+                        <code>PersonalDataErasureCoordinator</code>, which returns an <code>ErasureReceipt</code> with a
+                        line per store and an honest <code>Full</code> or <code>Partial</code> verdict, and writes a
+                        pseudonymous audit record (see <a href="../security/08-data-protection.html#erasure">Data
+                        protection</a>). <code>RetentionEnforcementService</code> runs as a background sweep.
                     </p>
 
                     <h3 id="multi-tenant">Multi-tenant knowledge isolation</h3>

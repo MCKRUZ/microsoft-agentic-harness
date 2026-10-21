@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Infrastructure.AI.Changes;
@@ -58,6 +59,9 @@ public static partial class DependencyInjection
         services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IChangeAuditWriter, JsonlChangeAuditWriter>();
         services.AddSingleton<IEvidenceStore, FileSystemEvidenceStore>();
+        services.AddRetainedPersonalData<IChangeProposalStore>("change proposals");
+        services.AddRetainedPersonalData<IChangeAuditWriter>("change audit trail");
+        services.AddRetainedPersonalData<IEvidenceStore>("change evidence");
 
         // --- Default resolver + approval router ---
         services.AddSingleton<IChangeProposalGateResolver, DefaultChangeProposalGateResolver>();

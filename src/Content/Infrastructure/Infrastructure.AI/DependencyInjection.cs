@@ -124,6 +124,7 @@ public static partial class DependencyInjection
 
         // Execution trace store — filesystem-backed per-run trace artifact persistence
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
+        services.AddRetainedPersonalData<IExecutionTraceStore>("execution traces");
 
         // Security-review finding (#574): the page-fetch cache below must NOT be the ambient app-wide
         // IMemoryCache (AgentConversationCache and any future consumer also share that instance) — a
@@ -439,6 +440,7 @@ public static partial class DependencyInjection
         // --- Delegation and supervision ---
 
         services.AddSingleton<IDelegationStore, JsonlDelegationStore>();
+        services.AddRetainedPersonalData<IDelegationStore>("agent delegation records");
         services.AddKeyedSingleton<ISupervisorStrategy>("capability-match", (sp, _) =>
             new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
         services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();

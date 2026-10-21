@@ -21,4 +21,25 @@ public enum StoreErasureStatus
     /// will not help, so it does not hold later stages back.
     /// </summary>
     NotSupported,
+
+    /// <summary>
+    /// A store that cannot be searched for one person, such as logs, traces or the response cache, and that nothing ages
+    /// out. It may still hold the subject's data with no end date, so the receipt is <c>Partial</c> while it is listed.
+    /// </summary>
+    RetainedIndefinitely,
+
+    /// <summary>
+    /// A store that cannot be searched for one person but whose records go away on their own, such as one held only in
+    /// process memory. A retention period that configuration can switch off does not count. Listed so the subject knows;
+    /// it does not make the receipt <c>Partial</c>.
+    /// </summary>
+    RetainedUntilExpiry,
+
+    /// <summary>
+    /// A tamper-evident accountability record kept on purpose (the audit trails), which cannot be altered to remove one
+    /// person without breaking the evidence it exists to provide. Its line names the kinds of data it holds. It is the one
+    /// store kept with no end date that does not make the receipt <c>Partial</c>: <c>Full</c> means every other store is
+    /// clear of the subject, and says so of the audit trails only through their listed lines.
+    /// </summary>
+    RetainedByObligation,
 }

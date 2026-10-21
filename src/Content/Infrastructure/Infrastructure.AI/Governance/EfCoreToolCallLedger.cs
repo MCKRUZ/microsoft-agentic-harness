@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Governance;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.Data.Sqlite;
@@ -49,9 +50,12 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser
 
         var ids = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        return await context.ToolCallLedger
+        var removed = await context.ToolCallLedger
             .Where(e => ids.Contains(e.ConversationId))
             .ExecuteDeleteAsync(cancellationToken);
+        if (removed > 0)
+            await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
+        return removed;
     }
 
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;

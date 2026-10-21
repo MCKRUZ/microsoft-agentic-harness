@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Budget;
 using Domain.Common.Config;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -81,9 +82,12 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
 
         var keys = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        return await context.ConversationBudgets
+        var removed = await context.ConversationBudgets
             .Where(e => keys.Contains(e.BudgetKey))
             .ExecuteDeleteAsync(cancellationToken);
+        if (removed > 0)
+            await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
+        return removed;
     }
 
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;
