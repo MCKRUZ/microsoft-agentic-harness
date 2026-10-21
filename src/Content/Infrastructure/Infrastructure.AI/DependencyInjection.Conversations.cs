@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Extensions;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI;
 
@@ -55,6 +57,11 @@ public static partial class DependencyInjection
         // it finds. Both trackers fall silent below a positive ceiling, which is how the budget shipped
         // switched off and stayed unnoticed (issues #256, #279).
         services.AddHostedService<ConversationBudgetStartupDisclosure>();
+
+        // Both providers' stores and budget trackers erase one person's data (#900); forwarded through the interface
+        // so erasure reaches whichever pair the branch below registers.
+        services.AddPersonalDataEraser<IConversationStore>(ErasureStage.Conversations);
+        services.AddPersonalDataEraser<IConversationBudgetTracker>(ErasureStage.AfterConversations);
 
         if (appConfig.AI.Conversations.Provider == ConversationStoreProvider.FileSystem)
         {

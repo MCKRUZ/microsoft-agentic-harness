@@ -35,13 +35,13 @@ namespace Infrastructure.AI.Conversations;
 /// <see cref="ArgumentException"/>, preventing path-traversal attacks via crafted conversation IDs.
 /// </summary>
 [PersonalDataStore(
-    "The file conversation store (Conversations:Provider=FileSystem): one JSON file per conversation under Conversations:ConversationsPath, naming its user and holding every message. Nothing ages them out; the owner can delete one at a time.",
+    "The file conversation store (Conversations:Provider=FileSystem): one JSON file per conversation under Conversations:ConversationsPath, naming its user and holding every message. Nothing ages them out; owner erasure removes every conversation the person owns, after the stores reached through them.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
     PersonalDataKey.Owner,
     RetentionBasis.Unbounded,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
-public sealed class FileSystemConversationStore : IConversationStore
+public sealed partial class FileSystemConversationStore : IConversationStore
 {
     private readonly string _basePath;
     private readonly KeyedAsyncLock _locks = new(StringComparer.OrdinalIgnoreCase);

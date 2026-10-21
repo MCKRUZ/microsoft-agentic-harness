@@ -5,6 +5,7 @@ using Infrastructure.AI.Prompts.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Application.AI.Common.Extensions;
 
 namespace Infrastructure.AI.Prompts;
 
@@ -93,6 +94,7 @@ public static class PromptRegistryDependencyInjection
             opts.UseSqlite(usageOptions.ConnectionString));
 
         services.AddSingleton<IPromptUsageStore, EfCorePromptUsageStore>();
+        services.AddPersonalDataEraser<IPromptUsageStore>();
 
         // Ensure the schema is created the first time the store is needed. Idempotent.
         // SchemaInitializer<TContext> is the shared base — same lifecycle used by

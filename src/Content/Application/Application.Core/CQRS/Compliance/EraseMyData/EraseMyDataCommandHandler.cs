@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
@@ -9,7 +10,7 @@ namespace Application.Core.CQRS.Compliance.EraseMyData;
 /// <summary>
 /// Fulfils a self-scoped right-to-erasure request. Reads the authenticated caller's identity from the
 /// ambient <see cref="IKnowledgeScope"/> and erases only that owner's data via
-/// <see cref="IErasureOrchestrator.EraseByOwnerAsync"/>, returning the <see cref="ErasureReceipt"/> as
+/// <see cref="IPersonalDataErasure.EraseOwnerAsync"/>, returning the <see cref="ErasureReceipt"/> as
 /// proof of compliance.
 /// </summary>
 /// <remarks>
@@ -34,24 +35,24 @@ public sealed class EraseMyDataCommandHandler
     : IRequestHandler<EraseMyDataCommand, Result<ErasureReceipt>>
 {
     private readonly IKnowledgeScope _scope;
-    private readonly IErasureOrchestrator _erasureOrchestrator;
+    private readonly IPersonalDataErasure _erasure;
     private readonly ILogger<EraseMyDataCommandHandler> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="EraseMyDataCommandHandler"/> class.</summary>
     /// <param name="scope">Ambient knowledge scope supplying the authenticated caller's identity.</param>
-    /// <param name="erasureOrchestrator">Cross-store right-to-erasure coordinator.</param>
+    /// <param name="erasure">Right-to-erasure across the knowledge graph and every registered store (#900).</param>
     /// <param name="logger">Logger for the destructive-action audit trail.</param>
     public EraseMyDataCommandHandler(
         IKnowledgeScope scope,
-        IErasureOrchestrator erasureOrchestrator,
+        IPersonalDataErasure erasure,
         ILogger<EraseMyDataCommandHandler> logger)
     {
         ArgumentNullException.ThrowIfNull(scope);
-        ArgumentNullException.ThrowIfNull(erasureOrchestrator);
+        ArgumentNullException.ThrowIfNull(erasure);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scope = scope;
-        _erasureOrchestrator = erasureOrchestrator;
+        _erasure = erasure;
         _logger = logger;
     }
 
@@ -75,13 +76,13 @@ public sealed class EraseMyDataCommandHandler
 
         try
         {
-            var receipt = await _erasureOrchestrator.EraseByOwnerAsync(ownerId, cancellationToken);
+            var receipt = await _erasure.EraseOwnerAsync(ownerId, cancellationToken);
 
             _logger.LogInformation(
-                "Right-to-erasure completed for owner {OwnerId}: request {RequestId}, "
-                + "{Nodes} nodes, {Edges} edges, {Feedback} feedback weights, {Vectors} vector embeddings deleted.",
-                ownerId, receipt.RequestId, receipt.NodesDeleted, receipt.EdgesDeleted,
-                receipt.FeedbackWeightsDeleted, receipt.VectorEmbeddingsDeleted);
+                "Right-to-erasure completed for owner {OwnerId}: request {RequestId}, completeness {Completeness}, "
+                + "{Nodes} nodes, {Edges} edges, {Stores} other stores reached.",
+                ownerId, receipt.RequestId, receipt.Completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
+                receipt.Stores.Count);
 
             return Result<ErasureReceipt>.Success(receipt);
         }

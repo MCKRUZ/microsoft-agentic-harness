@@ -1,3 +1,5 @@
+using Domain.Common.Compliance;
+
 namespace Domain.AI.KnowledgeGraph.Models;
 
 /// <summary>
@@ -78,4 +80,14 @@ public record ErasureReceipt
     /// <see cref="ErasureCompleteness.Full"/>.
     /// </summary>
     public string? CompletenessReason { get; init; }
+
+    /// <summary>
+    /// One line for every store beyond the knowledge graph that the request reached: conversations, plans, schedules,
+    /// document indexes, and the stores found through the subject's conversations (#900). A store that failed, or was
+    /// held back so a retry can still find what depends on it, makes <see cref="Completeness"/>
+    /// <see cref="ErasureCompleteness.Partial"/>. Stores that hold no record of who their data belongs to cannot be
+    /// searched for one person and are not listed here; the personal-data inventory records them. Defaults to empty so
+    /// pre-existing construction sites remain valid.
+    /// </summary>
+    public IReadOnlyList<StoreErasureOutcome> Stores { get; init; } = [];
 }

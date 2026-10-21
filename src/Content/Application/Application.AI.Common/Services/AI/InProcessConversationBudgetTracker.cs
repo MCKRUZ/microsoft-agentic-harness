@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Budget;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -45,14 +46,29 @@ namespace Application.AI.Common.Services.AI;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "In-memory token budget per conversation: a conversation id and a running token total, released when the conversation ends and lost at restart. An operational counter, so export does not apply.",
+    "In-memory token budget per conversation: a conversation id and a running token total, released when the conversation ends and lost at restart; owner erasure releases the person's conversations. An operational counter, so export does not apply.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Volatile,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class InProcessConversationBudgetTracker : IConversationBudgetTracker
+public sealed class InProcessConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser
 {
+    /// <inheritdoc />
+    public string ErasureStoreName => "conversation token budgets";
+
+    /// <inheritdoc />
+    /// <remarks>After the conversations: clearing a surviving conversation's budget would reset its token ceiling.</remarks>
+    public ErasureStage ErasureStage => ErasureStage.AfterConversations;
+
+    /// <inheritdoc />
+    /// <remarks>A conversation's budget key is its conversation id; plan-run budgets use their own keys.</remarks>
+    public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return Task.FromResult(subject.ConversationIds.Count(id => _entries.TryRemove(id, out _)));
+    }
+
     /// <summary>Maximum number of keys tracked before least-recently-used eviction kicks in.</summary>
     internal const int MaxTrackedConversations = 50_000;
 

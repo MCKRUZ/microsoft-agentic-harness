@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
@@ -13,15 +14,57 @@ namespace Infrastructure.AI.Prompts.Persistence;
 /// shared DbContext across threads.
 /// </summary>
 [PersonalDataStore(
-    "The prompt-usage SQLite table: each rendered prompt's name, version and hash with trace ids and a case id that fact extraction sets to {conversationId}:{turn}. No owner column; operational telemetry, so not exported. Nothing deletes rows.",
+    "The prompt-usage SQLite table: each rendered prompt's name, version and hash with trace ids and a case id that fact extraction sets to {conversationId}:{turn}. No owner column; operational telemetry, so not exported. Nothing ages rows out; owner erasure removes the rows of the person's conversations.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Unbounded,
-    ErasureSupport.NotSupported,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class EfCorePromptUsageStore : IPromptUsageStore
+public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser
 {
     private readonly IDbContextFactory<PromptUsageDbContext> _contextFactory;
+
+    /// <inheritdoc />
+    public string ErasureStoreName => "prompt usage records";
+
+    /// <inheritdoc />
+    public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Fact extraction writes the case id as <c>{conversationId}:{turn}</c>. A row belongs to one of the person's
+    /// conversations only when its case id is that conversation id, a colon, and a turn number; a bare prefix match would
+    /// also take <c>conv-1:…</c> rows when erasing <c>conv</c>, or rows of a conversation whose own id contains a colon.
+    /// Candidates are narrowed by prefix in the database and confirmed exactly here.
+    /// </remarks>
+    public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.ConversationIds.Count == 0)
+            return 0;
+
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        var rowIds = new List<long>();
+        foreach (var conversationId in subject.ConversationIds)
+        {
+            var prefix = conversationId + ":";
+            var candidates = await context.PromptUsages
+                .Where(e => e.CaseId != null && e.CaseId.StartsWith(prefix))
+                .Select(e => new { e.Id, e.CaseId })
+                .ToListAsync(cancellationToken);
+            // The database narrows with LIKE, which SQLite matches case-insensitively, so the prefix is re-checked here
+            // exactly: "CONV:7" must survive erasing "conv".
+            rowIds.AddRange(candidates
+                .Where(c => c.CaseId!.StartsWith(prefix, StringComparison.Ordinal)
+                    && c.CaseId.Length > prefix.Length
+                    && c.CaseId[prefix.Length..].All(char.IsAsciiDigit))
+                .Select(c => c.Id));
+        }
+
+        return rowIds.Count == 0
+            ? 0
+            : await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
+    }
 
     /// <summary>Initializes a new instance.</summary>
     public EfCorePromptUsageStore(IDbContextFactory<PromptUsageDbContext> contextFactory)

@@ -56,6 +56,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Extensions;
 
 namespace Infrastructure.AI;
 
@@ -140,6 +141,7 @@ public static partial class DependencyInjection
         // off-load large tool results so they don't dominate the context window. Filesystem-backed by
         // default; consumers can override with a different IToolResultStore after this call.
         services.AddSingleton<IToolResultStore, Context.FileSystemToolResultStore>();
+        services.AddPersonalDataEraser<IToolResultStore>();
 
         // Retention sweep for the store above (#559) — unconditional registration, Enabled read live
         // per tick, matching ConversationBudgetRetentionService's own registration convention. A

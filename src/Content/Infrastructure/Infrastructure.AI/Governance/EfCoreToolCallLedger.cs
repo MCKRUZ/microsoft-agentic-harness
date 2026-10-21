@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Governance;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
@@ -23,14 +24,36 @@ namespace Infrastructure.AI.Governance;
 /// declared, not on anything the caller controls.
 /// </remarks>
 [PersonalDataStore(
-    "The call-once ledger in governance-state SQLite (off unless call-once enforcement is durable): one row per conversation or run id, tool name and time. Never pruned on purpose, since deleting a row re-arms a call-once tool. Operational, so not exported.",
+    "The call-once ledger in governance-state SQLite (off unless call-once enforcement is durable): one row per conversation or run id, tool name and time. Never pruned on purpose, since deleting a row re-arms a call-once tool; owner erasure removes the rows of the person's conversations only after those conversations are gone. Operational, so not exported.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Unbounded,
-    ErasureSupport.NotSupported,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class EfCoreToolCallLedger : IToolCallLedger
+public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser
 {
+    /// <inheritdoc />
+    public string ErasureStoreName => "call-once ledger";
+
+    /// <inheritdoc />
+    /// <remarks>After the conversations: removing a surviving conversation's rows would let a once-only tool run again.</remarks>
+    public ErasureStage ErasureStage => ErasureStage.AfterConversations;
+
+    /// <inheritdoc />
+    /// <remarks>An agent turn's ledger scope is its conversation id; workflow-run scopes use run ids and are untouched.</remarks>
+    public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.ConversationIds.Count == 0)
+            return 0;
+
+        var ids = subject.ConversationIds.ToList();
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        return await context.ToolCallLedger
+            .Where(e => ids.Contains(e.ConversationId))
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;
     private readonly TimeProvider _time;
     private readonly ILogger<EfCoreToolCallLedger> _logger;
