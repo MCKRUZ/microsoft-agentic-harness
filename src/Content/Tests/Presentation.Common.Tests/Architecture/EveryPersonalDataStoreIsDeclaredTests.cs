@@ -107,6 +107,62 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             .Should().BeEmpty("a type either describes its data or passes data through for callers that do");
     }
 
+    /// <summary>
+    /// <c>ErasureSupport.PurgeByOwner</c>'s value. Enums are decoded from metadata as their underlying integer, and the
+    /// descriptor's erasure support is its fifth constructor argument.
+    /// </summary>
+    private const int PurgeByOwner = 0;
+    private const int ErasureArgument = 4;
+    private const string EraserInterface = "Application.AI.Common.Interfaces.Compliance.IPersonalDataEraser";
+
+    /// <summary>
+    /// Stores that say they purge by owner without implementing <c>IPersonalDataEraser</c> themselves, because the
+    /// knowledge-graph erasure (<c>DefaultErasureOrchestrator</c>) reaches them, with how it does.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ErasedThroughKnowledgeGraph = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, deleted with the owner's nodes",
+        ["Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore"] = "the orchestrator calls ICrossSessionMemoryStore.PurgeByOwnerAsync",
+        ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "cross-session memory's purge deletes the owner's memory nodes from this backend",
+    };
+
+    [Fact]
+    public void ADescriptorSaysPurgeByOwner_ExactlyWhenTheStoreCanBeErased()
+    {
+        var stores = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToList();
+
+        static bool SaysPurge(PersistenceScan.TypeFacts store) =>
+            store.Attributes[StoreAttribute] is { Count: > ErasureArgument } args && args[ErasureArgument] is PurgeByOwner;
+
+        var erasersNotSayingSo = stores
+            .Where(s => s.Supertypes.Contains(EraserInterface) && !SaysPurge(s))
+            .Select(s => s.Name);
+        var sayingSoWithoutEraser = stores
+            .Where(s => SaysPurge(s) && !s.Supertypes.Contains(EraserInterface) && !ErasedThroughKnowledgeGraph.ContainsKey(s.Name))
+            .Select(s => s.Name);
+
+        erasersNotSayingSo.Concat(sayingSoWithoutEraser).Should().BeEmpty(
+            "a descriptor that says PurgeByOwner is what erasure, retention and export work plan against; it must be " +
+            "true. A store implementing IPersonalDataEraser must say so, and one saying so must implement it or be " +
+            "reached through the knowledge-graph erasure (listed in ErasedThroughKnowledgeGraph)");
+    }
+
+    [Fact]
+    public void EveryStoreErasedThroughTheGraph_IsStillOne()
+    {
+        var byName = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToDictionary(f => f.Name);
+
+        ErasedThroughKnowledgeGraph.Keys
+            .Where(name => !byName.TryGetValue(name, out var store)
+                || store.Supertypes.Contains(EraserInterface)
+                || store.Attributes[StoreAttribute] is not { Count: > ErasureArgument } args
+                || args[ErasureArgument] is not PurgeByOwner)
+            .Should().BeEmpty("an entry must name a declared store that says PurgeByOwner and does not erase itself");
+    }
+
     [Fact]
     public void EveryDescriptor_SaysWhatItHolds()
     {
@@ -183,7 +239,8 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
 
             if (type.Attributes.ContainsKey(StoreAttribute))
             {
-                foreach (var supertype in type.Supertypes.Where(productionNames.Contains))
+                // The erasure contract is shared by every erasable store whatever it holds; it is not a storage seam.
+                foreach (var supertype in type.Supertypes.Where(s => productionNames.Contains(s) && s != EraserInterface))
                     foreach (var sibling in bySupertype[supertype].Where(s => s != key && !facts[s].IsInterface))
                         Require(sibling, $"shares {supertype} with store {type.Name}");
             }

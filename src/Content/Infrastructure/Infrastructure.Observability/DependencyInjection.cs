@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Extensions;
 
 namespace Infrastructure.Observability;
 
@@ -124,6 +125,7 @@ public static class DependencyInjection
             }
             return new PostgresObservabilityStore(connStr, logger);
         });
+        services.AddPersonalDataEraser<IObservabilityStore>();
 
         return services;
     }

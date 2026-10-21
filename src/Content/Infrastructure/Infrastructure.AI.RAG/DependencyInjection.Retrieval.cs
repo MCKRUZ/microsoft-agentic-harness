@@ -16,6 +16,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Extensions;
 
 namespace Infrastructure.AI.RAG;
 
@@ -42,6 +43,8 @@ public static partial class DependencyInjection
             return sp.GetRequiredKeyedService<IVectorStore>(provider);
         });
 
+        services.AddPersonalDataEraser<IVectorStore>();
+
         // BM25 stores — keyed by provider name
         services.AddKeyedSingleton<IBm25Store>("azure_ai_search", (sp, _) =>
             new AzureAISearchBm25Store(
@@ -61,6 +64,7 @@ public static partial class DependencyInjection
             var key = provider == "azure_ai_search" ? "azure_ai_search" : "faiss";
             return sp.GetRequiredKeyedService<IBm25Store>(key);
         });
+        services.AddPersonalDataEraser<IBm25Store>();
 
         // Hybrid retriever — keyed so an optional server-side backend (Azure AI Search
         // agentic retrieval) can replace the local dense+sparse+RRF path without changing

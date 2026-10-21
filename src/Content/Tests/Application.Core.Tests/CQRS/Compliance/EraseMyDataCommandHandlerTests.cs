@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Core.CQRS.Compliance.EraseMyData;
 using Domain.AI.KnowledgeGraph.Models;
@@ -16,7 +17,7 @@ namespace Application.Core.Tests.CQRS.Compliance;
 public sealed class EraseMyDataCommandHandlerTests
 {
     private readonly Mock<IKnowledgeScope> _scope = new();
-    private readonly Mock<IErasureOrchestrator> _orchestrator = new();
+    private readonly Mock<IPersonalDataErasure> _orchestrator = new();
 
     private EraseMyDataCommandHandler CreateHandler() => new(
         _scope.Object,
@@ -41,14 +42,14 @@ public sealed class EraseMyDataCommandHandlerTests
         _scope.SetupGet(s => s.UserId).Returns("user-1");
         var receipt = SampleReceipt("user-1");
         _orchestrator
-            .Setup(o => o.EraseByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
+            .Setup(o => o.EraseOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(receipt);
 
         var result = await CreateHandler().Handle(new EraseMyDataCommand(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeSameAs(receipt);
-        _orchestrator.Verify(o => o.EraseByOwnerAsync("user-1", It.IsAny<CancellationToken>()), Times.Once);
+        _orchestrator.Verify(o => o.EraseOwnerAsync("user-1", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -58,19 +59,16 @@ public sealed class EraseMyDataCommandHandlerTests
         // ambient scope's user id. This proves a caller cannot direct the erasure at another owner.
         _scope.SetupGet(s => s.UserId).Returns("caller-oid");
         _orchestrator
-            .Setup(o => o.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(o => o.EraseOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleReceipt("caller-oid"));
 
         await CreateHandler().Handle(new EraseMyDataCommand(), CancellationToken.None);
 
         _orchestrator.Verify(
-            o => o.EraseByOwnerAsync(It.Is<string>(id => id == "caller-oid"), It.IsAny<CancellationToken>()),
+            o => o.EraseOwnerAsync(It.Is<string>(id => id == "caller-oid"), It.IsAny<CancellationToken>()),
             Times.Once);
         _orchestrator.Verify(
-            o => o.EraseByOwnerAsync(It.Is<string>(id => id != "caller-oid"), It.IsAny<CancellationToken>()),
-            Times.Never);
-        _orchestrator.Verify(
-            o => o.EraseByNodeIdsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()),
+            o => o.EraseOwnerAsync(It.Is<string>(id => id != "caller-oid"), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -84,7 +82,7 @@ public sealed class EraseMyDataCommandHandlerTests
         result.IsSuccess.Should().BeFalse();
         result.FailureType.Should().Be(ResultFailureType.Forbidden);
         _orchestrator.Verify(
-            o => o.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            o => o.EraseOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -100,7 +98,7 @@ public sealed class EraseMyDataCommandHandlerTests
         result.IsSuccess.Should().BeFalse();
         result.FailureType.Should().Be(ResultFailureType.Forbidden);
         _orchestrator.Verify(
-            o => o.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            o => o.EraseOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -109,7 +107,7 @@ public sealed class EraseMyDataCommandHandlerTests
     {
         _scope.SetupGet(s => s.UserId).Returns("user-1");
         _orchestrator
-            .Setup(o => o.EraseByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
+            .Setup(o => o.EraseOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException(
                 "Connection string Server=secret;Password=hunter2 failed at C:\\internal\\path"));
 

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Budget;
 using Domain.Common.Config;
 using Infrastructure.AI.Persistence;
@@ -52,14 +53,39 @@ namespace Infrastructure.AI.Conversations;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Budget rows in the conversations database: a conversation id and a running token total. A row is swept 30 days after its conversation no longer exists. An operational counter, so export does not apply.",
+    "Budget rows in the conversations database: a conversation id and a running token total. A row is swept 30 days after its conversation no longer exists; owner erasure removes the rows of the person's conversations. An operational counter, so export does not apply.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Configured,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
+public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser
 {
+    /// <inheritdoc />
+    public string ErasureStoreName => "conversation token budgets";
+
+    /// <inheritdoc />
+    /// <remarks>After the conversations: clearing a surviving conversation's budget would reset its token ceiling.</remarks>
+    public ErasureStage ErasureStage => ErasureStage.AfterConversations;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// A conversation's budget key is its conversation id, so the person's rows are exactly those keyed by
+    /// <see cref="ErasureSubject.ConversationIds"/>. Plan-run budgets use their own keys and are not touched.
+    /// </remarks>
+    public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.ConversationIds.Count == 0)
+            return 0;
+
+        var keys = subject.ConversationIds.ToList();
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        return await context.ConversationBudgets
+            .Where(e => keys.Contains(e.BudgetKey))
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly TimeProvider _timeProvider;

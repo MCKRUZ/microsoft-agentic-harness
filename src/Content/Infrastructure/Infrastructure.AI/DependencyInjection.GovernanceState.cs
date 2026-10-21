@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Extensions;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI;
 
@@ -108,5 +110,6 @@ public static partial class DependencyInjection
                 .CurrentValue.AI.Governance.DurableState.CallOnceEnforcementEnabled
                 ? sp.GetRequiredService<EfCoreToolCallLedger>()
                 : sp.GetRequiredService<NullToolCallLedger>());
+        services.AddPersonalDataEraser<IToolCallLedger>(ErasureStage.AfterConversations);
     }
 }

@@ -19,11 +19,11 @@ namespace Infrastructure.Observability.Persistence;
 /// schema change could never reach a database that already held data.
 /// </remarks>
 [PersonalDataStore(
-    "The PostgreSQL observability database (opt-in): sessions by conversation id, message previews and full content, tool arguments and output, safety events, audit metadata and context snapshots. No user column. Nothing deletes rows.",
+    "The PostgreSQL observability database (opt-in): sessions by conversation id, message previews and full content, tool arguments and output, safety events, audit metadata and context snapshots. No user column. Nothing ages rows out; owner erasure removes everything recorded for the person's conversations, but not yet the sessions of their planned tasks' model steps, whose run scope is not recorded (#906).",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Unbounded,
-    ErasureSupport.NotSupported,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
 public sealed partial class PostgresObservabilityStore : IObservabilityStore, IDisposable
 {

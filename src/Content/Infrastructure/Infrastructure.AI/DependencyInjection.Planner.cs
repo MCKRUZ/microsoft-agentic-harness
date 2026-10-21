@@ -22,6 +22,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Application.AI.Common.Extensions;
 
 namespace Infrastructure.AI;
 
@@ -178,6 +179,7 @@ public static partial class DependencyInjection
         // assembly scanning and exist in every host, so a conditional registration would fail
         // ValidateOnBuild in whichever host omitted it.
         services.TryAddSingleton<IScheduleStore, EfScheduleStore>();
+        services.AddPersonalDataEraser<IScheduleStore>();
 
         // The tick service is passive until Enabled is set — see ScheduleDispatchBackgroundService's
         // own loop — so registering it unconditionally costs nothing on hosts that never turn schedules
@@ -187,6 +189,7 @@ public static partial class DependencyInjection
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();
+        services.AddPersonalDataEraser<IPlanStateStore>();
         services.AddScoped<PlanExecutionContext>();
 
         services.AddKeyedScoped<IPlanStepExecutor>(StepType.LlmCall,

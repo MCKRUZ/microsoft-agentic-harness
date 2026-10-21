@@ -8,6 +8,7 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Presentation.AgentHub.Auth;
 using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
@@ -50,14 +51,19 @@ public sealed class ComplianceController : ControllerBase
     }
 
     /// <summary>
-    /// Erases all knowledge data owned by the authenticated caller — graph nodes/edges, feedback
-    /// weights, and vector embeddings — and returns an <see cref="ErasureReceipt"/> as proof of
-    /// compliance. The caller's identity is the sole subject; no other owner can be targeted.
+    /// Erases everything the harness can link to the authenticated caller — knowledge graph, memories, document
+    /// indexes, plans, schedules, conversations and the stores reached through them (#900) — and returns an
+    /// <see cref="ErasureReceipt"/> listing what each store removed. The caller's identity is the sole subject; no other
+    /// owner can be targeted.
     /// </summary>
+    /// <remarks>
+    /// Refused when sign-in is bypassed (<c>DevAuthHandler</c> or <c>SelfHostedAuthHandler</c>): every caller is then
+    /// the same synthetic person, so "my data" is everyone's.
+    /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The erasure receipt with actual deleted counts.</returns>
     /// <response code="200">Erasure completed; body is the receipt.</response>
-    /// <response code="403">No authenticated user scope present.</response>
+    /// <response code="403">No authenticated user scope present, or sign-in is bypassed.</response>
     /// <response code="500">Erasure failed; see server logs (details are not leaked to the caller).</response>
     [HttpPost("erase-my-data")]
     [ProducesResponseType(typeof(ErasureReceipt), StatusCodes.Status200OK)]
@@ -65,6 +71,14 @@ public sealed class ComplianceController : ControllerBase
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> EraseMyData(CancellationToken cancellationToken)
     {
+        if (AuthBypassPolicy.IsSharedSyntheticIdentity(User))
+        {
+            return Problem(
+                detail: "Erasure is not available while sign-in is bypassed: every caller shares one identity, so it " +
+                        "would erase every user's data.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         var result = await _mediator
             .Send(new EraseMyDataCommand(), cancellationToken)
             .ConfigureAwait(false);

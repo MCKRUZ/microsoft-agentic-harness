@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Microsoft.Extensions.Logging;
@@ -28,14 +29,42 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "An in-memory vector index (despite the name, nothing is written to disk) holding ingested document chunks, their embeddings and owner and tenant stamps. Lost at restart. Deletion is by document id only, never by owner.",
+    "An in-memory vector index (despite the name, nothing is written to disk) holding ingested document chunks, their embeddings and owner and tenant stamps. Lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Volatile,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
-public sealed class FaissVectorStore : IVectorStore
+public sealed class FaissVectorStore : IVectorStore, IPersonalDataEraser
 {
+    /// <inheritdoc />
+    public string ErasureStoreName => "document index (in-memory vectors)";
+
+    /// <inheritdoc />
+    public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
+
+    /// <inheritdoc />
+    /// <remarks>Matches <see cref="ErasureSubject.OwnerId"/>, the as-issued form ingest stamps.</remarks>
+    public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+
+        var removed = 0;
+        foreach (var collection in _collections.Values)
+        {
+            foreach (var (id, entry) in collection)
+            {
+                if (string.Equals(entry.Chunk.Metadata.OwnerId, subject.OwnerId, StringComparison.Ordinal)
+                    && collection.TryRemove(id, out _))
+                {
+                    removed++;
+                }
+            }
+        }
+
+        return Task.FromResult(removed);
+    }
+
     private const string DefaultCollection = "default";
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, (DocumentChunk Chunk, float[] Embedding)>>

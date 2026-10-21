@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.RAG;
 using Azure.Search.Documents;
 using Azure.Search.Documents.Models;
@@ -35,16 +36,33 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Nothing queries or deletes by those stamps; deletion is by document id only.",
+    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Owner erasure deletes every chunk carrying the person's stamp; chunks ingested without an identity carry none and are not reached.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Unbounded,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
-public sealed class AzureAISearchBm25Store : IBm25Store
+public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser
 {
     private readonly SearchClient _searchClient;
     private readonly ILogger<AzureAISearchBm25Store> _logger;
+
+    /// <inheritdoc />
+    public string ErasureStoreName => "document index (Azure AI Search full text)";
+
+    /// <inheritdoc />
+    public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Matches <see cref="ErasureSubject.OwnerId"/>, the as-issued form ingest stamps. The vector store shares this
+    /// index, so whichever of the two runs second finds nothing left.
+    /// </remarks>
+    public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return AzureSearchOwnerErasure.DeleteByOwnerAsync(_searchClient, subject.OwnerId, _logger, cancellationToken);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AzureAISearchBm25Store"/> class.

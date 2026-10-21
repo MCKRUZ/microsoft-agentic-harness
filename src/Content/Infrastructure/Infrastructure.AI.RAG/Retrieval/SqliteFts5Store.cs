@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Microsoft.Data.Sqlite;
@@ -47,14 +48,38 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "A full-text SQLite table in a shared in-memory database (DI never passes a file path) holding chunk text, document id, collection and owner and tenant stamps; lost at restart. Deletion is by document id only, never by owner.",
+    "A full-text SQLite table in a shared in-memory database (DI never passes a file path) holding chunk text, document id, collection and owner and tenant stamps; lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Volatile,
-    ErasureSupport.ItemDeleteOnly,
+    ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
-public sealed class SqliteFts5Store : IBm25Store
+public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
 {
+    /// <inheritdoc />
+    public string ErasureStoreName => "document index (SQLite full text)";
+
+    /// <inheritdoc />
+    public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Matches <see cref="ErasureSubject.OwnerId"/>, the as-issued form ingest stamps. Initializes the schema first, like
+    /// the all-collections delete, so a host that has not ingested yet still answers truthfully instead of a false zero.
+    /// </remarks>
+    public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM chunks_fts WHERE owner_id = @ownerId";
+        cmd.Parameters.AddWithValue("@ownerId", subject.OwnerId);
+        return await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private const string DefaultCollection = "default";
 
     private readonly string _connectionString;

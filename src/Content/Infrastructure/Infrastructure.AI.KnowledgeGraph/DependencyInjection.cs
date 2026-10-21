@@ -20,6 +20,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Services.Compliance;
 
 namespace Infrastructure.AI.KnowledgeGraph;
 
@@ -240,6 +242,9 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<ILogger<DefaultErasureOrchestrator>>(),
                 sp.GetService<IBm25Store>(),
                 sp.GetService<ICrossSessionMemoryStore>()));
+
+        // Right-to-erasure across every store (#900): the graph above, then each registered IPersonalDataEraser.
+        services.AddScoped<IPersonalDataErasure, PersonalDataErasureCoordinator>();
 
         // Retention enforcement background service
         if (appConfig.AI.Rag.GraphRag.ComplianceEnabled &&
