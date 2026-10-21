@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Domain.Common.Compliance;
@@ -54,7 +55,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
     RetentionBasis.Volatile,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
-public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
+public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc />
     public string ErasureStoreName => "document index (SQLite full text)";
@@ -78,6 +79,15 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
         cmd.CommandText = "DELETE FROM chunks_fts WHERE owner_id = @ownerId";
         cmd.Parameters.AddWithValue("@ownerId", subject.OwnerId);
         return await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await SqliteSecureDelete.TruncateWriteAheadLogAsync(connection, cancellationToken);
     }
 
     private const string DefaultCollection = "default";
@@ -285,6 +295,10 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
             cmd.CommandText = $"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5({SchemaColumns})";
             cmd.ExecuteNonQuery();
 
+            // Every initialisation, so a table created before this existed, or rebuilt by the migration above, gets it
+            // too: without it a deleted chunk's words stay in the full-text index until a merge (#900).
+            SqliteSecureDelete.EnableFts5SecureDelete(_keepAliveConnection, "chunks_fts", transaction);
+
             transaction.Commit();
             _initialized = true;
         }
@@ -358,7 +372,7 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser
             DefaultCollection);
     }
 
-    private SqliteConnection CreateConnection() => new(_connectionString);
+    private SqliteConnection CreateConnection() => SqliteSecureDelete.CreateConnection(_connectionString);
 
     /// <summary>
     /// FTS5 rank values are negative (more negative = more relevant).

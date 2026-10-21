@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Common.Interfaces.Common;
 using Domain.AI.KnowledgeGraph.Models;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Domain.Common.Compliance;
@@ -69,7 +70,7 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
         directoryCreator.Create(dataDirectory, logger);
 
         var dbPath = Path.Combine(dataDirectory, "graph.db");
-        _connection = new SqliteConnection($"Data Source={dbPath};");
+        _connection = SqliteSecureDelete.CreateConnection($"Data Source={dbPath};");
         _connection.Open();
 
         EnableWalMode();

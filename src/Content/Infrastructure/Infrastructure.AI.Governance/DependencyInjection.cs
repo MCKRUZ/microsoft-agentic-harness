@@ -1,6 +1,7 @@
 using AgentGovernance;
 using AgentGovernance.Policy;
 using AgentGovernance.Security;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
@@ -178,6 +179,7 @@ public static class DependencyInjection
             sp.GetRequiredService<JsonlGovernanceAuditWriter>());
         services.AddSingleton<IVerifiableAuditChain>(sp =>
             sp.GetRequiredService<JsonlGovernanceAuditWriter>());
+        services.AddRetainedPersonalData<IGovernanceAuditService>("governance audit trail");
     }
 
     /// <summary>

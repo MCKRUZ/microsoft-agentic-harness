@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Learnings;
@@ -42,6 +43,7 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetService<TimeProvider>() ?? TimeProvider.System,
                 sp.GetRequiredService<ILogger<JsonlDriftAuditStore>>()));
+        services.AddRetainedPersonalData<IDriftAuditStore>("drift audit trail");
 
         services.AddSingleton<IDriftNotifier, CompositeDriftNotifier>();
 

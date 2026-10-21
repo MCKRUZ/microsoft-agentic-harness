@@ -119,6 +119,63 @@ public sealed class EfCoreConversationStoreErasureTests : IDisposable
         (await CountMessagesAsync(theirs)).Should().Be(2);
     }
 
+    [Fact]
+    public async Task ScrubAsync_AfterAnErase_WithAnotherConnectionOpen_EmptiesTheWriteAheadLog()
+    {
+        // A running host keeps connections open, so SQLite's write-ahead log is never folded in on close and keeps the
+        // frames that wrote the transcript; the scrub after erasure must empty it (#900). The open connection here stands
+        // in for the host's pool, and keeps the log from being folded in by the last connection closing.
+        var databasePath = Path.Combine(_tempDir, "conversations.db");
+        var erased = await SeedAsync("user-a", messages: 2);
+        await using var held = new Microsoft.Data.Sqlite.SqliteConnection($"DataSource={databasePath};Pooling=False");
+        await held.OpenAsync();
+        await using (var walMode = held.CreateCommand())
+        {
+            // The mode the host's databases run in (the composition test sees their -wal files); persistent per file.
+            walMode.CommandText = "PRAGMA journal_mode=WAL;";
+            await walMode.ExecuteNonQueryAsync();
+        }
+
+        await SeedAsync("user-b", messages: 1);
+        new FileInfo(databasePath + "-wal").Length.Should().BeGreaterThan(0, "the seed must leave frames in the log");
+
+        await _store.EraseSubjectAsync(new ErasureSubject("user-a", [erased]), CancellationToken.None);
+        new FileInfo(databasePath + "-wal").Length.Should().BeGreaterThan(0, "erasing alone leaves the log to the scrub");
+
+        await _store.ScrubAsync(CancellationToken.None);
+
+        new FileInfo(databasePath + "-wal").Length.Should().Be(0, "the erased transcript's frames must not stay in the log");
+    }
+
+    [Fact]
+    public async Task ScrubAsync_AnotherConnectionMidRead_ThrowsRatherThanClaimingTheLogIsEmpty()
+    {
+        var databasePath = Path.Combine(_tempDir, "conversations.db");
+        await SeedAsync("user-a", messages: 1);
+        await using var reader = new Microsoft.Data.Sqlite.SqliteConnection($"DataSource={databasePath};Pooling=False");
+        await reader.OpenAsync();
+        await using (var walMode = reader.CreateCommand())
+        {
+            walMode.CommandText = "PRAGMA journal_mode=WAL;";
+            await walMode.ExecuteNonQueryAsync();
+        }
+
+        await SeedAsync("user-b", messages: 1);
+        await using var snapshot = reader.BeginTransaction(deferred: true);
+        await using (var read = reader.CreateCommand())
+        {
+            read.Transaction = snapshot;
+            // Any read takes a snapshot of the log, which a truncating checkpoint cannot discard while it is held.
+            read.CommandText = "SELECT COUNT(*) FROM sqlite_master;";
+            await read.ExecuteScalarAsync();
+        }
+
+        await SeedAsync("user-c", messages: 1);
+        var act = () => _store.ScrubAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
     private async Task<string> SeedAsync(string owner, int messages)
     {
         var record = await _store.CreateAsync("agent", owner);

@@ -1,10 +1,11 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Infrastructure.AI.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Planner;
 
-public sealed partial class EfCorePlanStateStore : IPersonalDataEraser
+public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc/>
     public string ErasureStoreName => "plans";
@@ -49,5 +50,12 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser
         await transaction.CommitAsync(cancellationToken);
 
         return removed;
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _factory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 }

@@ -1,5 +1,6 @@
 using Application.AI.Common.Prompts.Interfaces;
 using Domain.Common.Config.AI;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Prompts.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -91,7 +92,7 @@ public static class PromptRegistryDependencyInjection
         // Persistence enabled: register the DbContext factory, the store, the persistence
         // recorder, and the composite that fans out to both Otel + Persistence.
         services.AddDbContextFactory<PromptUsageDbContext>(opts =>
-            opts.UseSqlite(usageOptions.ConnectionString));
+            opts.UseSqliteWithSecureDelete(usageOptions.ConnectionString));
 
         services.AddSingleton<IPromptUsageStore, EfCorePromptUsageStore>();
         services.AddPersonalDataEraser<IPromptUsageStore>();

@@ -5,6 +5,7 @@ using Application.AI.Common.Services.SkillTraining;
 using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.SkillTraining;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.SkillTraining;
@@ -60,7 +61,7 @@ public static partial class DependencyInjection
         // theirs. Resolving the store forces the schema into existence (it demands the initializer).
         var dbPath = Path.Combine(AppContext.BaseDirectory, appConfig.AI.SkillTraining.CheckpointDatabasePath);
         OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(dbPath)!);
-        services.AddDbContextFactory<SkillTrainingDbContext>(options => options.UseSqlite($"DataSource={dbPath}"));
+        services.AddDbContextFactory<SkillTrainingDbContext>(options => options.UseSqliteWithSecureDelete($"DataSource={dbPath}"));
         services.AddSingleton<SchemaInitializer<SkillTrainingDbContext>>();
         services.TryAddSingleton(TimeProvider.System);
         services.ReplacePlaceholder<ISkillTrainingCheckpointStore, InMemorySkillTrainingCheckpointStore, EfSkillTrainingCheckpointStore>(ServiceLifetime.Singleton);

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Governance;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.Data.Sqlite;
@@ -30,7 +31,7 @@ namespace Infrastructure.AI.Governance;
     RetentionBasis.Unbounded,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser
+public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc />
     public string ErasureStoreName => "call-once ledger";
@@ -52,6 +53,13 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser
         return await context.ToolCallLedger
             .Where(e => ids.Contains(e.ConversationId))
             .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;

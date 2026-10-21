@@ -12,6 +12,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Infrastructure.AI.Attestation;
 using Infrastructure.AI.Evaluation;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
@@ -44,7 +45,7 @@ public static partial class DependencyInjection
         var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 
         services.AddDbContextFactory<PlannerDbContext>(options => options
-            .UseSqlite(connectionString)
+            .UseSqliteWithSecureDelete(connectionString)
             .AddInterceptors(new SqliteVersionInterceptor()));
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
 
@@ -73,7 +74,7 @@ public static partial class DependencyInjection
         var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 
         services.AddDbContextFactory<ScheduleDbContext>(options => options
-            .UseSqlite(connectionString)
+            .UseSqliteWithSecureDelete(connectionString)
             .AddInterceptors(new SqliteVersionInterceptor()));
 
         // Same "resolving the store forces the schema into existence" lifecycle as the planner's

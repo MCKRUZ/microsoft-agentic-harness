@@ -18,12 +18,17 @@ namespace Application.AI.Common.Services.Compliance;
 /// stores carry only a conversation id. Then the knowledge graph and every <see cref="ErasureStage.BeforeConversations"/>
 /// store run. The conversations are erased next, only when every earlier store succeeded: deleting them after a failure
 /// would leave the failed store's data with nothing left that leads to it. <see cref="ErasureStage.AfterConversations"/>
-/// stores run last, only when the conversations are gone.
+/// stores run last, only when the conversations are gone. Every <see cref="IPersonalDataScrubber"/> then clears the bytes
+/// its deletes left in its files, on every request, so a store whose files are busy fails only its own line.
 /// </para>
 /// <para>
-/// <strong>What <c>Full</c> means.</strong> Every store that can find the subject's data removed it. Stores that do not
-/// record whose data they hold (logs, traces, the response cache) cannot be searched for one person; they are not on the
-/// receipt, and the personal-data inventory states what each keeps and for how long.
+/// <strong>What <c>Full</c> means.</strong> Every store that can find the subject's data removed it, and no store the host
+/// runs can still hold it with no end date, other than the tamper-evident audit trails. Stores that cannot be searched
+/// for one person (logs, traces, the response cache, the audit trails) are listed on the receipt from their
+/// <see cref="RetainedPersonalData"/> registrations, each with how long it keeps what it holds. One that nothing ages out
+/// (<see cref="StoreErasureStatus.RetainedIndefinitely"/>) makes the receipt <c>Partial</c>; one whose records go away on
+/// their own is listed without doing so, and so is an audit trail kept on purpose, whose line says what kinds of data it
+/// holds so the receipt does not imply it holds nothing.
 /// </para>
 /// <para>
 /// <strong>Runs system-scoped.</strong> The ambient request scope is suspended for the whole request, as for background
@@ -44,12 +49,15 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private const string FailedReason = "the store could not be erased; the failure has been logged";
     private const string StartedMeanwhileReason =
         "the person started a conversation while erasure ran; it and what it produced were kept, so run erasure again";
+    private const string ScrubFailedReason =
+        "the records were deleted, but their bytes could not yet be cleared from the store's files; the failure has been logged, so run erasure again";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
     private readonly IErasureOrchestrator _graph;
     private readonly IConversationStore? _conversations;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
+    private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PersonalDataErasureCoordinator> _logger;
@@ -57,6 +65,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     /// <summary>Initializes a new instance of the <see cref="PersonalDataErasureCoordinator"/> class.</summary>
     /// <param name="graph">Erases the subject's knowledge-graph nodes, edges, memories and derived document content.</param>
     /// <param name="erasers">Every registered store that can erase one person.</param>
+    /// <param name="retained">Every registered store that keeps personal data it cannot search for one person.</param>
     /// <param name="ambientScope">Suspended for the request, so scope-filtering stores see the subject's data.</param>
     /// <param name="timeProvider">Time source for the receipt's completion time.</param>
     /// <param name="logger">Logger for store failures, which never reach the receipt.</param>
@@ -67,6 +76,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
+        IEnumerable<RetainedPersonalData> retained,
         IAmbientRequestScope ambientScope,
         TimeProvider timeProvider,
         ILogger<PersonalDataErasureCoordinator> logger,
@@ -74,6 +84,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
+        ArgumentNullException.ThrowIfNull(retained);
         ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
@@ -81,6 +92,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         _graph = graph;
         // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser.
         _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -129,6 +141,13 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
 
+        await ScrubAsync(outcomes);
+
+        outcomes.AddRange(_retained
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .DistinctBy(o => o.Store, StringComparer.Ordinal));
+
         return Fold(graphReceipt, outcomes);
     }
 
@@ -147,6 +166,32 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         {
             outcomes.Add(new StoreErasureOutcome(
                 "conversations started during erasure", StoreErasureStatus.Skipped, 0, StartedMeanwhileReason));
+        }
+    }
+
+    /// <summary>
+    /// Clears the deleted bytes every store left in its files, once every stage has run. Kept apart from the deletes: a
+    /// delete is committed before its bytes can be cleared, so a clear that fails must not mark that store as failed and
+    /// hold back the stages after it. It runs on every request, including one that found nothing to delete, so a retry
+    /// clears what an earlier request could not. A failure is its own line and makes the receipt <c>Partial</c>.
+    /// </summary>
+    private async Task ScrubAsync(List<StoreErasureOutcome> outcomes)
+    {
+        foreach (var eraser in _erasers)
+        {
+            if (eraser is not IPersonalDataScrubber scrubber)
+                continue;
+
+            try
+            {
+                await scrubber.ScrubAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                var store = $"{eraser.ErasureStoreName} (deleted bytes)";
+                _logger.LogError(ex, "Erasure failed in store {Store}.", store);
+                outcomes.Add(new StoreErasureOutcome(store, StoreErasureStatus.Failed, 0, ScrubFailedReason));
+            }
         }
     }
 
@@ -225,7 +270,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             reasons.Add(graphReason);
 
         reasons.AddRange(outcomes
-            .Where(o => o.Status != StoreErasureStatus.Erased)
+            .Where(o => LeavesDataBehind(o.Status))
             .Select(o => $"{o.Store}: {o.Reason}"));
 
         return graphReceipt with
@@ -236,4 +281,20 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             CompletenessReason = reasons.Count == 0 ? null : string.Join("; ", reasons),
         };
     }
+
+    /// <summary>
+    /// Whether a line means the subject's data may remain with no end date. A store whose records age out, or an audit
+    /// trail kept on purpose, is listed on the receipt without making it <c>Partial</c>.
+    /// </summary>
+    private static bool LeavesDataBehind(StoreErasureStatus status) => status switch
+    {
+        StoreErasureStatus.Erased => false,
+        StoreErasureStatus.RetainedUntilExpiry => false,
+        StoreErasureStatus.RetainedByObligation => false,
+        StoreErasureStatus.Failed => true,
+        StoreErasureStatus.Skipped => true,
+        StoreErasureStatus.NotSupported => true,
+        StoreErasureStatus.RetainedIndefinitely => true,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Every erasure status must say whether it leaves data behind."),
+    };
 }

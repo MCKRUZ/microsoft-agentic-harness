@@ -2,6 +2,8 @@ using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
+using Infrastructure.AI.Extensions;
+using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Domain.Common.Compliance;
 
@@ -20,7 +22,7 @@ namespace Infrastructure.AI.Prompts.Persistence;
     RetentionBasis.Unbounded,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser
+public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEraser, IPersonalDataScrubber
 {
     private readonly IDbContextFactory<PromptUsageDbContext> _contextFactory;
 
@@ -66,10 +68,26 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
             : await context.PromptUsages.Where(e => rowIds.Contains(e.Id)).ExecuteDeleteAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
+    }
+
     /// <summary>Initializes a new instance.</summary>
-    public EfCorePromptUsageStore(IDbContextFactory<PromptUsageDbContext> contextFactory)
+    /// <param name="contextFactory">Creates the short-lived contexts each operation uses.</param>
+    /// <param name="schemaInitializer">
+    /// Taken so the schema exists before any operation, not only once a recorder has been resolved. Without it, an
+    /// erasure or a usage query on a fresh database failed with "no such table", and a failed erasure holds the person's
+    /// conversations back (#900).
+    /// </param>
+    public EfCorePromptUsageStore(
+        IDbContextFactory<PromptUsageDbContext> contextFactory,
+        SchemaInitializer<PromptUsageDbContext> schemaInitializer)
     {
         ArgumentNullException.ThrowIfNull(contextFactory);
+        ArgumentNullException.ThrowIfNull(schemaInitializer);
         _contextFactory = contextFactory;
     }
 

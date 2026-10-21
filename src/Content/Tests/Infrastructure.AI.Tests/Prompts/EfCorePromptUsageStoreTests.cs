@@ -1,6 +1,7 @@
 using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
 using FluentAssertions;
+using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Prompts.Persistence;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -35,7 +36,7 @@ public sealed class EfCorePromptUsageStoreTests : IDisposable
             ctx.Database.EnsureCreated();
         }
 
-        _sut = new EfCorePromptUsageStore(_factory);
+        _sut = new EfCorePromptUsageStore(_factory, new SchemaInitializer<PromptUsageDbContext>(_factory));
     }
 
     public void Dispose()

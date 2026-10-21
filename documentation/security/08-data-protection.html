@@ -513,10 +513,14 @@
                         </li>
                         <li><strong>On reads</strong> it filters out expired nodes, so stale data simply isn't returned.</li>
                         <li>
-                            It emits a <code>MemoryAuditEvent</code> (<code>Remember</code> / <code>Forget</code> /
-                            <code>Erasure</code>, with <code>ActorId</code>, <code>Timestamp</code>,
-                            <code>ScopeId</code>, and <code>AffectedNodeIds</code>) to <code>IMemoryAuditSink</code>
-                            (JSONL) — an append-only trail of every memory-changing event.
+                            It emits a <code>MemoryAuditEvent</code> (<code>Remember</code> / <code>Recall</code> /
+                            <code>Forget</code> / <code>Erasure</code>, with <code>ActorId</code>, <code>Timestamp</code>
+                            and <code>ScopeId</code>) to <code>IMemoryAuditSink</code>. The default sink writes it to the
+                            structured log (<code>AppConfig:AI:Rag:GraphRag:AuditSinkProvider</code>, default
+                            <code>structured_logging</code>); it is not one of the hash-chained JSONL governance trails.
+                            Deletions record how many nodes and edges were removed, never their ids: memory node ids
+                            embed the owner and the memory key, so a deletion record that listed them would keep what was
+                            deleted.
                         </li>
                     </ul>
                     <p>
@@ -540,38 +544,141 @@
                     <h2 id="erasure">Right-to-erasure (GDPR Article 17)</h2>
                     <p>
                         "Delete the user's data" is easy to say and hard to do correctly, because an agent's knowledge of
-                        a user is scattered across several stores. Forgetting must be total, or it isn't forgetting. The
-                        orchestrator at
-                        <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Compliance/DefaultErasureOrchestrator.cs</code>
-                        makes it total: <code>EraseByOwnerAsync(ownerId)</code> deletes across <strong>all</strong>
-                        stores — graph nodes (and their edges), feedback weights, and vector embeddings — then emits an
-                        <code>Erasure</code> audit event and returns an
-                        <code>src/Content/Domain/Domain.AI/KnowledgeGraph/Models/ErasureReceipt.cs</code>.
+                        a user is scattered across several stores, and some of them cannot be searched for one person at
+                        all. The harness erases everything it can find for the person, lists everything it cannot, and
+                        says plainly whether the person is fully gone.
+                    </p>
+                    <p>
+                        <code>PersonalDataErasureCoordinator</code>
+                        (<code>src/Content/Application/Application.AI.Common/Services/Compliance/</code>) runs the request.
+                        It reads the person's conversation ids first, then erases the knowledge graph (nodes, edges,
+                        feedback weights, the vector and full-text content of linked documents, and cross-session memory)
+                        through <code>DefaultErasureOrchestrator</code>, then every store registered as an
+                        <code>IPersonalDataEraser</code>: the document indexes by owner, plans, schedules, tool-result
+                        spill files, prompt-usage records, token budgets, the call-once ledger and the observability
+                        database through the conversations (except the sessions of planned tasks' model steps, whose
+                        run is not yet recorded against the conversation, #906), and finally the conversations
+                        themselves. A store reached
+                        only through a conversation is erased before the conversation, so a failure part-way leaves
+                        something a retry can still find. It runs system-scoped, so the tenant-isolated graph does not
+                        hide the person's data from an operator acting on their behalf.
+                    </p>
+                    <p>
+                        Two ways in, both producing the same receipt:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Self-service</strong>: <code>POST /api/compliance/erase-my-data</code> erases the
+                            signed-in caller, and only them. There is no field through which another person can be named.
+                        </li>
+                        <li>
+                            <strong>Operator</strong>: <code>POST /api/compliance/erasures</code> with the person's id in
+                            the body, for someone who cannot sign in. It requires the
+                            <code>Harness.Compliance.EraseSubject</code> role <em>and</em> a sign-in from a tenant listed
+                            in <code>AppConfig:AI:Erasure:OperatorTenantIds</code>; with that list empty (the default),
+                            operator erasure is off. The role alone is not enough, because each organisation's
+                            administrator assigns roles in their own tenant and erasure reaches every tenant. Every refusal
+                            is audited, and the endpoint is rate limited.
+                        </li>
+                    </ul>
+                    <p>
+                        Both are refused while sign-in is bypassed, because every caller is then the same synthetic
+                        person.
                     </p>
 
                     <div class="callout callout-tip">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
-                            <div class="callout-title">The receipt is machine-checkable proof of compliance</div>
+                            <div class="callout-title">The receipt says what happened in every store</div>
                             <p>
-                                An <code>ErasureReceipt</code> is not a log line you have to trust — it is a structured,
-                                returnable record of exactly what was deleted, suitable for an auditor or a
-                                data-subject-access response. It carries:
+                                An <code>ErasureReceipt</code>
+                                (<code>src/Content/Domain/Domain.AI/KnowledgeGraph/Models/ErasureReceipt.cs</code>) is a
+                                structured record returned to the caller. It carries:
                             </p>
                             <ul style="margin-bottom: 0">
-                                <li><code>RequestId</code> and <code>ScopeId</code> — which request, which scope.</li>
+                                <li><code>RequestId</code> and <code>ScopeId</code>, and the <code>RequestedAt</code> /
+                                    <code>CompletedAt</code> window.</li>
+                                <li>The knowledge graph's counts: nodes, edges, feedback weights, vector embeddings,
+                                    full-text rows and cross-session memories actually removed.</li>
                                 <li>
-                                    <code>RequestedAt</code> / <code>CompletedAt</code> — the erasure window, provable
-                                    against the Article 17 timeframe.
+                                    <code>Stores</code>: one line per store, with a status and, unless it was erased, a
+                                    fixed reason. <code>Erased</code> (with the count removed), <code>Failed</code>,
+                                    <code>Skipped</code> (held back because an earlier store failed),
+                                    <code>NotSupported</code> (a configured store that cannot erase), and three for stores
+                                    that cannot be searched for one person: <code>RetainedIndefinitely</code> (nothing
+                                    reliably ages it out, such as log files, traces, the response cache, and stores whose
+                                    retention period can be switched off), <code>RetainedUntilExpiry</code> (its records
+                                    go away on their own, such as a store held only in memory) and
+                                    <code>RetainedByObligation</code> (the tamper-evident audit trails, kept on purpose;
+                                    the line names the kinds of data each holds, for example tool inputs or the network
+                                    addresses a tool reached).
                                 </li>
                                 <li>
-                                    counts: <code>NodesDeleted</code>, <code>EdgesDeleted</code>,
-                                    <code>FeedbackWeightsDeleted</code>, <code>VectorEmbeddingsDeleted</code> — the exact
-                                    blast radius of the deletion across every store.
+                                    <code>Completeness</code> and <code>CompletenessReason</code>. <code>Full</code> means
+                                    every store that can find the person erased them <em>and</em> no store the host runs can
+                                    still hold their data with no end date, <strong>other than the audit trails</strong>,
+                                    which are listed with what they hold rather than counted. Any failed, held-back or
+                                    unsupported store, or any store retained indefinitely, makes it <code>Partial</code>
+                                    and names it. Until retention limits exist for logs, traces and the response cache
+                                    (#901), a default deployment's receipts read <code>Partial</code> for that reason,
+                                    deliberately. Reducing what the audit trails record is tracked in #903.
                                 </li>
                             </ul>
                         </div>
                     </div>
+
+                    <h3>The erasure audit record</h3>
+                    <p>
+                        Each request writes an <code>Attempted</code> record before anything is deleted and an outcome
+                        after, paired by a correlation id, through the shared audit sink. The record proves the erasure
+                        happened without keeping the identity it erased: it holds who asked (an operator by id; a person
+                        erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
+                        and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
+                        <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
+                        the key can recompute it from an id and find that person's erasure, and no one without the key can
+                        reverse it. Without a key, no reference is recorded. A missing key or a broken audit sink never
+                        blocks an erasure. Log lines on the erasure path carry neither the person's id nor their
+                        conversation or memory ids.
+                    </p>
+
+                    <h3>Deleted text on disk</h3>
+                    <p>
+                        SQLite normally marks a deleted row's space free without clearing it, so erased text could still be
+                        read from the database file. Every SQLite connection the harness opens turns
+                        <code>PRAGMA secure_delete</code> on, through <code>SqliteSecureDelete</code> and
+                        <code>UseSqliteWithSecureDelete</code>, and the full-text index also sets FTS5's own
+                        <code>secure-delete</code> option so deleted words leave its index immediately. The databases run
+                        in write-ahead-log mode, where a deletion first lands in a side log and the old page stays in the
+                        main file until a checkpoint, so once every store has deleted, each SQLite store empties its log
+                        (<code>wal_checkpoint(TRUNCATE)</code>, through <code>IPersonalDataScrubber</code>). This is a
+                        separate pass, on every request: when another connection is mid-read and a log cannot be emptied,
+                        the receipt gets its own <code>Failed</code> "(deleted bytes)" line without marking the delete
+                        itself failed or holding back the stores after it, and a retry empties the log even though there
+                        is nothing left to delete. A test
+                        erases a person and scans the database files and their logs for their text while the host's
+                        connections are still open. Limits:
+                    </p>
+                    <ul>
+                        <li>
+                            It covers deletes from now on. Rows deleted before this change can remain in free pages until a
+                            one-time <code>VACUUM</code> of each database; for the full-text index, run its
+                            <code>optimize</code> (or <code>rebuild</code>) command first, because words of rows deleted
+                            before secure-delete was on sit in live index segments, which <code>VACUUM</code> keeps.
+                        </li>
+                        <li>
+                            Copies outside the database file are out of its reach: backups and snapshots taken before the
+                            erasure, and blocks the file system has not reused. Retention of backups is an operational
+                            control.
+                        </li>
+                        <li>
+                            With FTS5 secure-delete in use, the full-text database can no longer be read by SQLite older
+                            than 3.42; the bundled SQLite is newer.
+                        </li>
+                        <li>
+                            External stores (Azure AI Search, PostgreSQL, Neo4j) manage their own storage and deletion
+                            guarantees.
+                        </li>
+                    </ul>
 
                     <h2 id="data-classification-dlp">Data-classification DLP</h2>
                     <p>

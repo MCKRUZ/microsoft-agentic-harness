@@ -2,6 +2,7 @@ using Application.AI.Common.Prompts.Models;
 using Domain.AI.Prompts;
 using Domain.Common.Compliance;
 using FluentAssertions;
+using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Prompts.Persistence;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -37,10 +38,27 @@ public sealed class EfCorePromptUsageStoreErasureTests : IDisposable
             ctx.Database.EnsureCreated();
         }
 
-        _sut = new EfCorePromptUsageStore(_factory);
+        _sut = new EfCorePromptUsageStore(_factory, new SchemaInitializer<PromptUsageDbContext>(_factory));
     }
 
     public void Dispose() => _keepAlive.Dispose();
+
+    [Fact]
+    public async Task EraseSubjectAsync_FreshDatabaseNothingRecordedYet_ErasesNothingWithoutFailing()
+    {
+        // The schema used to be created only when a usage recorder was first resolved, so erasing someone before anything
+        // was recorded failed with "no such table", and a failed store holds the person's conversations back.
+        var connectionString = $"Data Source=file:promptusage-fresh-{Guid.NewGuid():N}?mode=memory&cache=shared";
+        using var keepAlive = new SqliteConnection(connectionString);
+        keepAlive.Open();
+        var factory = new TestDbContextFactory(
+            new DbContextOptionsBuilder<PromptUsageDbContext>().UseSqlite(connectionString).Options);
+        var store = new EfCorePromptUsageStore(factory, new SchemaInitializer<PromptUsageDbContext>(factory));
+
+        var removed = await store.EraseSubjectAsync(new ErasureSubject("user-a", ["conv"]), CancellationToken.None);
+
+        removed.Should().Be(0);
+    }
 
     [Fact]
     public async Task EraseSubjectAsync_ConversationIdColonTurn_RemovesOnlyExactMatches()

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Domain.AI.KnowledgeGraph.Models;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -306,6 +307,11 @@ public sealed partial class KuzuGraphBackend
 
         transaction.Commit();
 
+        // This database runs in write-ahead-log mode, so a deletion's old bytes stay in the log and the file until a
+        // checkpoint; empty it so erased memories leave the disk now (#900).
+        if (deletedNodeIds.Count > 0)
+            await EmptyWriteAheadLogAsync(cancellationToken).ConfigureAwait(false);
+
         _logger.LogDebug(
             "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
             deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
@@ -346,10 +352,24 @@ public sealed partial class KuzuGraphBackend
         }
 
         transaction.Commit();
+        if (deleted.Count > 0)
+            await EmptyWriteAheadLogAsync(cancellationToken).ConfigureAwait(false);
 
         // No owner: deleting by owner is right-to-erasure, and the owner is the identity it removes.
         _logger.LogDebug("Deleted {Count} edges owned by one owner", deleted.Count);
         return deleted;
+    }
+
+    /// <summary>
+    /// Empties the write-ahead log after a committed delete, best effort. It must never fail the delete: the rows are gone,
+    /// and a caller told otherwise (erasure) would retry against nothing while later cleanup, keyed to those rows, was
+    /// skipped. This backend holds a single connection, so the log is not normally busy; when it is, the next checkpoint
+    /// clears it and the miss is logged.
+    /// </summary>
+    private async Task EmptyWriteAheadLogAsync(CancellationToken cancellationToken)
+    {
+        if (!await SqliteSecureDelete.TryTruncateWriteAheadLogAsync(_connection, cancellationToken).ConfigureAwait(false))
+            _logger.LogWarning("The graph database's write-ahead log was busy and was not emptied after a delete");
     }
 
     /// <inheritdoc />

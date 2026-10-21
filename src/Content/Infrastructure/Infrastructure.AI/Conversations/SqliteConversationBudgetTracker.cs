@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Budget;
 using Domain.Common.Config;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -59,7 +60,7 @@ namespace Infrastructure.AI.Conversations;
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
-public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser
+public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker, IPersonalDataEraser, IPersonalDataScrubber
 {
     /// <inheritdoc />
     public string ErasureStoreName => "conversation token budgets";
@@ -84,6 +85,13 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
         return await context.ConversationBudgets
             .Where(e => keys.Contains(e.BudgetKey))
             .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task ScrubAsync(CancellationToken cancellationToken)
+    {
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        await context.Database.TruncateWriteAheadLogAsync(cancellationToken);
     }
 
     private readonly IDbContextFactory<ConversationDbContext> _contextFactory;

@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Skills;
@@ -41,6 +42,7 @@ public static partial class DependencyInjection
         // --- Audit ---
         services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
         services.AddSingleton<IEgressAuditWriter, JsonlEgressAuditWriter>();
+        services.AddRetainedPersonalData<IEgressAuditWriter>("egress audit trail");
 
         // --- Default policy (configuration-bound) + resolver ---
         services.AddSingleton<IEgressPolicy>(sp =>

@@ -185,6 +185,13 @@ public static class DependencyInjection
         // Agent factories — context mapping and agent creation
         services.AddSingleton<AgentExecutionContextFactory>();
         services.AddSingleton<IAgentFactory, AgentFactory>();
+        services.AddRetainedPersonalData<IAgentFactory>("chat response cache");
+
+        // The log files hold message and tool text and cannot be searched for one person, so every erasure receipt lists
+        // them (#900). Registered here rather than beside the providers, which live in Application.Common below this
+        // layer; each resolves to nothing in a host that writes no log files.
+        services.AddRetainedPersonalData<Application.Common.Logging.FileLoggerProvider>("application log files");
+        services.AddRetainedPersonalData<Application.Common.Logging.StructuredJsonLoggerProvider>("structured application logs");
 
         // Tool conversion — ITool to AITool bridge for keyed DI tools
         services.AddSingleton<IToolConverter, AIToolConverter>();

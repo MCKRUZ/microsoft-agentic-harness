@@ -70,6 +70,59 @@ public sealed class SqliteFts5StoreErasureTests
         (await RowsAsync()).Should().Equal([("b1", "user-b")]);
     }
 
+    [Fact]
+    public async Task EraseSubjectAsync_OnDisk_LeavesNoTraceOfTheErasedWordsInTheFile()
+    {
+        // FTS5 normally records a deletion as a tombstone and keeps the old words in its index until a merge, and SQLite
+        // leaves deleted rows in free pages, so erased text stayed readable in the file. The bystander's word is the
+        // control: the scan must find it, or it proves nothing about the subject's.
+        var directory = Path.Combine(Path.GetTempPath(), "fts5-scrub-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, "fts.db");
+        var store = new SqliteFts5Store($"Data Source={file}", NullLogger<SqliteFts5Store>.Instance);
+
+        // The scan looks for each marker's random tail, not the whole word: FTS5 stores an index term compressed against
+        // the term before it, so a whole word that shares a first letter with its neighbour is never contiguous in the
+        // file, while a random tail always is. Searching for the whole word could not see the index at all.
+        var subjectTail = Guid.NewGuid().ToString("N")[..10];
+        var bystanderTail = Guid.NewGuid().ToString("N")[..10];
+        await store.IndexAsync(
+        [
+            WithContent("s1", "user-a", $"subjectmark{subjectTail} appears once"),
+            WithContent("b1", "user-b", $"bystandermark{bystanderTail} appears once"),
+        ]);
+        await store.EraseSubjectAsync(new ErasureSubject("user-a", []), CancellationToken.None);
+
+        var bytes = ReadShared(file);
+        Occurrences(bytes, bystanderTail).Should().BeGreaterThanOrEqualTo(2, "the bystander's row and index term must both be seen");
+        Occurrences(bytes, subjectTail).Should().Be(0, "neither the row nor the index may keep the erased words");
+        SqliteConnection.ClearAllPools();
+    }
+
+    private static int Occurrences(byte[] haystack, string text)
+    {
+        var needle = System.Text.Encoding.UTF8.GetBytes(text);
+        var count = 0;
+        for (var span = haystack.AsSpan(); span.IndexOf(needle) is var at and >= 0; span = span[(at + needle.Length)..])
+            count++;
+        return count;
+    }
+
+    private static byte[] ReadShared(string path)
+    {
+        // The store keeps a connection open, so the file is read without asking for exclusive access.
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        return copy.ToArray();
+    }
+
+    private static DocumentChunk WithContent(string id, string ownerId, string content)
+    {
+        var chunk = RagTestData.CreateChunk(id: id, content: content, documentId: $"doc-{id}");
+        return chunk with { Metadata = chunk.Metadata with { OwnerId = ownerId, TenantId = "tenant-a" } };
+    }
+
     private async Task<List<(string Id, string? OwnerId)>> RowsAsync()
     {
         await using var connection = new SqliteConnection(_connectionString);

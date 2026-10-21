@@ -1,6 +1,7 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Evaluation.Persistence;
+using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,7 +49,7 @@ public static class EvalDashboardDependencyInjection
         }
 
         services.AddDbContextFactory<EvalDashboardDbContext>(opts =>
-            opts.UseSqlite(options.ConnectionString));
+            opts.UseSqliteWithSecureDelete(options.ConnectionString));
 
         // Ensure the schema exists the first time the store is needed. Idempotent.
         // SchemaInitializer<TContext> is the shared base — same lifecycle used by
