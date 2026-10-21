@@ -12,6 +12,9 @@ public sealed partial class FileSystemConversationStore : IPersonalDataEraser
     /// <remarks>Last: the stores reached through a conversation's id need it to still exist.</remarks>
     public ErasureStage ErasureStage => ErasureStage.Conversations;
 
+    /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
     /// <inheritdoc/>
     /// <remarks>
     /// Removes exactly the conversations listed in <see cref="ErasureSubject.ConversationIds"/> — the ones whose dependent

@@ -70,6 +70,9 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
     public ErasureStage ErasureStage => ErasureStage.AfterConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>
     /// A conversation's budget key is its conversation id, so the person's rows are exactly those keyed by
     /// <see cref="ErasureSubject.ConversationIds"/>. Plan-run budgets use their own keys and are not touched.

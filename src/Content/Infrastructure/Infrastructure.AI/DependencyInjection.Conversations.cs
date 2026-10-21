@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Application.AI.Common.Extensions;
+using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Services.Compliance;
 using Domain.Common.Compliance;
 
 namespace Infrastructure.AI;
@@ -63,6 +65,14 @@ public static partial class DependencyInjection
         // so erasure reaches whichever pair the branch below registers.
         services.AddPersonalDataEraser<IConversationStore>(ErasureStage.Conversations);
         services.AddPersonalDataEraser<IConversationBudgetTracker>(ErasureStage.AfterConversations);
+
+        // Conversations nobody has used for the configured period are deleted with what belongs to them (#901). The
+        // idle-conversation source is forwarded from whichever store the branch below registers; a replacement store that
+        // cannot list idle conversations forwards null, and then nothing expires. The sweep is registered unconditionally
+        // and reads its switch live, like the budget sweep.
+        services.AddScoped<IIdleConversationSource>(sp => (sp.GetService<IConversationStore>() as IIdleConversationSource)!);
+        services.AddScoped<IConversationExpiry, ConversationExpiry>();
+        services.AddHostedService<ConversationRetentionService>();
 
         if (appConfig.AI.Conversations.Provider == ConversationStoreProvider.FileSystem)
         {

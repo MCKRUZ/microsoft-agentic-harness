@@ -62,6 +62,9 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
     public ErasureStage ErasureStage => ErasureStage.AfterConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>A conversation's budget key is its conversation id; plan-run budgets use their own keys.</remarks>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {

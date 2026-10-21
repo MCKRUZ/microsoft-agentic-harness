@@ -41,6 +41,9 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser,
     public ErasureStage ErasureStage => ErasureStage.AfterConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>An agent turn's ledger scope is its conversation id; workflow-run scopes use run ids and are untouched.</remarks>
     public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {

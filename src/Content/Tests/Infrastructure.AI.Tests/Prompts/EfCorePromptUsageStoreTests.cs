@@ -178,6 +178,23 @@ public sealed class EfCorePromptUsageStoreTests : IDisposable
         await act.Should().ThrowAsync<ArgumentNullException>();
     }
 
+    [Fact]
+    public async Task DeleteRecordedBeforeAsync_DeletesOnlyRowsOlderThanTheCutoff()
+    {
+        // Retention (#901): too wide deletes usage history still in its period, too narrow keeps rows forever.
+        var cutoff = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        await _sut.AppendAsync(Record(traceId: "old", at: cutoff.AddTicks(-1)), CancellationToken.None);
+        await _sut.AppendAsync(Record(traceId: "at", at: cutoff), CancellationToken.None);
+        await _sut.AppendAsync(Record(traceId: "new", at: cutoff.AddDays(1)), CancellationToken.None);
+
+        var removed = await _sut.DeleteRecordedBeforeAsync(cutoff, CancellationToken.None);
+
+        removed.Should().Be(1);
+        (await _sut.QueryByTraceIdAsync("old", CancellationToken.None)).Should().BeEmpty();
+        (await _sut.QueryByTraceIdAsync("at", CancellationToken.None)).Should().ContainSingle("a row at the cutoff is in its period");
+        (await _sut.QueryByTraceIdAsync("new", CancellationToken.None)).Should().ContainSingle();
+    }
+
     /// <summary>
     /// Minimal <see cref="IDbContextFactory{TContext}"/> for tests that own their own
     /// <see cref="DbContextOptions{TContext}"/> — avoids depending on EF Core's internal

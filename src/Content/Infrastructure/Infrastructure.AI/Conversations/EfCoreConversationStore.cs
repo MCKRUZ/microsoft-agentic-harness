@@ -45,10 +45,10 @@ namespace Infrastructure.AI.Conversations;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "The default conversation store, SQLite at Conversations:DatabasePath (default data/conversations.db): one row per conversation naming its user, plus every message including tool calls and results. Nothing ages them out; owner erasure removes every conversation the person owns, after the stores reached through them.",
+    "The default conversation store, SQLite at Conversations:DatabasePath (default data/conversations.db): one row per conversation naming its user, plus every message including tool calls and results. A conversation with no new message for Conversations:Retention:IdlePeriod (default 365 days) is deleted with everything reached through it; owner erasure removes every conversation the person owns, after the stores reached through them.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
 public sealed partial class EfCoreConversationStore : IConversationStore

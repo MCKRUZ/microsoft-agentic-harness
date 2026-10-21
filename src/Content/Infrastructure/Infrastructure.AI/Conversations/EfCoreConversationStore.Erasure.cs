@@ -14,6 +14,9 @@ public sealed partial class EfCoreConversationStore : IPersonalDataEraser, IPers
     /// <remarks>Last: the stores reached through a conversation's id need it to still exist.</remarks>
     public ErasureStage ErasureStage => ErasureStage.Conversations;
 
+    /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
     /// <inheritdoc/>
     /// <remarks>
     /// <para>

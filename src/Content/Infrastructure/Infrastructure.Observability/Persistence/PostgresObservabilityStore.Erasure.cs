@@ -26,6 +26,9 @@ public sealed partial class PostgresObservabilityStore : IPersonalDataEraser
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.NamedConversations;
+
+    /// <inheritdoc />
     /// <remarks>
     /// Rows carry no user, only a conversation id, so the person's rows are those of
     /// <see cref="ErasureSubject.ConversationIds"/>. One transaction, and unlike the write path, failures are not

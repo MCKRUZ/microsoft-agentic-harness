@@ -64,6 +64,9 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonal
     public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
 
     /// <inheritdoc />
+    public ErasureReach ErasureReach => ErasureReach.Owner;
+
+    /// <inheritdoc />
     /// <remarks>
     /// Matches <see cref="ErasureSubject.OwnerId"/>, the as-issued form ingest stamps. Initializes the schema first, like
     /// the all-collections delete, so a host that has not ingested yet still answers truthfully instead of a false zero.
