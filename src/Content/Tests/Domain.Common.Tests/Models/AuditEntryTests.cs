@@ -95,6 +95,7 @@ public class AuditOutcomeTests
     [InlineData(AuditOutcome.Success, 0)]
     [InlineData(AuditOutcome.Failure, 1)]
     [InlineData(AuditOutcome.Denied, 2)]
+    [InlineData(AuditOutcome.Attempted, 3)]
     public void Value_HasExpectedInteger(AuditOutcome outcome, int expected)
     {
         ((int)outcome).Should().Be(expected);
@@ -106,6 +107,6 @@ public class AuditOutcomeTests
         var values = Enum.GetValues<AuditOutcome>();
 
         values.Should().OnlyHaveUniqueItems();
-        values.Should().HaveCount(3);
+        values.Should().HaveCount(4);
     }
 }
