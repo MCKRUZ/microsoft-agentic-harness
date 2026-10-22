@@ -598,14 +598,21 @@
                             is deleted. Traces hold prompts, model responses and tool payloads that cannot be found per
                             person, so age is the only control on them and the period is kept short. A run's age is its
                             newest file, so a run still being written is never touched and one a crash left unfinished
-                            still goes. The sweep deletes only the files the trace writer creates and never follows a link:
-                            an optimization's candidate definitions, or anything else placed in the folder, survive.
+                            still goes. A folder counts as a run only where the trace writer puts one, named by its run id
+                            and holding a manifest that names the same id, so a trace root pointed at a shared folder cannot
+                            reach other files. Only the files the writer creates are deleted, the manifest last so a
+                            delete interrupted by a locked file is finished by the next sweep, and links are never
+                            followed: an optimization's candidate definitions, or anything else placed in the folder,
+                            survive. The sweep runs inside a long-lived host (the first one six hours after start), so
+                            traces written by a short-lived process such as the evaluation runner are removed only by a host
+                            sharing its trace root.
                         </li>
                         <li>
                             <strong>The observability database.</strong> When enabled, a session with no activity for
                             <code>AppConfig:Observability:Retention:RetainFor</code> (default 90 days) is deleted with its
-                            messages, tool executions, safety events and audit rows. Activity is the session's newest
-                            start, end or row, not its first start, which a resumed conversation keeps. Context snapshots
+                            messages, tool executions, safety events and audit rows. Activity is the newest write to the
+                            session (starting, resuming, a turn's totals, ending) or row recorded under it, not its first
+                            start, which a resumed conversation keeps. Context snapshots
                             and audit rows with no session go by their own age, so a conversation active for longer than
                             the period loses its oldest snapshots. Conversation expiry and erasure remove a conversation's
                             rows sooner; this catches what they cannot reach, such as sessions of conversations that were

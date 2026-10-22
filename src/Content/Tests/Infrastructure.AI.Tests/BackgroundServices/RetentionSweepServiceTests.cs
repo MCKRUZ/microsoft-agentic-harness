@@ -147,10 +147,11 @@ public sealed class RetentionSweepServiceTests : IDisposable
         _config.MetaHarness.TraceDirectoryRoot = _dir;
         _config.MetaHarness.TraceRetention.RetainFor = TimeSpan.FromDays(days);
         _config.MetaHarness.TraceRetention.SweepInterval = TimeSpan.FromHours(1);
-        var run = Path.Combine(_dir, "executions", Guid.NewGuid().ToString("D"));
+        var id = Guid.NewGuid().ToString("D");
+        var run = Path.Combine(_dir, "executions", id);
         Directory.CreateDirectory(run);
         var manifest = Path.Combine(run, "manifest.json");
-        await File.WriteAllTextAsync(manifest, "{}");
+        await File.WriteAllTextAsync(manifest, $$"""{"execution_run_id":"{{id}}"}""");
         // Older than 30 days on the fake clock's calendar; the sweep compares against real file times.
         File.SetLastWriteTimeUtc(manifest, Origin.AddDays(-45).UtcDateTime);
         Directory.SetLastWriteTimeUtc(run, Origin.AddDays(-45).UtcDateTime);
@@ -185,10 +186,43 @@ public sealed class RetentionSweepServiceTests : IDisposable
 
         store.Verify(
             s => s.DeleteInactiveSinceAsync(
-                It.IsAny<DateTimeOffset>(), ObservabilityRetentionService.MaxSessionsPerSweep, It.IsAny<CancellationToken>()),
+                It.IsAny<DateTimeOffset>(), ObservabilityRetentionService.MaxSessionsPerBatch, It.IsAny<CancellationToken>()),
             Times.Exactly(calls));
         if (calls > 0)
             (await swept.Task.WaitAsync(Patience)).Should().Be(_clock.GetUtcNow() - TimeSpan.FromDays(days));
+    }
+
+    [Fact]
+    public async Task Observability_ABacklogLargerThanABatch_IsClearedInOneSweep()
+    {
+        // Without further batches a sweep removes one batch per interval, and a busier host grows its backlog forever
+        // while the receipt still promises the period.
+        _config.Observability.Retention.SweepInterval = TimeSpan.FromHours(1);
+        var store = new Mock<Application.AI.Common.Interfaces.IObservabilityStore>();
+        store.SetupSequence(s => s.DeleteInactiveSinceAsync(It.IsAny<DateTimeOffset>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ObservabilityRetentionService.MaxSessionsPerBatch)
+            .ReturnsAsync(ObservabilityRetentionService.MaxSessionsPerBatch)
+            .ReturnsAsync(3);
+        var services = new ServiceCollection().AddSingleton(store.Object).BuildServiceProvider();
+        using var service = new ObservabilityRetentionService(
+            services, Monitor(), _clock, NullLogger<ObservabilityRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        store.Verify(
+            s => s.DeleteInactiveSinceAsync(It.IsAny<DateTimeOffset>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(3));
+    }
+
+    [Fact]
+    public async Task ASweep_StopsAfterItsBatchLimit_EvenWhileBatchesComeBackFull()
+    {
+        var calls = 0;
+
+        var total = await SweepBatches.RunAsync(() => Task.FromResult(++calls > 0 ? 10 : 0), batchSize: 10);
+
+        calls.Should().Be(SweepBatches.MaxBatches);
+        total.Should().Be(10 * SweepBatches.MaxBatches);
     }
 
     [Fact]

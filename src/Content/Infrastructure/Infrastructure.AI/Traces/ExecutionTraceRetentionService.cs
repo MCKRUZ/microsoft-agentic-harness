@@ -16,8 +16,8 @@ namespace Infrastructure.AI.Traces;
 /// </remarks>
 internal sealed class ExecutionTraceRetentionService : PeriodicSweepService
 {
-    /// <summary>The most runs one sweep removes, so a first sweep over a large backlog does not hold the disk for long.</summary>
-    internal const int MaxRunsPerSweep = 500;
+    /// <summary>The most runs one batch removes; a sweep runs further batches while each comes back full.</summary>
+    internal const int MaxRunsPerBatch = 500;
 
     private static readonly TimeSpan MinInterval = TimeSpan.FromMinutes(1);
 
@@ -54,12 +54,15 @@ internal sealed class ExecutionTraceRetentionService : PeriodicSweepService
 
     /// <inheritdoc />
     /// <remarks>A period under a day is refused here as well as at startup, because a reloaded value is not re-validated.</remarks>
-    protected override Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
+    protected override async Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(gracePeriod, RetentionPeriodConfig.MinimumRetainFor);
-        return _store is FileSystemExecutionTraceStore files
-            ? files.DeleteRunsNotWrittenSinceAsync(_timeProvider.GetUtcNow() - gracePeriod, MaxRunsPerSweep, cancellationToken)
-            : Task.FromResult(0);
+        if (_store is not FileSystemExecutionTraceStore files)
+            return 0;
+
+        var cutoff = _timeProvider.GetUtcNow() - gracePeriod;
+        return await SweepBatches.RunAsync(
+            () => files.DeleteRunsNotWrittenSinceAsync(cutoff, MaxRunsPerBatch, cancellationToken), MaxRunsPerBatch);
     }
 
     /// <inheritdoc />

@@ -74,8 +74,8 @@ public interface IObservabilityStore
     /// everything recorded under them, plus context snapshots and session-less audit rows older than it (#901).
     /// </summary>
     /// <remarks>
-    /// A session's activity is its newest start, end or child row, never its start alone: a resumed session keeps its
-    /// original start time. A store that keeps nothing deletes nothing.
+    /// A session's activity is the newest write to it (start, resume, metrics, end) or row recorded under it, never its
+    /// start alone: a resumed session keeps its original start time. A store that keeps nothing deletes nothing.
     /// </remarks>
     /// <returns>How many sessions were removed.</returns>
     Task<int> DeleteInactiveSinceAsync(

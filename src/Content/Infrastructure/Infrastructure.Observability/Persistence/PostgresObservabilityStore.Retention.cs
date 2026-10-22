@@ -6,22 +6,29 @@ public sealed partial class PostgresObservabilityStore
     private const int AgedRowBatch = 10_000;
 
     /// <summary>
-    /// Sessions with no activity since the cutoff, oldest first. Activity is the session's start or end, or any row
-    /// recorded under it; the start alone is not enough, because a resumed session keeps its original start time. Rows
-    /// are locked so a concurrent write waits for the delete rather than racing it.
+    /// A session is inactive when nothing has written to its row (<c>last_activity_at</c>, touched by start, resume,
+    /// metrics and end) or recorded a row under it since the cutoff. Its start time alone would not do: a resumed session
+    /// keeps its first one.
     /// </summary>
-    private const string SelectInactiveSessions = """
-        SELECT s.id FROM sessions s
-        WHERE s.started_at < $1
-          AND COALESCE(s.ended_at, s.started_at) < $1
+    private const string Inactive = """
+        s.last_activity_at < $1
           AND NOT EXISTS (SELECT 1 FROM session_messages m WHERE m.session_id = s.id AND m.created_at >= $1)
           AND NOT EXISTS (SELECT 1 FROM tool_executions t WHERE t.session_id = s.id AND t.created_at >= $1)
           AND NOT EXISTS (SELECT 1 FROM safety_events e WHERE e.session_id = s.id AND e.created_at >= $1)
           AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.session_id = s.id AND a.created_at >= $1)
-        ORDER BY s.started_at
-        LIMIT $2
-        FOR UPDATE SKIP LOCKED
         """;
+
+    /// <summary>Inactive sessions, oldest first, locked so a write to one waits for this transaction.</summary>
+    private const string LockInactiveSessions =
+        "SELECT s.id FROM sessions s WHERE " + Inactive + " ORDER BY s.last_activity_at LIMIT $2 FOR UPDATE SKIP LOCKED";
+
+    /// <summary>
+    /// The locked sessions that are still inactive. Run as its own statement so it sees every write that committed
+    /// before the locks were taken, which the locking statement's snapshot may not; once they are held, a child row
+    /// cannot be added, because its foreign key check has to wait for them.
+    /// </summary>
+    private const string StillInactive =
+        "SELECT s.id FROM sessions s WHERE s.id = ANY($2) AND " + Inactive;
 
     /// <summary>
     /// A session's rows, audit first for the same reason as erasure: deleting the session only nulls their link. Its
@@ -63,22 +70,14 @@ public sealed partial class PostgresObservabilityStore
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var ids = new List<Guid>();
-        await using (var select = connection.CreateCommand())
-        {
-            select.CommandText = SelectInactiveSessions;
-            select.Transaction = transaction;
-            select.Parameters.AddWithValue(cutoff);
-            select.Parameters.AddWithValue(maxSessions);
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                ids.Add(reader.GetGuid(0));
-        }
-
-        if (ids.Count == 0)
+        var locked = await ReadIdsAsync(connection, transaction, LockInactiveSessions, cutoff, maxSessions, cancellationToken);
+        if (locked.Length == 0)
             return 0;
 
-        var sessionIds = ids.ToArray();
+        var sessionIds = await ReadIdsAsync(connection, transaction, StillInactive, cutoff, locked, cancellationToken);
+        if (sessionIds.Length == 0)
+            return 0;
+
         foreach (var sql in DeleteSessionStatements)
         {
             await using var cmd = connection.CreateCommand();
@@ -89,7 +88,23 @@ public sealed partial class PostgresObservabilityStore
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return ids.Count;
+        return sessionIds.Length;
+    }
+
+    private static async Task<Guid[]> ReadIdsAsync(
+        Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, string sql,
+        DateTimeOffset cutoff, object second, CancellationToken cancellationToken)
+    {
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Transaction = transaction;
+        cmd.Parameters.AddWithValue(cutoff);
+        cmd.Parameters.AddWithValue(second);
+        var ids = new List<Guid>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            ids.Add(reader.GetGuid(0));
+        return [.. ids];
     }
 
     private async Task DeleteAgedRowsAsync(DateTimeOffset cutoff, CancellationToken cancellationToken)

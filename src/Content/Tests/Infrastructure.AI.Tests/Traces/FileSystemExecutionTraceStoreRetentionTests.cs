@@ -138,11 +138,12 @@ public sealed class FileSystemExecutionTraceStoreRetentionTests : IDisposable
     [SkippableFact]
     public async Task ALinkInsideAnExpiredRun_IsNotFollowed()
     {
+        // The link sits where a turn folder would, so a file reached through it matches the trace writer's own names.
         var run = await WriteRunAsync(TraceScope.ForExecution(Guid.NewGuid()));
-        Directory.CreateDirectory(Path.Combine(_outside, "turns", "1"));
-        var target = Path.Combine(_outside, "turns", "1", "model_response.md");
+        Directory.CreateDirectory(_outside);
+        var target = Path.Combine(_outside, "model_response.md");
         await File.WriteAllTextAsync(target, "not a trace");
-        SandboxLinkFactory.CreateDirectoryLink(Path.Combine(run, "linked"), _outside);
+        SandboxLinkFactory.CreateDirectoryLink(Path.Combine(run, "turns", "2"), _outside);
         Age(run, Old);
 
         await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None);
@@ -150,6 +151,72 @@ public sealed class FileSystemExecutionTraceStoreRetentionTests : IDisposable
         File.Exists(target).Should().BeTrue("a file reached through a link is not the store's to delete");
         File.Exists(Path.Combine(run, "manifest.json")).Should().BeFalse();
         Directory.Exists(run).Should().BeTrue("a folder still holding a link is not emptied of it");
+    }
+
+    [Theory]
+    [InlineData("logs/run-1")]
+    [InlineData("executions/not-a-run-id")]
+    [InlineData("executions/0F8FAD5B-D9CB-469F-A165-70867728950E")]
+    public async Task AFolderThatOnlyHoldsAManifest_IsNotARun(string folder)
+    {
+        // A trace root pointed at a shared folder must not reach another store's files: the file logger, for one,
+        // writes a manifest.json and a summary into every run folder of its own.
+        var foreign = Path.Combine(_root, folder);
+        Directory.CreateDirectory(foreign);
+        await File.WriteAllTextAsync(Path.Combine(foreign, "manifest.json"), $$"""{"execution_run_id":"{{Path.GetFileName(folder)}}"}""");
+        await File.WriteAllTextAsync(Path.Combine(foreign, "summary.md"), "someone else's");
+        Age(foreign, Old);
+
+        var deleted = await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None);
+
+        deleted.Should().Be(0);
+        File.Exists(Path.Combine(foreign, "manifest.json")).Should().BeTrue();
+        File.Exists(Path.Combine(foreign, "summary.md")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ARunIdFolderWhoseManifestNamesAnotherRun_IsNotARun()
+    {
+        var folder = Path.Combine(_root, "executions", Guid.NewGuid().ToString("D"));
+        Directory.CreateDirectory(folder);
+        await File.WriteAllTextAsync(
+            Path.Combine(folder, "manifest.json"), $$"""{"execution_run_id":"{{Guid.NewGuid():D}}"}""");
+        Age(folder, Old);
+
+        (await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None)).Should().Be(0);
+        File.Exists(Path.Combine(folder, "manifest.json")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AFileNamedLikeATraceFileDeeperInTheRun_IsNotTheWriters()
+    {
+        var run = await WriteRunAsync(TraceScope.ForExecution(Guid.NewGuid()));
+        var nested = Path.Combine(run, "snapshot", "summary.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(nested)!);
+        await File.WriteAllTextAsync(nested, "a skill snapshot's own summary");
+        Age(run, Old);
+
+        await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None);
+
+        File.Exists(nested).Should().BeTrue();
+        File.Exists(Path.Combine(run, "traces.jsonl")).Should().BeFalse();
+    }
+
+    [SkippableFact]
+    public async Task ARunThatCouldNotBeFullyDeleted_KeepsItsManifest_AndTheNextSweepFinishesIt()
+    {
+        // Only Windows refuses to delete an open file; elsewhere the first sweep simply succeeds.
+        Skip.IfNot(OperatingSystem.IsWindows(), "Deleting an open file only fails on Windows.");
+        var run = await WriteRunAsync(TraceScope.ForExecution(Guid.NewGuid()));
+        Age(run, Old);
+        var locked = Path.Combine(run, "turns", "1", "model_response.md");
+
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            (await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None)).Should().Be(0);
+
+        File.Exists(Path.Combine(run, "manifest.json")).Should().BeTrue("a run left half-deleted must still be found");
+        (await _sut.DeleteRunsNotWrittenSinceAsync(Cutoff, 100, CancellationToken.None)).Should().Be(1);
+        Directory.Exists(run).Should().BeFalse();
     }
 
     [Theory]

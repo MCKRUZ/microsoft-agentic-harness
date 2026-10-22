@@ -16,8 +16,11 @@ namespace Infrastructure.AI.BackgroundServices;
 /// </remarks>
 internal sealed class ObservabilityRetentionService : PeriodicSweepService
 {
-    /// <summary>The most sessions one sweep removes, so a first sweep over a large backlog does not hold the database for long.</summary>
-    internal const int MaxSessionsPerSweep = 1000;
+    /// <summary>
+    /// The most sessions one batch removes, each in its own transaction so no lock is held for long; a sweep runs further
+    /// batches while each comes back full.
+    /// </summary>
+    internal const int MaxSessionsPerBatch = 1000;
 
     private static readonly TimeSpan MinInterval = TimeSpan.FromMinutes(1);
 
@@ -54,12 +57,15 @@ internal sealed class ObservabilityRetentionService : PeriodicSweepService
 
     /// <inheritdoc />
     /// <remarks>A period under a day is refused here as well as at startup, because a reloaded value is not re-validated.</remarks>
-    protected override Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
+    protected override async Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(gracePeriod, RetentionPeriodConfig.MinimumRetainFor);
-        return _services.GetService<IObservabilityStore>() is { } store
-            ? store.DeleteInactiveSinceAsync(_timeProvider.GetUtcNow() - gracePeriod, MaxSessionsPerSweep, cancellationToken)
-            : Task.FromResult(0);
+        if (_services.GetService<IObservabilityStore>() is not { } store)
+            return 0;
+
+        var cutoff = _timeProvider.GetUtcNow() - gracePeriod;
+        return await SweepBatches.RunAsync(
+            () => store.DeleteInactiveSinceAsync(cutoff, MaxSessionsPerBatch, cancellationToken), MaxSessionsPerBatch);
     }
 
     /// <inheritdoc />

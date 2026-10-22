@@ -57,6 +57,29 @@ public sealed class PostgresObservabilityStoreRetentionTests
     }
 
     [SkippableFact]
+    public async Task ASessionReopenedJustNow_IsKept_BeforeItsFirstTurnLands()
+    {
+        // Resuming clears ended_at and keeps the first start, so without a recorded activity time a conversation reopened
+        // after a long gap read as idle until its first turn, and a sweep in between removed the session it had adopted.
+        _fixture.SkipIfUnavailable();
+        var conversation = _fixture.NewConversationId();
+        try
+        {
+            var session = await SeedSessionAsync(conversation, endedAt: Ancient.AddDays(1), childAt: Ancient);
+            using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+            (await store.ResumeSessionAsync(session)).Should().BeTrue();
+
+            await store.DeleteInactiveSinceAsync(Cutoff, 100, CancellationToken.None);
+
+            (await SessionsAsync(conversation)).Should().Be(1);
+        }
+        finally
+        {
+            await CleanUpAsync(conversation);
+        }
+    }
+
+    [SkippableFact]
     public async Task SnapshotsAndSessionlessAuditRows_GoByTheirOwnAge()
     {
         _fixture.SkipIfUnavailable();
@@ -136,7 +159,8 @@ public sealed class PostgresObservabilityStoreRetentionTests
     {
         var sessionId = Guid.NewGuid();
         await _fixture.ExecuteAsync(
-            "INSERT INTO sessions (id, conversation_id, agent_name, started_at, ended_at) VALUES ($1, $2, 'retention-agent', $3, $4)",
+            "INSERT INTO sessions (id, conversation_id, agent_name, started_at, ended_at, last_activity_at) "
+            + "VALUES ($1, $2, 'retention-agent', $3, $4, GREATEST($3, COALESCE($4, $3)))",
             new NpgsqlParameter { Value = sessionId },
             new NpgsqlParameter { Value = conversationId },
             new NpgsqlParameter { Value = startedAt ?? Ancient },
