@@ -44,6 +44,16 @@ public sealed class ChangesConfig
     public string EvidenceStoragePath { get; set; } = ".agent-sessions/changes/evidence";
 
     /// <summary>
+    /// How long a piece of gate evidence is kept after it was last stored (#901). Defaults to 90 days, the period
+    /// terminal proposals are kept, so evidence does not routinely vanish from under a proposal still on record.
+    /// </summary>
+    /// <remarks>
+    /// Evidence that an open proposal's gate decisions point at is never deleted. A merged, rejected or cancelled
+    /// proposal's evidence goes by age; readers already treat a missing blob as pruned.
+    /// </remarks>
+    public RetentionPeriodConfig EvidenceRetention { get; set; } = new();
+
+    /// <summary>
     /// Hard upper bound on consecutive <c>GateAction.Defer</c> responses from
     /// the same gate against the same proposal. After this many defers the
     /// orchestrator promotes the proposal to <c>Rejected</c> with a

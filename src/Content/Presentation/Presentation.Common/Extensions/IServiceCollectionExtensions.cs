@@ -136,6 +136,8 @@ public static class IServiceCollectionExtensions
         "AppConfig:AI:Rag:CrossSessionMemory:Retention",
         "AppConfig:MetaHarness:TraceRetention",
         "AppConfig:Observability:Retention",
+        "AppConfig:Infrastructure:StateManagement:Retention",
+        "AppConfig:AI:Changes:EvidenceRetention",
     ];
 
     /// <summary>

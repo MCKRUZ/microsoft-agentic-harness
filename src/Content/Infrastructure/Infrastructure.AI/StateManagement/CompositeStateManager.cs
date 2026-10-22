@@ -42,6 +42,16 @@ public class CompositeStateManager : IStateManager
     private readonly IStateManager _decoratedManager;
 
     /// <summary>
+    /// The JSON checkpoint store underneath, or <see langword="null"/> when this wraps another store. Resolved on its own
+    /// so the erasure receipt lists it and the retention sweep reaches it (#901).
+    /// </summary>
+    internal JsonCheckpointStateManager? Checkpoints =>
+        _decoratedManager as JsonCheckpointStateManager ?? Markdown?.Checkpoints;
+
+    /// <summary>The markdown decorator, or <see langword="null"/> when markdown generation is off.</summary>
+    internal MarkdownCheckpointDecorator? Markdown => _decoratedManager as MarkdownCheckpointDecorator;
+
+    /// <summary>
     /// Initializes a new instance of the CompositeStateManager.
     /// </summary>
     /// <param name="logger">Logger for operations</param>

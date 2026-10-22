@@ -214,6 +214,104 @@ public sealed class RetentionSweepServiceTests : IDisposable
             Times.Exactly(3));
     }
 
+    [Theory]
+    [InlineData(false, false, 90)]
+    [InlineData(true, true, 90)]
+    [InlineData(false, true, 0.5)]
+    public async Task Evidence_AnOpenProposalsEvidenceIsKept_AndATruncatedListingOrAPeriodUnderADayStopsTheSweep(
+        bool listingFull, bool unreferencedLeft, double days)
+    {
+        // A listing that came back full may have left out an open proposal, and deleting the evidence it points at
+        // cannot be undone, so the sweep deletes nothing rather than guess.
+        _config.AI.Changes.EvidenceStoragePath = _dir;
+        _config.AI.Changes.EvidenceRetention.RetainFor = TimeSpan.FromDays(days);
+        _config.AI.Changes.EvidenceRetention.SweepInterval = TimeSpan.FromHours(1);
+        var evidence = new Infrastructure.AI.Changes.FileSystemEvidenceStore(
+            Monitor(), NullLogger<Infrastructure.AI.Changes.FileSystemEvidenceStore>.Instance);
+        var referenced = await evidence.StoreAsync("referenced"u8.ToArray(), "text/plain", CancellationToken.None);
+        var unreferenced = await evidence.StoreAsync("unreferenced"u8.ToArray(), "text/plain", CancellationToken.None);
+        foreach (var hash in new[] { referenced, unreferenced })
+        {
+            var name = hash["sha256:".Length..];
+            var blob = Path.Combine(_dir, name[..2], name + ".bin");
+            File.SetLastWriteTimeUtc(blob, Origin.AddDays(-120).UtcDateTime);
+            File.SetLastWriteTimeUtc(blob + ".contenttype", Origin.AddDays(-120).UtcDateTime);
+        }
+
+        var open = OpenProposalPointingAt(referenced);
+        var proposals = new Mock<Application.AI.Common.Interfaces.Changes.IChangeProposalStore>();
+        proposals.Setup(p => p.ListAsync(It.IsAny<Application.AI.Common.Interfaces.Changes.ChangeProposalQuery>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Application.AI.Common.Interfaces.Changes.ChangeProposalQuery q, CancellationToken _) =>
+                q.Status == Domain.AI.Changes.ChangeProposalStatus.AwaitingApproval
+                    ? Enumerable.Repeat(open, listingFull ? q.MaxResults : 1).ToList()
+                    : []);
+        var services = new ServiceCollection()
+            .AddSingleton<Application.AI.Common.Interfaces.Changes.IEvidenceStore>(evidence)
+            .AddSingleton(proposals.Object)
+            .BuildServiceProvider();
+        using var service = new Infrastructure.AI.Changes.EvidenceRetentionService(
+            services, Monitor(), _clock, NullLogger<Infrastructure.AI.Changes.EvidenceRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        File.Exists(BlobFile(referenced)).Should().BeTrue();
+        File.Exists(BlobFile(unreferenced)).Should().Be(unreferencedLeft);
+    }
+
+    [Theory]
+    [InlineData(90, false)]
+    [InlineData(0.5, true)]
+    public async Task WorkflowState_AnIdleWorkflowGoesOnTheTick_UnlessThePeriodIsUnderADay(double days, bool stateLeft)
+    {
+        _config.Infrastructure.StateManagement.BasePath = _dir;
+        _config.Infrastructure.StateManagement.Retention.RetainFor = TimeSpan.FromDays(days);
+        _config.Infrastructure.StateManagement.Retention.SweepInterval = TimeSpan.FromHours(1);
+        var infra = new Mock<IOptionsMonitor<Domain.Common.Config.Infrastructure.InfrastructureConfig>>();
+        infra.Setup(m => m.CurrentValue).Returns(() => _config.Infrastructure);
+        var checkpoints = new Infrastructure.AI.StateManagement.Checkpoints.JsonCheckpointStateManager(
+            NullLogger<Infrastructure.AI.StateManagement.Checkpoints.JsonCheckpointStateManager>.Instance, infra.Object);
+        await checkpoints.CreateAsync("idle");
+        var state = Path.Combine(_dir, "idle", "checkpoints", "workflow-state.json");
+        File.SetLastWriteTimeUtc(state, Origin.AddDays(-120).UtcDateTime);
+        var services = new ServiceCollection().AddSingleton(checkpoints).BuildServiceProvider();
+        using var service = new Infrastructure.AI.StateManagement.WorkflowStateRetentionService(
+            services, Monitor(), _clock, NullLogger<Infrastructure.AI.StateManagement.WorkflowStateRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        File.Exists(state).Should().Be(stateLeft);
+    }
+
+    private string BlobFile(string hash)
+    {
+        var name = hash["sha256:".Length..];
+        return Path.Combine(_dir, name[..2], name + ".bin");
+    }
+
+    private static Domain.AI.Changes.ChangeProposal OpenProposalPointingAt(string evidenceHash) =>
+        Domain.AI.Changes.ChangeProposal.Create(
+            target: new Domain.AI.Changes.GitRepoTarget("https://github.com/org/repo", "main", "abc123"),
+            diff: [],
+            submittedBy: new Domain.AI.Identity.AgentIdentity
+            {
+                Id = "agent-001", Kind = Domain.AI.Identity.AgentIdentityKind.ManagedIdentity, TenantId = "tenant-A",
+            },
+            summary: "a proposal awaiting approval",
+            blastRadius: Domain.AI.Changes.BlastRadius.Low,
+            requiredGates: [],
+            submittedAt: Origin) with
+        {
+            Status = Domain.AI.Changes.ChangeProposalStatus.AwaitingApproval,
+            History =
+            [
+                new Domain.AI.Changes.GateDecision
+                {
+                    Timestamp = Origin, GateKey = "gate", Action = Domain.AI.Changes.GateAction.Pass,
+                    EvidenceHash = evidenceHash, DurationMs = 1,
+                },
+            ],
+        };
+
     [Fact]
     public async Task ASweep_StopsAfterItsBatchLimit_EvenWhileBatchesComeBackFull()
     {

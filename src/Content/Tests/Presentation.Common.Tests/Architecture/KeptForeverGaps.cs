@@ -25,9 +25,6 @@ internal static class KeptForeverGaps
         // Off by default, file-based, or external.
         ["Application.Common.Logging.FileLoggerProvider"] = "sweep of old run log directories",
         ["Application.Common.Logging.StructuredJsonLoggerProvider"] = "sweep of old run log directories",
-        ["Infrastructure.AI.StateManagement.Checkpoints.JsonCheckpointStateManager"] = "sweep of completed workflows",
-        ["Infrastructure.AI.StateManagement.MarkdownCheckpointDecorator"] = "sweep of completed workflows",
-        ["Infrastructure.AI.Changes.FileSystemEvidenceStore"] = "sweep of evidence no open proposal references",
         ["Infrastructure.AI.RAG.Retrieval.AzureAISearchVectorStore"] = "kept as long as its source document, or an ingest-time expiry",
         ["Infrastructure.AI.RAG.Retrieval.AzureAISearchBm25Store"] = "kept as long as its source document, or an ingest-time expiry",
     };

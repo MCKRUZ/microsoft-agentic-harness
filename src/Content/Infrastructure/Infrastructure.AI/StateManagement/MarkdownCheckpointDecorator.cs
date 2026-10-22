@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Generators;
@@ -35,14 +36,17 @@ namespace Infrastructure.AI.StateManagement;
 /// - Others: Delegate to inner
 /// </remarks>
 [PersonalDataStore(
-    "A markdown rendering of each workflow's state at {StateManagement:BasePath}/{workflowId}/inputs/workflow-state.md, on by default. Records carry a workflow id, not an owner. Removed with its workflow.",
+    "A markdown rendering of each workflow's state at {StateManagement:BasePath}/{workflowId}/inputs/workflow-state.md, on by default. Records carry a workflow id, not an owner. Removed with its workflow, and with the JSON state when that ages out (StateManagement:Retention, 90 days by default).",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.ItemDeleteOnly,
     ExportSupport.NotSupported)]
-public class MarkdownCheckpointDecorator : IStateManager
+public class MarkdownCheckpointDecorator : IStateManager, IStoreRetentionPeriod
 {
+    /// <summary>The rendering's path from the workflow's own folder.</summary>
+    internal const string MarkdownRelativePath = "inputs/workflow-state.md";
+
     private readonly IStateManager _inner;
     private readonly ILogger<MarkdownCheckpointDecorator> _logger;
     private readonly IStateMarkdownGenerator _markdownGenerator;
@@ -70,6 +74,16 @@ public class MarkdownCheckpointDecorator : IStateManager
         // existed with looser permissions (#670).
         OwnerOnlyDirectoryHelper.Create(_settings.BasePath, _logger);
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The rendering is aged out by the JSON checkpoint store's sweep along with the state it describes, so it has a period
+    /// only while that is the store this decorates and its sweep is running.
+    /// </remarks>
+    public TimeSpan? CurrentRetentionPeriod => (_inner as JsonCheckpointStateManager)?.CurrentRetentionPeriod;
+
+    /// <summary>The JSON checkpoint store this decorates, when it is one.</summary>
+    internal JsonCheckpointStateManager? Checkpoints => _inner as JsonCheckpointStateManager;
 
     public async Task<WorkflowState?> LoadAsync(string workflowId, CancellationToken cancellationToken = default)
     {

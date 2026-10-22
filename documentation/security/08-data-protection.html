@@ -620,6 +620,22 @@
                             than writing to a row that is gone.
                         </li>
                         <li>
+                            <strong>Saved workflow state.</strong> A workflow nothing has saved for
+                            <code>AppConfig:Infrastructure:StateManagement:Retention:RetainFor</code> (default 90 days)
+                            loses its JSON checkpoint and its markdown rendering; anything else in its folder is kept. A
+                            folder counts only when its state file names that folder as its workflow, so a base path shared
+                            with other content cannot reach it. Both files are now listed on the erasure receipt; before,
+                            neither was, because the store that writes them is built inside another.
+                        </li>
+                        <li>
+                            <strong>Change-gate evidence.</strong> A blob nothing has stored for
+                            <code>AppConfig:AI:Changes:EvidenceRetention:RetainFor</code> (default 90 days, the period
+                            terminal proposals are kept) is deleted, unless an open proposal's gate decisions point at it;
+                            storing the same content again renews it. If the open proposals cannot be listed in full, the
+                            sweep deletes nothing. Only files named the way the store names a blob are matched, so the audit
+                            files kept beside the evidence are never reached.
+                        </li>
+                        <li>
                             <strong>An expired node no longer takes its source document with it.</strong> Retention removes
                             expired graph nodes through <code>IErasureOrchestrator.ExpireNodesAsync</code>, which leaves
                             the document content behind their chunk references. Before #901 it used erasure, which deleted

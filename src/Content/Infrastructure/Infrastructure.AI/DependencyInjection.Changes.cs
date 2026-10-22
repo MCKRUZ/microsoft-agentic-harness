@@ -62,6 +62,8 @@ public static partial class DependencyInjection
         services.AddRetainedPersonalData<IChangeProposalStore>("change proposals");
         services.AddRetainedPersonalData<IChangeAuditWriter>("change audit trail");
         services.AddRetainedPersonalData<IEvidenceStore>("change evidence");
+        // Evidence not stored for Changes:EvidenceRetention, and no open proposal points at, is deleted (#901).
+        services.AddHostedService<EvidenceRetentionService>();
 
         // --- Default resolver + approval router ---
         services.AddSingleton<IChangeProposalGateResolver, DefaultChangeProposalGateResolver>();
