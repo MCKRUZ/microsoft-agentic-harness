@@ -1,3 +1,5 @@
+using Application.AI.Common.Interfaces.Compliance;
+using Domain.Common.Config;
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Helpers;
@@ -36,15 +38,19 @@ namespace Infrastructure.AI.StateManagement.Checkpoints;
 /// </code>
 /// </remarks>
 [PersonalDataStore(
-    "JSON workflow-state files at {StateManagement:BasePath}/{workflowId}/checkpoints/, including free-form metadata supplied by callers. Records carry a workflow id, not an owner. A file is kept until its workflow is deleted.",
+    "JSON workflow-state files at {StateManagement:BasePath}/{workflowId}/checkpoints/, including free-form metadata supplied by callers. Records carry a workflow id, not an owner. A workflow's state is deleted once nothing has written it for StateManagement:Retention (90 days by default), or when the workflow is deleted.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.ItemDeleteOnly,
     ExportSupport.NotSupported)]
-public class JsonCheckpointStateManager : IStateManager
+public class JsonCheckpointStateManager : IStateManager, IStoreRetentionPeriod
 {
+    /// <summary>A workflow's state file, from the workflow's own folder; it marks the folder as a workflow.</summary>
+    internal const string StateFileRelativePath = "checkpoints/workflow-state.json";
+
     private readonly ILogger<JsonCheckpointStateManager> _logger;
+    private readonly IOptionsMonitor<InfrastructureConfig> _infraConfig;
     private readonly StateManagementConfig _settings;
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -56,6 +62,7 @@ public class JsonCheckpointStateManager : IStateManager
         IOptionsMonitor<InfrastructureConfig> infraConfig)
     {
         _logger = logger;
+        _infraConfig = infraConfig;
         _settings = infraConfig.CurrentValue.StateManagement;
 
         // Configure JSON options for Agent Framework compatibility
@@ -306,6 +313,79 @@ public class JsonCheckpointStateManager : IStateManager
     public async Task CompleteWorkflowAsync(string workflowId, CancellationToken cancellationToken = default)
     {
         await SetWorkflowStatusAsync(workflowId, "completed", cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>A period below the sweep's floor is refused by the sweep, so it is reported as no period at all.</remarks>
+    public TimeSpan? CurrentRetentionPeriod =>
+        _infraConfig.CurrentValue.StateManagement.Retention is { Enabled: true } retention
+        && retention.RetainFor >= RetentionPeriodConfig.MinimumRetainFor
+            ? retention.RetainFor
+            : null;
+
+    /// <summary>
+    /// Deletes the saved state of up to <paramref name="maxWorkflows"/> workflows nothing has written since
+    /// <paramref name="cutoff"/> (#901): the JSON checkpoint, its temp file, and the markdown rendering
+    /// (<see cref="MarkdownCheckpointDecorator.MarkdownRelativePath"/>) that describes the same state.
+    /// </summary>
+    /// <remarks>
+    /// A workflow is a folder directly under the base path whose state file names that folder as its workflow id, as
+    /// every state this store saves does; a folder that only holds a file of that name is not one, so a base path shared
+    /// with other content cannot reach it. A workflow's age is its newest file; anything else in its folder is kept, and
+    /// the state file goes last, so a delete a locked file interrupts is finished by the next sweep (see
+    /// <see cref="RetentionDirectories"/>). Status is not consulted: a workflow paused for longer than the period, at a
+    /// human gate for example, loses its state like an abandoned one, so a deployment whose workflows pause that long sets
+    /// a longer period.
+    /// </remarks>
+    /// <returns>How many workflows' state was removed.</returns>
+    public Task<int> DeleteWorkflowsNotWrittenSinceAsync(DateTimeOffset cutoff, int maxWorkflows, CancellationToken cancellationToken)
+    {
+        var deleted = 0;
+        foreach (var workflow in RetentionDirectories.Subdirectories(Path.GetFullPath(_settings.BasePath)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (deleted >= maxWorkflows)
+                break;
+
+            try
+            {
+                if (!IsWorkflowSavedHere(workflow) || RetentionDirectories.NewestWriteUtc(workflow) >= cutoff.UtcDateTime)
+                    continue;
+
+                if (RetentionDirectories.DeleteOwnFiles(workflow, StateFileRelativePath, IsOwnFile, cutoff.UtcDateTime))
+                    deleted++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning(ex, "Could not delete expired workflow state {Workflow}; will retry on the next sweep.", workflow);
+            }
+        }
+
+        return Task.FromResult(deleted);
+    }
+
+    private static bool IsOwnFile(string relativePath) =>
+        relativePath is StateFileRelativePath + ".tmp"
+            or MarkdownCheckpointDecorator.MarkdownRelativePath
+            or MarkdownCheckpointDecorator.MarkdownRelativePath + ".tmp";
+
+    /// <summary>Whether the folder's state file names the folder's own workflow id.</summary>
+    private bool IsWorkflowSavedHere(string workflow)
+    {
+        var stateFile = Path.Combine(workflow, StateFileRelativePath);
+        if (!File.Exists(stateFile))
+            return false;
+
+        try
+        {
+            var state = JsonSerializer.Deserialize<WorkflowState>(File.ReadAllText(stateFile), _jsonOptions);
+            return state is not null
+                && string.Equals(state.WorkflowId, Path.GetFileName(workflow), RetentionDirectories.PathComparison);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private string GetStateFilePath(string workflowId)

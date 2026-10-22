@@ -109,7 +109,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore, IStore
                 if (!IsRunWrittenHere(run) || RetentionDirectories.NewestWriteUtc(run) >= cutoff.UtcDateTime)
                     continue;
 
-                if (!RetentionDirectories.DeleteOwnFiles(run, ManifestFileName, path => OwnFile.IsMatch(path)))
+                if (!RetentionDirectories.DeleteOwnFiles(run, ManifestFileName, path => OwnFile.IsMatch(path), cutoff.UtcDateTime))
                     continue;
 
                 RetentionDirectories.RemoveEmptyParents(run, root);

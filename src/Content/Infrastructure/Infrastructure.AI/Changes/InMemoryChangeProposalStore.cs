@@ -45,6 +45,15 @@ public sealed class InMemoryChangeProposalStore : IChangeProposalStore
     }
 
     /// <inheritdoc />
+    public Task<IReadOnlySet<string>> GetEvidenceHashesOfOpenProposalsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlySet<string>>(_byId.Values
+            .Where(p => !p.IsTerminal)
+            .SelectMany(p => p.History)
+            .Select(d => d.EvidenceHash)
+            .OfType<string>()
+            .ToHashSet(StringComparer.Ordinal));
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<ChangeProposal>> ListAsync(
         ChangeProposalQuery query,
         CancellationToken cancellationToken)

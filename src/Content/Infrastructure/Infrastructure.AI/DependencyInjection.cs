@@ -419,6 +419,15 @@ public static partial class DependencyInjection
             sp.GetRequiredService<IOptionsMonitor<InfrastructureConfig>>()));
         services.AddSingleton<IStateManager>(sp => sp.GetRequiredService<CompositeStateManager>());
 
+        // The two stores the composite writes through, resolvable on their own so the erasure receipt lists them with
+        // their live period and the retention sweep reaches them (#901). Either is null when the composite runs without it,
+        // and both are when a host replaces IStateManager, so the receipt does not list a store nothing writes.
+        services.AddSingleton(sp => (sp.GetRequiredService<IStateManager>() as CompositeStateManager)?.Checkpoints!);
+        services.AddSingleton(sp => (sp.GetRequiredService<IStateManager>() as CompositeStateManager)?.Markdown!);
+        services.AddRetainedPersonalData<StateManagement.Checkpoints.JsonCheckpointStateManager>("workflow state");
+        services.AddRetainedPersonalData<MarkdownCheckpointDecorator>("workflow state documents");
+        services.AddHostedService<StateManagement.WorkflowStateRetentionService>();
+
         // --- Hooks ---
 
         services.AddSingleton<IHookRegistry, InMemoryHookRegistry>();

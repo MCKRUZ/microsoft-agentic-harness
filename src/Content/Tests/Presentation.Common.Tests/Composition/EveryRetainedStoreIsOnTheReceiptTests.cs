@@ -113,6 +113,30 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
             "90 days after the day's file was last written, which is up to a day after the record");
     }
 
+    [Fact]
+    public async Task SavedWorkflowState_IsListedWithItsLivePeriod()
+    {
+        // The host reaches both stores only through the composite state manager, so the interface scan above cannot see
+        // them; before #901 neither was on the receipt at all.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:Infrastructure:StateManagement:BasePath"] = Path.Combine(_workingDir, "projects"),
+        });
+        await using var scope = provider.CreateAsyncScope();
+
+        var lines = scope.ServiceProvider.GetServices<RetainedPersonalData>()
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .ToDictionary(o => o.Store);
+
+        foreach (var store in new[] { "workflow state", "workflow state documents" })
+        {
+            lines[store].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
+            lines[store].Reason.Should().EndWith("within 90 days of being written");
+        }
+    }
+
     private static bool IsRetainedStore(Type type) =>
         type is { IsClass: true, IsAbstract: false }
         && !typeof(IPersonalDataEraser).IsAssignableFrom(type)

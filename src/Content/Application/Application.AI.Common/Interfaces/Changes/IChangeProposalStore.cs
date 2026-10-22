@@ -48,4 +48,17 @@ public interface IChangeProposalStore
     Task<IReadOnlyList<ChangeProposal>> ListAsync(
         ChangeProposalQuery query,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Every evidence hash the gate decisions of an open proposal (not merged, rejected or cancelled) point at (#901).
+    /// </summary>
+    /// <remarks>
+    /// Read by evidence retention, which must never delete evidence an open proposal still needs, so this reads every open
+    /// proposal: no result cap, and a stored proposal that fails its integrity check counts too, because a quarantined
+    /// record is kept for investigation and so is what it points at. One that cannot be read at all throws rather than
+    /// being left out.
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The hashes.</returns>
+    Task<IReadOnlySet<string>> GetEvidenceHashesOfOpenProposalsAsync(CancellationToken cancellationToken);
 }

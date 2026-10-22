@@ -55,4 +55,14 @@ public class StateManagementConfig
     /// Agent Framework workflow resume capability. Default: <c>true</c>.
     /// </value>
     public bool EnableJsonCheckpointing { get; set; } = true;
+
+    /// <summary>
+    /// How long a workflow's saved state is kept after it was last written (#901). Defaults to 90 days.
+    /// </summary>
+    /// <remarks>
+    /// A workflow saves its state on every change. One untouched for this long has its JSON checkpoint and markdown
+    /// rendering deleted whatever its status, including one paused at a human gate, so set a longer period if workflows
+    /// pause that long. Anything else in the workflow's folder is left.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; set; } = new();
 }
