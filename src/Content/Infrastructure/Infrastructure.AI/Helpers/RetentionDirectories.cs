@@ -16,7 +16,8 @@ namespace Infrastructure.AI.Helpers;
 ///   <item>Only files the caller names as its own are deleted; anything else, such as a file an agent wrote into the
 ///   same folder, survives, and so does every directory it sits in.</item>
 ///   <item>The file that marks a folder as a unit is deleted last, once every other own file is gone, so a delete that
-///   fails part-way leaves the unit findable and the next sweep finishes it.</item>
+///   fails part-way leaves the unit findable and the next sweep finishes it. Just before it goes the unit's age is read
+///   again, so a write that landed while the sweep was deleting (a workflow saving again) keeps the unit.</item>
 ///   <item>Directories are removed only once empty.</item>
 /// </list>
 /// <para>
@@ -62,23 +63,27 @@ internal static class RetentionDirectories
 
     /// <summary>
     /// Deletes the files in <paramref name="unit"/>, at any depth, that <paramref name="isOwnFile"/> accepts (given the
-    /// path relative to the unit, with <c>/</c> separators); then the unit's <paramref name="markerFileName"/>; then
-    /// every directory left empty, the unit included.
+    /// path relative to the unit, with <c>/</c> separators); then, if nothing in the unit has been written since
+    /// <paramref name="cutoffUtc"/>, the unit's <paramref name="markerFileName"/>; then every directory left empty, the
+    /// unit included.
     /// </summary>
     /// <returns>Whether the marker was deleted, so the folder is no longer a unit.</returns>
     /// <exception cref="IOException">A file could not be deleted; the marker is still in place.</exception>
     /// <exception cref="UnauthorizedAccessException">A file could not be deleted; the marker is still in place.</exception>
-    public static bool DeleteOwnFiles(string unit, string markerFileName, Func<string, bool> isOwnFile)
+    public static bool DeleteOwnFiles(string unit, string markerFileName, Func<string, bool> isOwnFile, DateTime cutoffUtc)
     {
+        string? marker = null;
         foreach (var file in Files(unit).ToList())
         {
             var relative = Path.GetRelativePath(unit, file).Replace('\\', '/');
-            if (relative != markerFileName && isOwnFile(relative))
+            if (relative == markerFileName)
+                marker = file;
+            else if (isOwnFile(relative))
                 File.Delete(file);
         }
 
-        var marker = Path.Combine(unit, markerFileName);
-        if (!File.Exists(marker))
+        // Only a marker reached without passing through a link, and only while the unit is still old.
+        if (marker is null || NewestWriteUtc(unit) >= cutoffUtc)
             return false;
 
         File.Delete(marker);
@@ -136,6 +141,7 @@ internal static class RetentionDirectories
         return info.Attributes.HasFlag(FileAttributes.ReparsePoint) || info.LinkTarget is not null;
     }
 
-    private static StringComparison PathComparison =>
+    /// <summary>How this file system compares names: ignoring case on Windows and macOS, exactly elsewhere.</summary>
+    internal static StringComparison PathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }

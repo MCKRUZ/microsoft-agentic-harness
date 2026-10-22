@@ -218,11 +218,11 @@ public sealed class RetentionSweepServiceTests : IDisposable
     [InlineData(false, false, 90)]
     [InlineData(true, true, 90)]
     [InlineData(false, true, 0.5)]
-    public async Task Evidence_AnOpenProposalsEvidenceIsKept_AndATruncatedListingOrAPeriodUnderADayStopsTheSweep(
-        bool listingFull, bool unreferencedLeft, double days)
+    public async Task Evidence_AnOpenProposalsEvidenceIsKept_AndAnUnreadableStoreOrAPeriodUnderADayStopsTheSweep(
+        bool storeFails, bool unreferencedLeft, double days)
     {
-        // A listing that came back full may have left out an open proposal, and deleting the evidence it points at
-        // cannot be undone, so the sweep deletes nothing rather than guess.
+        // A proposal store that cannot say what every open proposal points at may be hiding one, and deleting the
+        // evidence it points at cannot be undone, so the sweep deletes nothing rather than guess.
         _config.AI.Changes.EvidenceStoragePath = _dir;
         _config.AI.Changes.EvidenceRetention.RetainFor = TimeSpan.FromDays(days);
         _config.AI.Changes.EvidenceRetention.SweepInterval = TimeSpan.FromHours(1);
@@ -238,16 +238,29 @@ public sealed class RetentionSweepServiceTests : IDisposable
             File.SetLastWriteTimeUtc(blob + ".contenttype", Origin.AddDays(-120).UtcDateTime);
         }
 
-        var open = OpenProposalPointingAt(referenced);
-        var proposals = new Mock<Application.AI.Common.Interfaces.Changes.IChangeProposalStore>();
-        proposals.Setup(p => p.ListAsync(It.IsAny<Application.AI.Common.Interfaces.Changes.ChangeProposalQuery>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Application.AI.Common.Interfaces.Changes.ChangeProposalQuery q, CancellationToken _) =>
-                q.Status == Domain.AI.Changes.ChangeProposalStatus.AwaitingApproval
-                    ? Enumerable.Repeat(open, listingFull ? q.MaxResults : 1).ToList()
-                    : []);
+        Application.AI.Common.Interfaces.Changes.IChangeProposalStore proposals;
+        if (storeFails)
+        {
+            var failing = new Mock<Application.AI.Common.Interfaces.Changes.IChangeProposalStore>();
+            failing.Setup(p => p.GetEvidenceHashesOfOpenProposalsAsync(It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("an open proposal could not be read"));
+            proposals = failing.Object;
+        }
+        else
+        {
+            proposals = new Infrastructure.AI.Changes.InMemoryChangeProposalStore();
+            await proposals.SaveAsync(OpenProposalPointingAt(referenced), CancellationToken.None);
+            await proposals.SaveAsync(
+                OpenProposalPointingAt(unreferenced) with
+                {
+                    Id = "merged-proposal", Status = Domain.AI.Changes.ChangeProposalStatus.Merged,
+                },
+                CancellationToken.None);
+        }
+
         var services = new ServiceCollection()
             .AddSingleton<Application.AI.Common.Interfaces.Changes.IEvidenceStore>(evidence)
-            .AddSingleton(proposals.Object)
+            .AddSingleton(proposals)
             .BuildServiceProvider();
         using var service = new Infrastructure.AI.Changes.EvidenceRetentionService(
             services, Monitor(), _clock, NullLogger<Infrastructure.AI.Changes.EvidenceRetentionService>.Instance);

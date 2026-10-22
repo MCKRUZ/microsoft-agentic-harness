@@ -1,5 +1,4 @@
 using Application.AI.Common.Interfaces.Changes;
-using Domain.AI.Changes;
 using Domain.Common.Config;
 using Infrastructure.AI.BackgroundServices;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,8 +13,9 @@ namespace Infrastructure.AI.Changes;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Fails closed: the evidence open proposals point at is read from the proposal store one status at a time, and if any
-/// listing comes back full, so that some open proposal may be missing from it, nothing is deleted that sweep.
+/// Fails closed: the evidence open proposals point at comes from
+/// <see cref="IChangeProposalStore.GetEvidenceHashesOfOpenProposalsAsync"/>, which reads every open proposal, quarantined
+/// ones included, and throws rather than leave one out. With no proposal store, or when that throws, nothing is deleted.
 /// </para>
 /// <para>
 /// Both stores are resolved when the sweep runs. Only the shipped <see cref="FileSystemEvidenceStore"/> is swept; a
@@ -27,24 +27,17 @@ internal sealed class EvidenceRetentionService : PeriodicSweepService
     /// <summary>The most blobs one batch removes; a sweep runs further batches while each comes back full.</summary>
     internal const int MaxBlobsPerBatch = 1000;
 
-    /// <summary>
-    /// The most open proposals of one status the sweep reads. A listing this long may have been cut short, so it stops
-    /// the sweep rather than risk deleting evidence an unseen proposal points at.
-    /// </summary>
-    internal const int MaxOpenProposalsPerStatus = 10_000;
-
     private static readonly TimeSpan MinInterval = TimeSpan.FromMinutes(1);
 
     private readonly IServiceProvider _services;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _timeProvider;
-    private readonly ILogger<EvidenceRetentionService> _logger;
 
     /// <summary>Initializes a new <see cref="EvidenceRetentionService"/>.</summary>
     /// <param name="services">Resolves the evidence and proposal stores when the sweep runs.</param>
     /// <param name="config">Supplies the period and interval, read live on every tick.</param>
     /// <param name="timeProvider">Drives the wait and the cutoff.</param>
-    /// <param name="logger">Receives the per-sweep result, a sweep held back, and any failure.</param>
+    /// <param name="logger">Receives the per-sweep result and any failure.</param>
     public EvidenceRetentionService(
         IServiceProvider services,
         IOptionsMonitor<AppConfig> config,
@@ -58,7 +51,6 @@ internal sealed class EvidenceRetentionService : PeriodicSweepService
         _services = services;
         _config = config;
         _timeProvider = timeProvider;
-        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -73,46 +65,16 @@ internal sealed class EvidenceRetentionService : PeriodicSweepService
     protected override async Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(gracePeriod, RetentionPeriodConfig.MinimumRetainFor);
-        if (_services.GetService<IEvidenceStore>() is not FileSystemEvidenceStore evidence)
+        if (_services.GetService<IEvidenceStore>() is not FileSystemEvidenceStore evidence
+            || _services.GetService<IChangeProposalStore>() is not { } proposals)
             return 0;
 
-        var inUse = await EvidenceOpenProposalsPointAtAsync(cancellationToken);
-        if (inUse is null)
-            return 0;
+        var inUse = await proposals.GetEvidenceHashesOfOpenProposalsAsync(cancellationToken);
 
         var cutoff = _timeProvider.GetUtcNow() - gracePeriod;
         return await SweepBatches.RunAsync(
             () => evidence.DeleteNotStoredSinceAsync(cutoff, inUse, MaxBlobsPerBatch, cancellationToken),
             MaxBlobsPerBatch);
-    }
-
-    /// <summary>
-    /// The hashes every open proposal's gate decisions point at, or <see langword="null"/> when that cannot be known in
-    /// full: no proposal store, or a listing that may have been cut short.
-    /// </summary>
-    private async Task<IReadOnlySet<string>?> EvidenceOpenProposalsPointAtAsync(CancellationToken cancellationToken)
-    {
-        if (_services.GetService<IChangeProposalStore>() is not { } proposals)
-            return null;
-
-        var hashes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var status in Enum.GetValues<ChangeProposalStatus>().Where(s => !ChangeProposalStateTransitions.IsTerminal(s)))
-        {
-            var open = await proposals.ListAsync(
-                new ChangeProposalQuery { Status = status, MaxResults = MaxOpenProposalsPerStatus }, cancellationToken);
-            if (open.Count >= MaxOpenProposalsPerStatus)
-            {
-                _logger.LogWarning(
-                    "Evidence retention skipped: {Count} or more open proposals are {Status}, so the evidence they point at cannot be listed in full.",
-                    MaxOpenProposalsPerStatus, status);
-                return null;
-            }
-
-            foreach (var proposal in open)
-                hashes.UnionWith(proposal.History.Select(d => d.EvidenceHash).OfType<string>());
-        }
-
-        return hashes;
     }
 
     /// <inheritdoc />

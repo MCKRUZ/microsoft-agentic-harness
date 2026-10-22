@@ -131,6 +131,40 @@ public sealed class EfCoreChangeProposalStore : IChangeProposalStore
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Reads the stored JSON without the seal check that <see cref="ListAsync"/> applies, so a quarantined row's evidence
+    /// is kept with it; a row whose JSON does not parse throws.
+    /// </remarks>
+    public async Task<IReadOnlySet<string>> GetEvidenceHashesOfOpenProposalsAsync(CancellationToken cancellationToken)
+    {
+        var terminal = Enum.GetValues<ChangeProposalStatus>()
+            .Where(ChangeProposalStateTransitions.IsTerminal)
+            .Select(s => s.ToString())
+            .ToList();
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        var payloads = await context.ChangeProposals.AsNoTracking()
+            .Where(p => !terminal.Contains(p.Status))
+            .Select(p => new { p.Id, p.ProposalJson })
+            .ToListAsync(cancellationToken);
+
+        var hashes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var payload in payloads)
+        {
+            var proposal = payload.ProposalJson is null
+                ? null
+                : GovernanceStatePayload.TryDeserialize<ChangeProposal>(
+                    payload.ProposalJson, _logger, "change proposal", payload.Id ?? string.Empty);
+            if (proposal is null)
+                throw new InvalidOperationException(
+                    $"Open change proposal '{payload.Id}' could not be read, so the evidence it points at is unknown.");
+
+            hashes.UnionWith(proposal.History.Select(d => d.EvidenceHash).OfType<string>());
+        }
+
+        return hashes;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<ChangeProposal>> ListAsync(
         ChangeProposalQuery query,
         CancellationToken cancellationToken)

@@ -28,6 +28,14 @@ internal sealed class InMemoryChangeProposalStore : IChangeProposalStore
         return Task.CompletedTask;
     }
 
+    public Task<IReadOnlySet<string>> GetEvidenceHashesOfOpenProposalsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlySet<string>>(_byId.Values
+            .Where(p => !p.IsTerminal)
+            .SelectMany(p => p.History)
+            .Select(d => d.EvidenceHash)
+            .OfType<string>()
+            .ToHashSet(StringComparer.Ordinal));
+
     public Task<IReadOnlyList<ChangeProposal>> ListAsync(
         ChangeProposalQuery query,
         CancellationToken cancellationToken)

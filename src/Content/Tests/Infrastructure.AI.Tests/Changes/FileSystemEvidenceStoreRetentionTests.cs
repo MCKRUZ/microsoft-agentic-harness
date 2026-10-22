@@ -84,10 +84,9 @@ public sealed class FileSystemEvidenceStoreRetentionTests : IDisposable
     [InlineData("ab/notes.bin")]
     [InlineData("ab/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG.bin.bak")]
     [InlineData("xy/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG.bin")]
-    [InlineData("AB/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG.bin")]
     public async Task AFileThisStoreWouldNotHaveNamed_IsKept(string relative)
     {
-        // The right name in the wrong prefix folder (including another case of the right one) was not written here.
+        // The right name in the wrong prefix folder was not written here.
         var path = Path.Combine(_root, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, "not evidence");
@@ -95,6 +94,34 @@ public sealed class FileSystemEvidenceStoreRetentionTests : IDisposable
 
         (await _sut.DeleteNotStoredSinceAsync(Cutoff, NoneInUse, 100, CancellationToken.None)).Should().Be(0);
         File.Exists(path).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ABlobFiledInAPrefixFolderOfAnotherCase_IsTheStoresOwn_WhereTheFileSystemIgnoresCase()
+    {
+        // On Windows and macOS a hash starting "Ab" is written into the "ab" folder a hash starting "ab" created, so
+        // matching the folder exactly would leave most blobs there forever. Elsewhere that file was not written here.
+        var name = "Ab" + new string('x', 41);
+        var blob = Path.Combine(_root, "ab", name + ".bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(blob)!);
+        await File.WriteAllTextAsync(blob, "evidence");
+        File.SetLastWriteTimeUtc(blob, Old);
+
+        await _sut.DeleteNotStoredSinceAsync(Cutoff, NoneInUse, 100, CancellationToken.None);
+
+        var ignoresCase = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+        File.Exists(blob).Should().Be(!ignoresCase);
+    }
+
+    [Fact]
+    public async Task AnEmptyFolderThatIsNotAPrefixFolder_IsLeftAlone()
+    {
+        var folder = Path.Combine(_root, "not-a-prefix");
+        Directory.CreateDirectory(folder);
+
+        await _sut.DeleteNotStoredSinceAsync(Cutoff, NoneInUse, 100, CancellationToken.None);
+
+        Directory.Exists(folder).Should().BeTrue();
     }
 
     [Fact]

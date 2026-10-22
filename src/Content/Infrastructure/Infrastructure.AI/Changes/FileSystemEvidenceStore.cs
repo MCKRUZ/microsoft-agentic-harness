@@ -66,6 +66,16 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore, IStoreRetentionPer
     private readonly string _root;
     private readonly ILogger<FileSystemEvidenceStore> _logger;
 
+    /// <summary>
+    /// Held by a store and by each delete, so a sweep never removes a blob or its folder while it is being stored or
+    /// renewed in this process.
+    /// </summary>
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>A prefix folder's name: two characters of the Base64URL alphabet. No other folder is ever removed.</summary>
+    private static readonly Regex PrefixFolderName = new(
+        @"^[A-Za-z0-9_-]{2}\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     /// <summary>Initializes a new <see cref="FileSystemEvidenceStore"/>.</summary>
     public FileSystemEvidenceStore(
         IOptionsMonitor<AppConfig> config,
@@ -94,23 +104,29 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore, IStoreRetentionPer
     /// </summary>
     /// <remarks>
     /// A blob is a file this store names: <c>{prefix}/{hash}.bin</c> where the prefix is the hash's first two
-    /// characters. Its age is the newer of the blob and its sidecar. The sidecar goes first, so a blob a lock kept in
-    /// place is found again by the next sweep. Links are never followed.
+    /// characters, compared the way this file system compares names (a folder created as <c>ab</c> also holds names
+    /// starting <c>Ab</c> on Windows and macOS). Its age is the newer of the blob and its sidecar. The sidecar goes
+    /// first, so a blob a lock kept in place is found again by the next sweep. Links are never followed, and only
+    /// two-character prefix folders left empty are removed.
     /// </remarks>
     /// <returns>How many blobs were removed.</returns>
-    public Task<int> DeleteNotStoredSinceAsync(
+    public async Task<int> DeleteNotStoredSinceAsync(
         DateTimeOffset cutoff, IReadOnlySet<string> inUse, int maxBlobs, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(inUse);
         var deleted = 0;
-        foreach (var prefix in RetentionDirectories.Subdirectories(Path.GetFullPath(_root)))
+        foreach (var prefix in RetentionDirectories.Subdirectories(Path.GetFullPath(_root)).ToList())
         {
-            foreach (var file in Directory.EnumerateFiles(prefix, "*", NoLinks))
+            if (!PrefixFolderName.IsMatch(Path.GetFileName(prefix)))
+                continue;
+
+            foreach (var file in Directory.EnumerateFiles(prefix, "*", NoLinks).ToList())
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (deleted >= maxBlobs)
-                    return Task.FromResult(deleted);
+                    return deleted;
 
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
                     if (TryDeleteExpiredBlob(prefix, file, cutoff, inUse))
@@ -122,13 +138,34 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore, IStoreRetentionPer
                 {
                     _logger.LogWarning(ex, "Could not delete expired evidence {File}; will retry on the next sweep.", file);
                 }
+                finally
+                {
+                    _gate.Release();
+                }
             }
 
+            await RemoveIfEmptyAsync(prefix, cancellationToken).ConfigureAwait(false);
+        }
+
+        return deleted;
+    }
+
+    private async Task RemoveIfEmptyAsync(string prefix, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
             if (!Directory.EnumerateFileSystemEntries(prefix).Any())
                 Directory.Delete(prefix);
         }
-
-        return Task.FromResult(deleted);
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "Evidence folder {Folder} was not removed; it is tried again on the next sweep.", prefix);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     private static readonly EnumerationOptions NoLinks = new()
@@ -168,9 +205,12 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore, IStoreRetentionPer
             File.Delete(file);
     }
 
-    /// <summary>Whether the folder is the one this store files the name under: its first two characters, exactly.</summary>
+    /// <summary>
+    /// Whether the folder is the one this store files the name under: its first two characters, compared as the file
+    /// system compares names, since that is the folder a write of the name lands in.
+    /// </summary>
     private static bool IsInItsPrefix(string prefix, string name) =>
-        string.Equals(Path.GetFileName(prefix), name[..2], StringComparison.Ordinal);
+        string.Equals(Path.GetFileName(prefix), name[..2], RetentionDirectories.PathComparison);
 
     /// <inheritdoc />
     public async Task<string> StoreAsync(
@@ -183,20 +223,31 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore, IStoreRetentionPer
         var path = PathFor(hash);
 
         var dir = Path.GetDirectoryName(path)!;
-        OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
 
-        // Already present: content addressing makes the write pure, so an
-        // existing blob is byte-identical. Skip rewriting to avoid needless I/O
-        // while remaining idempotent, but renew its time: retention ages a blob
-        // from when it was last stored, not first (#901).
-        if (!File.Exists(path))
+        // Held across the whole store so the retention sweep cannot remove the folder, or a blob being renewed, in
+        // between (#901).
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await WriteAtomicAsync(path, content, cancellationToken).ConfigureAwait(false);
-            await WriteAtomicTextAsync(path + ContentTypeExtension, contentType ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
+
+            // Already present: content addressing makes the write pure, so an
+            // existing blob is byte-identical. Skip rewriting to avoid needless I/O
+            // while remaining idempotent, but renew its time: retention ages a blob
+            // from when it was last stored, not first (#901).
+            if (!File.Exists(path))
+            {
+                await WriteAtomicAsync(path, content, cancellationToken).ConfigureAwait(false);
+                await WriteAtomicTextAsync(path + ContentTypeExtension, contentType ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            }
         }
-        else
+        finally
         {
-            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            _gate.Release();
         }
 
         return hash;

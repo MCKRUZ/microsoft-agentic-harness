@@ -39,6 +39,8 @@ public sealed class ChangeProposalStartupValidatorTests
             Task.CompletedTask;
         public Task<IReadOnlyList<ChangeProposal>> ListAsync(ChangeProposalQuery q, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<ChangeProposal>>(Array.Empty<ChangeProposal>());
+        public Task<IReadOnlySet<string>> GetEvidenceHashesOfOpenProposalsAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
     }
 
     private sealed class StubCustomRouter : IChangeApprovalRouter

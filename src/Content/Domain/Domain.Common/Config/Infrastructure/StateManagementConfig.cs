@@ -60,8 +60,9 @@ public class StateManagementConfig
     /// How long a workflow's saved state is kept after it was last written (#901). Defaults to 90 days.
     /// </summary>
     /// <remarks>
-    /// A workflow saves its state on every change, so one untouched for this long has stopped. Its JSON checkpoint and
-    /// markdown rendering are deleted; anything else in the workflow's folder is left.
+    /// A workflow saves its state on every change. One untouched for this long has its JSON checkpoint and markdown
+    /// rendering deleted whatever its status, including one paused at a human gate, so set a longer period if workflows
+    /// pause that long. Anything else in the workflow's folder is left.
     /// </remarks>
     public RetentionPeriodConfig Retention { get; set; } = new();
 }

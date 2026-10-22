@@ -333,7 +333,9 @@ public class JsonCheckpointStateManager : IStateManager, IStoreRetentionPeriod
     /// every state this store saves does; a folder that only holds a file of that name is not one, so a base path shared
     /// with other content cannot reach it. A workflow's age is its newest file; anything else in its folder is kept, and
     /// the state file goes last, so a delete a locked file interrupts is finished by the next sweep (see
-    /// <see cref="RetentionDirectories"/>).
+    /// <see cref="RetentionDirectories"/>). Status is not consulted: a workflow paused for longer than the period, at a
+    /// human gate for example, loses its state like an abandoned one, so a deployment whose workflows pause that long sets
+    /// a longer period.
     /// </remarks>
     /// <returns>How many workflows' state was removed.</returns>
     public Task<int> DeleteWorkflowsNotWrittenSinceAsync(DateTimeOffset cutoff, int maxWorkflows, CancellationToken cancellationToken)
@@ -350,7 +352,7 @@ public class JsonCheckpointStateManager : IStateManager, IStoreRetentionPeriod
                 if (!IsWorkflowSavedHere(workflow) || RetentionDirectories.NewestWriteUtc(workflow) >= cutoff.UtcDateTime)
                     continue;
 
-                if (RetentionDirectories.DeleteOwnFiles(workflow, StateFileRelativePath, IsOwnFile))
+                if (RetentionDirectories.DeleteOwnFiles(workflow, StateFileRelativePath, IsOwnFile, cutoff.UtcDateTime))
                     deleted++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -377,7 +379,8 @@ public class JsonCheckpointStateManager : IStateManager, IStoreRetentionPeriod
         try
         {
             var state = JsonSerializer.Deserialize<WorkflowState>(File.ReadAllText(stateFile), _jsonOptions);
-            return state is not null && state.WorkflowId == Path.GetFileName(workflow);
+            return state is not null
+                && string.Equals(state.WorkflowId, Path.GetFileName(workflow), RetentionDirectories.PathComparison);
         }
         catch (JsonException)
         {

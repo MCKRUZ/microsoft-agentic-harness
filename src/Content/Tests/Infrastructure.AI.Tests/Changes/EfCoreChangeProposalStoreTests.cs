@@ -106,6 +106,59 @@ public sealed class EfCoreChangeProposalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task OpenEvidence_IncludesAQuarantinedProposal_AndLeavesOutClosedOnes()
+    {
+        // Evidence retention reads this to decide what it must keep (#901). ListAsync skips a row whose seal fails, but
+        // a quarantined record is kept for investigation, so what it points at must be kept too.
+        var store = CreateStore();
+        var open = WithEvidence(TestProposals.NewProposal(), "sha256:open") with { Status = ChangeProposalStatus.AwaitingApproval };
+        var tampered = WithEvidence(TestProposals.NewProposal() with { Id = "tampered" }, "sha256:tampered")
+            with { Status = ChangeProposalStatus.Validating };
+        var merged = WithEvidence(TestProposals.NewProposal() with { Id = "merged" }, "sha256:merged")
+            with { Status = ChangeProposalStatus.Merged };
+        foreach (var proposal in new[] { open, tampered, merged })
+            await store.SaveAsync(proposal, CancellationToken.None);
+        await SetRowAsync("tampered", row => row.ProposalSealJson = "{\"broken\":true}");
+
+        (await store.GetAsync("tampered", CancellationToken.None)).Should().BeNull("the precondition: the row is quarantined");
+        var hashes = await store.GetEvidenceHashesOfOpenProposalsAsync(CancellationToken.None);
+
+        hashes.Should().BeEquivalentTo(["sha256:open", "sha256:tampered"]);
+    }
+
+    [Fact]
+    public async Task OpenEvidence_AnOpenProposalThatCannotBeReadAtAll_Throws()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(TestProposals.NewProposal() with { Id = "unreadable" }, CancellationToken.None);
+        await SetRowAsync("unreadable", row => row.ProposalJson = "not json");
+
+        var act = () => store.GetEvidenceHashesOfOpenProposalsAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*unreadable*");
+    }
+
+    private static ChangeProposal WithEvidence(ChangeProposal proposal, string evidenceHash) => proposal with
+    {
+        History =
+        [
+            new GateDecision
+            {
+                Timestamp = DateTimeOffset.UnixEpoch, GateKey = "gate", Action = GateAction.Pass,
+                EvidenceHash = evidenceHash, DurationMs = 1,
+            },
+        ],
+    };
+
+    private async Task SetRowAsync(string id, Action<Infrastructure.AI.Persistence.Entities.ChangeProposalEntity> change)
+    {
+        await using var context = new GovernanceStateDbContext(_options);
+        var row = await context.ChangeProposals.SingleAsync(p => p.Id == id);
+        change(row);
+        await context.SaveChangesAsync();
+    }
+
+    [Fact]
     public async Task List_FiltersByStatus()
     {
         var store = CreateStore();
