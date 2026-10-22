@@ -26,10 +26,12 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
         act.Should().Throw<OptionsValidationException>().WithMessage("*IdlePeriod*");
     }
 
-    [Fact]
-    public void APromptUsageRetentionUnderADay_StopsTheHost()
+    [Theory]
+    [InlineData("AppConfig:AI:PromptUsage:Retention")]
+    [InlineData("AppConfig:MetaHarness:TraceRetention")]
+    [InlineData("AppConfig:Observability:Retention")]
+    public void ARetentionPeriodUnderADay_StopsTheHost(string section)
     {
-        const string section = "AppConfig:AI:PromptUsage:Retention";
         using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
         {
             [$"{section}:RetainFor"] = "01:00:00",
@@ -60,5 +62,8 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
         provider.GetRequiredService<IOptions<ConversationRetentionConfig>>().Value.IdlePeriod.Should().Be(TimeSpan.FromDays(365));
         provider.GetRequiredService<IOptionsMonitor<RetentionPeriodConfig>>().Get("AppConfig:AI:PromptUsage:Retention")
             .RetainFor.Should().Be(TimeSpan.FromDays(90));
+        var app = provider.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
+        app.MetaHarness.TraceRetention.RetainFor.Should().Be(TimeSpan.FromDays(30));
+        app.Observability.Retention.RetainFor.Should().Be(TimeSpan.FromDays(90));
     }
 }

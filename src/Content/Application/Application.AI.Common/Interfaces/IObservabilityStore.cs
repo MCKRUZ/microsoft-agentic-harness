@@ -60,8 +60,27 @@ public interface IObservabilityStore
     /// </remarks>
     /// <param name="sessionId">The session to reopen. <see cref="Guid.Empty"/> is a no-op.</param>
     /// <param name="cancellationToken">Cancels the write.</param>
-    Task ResumeSessionAsync(
+    /// <returns>
+    /// <see langword="false"/> only when the store knows the session no longer exists — retention or erasure removed it —
+    /// so the caller must start a new one rather than keep writing to a row that is gone. A store that cannot tell, or a
+    /// write that failed, answers <see langword="true"/>: restarting a live session would reset its start time.
+    /// </returns>
+    Task<bool> ResumeSessionAsync(
         Guid sessionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes up to <paramref name="maxSessions"/> sessions with no activity since <paramref name="cutoff"/>, with
+    /// everything recorded under them, plus context snapshots and session-less audit rows older than it (#901).
+    /// </summary>
+    /// <remarks>
+    /// A session's activity is the newest write to it (start, resume, metrics, end) or row recorded under it, never its
+    /// start alone: a resumed session keeps its original start time. A store that keeps nothing deletes nothing.
+    /// </remarks>
+    /// <returns>How many sessions were removed.</returns>
+    Task<int> DeleteInactiveSinceAsync(
+        DateTimeOffset cutoff,
+        int maxSessions,
         CancellationToken cancellationToken = default);
 
     /// <summary>

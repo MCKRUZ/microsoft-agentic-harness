@@ -33,6 +33,9 @@ public class MetaHarnessConfig
     /// an optimization run still produces the traces it exists to produce, whatever this is set to.
     /// </para>
     /// <para>
+    /// Since #901 a trace run is deleted once nothing has been written to it for <see cref="TraceRetention"/>.
+    /// </para>
+    /// <para>
     /// Before #505 this flag would have made no difference — nothing read the writer the production
     /// path created, so the branch that writes tool records never executed. Wiring that up is what
     /// turned an empty directory into a growing log, and what makes an explicit switch necessary.
@@ -55,6 +58,16 @@ public class MetaHarnessConfig
     /// </summary>
     /// <value>Default: <c>"traces"</c>.</value>
     public string TraceDirectoryRoot { get; set; } = "traces";
+
+    /// <summary>
+    /// How long a trace run is kept after its last write (#901). Defaults to 30 days.
+    /// </summary>
+    /// <remarks>
+    /// Traces hold prompts, model responses and tool payloads that cannot be found per person, so age is the only control
+    /// on them; the period is kept well under a conversation's. Applies to every run under <see cref="TraceDirectoryRoot"/>,
+    /// production and evaluation alike, whether or not <see cref="ExecutionTracingEnabled"/> is on.
+    /// </remarks>
+    public RetentionPeriodConfig TraceRetention { get; set; } = new() { RetainFor = TimeSpan.FromDays(30) };
 
     /// <summary>
     /// Gets or sets the maximum number of propose-evaluate iterations per optimization run.

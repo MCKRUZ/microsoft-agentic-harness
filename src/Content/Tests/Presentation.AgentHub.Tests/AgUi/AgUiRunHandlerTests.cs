@@ -1306,6 +1306,7 @@ public sealed class AgUiRunHandlerTests
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
         var observability = new Mock<IObservabilityStore>();
+        observability.Setup(o => o.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var existingTelemetry = new TelemetryAccumulator(1, 0, 100, 50, 40, 10, 0.01m);
         var record = new ConversationRecord(

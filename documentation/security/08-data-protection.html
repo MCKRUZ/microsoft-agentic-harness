@@ -593,6 +593,33 @@
                             of old personal knowledge, spreads the work over several runs.
                         </li>
                         <li>
+                            <strong>Execution traces.</strong> A trace run (production or evaluation) that nothing has
+                            written to for <code>AppConfig:MetaHarness:TraceRetention:RetainFor</code> (default 30 days)
+                            is deleted. Traces hold prompts, model responses and tool payloads that cannot be found per
+                            person, so age is the only control on them and the period is kept short. A run's age is its
+                            newest file, so a run still being written is never touched and one a crash left unfinished
+                            still goes. A folder counts as a run only where the trace writer puts one, named by its run id
+                            and holding a manifest that names the same id, so a trace root pointed at a shared folder cannot
+                            reach other files. Only the files the writer creates are deleted, the manifest last so a
+                            delete interrupted by a locked file is finished by the next sweep, and links are never
+                            followed: an optimization's candidate definitions, or anything else placed in the folder,
+                            survive. The sweep runs inside a long-lived host (the first one six hours after start), so
+                            traces written by a short-lived process such as the evaluation runner are removed only by a host
+                            sharing its trace root.
+                        </li>
+                        <li>
+                            <strong>The observability database.</strong> When enabled, a session with no activity for
+                            <code>AppConfig:Observability:Retention:RetainFor</code> (default 90 days) is deleted with its
+                            messages, tool executions, safety events and audit rows. Activity is the newest write to the
+                            session (starting, resuming, a turn's totals, ending) or row recorded under it, not its first
+                            start, which a resumed conversation keeps. Context snapshots
+                            and audit rows with no session go by their own age, so a conversation active for longer than
+                            the period loses its oldest snapshots. Conversation expiry and erasure remove a conversation's
+                            rows sooner; this catches what they cannot reach, such as sessions of conversations that were
+                            never stored. A conversation coming back after its session was removed starts a new one rather
+                            than writing to a row that is gone.
+                        </li>
+                        <li>
                             <strong>An expired node no longer takes its source document with it.</strong> Retention removes
                             expired graph nodes through <code>IErasureOrchestrator.ExpireNodesAsync</code>, which leaves
                             the document content behind their chunk references. Before #901 it used erasure, which deleted
@@ -714,8 +741,8 @@
                                     still hold their data with no end date, <strong>other than the audit trails</strong>,
                                     which are listed with what they hold rather than counted. Any failed, held-back or
                                     unsupported store, or any store retained indefinitely, makes it <code>Partial</code>
-                                    and names it. Until retention limits exist for logs, traces and the response cache
-                                    (#901), a default deployment's receipts read <code>Partial</code> for that reason,
+                                    and names it. Until every store on the gap list has a retention limit (#901), a
+                                    default deployment's receipts read <code>Partial</code> for that reason,
                                     deliberately. Reducing what the audit trails record is tracked in #903.
                                 </li>
                             </ul>

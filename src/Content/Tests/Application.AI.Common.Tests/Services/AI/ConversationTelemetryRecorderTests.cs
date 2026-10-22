@@ -36,6 +36,9 @@ public sealed class ConversationTelemetryRecorderTests
             .Setup(o => o.StartSessionAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(NewSession);
+        _observability
+            .Setup(o => o.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
     }
 
     private ConversationTelemetryRecorder Sut() =>
@@ -69,6 +72,29 @@ public sealed class ConversationTelemetryRecorderTests
             Times.Never,
             "a conversation has one session for its whole life — opening a second restamps the first "
             + "one's start time and every duration derived from it");
+    }
+
+    [Fact]
+    public async Task BeginAsync_TheSessionWasDeletedWhileIdle_OpensANewOneAndKeepsTheTotals()
+    {
+        // Retention or erasure can remove a session row while its conversation sits idle (#901). Adopting the stale id
+        // would drop every later write on its foreign key for the rest of the conversation.
+        var totals = new TelemetryAccumulator(5, 2, 100, 50, 10, 5, 0.5m);
+        _conversations
+            .Setup(s => s.GetAsync(ConversationId, Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Record(ExistingSession, totals));
+        _observability
+            .Setup(o => o.ResumeSessionAsync(ExistingSession, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var state = await Sut().BeginAsync(ConversationId, Owner, "agent");
+
+        state.SessionId.Should().Be(NewSession);
+        state.Totals.Should().Be(totals);
+        state.SessionOpened.Should().BeTrue();
+        _conversations.Verify(
+            s => s.UpdateTelemetryAsync(ConversationId, Owner, NewSession, totals, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

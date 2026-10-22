@@ -54,6 +54,9 @@ public class ConversationOrchestratorTests
 
         // Enabled by default — most tests don't exercise the tool-call replay kill switch.
         _toolCallReplayTreatment.Setup(t => t.Enabled).Returns(true);
+
+        // A session a conversation already has still exists unless a test says retention removed it.
+        _obsStore.Setup(s => s.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
         // Explicit, because an unconfigured Moq int property returns 0 — and a zero limit is not "no
         // limit", it drops every replayed tool call.
         _toolCallReplayTreatment.Setup(t => t.MaxCallsPerTurn).Returns(32);

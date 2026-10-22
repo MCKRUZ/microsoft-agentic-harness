@@ -126,6 +126,11 @@ public static partial class DependencyInjection
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
         services.AddRetainedPersonalData<IExecutionTraceStore>("execution traces");
 
+        // Trace runs idle past MetaHarness:TraceRetention, and observability sessions idle past Observability:Retention,
+        // are deleted (#901). Both resolve their store and do nothing when it keeps nothing.
+        services.AddHostedService<Traces.ExecutionTraceRetentionService>();
+        services.AddHostedService<BackgroundServices.ObservabilityRetentionService>();
+
         // Security-review finding (#574): the page-fetch cache below must NOT be the ambient app-wide
         // IMemoryCache (AgentConversationCache and any future consumer also share that instance) — a
         // dedicated, size-bounded cache confines the blast radius of a pathological fetch pattern to

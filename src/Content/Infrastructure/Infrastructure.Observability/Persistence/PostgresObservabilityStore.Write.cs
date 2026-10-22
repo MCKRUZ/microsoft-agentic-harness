@@ -40,7 +40,8 @@ public sealed partial class PostgresObservabilityStore
                     total_cache_read = 0,
                     total_cache_write = 0,
                     total_cost_usd = 0,
-                    cache_hit_rate = 0
+                    cache_hit_rate = 0,
+                    last_activity_at = NOW()
             RETURNING id
             """;
 
@@ -71,9 +72,10 @@ public sealed partial class PostgresObservabilityStore
         const string sql = """
             UPDATE sessions
             SET ended_at = NOW(),
-                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000,
+                duration_ms = LEAST(EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000, 2147483647)::INT,
                 status = $2,
-                error_message = $3
+                error_message = $3,
+                last_activity_at = NOW()
             WHERE id = $1
             """;
 
@@ -82,15 +84,21 @@ public sealed partial class PostgresObservabilityStore
     }
 
     /// <inheritdoc />
-    public async Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    public async Task<bool> ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
-        if (sessionId == Guid.Empty) return;
+        if (sessionId == Guid.Empty) return true;
 
         // The WHERE clause is what makes this idempotent, and it is why no read is needed first: on a
-        // session that is already open the statement matches nothing and the row — including its start
-        // time, which must never be restamped — is untouched. Called on every turn that adopts an
-        // existing session, so the common case has to cost one indexed no-op, not a round trip and a
-        // conditional write.
+        // session that is already open and was active within the hour the statement matches nothing and the
+        // row — including its start time, which must never be restamped — is untouched. Called on every turn
+        // that adopts an existing session, so the common case has to cost one indexed no-op, not a write.
+        //
+        // An open session quiet for longer (a crash left it open) is still touched, for last_activity_at
+        // alone (#901): adopting a session is activity, and without it a conversation coming back after a
+        // long gap reads as idle until its first turn lands, which is long enough for the retention sweep to
+        // remove it. The CASE arms leave such a session's other fields as they were; every arm reads the row
+        // as it was before the update.
+        //
         // duration_ms is recomputed rather than cleared. It means "how long so far" on a live session —
         // that is what UpdateSessionMetricsAsync writes on every turn — so blanking it would leave the
         // row with no duration at all until the next turn lands, and permanently if that write fails.
@@ -100,16 +108,38 @@ public sealed partial class PostgresObservabilityStore
         // dashboard's status badge reads this row, and a live conversation carrying a stale failure
         // reads as broken. The failure itself is not lost — it stays in the turn's own message row and
         // in the audit log, which is where a history of what went wrong belongs.
+        //
+        // The same statement says whether the row still exists (#901): retention or erasure may have
+        // removed it while the conversation sat idle, and every write to a missing session fails its
+        // foreign key and is swallowed, so the caller has to start a new one. A failed statement answers
+        // that it exists, so a database hiccup never restarts a live session.
         const string sql = """
+            WITH touched AS (
             UPDATE sessions
-            SET ended_at = NULL,
-                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000,
-                status = 'active',
-                error_message = NULL
-            WHERE id = $1 AND ended_at IS NOT NULL
+            SET duration_ms = CASE WHEN ended_at IS NOT NULL
+                                   THEN LEAST(EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000, 2147483647)::INT
+                                   ELSE duration_ms END,
+                status = CASE WHEN ended_at IS NOT NULL THEN 'active' ELSE status END,
+                error_message = CASE WHEN ended_at IS NOT NULL THEN NULL ELSE error_message END,
+                ended_at = NULL,
+                last_activity_at = NOW()
+            WHERE id = $1 AND (ended_at IS NOT NULL OR last_activity_at < NOW() - INTERVAL '1 hour')
+            RETURNING id
+            )
+            SELECT EXISTS (SELECT 1 FROM touched) OR EXISTS (SELECT 1 FROM sessions WHERE id = $1)
             """;
 
-        await ExecuteNonQuerySafe(sql, cancellationToken, sessionId);
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+            return await cmd.ExecuteScalarAsync(cancellationToken) is not false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resume session {SessionId}", sessionId);
+            return true;
+        }
     }
 
     /// <inheritdoc />
@@ -133,7 +163,8 @@ public sealed partial class PostgresObservabilityStore
                 total_cost_usd = $9,
                 cache_hit_rate = $10,
                 model = COALESCE($11, model),
-                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000
+                duration_ms = LEAST(EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000, 2147483647)::INT,
+                last_activity_at = NOW()
             WHERE id = $1
             """;
 
