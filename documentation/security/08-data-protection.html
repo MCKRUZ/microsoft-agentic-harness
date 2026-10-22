@@ -577,6 +577,27 @@
                             expiry; flush the cache once after upgrading.
                         </li>
                         <li>
+                            <strong>What the agent knows about a person.</strong> In the knowledge graph, a node that belongs
+                            to someone, was not extracted from a document, and whose type has no period of its own (facts,
+                            preferences, memories) is deleted once it has not been written for
+                            <code>AppConfig:AI:Rag:GraphRag:PersonalKnowledgeRetention</code> (default two years); the
+                            graph records writes, not reads. Cross-session memories go once not recalled or written for
+                            <code>AppConfig:AI:Rag:CrossSessionMemory:Retention:RetainFor</code> (default two years), from
+                            the cache and the graph database. A learning that decayed or that someone asked the agent to
+                            forget is hidden at once and removed for good after
+                            <code>AppConfig:AI:Learnings:DeletedRetentionDays</code> (default 30); a learning marked
+                            Permanent is kept by design. <code>RetentionEnforcementService</code> reads its interval live
+                            and removes at most 1,000 nodes a run, so the first run after an upgrade, which may find years
+                            of old personal knowledge, spreads the work over several runs.
+                        </li>
+                        <li>
+                            <strong>An expired node no longer takes its source document with it.</strong> Retention removes
+                            expired graph nodes through <code>IErasureOrchestrator.ExpireNodesAsync</code>, which leaves
+                            the document content behind their chunk references. Before #901 it used erasure, which deleted
+                            the whole source document from both indexes when one node extracted from it aged, while it was
+                            still the source of every other node. Owner and document erasure still remove it.
+                        </li>
+                        <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's
                             standing instruction, identifiers only, kept until they delete it or are erased) and the
                             call-once ledger's workflow-run rows (a run id and tool name, nothing that names a person;

@@ -3,12 +3,14 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.Feedback;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -240,12 +242,16 @@ public sealed class ErasureCompletenessTests
     }
 
     // ------------------------------------------------------------------
-    // Gap 4 — retention must purge derived content for EXPIRED nodes even
-    // though the compliance-aware store returns null when re-fetching them
+    // Gap 4, revised by #901 — retention removes an EXPIRED node through the
+    // compliance-aware store (which returns null on re-fetch), but leaves the
+    // document it was extracted from. Gap 4 originally required the document's
+    // embeddings and full-text rows to go too; that deleted a whole document
+    // when one node extracted from it aged, while it was still the source of
+    // every other node. A document goes when it is deleted or its owner erased.
     // ------------------------------------------------------------------
 
     [Fact]
-    public async Task RetentionEnforcement_PurgesDerivedContentForExpiredNodes_ThroughComplianceStore()
+    public async Task RetentionEnforcement_RemovesTheExpiredNode_ButNotItsSourceDocument_ThroughComplianceStore()
     {
         // Seed an EXPIRED node carrying derived chunk IDs directly into the inner store, so we
         // control ExpiresAt (bypassing the decorator's retention stamping).
@@ -282,17 +288,21 @@ public sealed class ErasureCompletenessTests
 
         var service = new RetentionEnforcementService(
             decorated, ScopeFactoryFor(orchestrator),
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),
+            TimeProvider.System,
             NullLogger<RetentionEnforcementService>.Instance);
 
-        await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
+        var removed = await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
 
+        removed.Should().Be(1, "the expired node is found through the decorated store and removed");
+        (await _graphStore.GetNodeAsync("expired-1")).Should().BeNull();
         vectorStore.Verify(
-            v => v.DeleteFromAllCollectionsAsync("docExpired", It.IsAny<CancellationToken>()),
-            Times.Once,
-            "the expired node's derived embeddings must be purged — its chunk IDs must survive to the derived-content sweep");
+            v => v.DeleteFromAllCollectionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the source document is still the corpus for every other node extracted from it");
         bm25Store.Verify(
-            b => b.DeleteFromAllCollectionsAsync("docExpired", It.IsAny<CancellationToken>()),
-            Times.Once);
+            b => b.DeleteFromAllCollectionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>

@@ -445,6 +445,10 @@ public static partial class DependencyInjection
         services.AddSingleton<IDelegationStore>(sp => sp.GetRequiredService<JsonlDelegationStore>());
         services.AddRetainedPersonalData<IDelegationStore>("agent delegation records");
         services.AddHostedService<DelegationRetentionService>();
+
+        // Cross-session memories unused past Rag:CrossSessionMemory:Retention are deleted (#901). Registered whether or not
+        // the memory store is: it sweeps only the built-in store, and only when one is registered.
+        services.AddHostedService<Memory.CrossSessionMemoryRetentionService>();
         services.AddKeyedSingleton<ISupervisorStrategy>("capability-match", (sp, _) =>
             new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
         services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();

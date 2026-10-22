@@ -99,6 +99,15 @@ public sealed class DefaultLearningDecayService : ILearningDecayService
         }
 
         _logger.LogInformation("Pruned {Count} expired learnings", prunedCount);
+
+        // A soft-deleted learning keeps its content; past the grace period it is removed for good (#901).
+        var grace = TimeSpan.FromDays(Math.Max(1, _config.CurrentValue.DeletedRetentionDays));
+        var purge = await _store.PurgeDeletedAsync(_timeProvider.GetUtcNow() - grace, ct);
+        if (purge.IsSuccess)
+            _logger.LogInformation("Removed {Count} deleted learnings past the grace period", purge.Value);
+        else
+            _logger.LogWarning("Removing deleted learnings failed: {Errors}", string.Join(", ", purge.Errors));
+
         return Result<int>.Success(prunedCount);
     }
 }

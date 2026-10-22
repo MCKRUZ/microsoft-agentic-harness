@@ -133,6 +133,7 @@ public static class IServiceCollectionExtensions
         "AppConfig:AI:PromptUsage:Retention",
         "AppConfig:AI:Orchestration:Subagent:DelegationRetention",
         "AppConfig:AI:Planner:Retention",
+        "AppConfig:AI:Rag:CrossSessionMemory:Retention",
     ];
 
     /// <summary>

@@ -565,4 +565,47 @@ public sealed class GraphLearningsStoreTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().ContainSingle();
     }
+
+    [Fact]
+    public async Task PurgeDeleted_RemovesALearningDeletedBeforeTheCutoff_ForGood()
+    {
+        // #901: a soft delete hides a learning but keeps its content; the purge removes it from the graph.
+        var forgotten = BuildEntry(content: "the user's home address is 1 Main St");
+        var kept = BuildEntry(content: "prefer short answers");
+        await _sut.SaveAsync(forgotten, CancellationToken.None);
+        await _sut.SaveAsync(kept, CancellationToken.None);
+        await _sut.SoftDeleteAsync(forgotten.LearningId, "user asked to forget", CancellationToken.None);
+
+        var purged = await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+
+        purged.Value.Should().Be(1);
+        (await _graphStore.GetAllNodesAsync()).Select(n => n.Id)
+            .Should().NotContain($"learning:{forgotten.LearningId}")
+            .And.Contain($"learning:{kept.LearningId}", "a learning that was never deleted is not touched");
+    }
+
+    [Fact]
+    public async Task PurgeDeleted_KeepsALearningDeletedWithinTheGracePeriod()
+    {
+        var learning = BuildEntry();
+        await _sut.SaveAsync(learning, CancellationToken.None);
+        await _sut.SoftDeleteAsync(learning.LearningId, "decayed", CancellationToken.None);
+
+        var purged = await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddDays(-30), CancellationToken.None);
+
+        purged.Value.Should().Be(0);
+        (await _graphStore.GetAllNodesAsync()).Should().Contain(n => n.Id == $"learning:{learning.LearningId}");
+    }
+
+    [Fact]
+    public async Task PurgeDeleted_ALearningDeletedBeforeDeletionTimesWereRecorded_IsRemoved()
+    {
+        await _graphStore.AddNodesAsync([new GraphNode
+        {
+            Id = "learning:legacy", Name = "legacy", Type = "LearningEntry",
+            Properties = new Dictionary<string, string> { ["IsDeleted"] = "true", ["Content"] = "old" },
+        }]);
+
+        (await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddDays(-30), CancellationToken.None)).Value.Should().Be(1);
+    }
 }

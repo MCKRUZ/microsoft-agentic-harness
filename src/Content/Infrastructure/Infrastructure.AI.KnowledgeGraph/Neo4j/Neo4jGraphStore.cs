@@ -22,7 +22,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Neo4j;
 /// formatted as <c>bolt://user:password@host:7687</c>.
 /// </remarks>
 [PersonalDataStore(
-    "Knowledge-graph nodes and edges in Neo4j: extracted entities, facts and per-user memories with owner and tenant ids. Expiry is stamped per entity type (Fact 365d, Concept 730d) and swept daily, but unlisted types, including learnings and work episodes, never expire. Export returns nodes only.",
+    "Knowledge-graph nodes and edges in Neo4j: extracted entities, facts and per-user memories with owner and tenant ids. Listed entity types expire after their period (Fact 365d, Concept 730d); knowledge held about one person (owned, not from a document) after Rag:GraphRag:PersonalKnowledgeRetention since last written (default two years); learnings by their own lifecycle. Nodes extracted from documents carry no period: they are not deleted when their document is. Export returns nodes only.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames,
     PersonalDataKey.Owner,
     RetentionBasis.Unbounded,

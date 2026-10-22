@@ -34,10 +34,10 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Cross-session memory records cached in process and synced to the graph database backend, stamped with their owner. Owner erasure purges them. The decay scheduler that would prune them is off by default, so nothing deletes them otherwise.",
+    "Cross-session memory records cached in process and synced to the graph database backend, stamped with their owner. A memory not recalled or written for Rag:CrossSessionMemory:Retention:RetainFor (default two years) is deleted from both; owner erasure purges them.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
 public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposable
@@ -314,6 +314,55 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
                 "CrossSessionMemoryStore: pruned memory {Id} (weight={Weight:F4})",
                 victim.Id, victim.Weight);
         }
+    }
+
+    // ── Retention ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Deletes every memory last recalled or written before <paramref name="cutoff"/> (#901), from the cache and from the
+    /// durable backend, every owner.
+    /// </summary>
+    /// <remarks>
+    /// The backend keeps memories across restarts while the cache starts empty, so both are swept. A backend row is kept
+    /// when the cache holds the same memory with a newer access the next sync has not written yet. Only nodes of the memory
+    /// type are touched; the backend also holds document-derived graph content.
+    /// </remarks>
+    /// <param name="cutoff">Memories with no access since this instant are deleted.</param>
+    /// <param name="cancellationToken">Cancels the delete.</param>
+    /// <returns>How many memories were deleted.</returns>
+    public async Task<int> DeleteNotAccessedSinceAsync(DateTimeOffset cutoff, CancellationToken cancellationToken)
+    {
+        var cacheVictims = _cache.Values.Where(r => r.LastAccessedAt < cutoff).Select(r => r.Id).ToList();
+        foreach (var id in cacheVictims)
+        {
+            _cache.TryRemove(id, out _);
+            _dirty.TryRemove(id, out _);
+        }
+
+        var backendVictims = (await _graphBackend.GetAllNodesAsync(cancellationToken).ConfigureAwait(false))
+            .Where(n => string.Equals(n.Type, MemoryNodeType, StringComparison.Ordinal))
+            .Where(n => LastAccess(n) < cutoff)
+            .Where(n => !_cache.TryGetValue(n.Id, out var live) || live.LastAccessedAt < cutoff)
+            .Select(n => n.Id)
+            .ToList();
+        if (backendVictims.Count > 0)
+            await _graphBackend.DeleteNodesAsync(backendVictims, cancellationToken).ConfigureAwait(false);
+
+        return cacheVictims.Concat(backendVictims).Distinct(StringComparer.Ordinal).Count();
+    }
+
+    /// <summary>A synced memory's last access, falling back to its creation; unreadable means it is never treated as old.</summary>
+    private static DateTimeOffset LastAccess(GraphNode node)
+    {
+        foreach (var key in (string[])["last_accessed_at", "created_at"])
+        {
+            if (node.Properties.TryGetValue(key, out var text)
+                && DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var at))
+                return at;
+        }
+
+        return node.CreatedAt ?? DateTimeOffset.MaxValue;
     }
 
     // ── IDisposable ──────────────────────────────────────────────────────────

@@ -126,8 +126,27 @@ public class GraphRagConfig
     public TimeSpan RetentionEnforcementInterval { get; set; } = TimeSpan.FromHours(24);
 
     /// <summary>
+    /// How long knowledge the agent holds about a person is kept after it was last written (#901). Defaults to two years;
+    /// <see cref="TimeSpan.Zero"/> keeps it indefinitely.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Applies to nodes that belong to someone (<c>OwnerId</c> set), were not extracted from a document (no chunk
+    /// references), and whose type has no entry in <see cref="RetentionPolicies"/>: facts, preferences and memories the
+    /// agent remembered. Knowledge extracted from a document stays while its document stays and goes with it.
+    /// Learnings have their own lifecycle and are not affected.
+    /// </para>
+    /// <para>
+    /// "Last written" is the node's stored creation time, which the compliance layer stamps on a write that does not carry
+    /// one, so writing the node again afresh renews it. Reading a node does not: the graph does not record reads.
+    /// </para>
+    /// </remarks>
+    public TimeSpan PersonalKnowledgeRetention { get; set; } = TimeSpan.FromDays(730);
+
+    /// <summary>
     /// Gets or sets retention policies per entity type. Key is entity type name,
-    /// value is the retention duration. Entity types not listed get indefinite retention.
+    /// value is the retention duration. A type not listed is governed by <see cref="PersonalKnowledgeRetention"/> when its
+    /// node is personal knowledge, and otherwise kept as long as its source document.
     /// </summary>
     public Dictionary<string, TimeSpan> RetentionPolicies { get; set; } = new()
     {

@@ -146,6 +146,18 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             nodes, nodeIds, requestedAt, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<ErasureReceipt> ExpireNodesAsync(
+        IReadOnlyList<GraphNode> nodes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        var nodeIds = nodes.Select(n => n.Id).ToList();
+        return ExecuteErasureAsync(
+            Guid.NewGuid().ToString(), "retention", ownerId: null, ownerScopeRequested: false,
+            nodes, nodeIds, _timeProvider.GetUtcNow(), cancellationToken, purgeDocumentContent: false);
+    }
+
     private async Task<ErasureReceipt> ExecuteErasureAsync(
         string requestId,
         string scopeId,
@@ -154,7 +166,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         IReadOnlyList<GraphNode> nodes,
         List<string> nodeIds,
         DateTimeOffset requestedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool purgeDocumentContent = true)
     {
         var partialReasons = new List<string>();
 
@@ -195,7 +208,9 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         //    over-report of a no-op. Counts come from the stores (rows actually removed), and a
         //    document that matched zero rows in every configured store is surfaced on the receipt
         //    instead of silently counting as done.
+        //    Skipped for retention expiry (#901): an aged node must not take its whole source document with it.
         var documentIds = nodes
+            .Where(_ => purgeDocumentContent)
             .SelectMany(n => n.ChunkIds)
             .Select(DeriveDocumentId)
             .Where(id => !string.IsNullOrEmpty(id))
