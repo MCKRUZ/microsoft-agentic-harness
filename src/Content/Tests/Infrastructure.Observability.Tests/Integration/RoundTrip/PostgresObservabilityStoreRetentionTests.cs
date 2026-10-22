@@ -56,22 +56,54 @@ public sealed class PostgresObservabilityStoreRetentionTests
         }
     }
 
-    [SkippableFact]
-    public async Task ASessionReopenedJustNow_IsKept_BeforeItsFirstTurnLands()
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ASessionReopenedJustNow_IsKept_BeforeItsFirstTurnLands(bool hadEnded)
     {
         // Resuming clears ended_at and keeps the first start, so without a recorded activity time a conversation reopened
         // after a long gap read as idle until its first turn, and a sweep in between removed the session it had adopted.
+        // A session a crash left open is the same case without the end.
         _fixture.SkipIfUnavailable();
         var conversation = _fixture.NewConversationId();
         try
         {
-            var session = await SeedSessionAsync(conversation, endedAt: Ancient.AddDays(1), childAt: Ancient);
+            var session = await SeedSessionAsync(
+                conversation, endedAt: hadEnded ? Ancient.AddDays(1) : null, childAt: Ancient);
             using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
             (await store.ResumeSessionAsync(session)).Should().BeTrue();
 
             await store.DeleteInactiveSinceAsync(Cutoff, 100, CancellationToken.None);
 
             (await SessionsAsync(conversation)).Should().Be(1);
+        }
+        finally
+        {
+            await CleanUpAsync(conversation);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ASessionOlderThanTheDurationColumnHolds_StillTakesWrites()
+    {
+        // duration_ms is a 32-bit count of milliseconds, about 25 days. Computing it for an older session overflowed and
+        // failed the whole statement, silently: its totals stopped updating, it could not be resumed or ended, and its
+        // activity time never moved, so retention swept a conversation that was still in use.
+        _fixture.SkipIfUnavailable();
+        var conversation = _fixture.NewConversationId();
+        try
+        {
+            var started = DateTimeOffset.UtcNow.AddDays(-40);
+            var session = await SeedSessionAsync(conversation, endedAt: null, childAt: started, startedAt: started);
+            using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+
+            await store.UpdateSessionMetricsAsync(session, 7, 0, 0, 0, 0, 0, 0, 0m, 0m);
+
+            (await _fixture.QueryScalarAsync<int>(
+                "SELECT turn_count FROM sessions WHERE id = $1", new NpgsqlParameter { Value = session })).Should().Be(7);
+            (await _fixture.QueryScalarAsync<int>(
+                "SELECT duration_ms FROM sessions WHERE id = $1", new NpgsqlParameter { Value = session }))
+                .Should().Be(int.MaxValue, "a duration the column cannot hold is capped, not refused");
         }
         finally
         {
