@@ -14,5 +14,10 @@ public enum MemoryAuditAction
     /// <summary>Feedback was applied to improve knowledge quality.</summary>
     Improve,
     /// <summary>A right-to-erasure request was executed, cascading across all stores.</summary>
-    Erasure
+    Erasure,
+    /// <summary>
+    /// Nodes past their retention period were removed by the retention sweep (#901). Kept apart from
+    /// <see cref="Erasure"/> so the audit trail still shows how erasure requests were handled.
+    /// </summary>
+    Expiry
 }

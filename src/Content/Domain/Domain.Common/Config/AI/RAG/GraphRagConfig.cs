@@ -126,8 +126,33 @@ public class GraphRagConfig
     public TimeSpan RetentionEnforcementInterval { get; set; } = TimeSpan.FromHours(24);
 
     /// <summary>
+    /// How long knowledge the agent holds about a person is kept after it was last written (#901). Defaults to two years;
+    /// <see cref="TimeSpan.Zero"/> keeps it indefinitely.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Applies to knowledge held about one person, named rather than inferred: what the agent remembered for someone
+    /// (facts, preferences, and the skill-training experience stored the same way), their work episodes and their
+    /// episodic conversation segments, each with an owner, no chunk references and a type with no entry in
+    /// <see cref="RetentionPolicies"/>. Knowledge extracted from a document, learnings and system records such as drift
+    /// events are not affected.
+    /// </para>
+    /// <para>
+    /// "Last written" is the time the compliance layer stamps on every write, so writing the node again renews it; a node
+    /// written before that stamp existed is aged from its creation. Reading a node does not renew it: the graph does not
+    /// record reads.
+    /// </para>
+    /// <para>
+    /// Zero keeps it indefinitely. Any other value under a day is refused at startup and, if reloaded while running, by
+    /// the sweep, which then expires no personal knowledge until it is corrected.
+    /// </para>
+    /// </remarks>
+    public TimeSpan PersonalKnowledgeRetention { get; set; } = TimeSpan.FromDays(730);
+
+    /// <summary>
     /// Gets or sets retention policies per entity type. Key is entity type name,
-    /// value is the retention duration. Entity types not listed get indefinite retention.
+    /// value is the retention duration. A type not listed is governed by <see cref="PersonalKnowledgeRetention"/> when its
+    /// node is personal knowledge, and otherwise kept as long as its source document.
     /// </summary>
     public Dictionary<string, TimeSpan> RetentionPolicies { get; set; } = new()
     {

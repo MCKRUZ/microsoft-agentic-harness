@@ -27,10 +27,10 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// on purpose — they are shared routing structures, not the subject's data.
 /// </remarks>
 [PersonalDataStore(
-    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days; Permanent ones never are.",
+    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days, and a pruned or forgotten learning is removed for good after Learnings:DeletedRetentionDays (default 30). Permanent learnings are kept by design, as someone deliberately marked them, until deleted or their owner is erased.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
 public sealed class GraphLearningsStore : ILearningsStore
@@ -44,6 +44,7 @@ public sealed class GraphLearningsStore : ILearningsStore
     private const string NodeType = "LearningEntry";
     private const string IndexType = "LearningIndex";
     private const string EdgePredicate = "has_learning";
+    private const string DeletedAtKey = "DeletedAt";
     private const string ChunkId = "learningindex";
 
     /// <summary>Initializes a new instance of the <see cref="GraphLearningsStore"/> class.</summary>
@@ -208,6 +209,59 @@ public sealed class GraphLearningsStore : ILearningsStore
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Removes the learning nodes; the graph store removes their index edges with them. The store is scope-filtered, and
+    /// outside a request (the pruning service) the filter lets every owner's learnings through; called inside a request
+    /// it would purge only what that caller can see.
+    /// </para>
+    /// <para>
+    /// A deleted learning with no recorded deletion time (deleted before times were recorded, or a backend that replaced
+    /// its properties on a later write) is given one now and removed on a later pass, so it still gets the grace period.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<int>> PurgeDeletedAsync(DateTimeOffset deletedBefore, CancellationToken ct)
+    {
+        try
+        {
+            var deleted = (await _graphStore.GetAllNodesAsync(ct))
+                .Where(n => n.Type == NodeType && n.Properties.GetValueOrDefault("IsDeleted", "false") == "true")
+                .ToList();
+
+            var undated = deleted.Where(n => DeletedAt(n) is null).ToList();
+            if (undated.Count > 0)
+                await _graphStore.AddNodesAsync(undated.Select(StampDeletedNow).ToList(), ct);
+
+            var victims = deleted.Where(n => DeletedAt(n) is { } at && at < deletedBefore).Select(n => n.Id).ToList();
+            if (victims.Count > 0)
+                await _graphStore.DeleteNodesAsync(victims, ct);
+            return Result<int>.Success(victims.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to purge deleted learnings");
+            return Result<int>.Fail("Failed to purge deleted learnings.");
+        }
+    }
+
+    /// <summary>When a learning was soft-deleted, or <see langword="null"/> when that was not recorded.</summary>
+    private static DateTimeOffset? DeletedAt(GraphNode node) =>
+        DateTimeOffset.TryParse(node.Properties.GetValueOrDefault(DeletedAtKey, ""), CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind, out var at)
+            ? at
+            : null;
+
+    /// <summary>The same deleted learning with its deletion time set to now, keeping its owner.</summary>
+    private static GraphNode StampDeletedNow(GraphNode node) => new()
+    {
+        Id = node.Id,
+        Name = node.Name,
+        Type = node.Type,
+        Properties = new Dictionary<string, string>(node.Properties) { [DeletedAtKey] = DateTimeOffset.UtcNow.ToString("O") },
+        OwnerId = node.OwnerId,
+    };
+
     public async Task<Result> SoftDeleteAsync(Guid learningId, string reason, CancellationToken ct)
     {
         try
@@ -220,6 +274,8 @@ public sealed class GraphLearningsStore : ILearningsStore
             var updatedProps = existing.Properties.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
             updatedProps["IsDeleted"] = "true";
             updatedProps["DeleteReason"] = reason;
+            // When it was deleted, so PurgeDeletedAsync can remove it for good after the grace period (#901).
+            updatedProps[DeletedAtKey] = DateTimeOffset.UtcNow.ToString("O");
 
             var updatedNode = new GraphNode
             {

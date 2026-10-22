@@ -16,11 +16,11 @@ internal static class KeptForeverGaps
         // On by default.
 
         // Knowledge graph and memory.
-        ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "enforce the expires_at it already writes",
-        ["Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore"] = "memory decay on by default",
-        ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "a period for every entity type",
-        ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "a period for every entity type",
-        ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "pruned learnings removed, not only marked deleted",
+        // Personal knowledge in these now ages out; what remains unbounded is content extracted from documents, which waits
+        // on the same decision as the document indexes below.
+        ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "document-derived GraphRAG content follows its documents",
+        ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "document-derived nodes follow their documents",
+        ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "document-derived nodes follow their documents",
 
         // Off by default, file-based, or external.
         ["Infrastructure.Observability.Persistence.PostgresObservabilityStore"] = "age-based sweep of closed sessions and their rows",

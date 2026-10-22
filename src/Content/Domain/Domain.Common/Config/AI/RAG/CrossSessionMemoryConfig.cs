@@ -28,4 +28,14 @@ public sealed class CrossSessionMemoryConfig
     /// hosted service periodically applies decay and prunes low-weight memories.
     /// </summary>
     public MemoryDecaySchedulerConfig DecayScheduler { get; set; } = new();
+
+    /// <summary>
+    /// How long a memory is kept after it was last recalled or written (#901). Defaults to two years.
+    /// </summary>
+    /// <remarks>
+    /// A memory is what the agent learned about a person across conversations. Recalling it renews it, so one still in use
+    /// is never removed. Separate from <see cref="DecayScheduler"/>, which prunes by a relevance score and gives no period
+    /// a person can be told.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; set; } = new() { RetainFor = TimeSpan.FromDays(730) };
 }

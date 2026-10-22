@@ -35,6 +35,8 @@ public sealed class DefaultLearningDecayServiceTests
         };
         _configMock = new Mock<IOptionsMonitor<LearningsConfig>>();
         _configMock.Setup(x => x.CurrentValue).Returns(_config);
+        _storeMock.Setup(s => s.PurgeDeletedAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(0));
 
         _sut = new DefaultLearningDecayService(
             _storeMock.Object,
@@ -353,5 +355,18 @@ public sealed class DefaultLearningDecayServiceTests
 
         result.IsSuccess.Should().BeTrue();
         _storeMock.Verify(s => s.SearchAsync(It.Is<LearningSearchCriteria>(c => c.Scope == null), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PruneExpired_RemovesLearningsDeletedLongerAgoThanTheGracePeriod()
+    {
+        // #901: a deleted learning keeps its content; each pruning pass removes the ones past the grace period.
+        _config.DeletedRetentionDays = 30;
+        _storeMock.Setup(s => s.SearchAsync(It.IsAny<LearningSearchCriteria>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<LearningEntry>>.Success([]));
+
+        await _sut.PruneExpiredAsync(CancellationToken.None);
+
+        _storeMock.Verify(s => s.PurgeDeletedAsync(_timeProvider.GetUtcNow() - TimeSpan.FromDays(30), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

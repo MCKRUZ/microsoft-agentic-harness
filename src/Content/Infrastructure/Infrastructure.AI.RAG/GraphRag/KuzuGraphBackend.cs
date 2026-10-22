@@ -35,7 +35,7 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Owner erasure removes only the memory nodes; expires_at is never enforced.",
+    "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Memory nodes unused for Rag:CrossSessionMemory:Retention:RetainFor (default two years) are deleted, and owner erasure removes them; the document-derived GraphRAG content has no period and expires_at is not enforced on it.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Unbounded,

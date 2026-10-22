@@ -40,4 +40,17 @@ public interface IErasureOrchestrator
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<ErasureReceipt> EraseByNodesAsync(IReadOnlyList<GraphNode> nodes, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes nodes whose retention period has passed (#901): the nodes, the edges touching them and their feedback
+    /// weights, but not the document content behind their chunk references.
+    /// </summary>
+    /// <remarks>
+    /// Erasure purges derived content by document: every chunk of a node's source document goes, which is right when a
+    /// person or a document is being erased and wrong when one node has merely aged. That document is still the corpus
+    /// for every other node extracted from it, and it has its own lifetime.
+    /// </remarks>
+    /// <param name="nodes">The store-sourced nodes to remove.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<ErasureReceipt> ExpireNodesAsync(IReadOnlyList<GraphNode> nodes, CancellationToken cancellationToken = default);
 }

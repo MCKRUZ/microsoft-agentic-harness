@@ -11,7 +11,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// Registered with keyed DI key <c>"in_memory"</c>.
 /// </summary>
 [PersonalDataStore(
-    "Learnings held in process memory, recalled into every user's agent turns; lost at restart. Entries carry no owner, and deletion is a soft delete that keeps the entry.",
+    "Learnings held in process memory, recalled into every user's agent turns; lost at restart. Entries carry no owner; a deleted entry is hidden at once and removed after Learnings:DeletedRetentionDays.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Volatile,
@@ -64,8 +64,27 @@ public sealed class InMemoryLearningsStore : ILearningsStore
             return Task.FromResult(Result.Fail("Learning not found"));
 
         _entries[learningId] = entry with { IsDeleted = true, DeleteReason = reason };
+        _deletedAt[learningId] = DateTimeOffset.UtcNow;
         return Task.FromResult(Result.Success());
     }
+
+    /// <inheritdoc />
+    public Task<Result<int>> PurgeDeletedAsync(DateTimeOffset deletedBefore, CancellationToken ct)
+    {
+        var victims = _entries.Values
+            .Where(e => e.IsDeleted && (!_deletedAt.TryGetValue(e.LearningId, out var at) || at < deletedBefore))
+            .Select(e => e.LearningId)
+            .ToList();
+        foreach (var id in victims)
+        {
+            _entries.TryRemove(id, out _);
+            _deletedAt.TryRemove(id, out _);
+        }
+
+        return Task.FromResult(Result<int>.Success(victims.Count));
+    }
+
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _deletedAt = new();
 
     private static bool MatchesScope(LearningScope entryScope, LearningScope? criteriaScope)
     {

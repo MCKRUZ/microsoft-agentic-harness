@@ -41,6 +41,18 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
     }
 
     [Fact]
+    public void APersonalKnowledgePeriodUnderADay_StopsTheHost()
+    {
+        // Minutes meant as days would delete everyone's remembered knowledge within the hour.
+        var act = () => CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Rag:GraphRag:PersonalKnowledgeRetention"] = "00:07:30",
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*PersonalKnowledgeRetention*");
+    }
+
+    [Fact]
     public void TheDefaults_StartTheHost()
     {
         using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>());

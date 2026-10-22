@@ -32,6 +32,9 @@ public sealed class LearningsConfigValidator : AbstractValidator<LearningsConfig
         RuleFor(x => x.PruneIntervalHours)
             .GreaterThan(0).WithMessage("PruneIntervalHours must be > 0.");
 
+        RuleFor(x => x.DeletedRetentionDays)
+            .InclusiveBetween(1, 36_500).WithMessage("DeletedRetentionDays must be between 1 and 36500.");
+
         RuleFor(x => x.BaselineAdjustmentThreshold)
             .GreaterThan(0).WithMessage("BaselineAdjustmentThreshold must be > 0.")
             .LessThanOrEqualTo(1).WithMessage("BaselineAdjustmentThreshold must be <= 1.");

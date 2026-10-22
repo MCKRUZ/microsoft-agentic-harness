@@ -146,6 +146,18 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             nodes, nodeIds, requestedAt, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<ErasureReceipt> ExpireNodesAsync(
+        IReadOnlyList<GraphNode> nodes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        var nodeIds = nodes.Select(n => n.Id).ToList();
+        return ExecuteErasureAsync(
+            Guid.NewGuid().ToString(), "retention", ownerId: null, ownerScopeRequested: false,
+            nodes, nodeIds, _timeProvider.GetUtcNow(), cancellationToken, purgeDocumentContent: false);
+    }
+
     private async Task<ErasureReceipt> ExecuteErasureAsync(
         string requestId,
         string scopeId,
@@ -154,7 +166,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         IReadOnlyList<GraphNode> nodes,
         List<string> nodeIds,
         DateTimeOffset requestedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool purgeDocumentContent = true)
     {
         var partialReasons = new List<string>();
 
@@ -195,7 +208,9 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         //    over-report of a no-op. Counts come from the stores (rows actually removed), and a
         //    document that matched zero rows in every configured store is surfaced on the receipt
         //    instead of silently counting as done.
+        //    Skipped for retention expiry (#901): an aged node must not take its whole source document with it.
         var documentIds = nodes
+            .Where(_ => purgeDocumentContent)
             .SelectMany(n => n.ChunkIds)
             .Select(DeriveDocumentId)
             .Where(id => !string.IsNullOrEmpty(id))
@@ -290,7 +305,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         await _auditSink.EmitAsync(new MemoryAuditEvent
         {
             EventId = requestId,
-            Action = MemoryAuditAction.Erasure,
+            // Retention expiry is recorded as such, so the trail still shows how erasure requests were handled.
+            Action = purgeDocumentContent ? MemoryAuditAction.Erasure : MemoryAuditAction.Expiry,
             ActorId = ErasureAuditScope,
             Timestamp = receipt.CompletedAt,
             ScopeId = ErasureAuditScope,
@@ -299,11 +315,11 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         }, cancellationToken);
 
         _logger.LogInformation(
-            "Erasure completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
+            "{Kind} completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
             "Edges={Edges}, FeedbackWeights={FeedbackWeights}, VectorChunks={VectorChunks}, " +
             "Bm25Rows={Bm25Rows}, CrossSessionMemories={CrossSessionMemories}, " +
             "UnmatchedDocuments={UnmatchedDocuments}{Reason}",
-            requestId, completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
+            purgeDocumentContent ? "Erasure" : "Retention expiry", requestId, completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
             receipt.FeedbackWeightsDeleted, vectorChunksDeleted, bm25RowsDeleted, crossSessionDeleted,
             unmatchedDocumentIds.Count,
             completenessReason is null ? string.Empty : $", Reason={completenessReason}");

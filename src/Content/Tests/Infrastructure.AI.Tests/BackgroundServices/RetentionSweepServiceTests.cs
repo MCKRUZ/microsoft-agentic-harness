@@ -104,6 +104,40 @@ public sealed class RetentionSweepServiceTests : IDisposable
         (await ctx.PlanGraphs.CountAsync()).Should().Be(plansLeft);
     }
 
+    [Theory]
+    [InlineData(730, true)]
+    [InlineData(0.5, false)]
+    public async Task Memories_AnUnusedMemoryGoesOnTheTick_UnlessThePeriodIsUnderADay(double days, bool deleted)
+    {
+        _config.AI.Rag.CrossSessionMemory.Retention.RetainFor = TimeSpan.FromDays(days);
+        _config.AI.Rag.CrossSessionMemory.Retention.SweepInterval = TimeSpan.FromHours(1);
+        _config.AI.Rag.CrossSessionMemory.SyncInterval = TimeSpan.FromHours(1);
+        var backend = new Mock<Application.AI.Common.Interfaces.KnowledgeGraph.IGraphDatabaseBackend>();
+        var removed = new List<string>();
+        backend.Setup(b => b.GetAllNodesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new Domain.AI.KnowledgeGraph.Models.GraphNode
+            {
+                Id = "old", Name = "old", Type = "Memory", OwnerId = "u1",
+                Properties = new Dictionary<string, string> { ["last_accessed_at"] = Origin.AddDays(-800).ToString("O") },
+            },
+        ]);
+        backend.Setup(b => b.DeleteNodesAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, CancellationToken>((ids, _) => removed.AddRange(ids))
+            .ReturnsAsync(Domain.AI.KnowledgeGraph.Models.NodeDeletionResult.Empty);
+        using var memory = new Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore(
+            backend.Object, Monitor(), NullLogger<Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore>.Instance);
+        var services = new ServiceCollection()
+            .AddSingleton<Application.AI.Common.Interfaces.KnowledgeGraph.ICrossSessionMemoryStore>(memory)
+            .BuildServiceProvider();
+        using var service = new Infrastructure.AI.Memory.CrossSessionMemoryRetentionService(
+            services, Monitor(), _clock, NullLogger<Infrastructure.AI.Memory.CrossSessionMemoryRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        removed.Contains("old").Should().Be(deleted);
+    }
+
     private async Task StartAndTickAsync(Microsoft.Extensions.Hosting.BackgroundService service)
     {
         var armed = _clock.NextTimer;

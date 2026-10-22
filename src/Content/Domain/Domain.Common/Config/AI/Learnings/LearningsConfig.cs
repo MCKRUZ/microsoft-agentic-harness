@@ -72,6 +72,13 @@ public class LearningsConfig
     public int StableShelfLifeDays { get; set; } = 180;
 
     /// <summary>
+    /// Days a deleted learning is kept before it is removed for good (#901): one that decayed, or that someone asked the
+    /// agent to forget. A deleted learning is hidden from recall at once but keeps its content until then.
+    /// </summary>
+    /// <value>Default: 30</value>
+    public int DeletedRetentionDays { get; set; } = 30;
+
+    /// <summary>
     /// Interval in hours for the <c>LearningsPruningBackgroundService</c>.
     /// </summary>
     /// <value>Default: 24</value>
