@@ -1,13 +1,13 @@
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Changes;
-using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Compliance;
+using Application.Common.Interfaces.Compliance;
 
 namespace Infrastructure.AI.Changes;
 

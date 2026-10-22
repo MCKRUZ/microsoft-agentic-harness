@@ -1,6 +1,7 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Application.Common.Interfaces.Compliance;
 
 namespace Application.AI.Common.Services.Compliance;
 

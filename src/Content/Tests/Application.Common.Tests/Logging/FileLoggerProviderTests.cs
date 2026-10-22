@@ -77,13 +77,36 @@ public sealed class FileLoggerProviderTests : IDisposable
         Directory.Exists(phaseDir).Should().BeTrue();
     }
 
-    [Fact]
-    public void StartNewRun_PathTraversal_ThrowsArgumentException()
+    [Theory]
+    [InlineData("../evil-run", null)]
+    [InlineData("../logsX", null)]
+    [InlineData("nested/run", null)]
+    [InlineData("..", null)]
+    [InlineData("run", "../../logsX")]
+    [InlineData("run", "a/b")]
+    public void StartNewRun_ARunIdOrPhaseThatIsNotOneFolderName_ThrowsArgumentException(string runId, string? phase)
     {
-        var act = () => _provider.StartNewRun("../evil-run");
+        // "../logsX" used to pass: the escape check compared prefixes without a separator, and a sibling folder of the
+        // logs folder starts with its path.
+        var act = () => _provider.StartNewRun(runId, phase);
 
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*escapes*base*");
+        act.Should().Throw<ArgumentException>().WithMessage("*not a single folder name*");
+        Directory.GetFileSystemEntries(Path.GetDirectoryName(_tempDir)!, Path.GetFileName(_tempDir) + "X").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StartNewRun_MarksTheRunAsTheProvidersOwn_AndReportsItAsCurrentUntilComplete()
+    {
+        _provider.StartNewRun("marked-run", "phase-1");
+
+        LogRunFolder.IsMarkedRun(Path.Combine(_tempDir, "marked-run"), StringComparison.Ordinal).Should().BeTrue();
+        File.Exists(Path.Combine(_tempDir, "marked-run", "phase-1", LogRunFolder.MarkerFileName))
+            .Should().BeFalse("the marker sits at the run root");
+        _provider.CurrentRunId.Should().Be("marked-run");
+
+        _provider.CompleteRun();
+
+        _provider.CurrentRunId.Should().BeNull();
     }
 
     [Fact]

@@ -32,6 +32,7 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
     [InlineData("AppConfig:Observability:Retention")]
     [InlineData("AppConfig:Infrastructure:StateManagement:Retention")]
     [InlineData("AppConfig:AI:Changes:EvidenceRetention")]
+    [InlineData("AppConfig:Logging:Retention")]
     public void ARetentionPeriodUnderADay_StopsTheHost(string section)
     {
         using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>

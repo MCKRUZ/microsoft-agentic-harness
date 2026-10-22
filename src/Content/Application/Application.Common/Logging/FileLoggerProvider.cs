@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Application.Common.Interfaces.Common;
+using Application.Common.Interfaces.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
@@ -30,18 +31,21 @@ namespace Application.Common.Logging;
 ///         ├── {Phase}/
 ///         │     ├── log.txt
 ///         │     └── console.txt
+///         ├── log-run.json
 ///         └── manifest.json
 /// </code>
+/// A run nothing has written to for <c>Logging:Retention:RetainFor</c> is deleted (#901), except the run this provider
+/// is writing; see <see cref="LogRunFolder"/>.
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Free-form log text in {Logging:LogsBasePath}/{runId}/log.txt and console.txt, never deleted. Only written once a run is started (StartNewRun), which nothing in production calls today. Redaction masks emails, phones and keys, not names or ids.",
+    "Free-form log text in {Logging:LogsBasePath}/{runId}/log.txt and console.txt. A run is deleted once nothing has written to it for Logging:Retention (30 days by default), except the run in progress; runs from before the run marker existed are never swept, and a run another process is writing is protected only by its age. Only written once a run is started (StartNewRun), which nothing in production calls today. Redaction masks emails, phones and keys, not names or ids.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.NotSupported,
     ExportSupport.NotSupported)]
-public sealed class FileLoggerProvider : ILoggerProvider
+public sealed class FileLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
 {
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new();
     private readonly BlockingCollection<(string Structured, string Console)> _messageQueue = new(1000);
@@ -65,6 +69,24 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     /// <summary>Gets whether a run is currently active and accepting log entries.</summary>
     public bool IsRunActive => _structuredWriter is not null;
+
+    /// <summary>The run this provider is writing, which the retention sweep never deletes, or <see langword="null"/>.</summary>
+    public string? CurrentRunId
+    {
+        get
+        {
+            lock (_lock)
+                return _currentRunId;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>A period below the sweep's floor is refused by the sweep, so it is reported as no period at all.</remarks>
+    public TimeSpan? CurrentRetentionPeriod =>
+        _config.CurrentValue.Retention is { Enabled: true } retention
+        && retention.RetainFor >= RetentionPeriodConfig.MinimumRetainFor
+            ? retention.RetainFor
+            : null;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FileLoggerProvider"/> class.
@@ -105,21 +127,14 @@ public sealed class FileLoggerProvider : ILoggerProvider
             if (string.IsNullOrWhiteSpace(basePath))
                 return;
 
-            var runPath = phase is not null
-                ? Path.Combine(basePath, runId, phase)
-                : Path.Combine(basePath, runId);
-
-            var fullBase = Path.GetFullPath(basePath);
-            var fullRun = Path.GetFullPath(runPath);
-            if (!fullRun.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Resolved run path escapes the base log directory.");
-
+            var (runRoot, runPath) = LogRunFolder.Resolve(basePath, runId, phase);
             _directoryCreator.Create(runPath);
+            LogRunFolder.WriteMarker(runRoot, runId);
 
             _structuredWriter = new StreamWriter(
-                Path.Combine(runPath, "log.txt"), append: false);
+                Path.Combine(runPath, LogRunFolder.LogFileName), append: false);
             _consoleWriter = new StreamWriter(
-                Path.Combine(runPath, "console.txt"), append: false);
+                Path.Combine(runPath, LogRunFolder.ConsoleFileName), append: false);
 
             _currentRunId = runId;
             _logEntryCount = 0;
@@ -150,7 +165,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 if (!string.IsNullOrWhiteSpace(basePath))
                 {
                     var manifestWithCount = manifest with { LogEntryCount = _logEntryCount };
-                    var manifestPath = Path.Combine(basePath, _currentRunId, "manifest.json");
+                    var manifestPath = Path.Combine(basePath, _currentRunId, LogRunFolder.ManifestFileName);
                     var json = JsonSerializer.Serialize(manifestWithCount, ManifestJsonOptions);
                     File.WriteAllText(manifestPath, json);
                 }

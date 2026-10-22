@@ -95,13 +95,28 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
         Directory.Exists(Path.Combine(_tempDir, "json-dir-test")).Should().BeTrue();
     }
 
-    [Fact]
-    public void StartNewRun_PathTraversal_ThrowsArgumentException()
+    [Theory]
+    [InlineData("../evil", null)]
+    [InlineData("../logsX", null)]
+    [InlineData("run", "../../logsX")]
+    public void StartNewRun_ARunIdOrPhaseThatIsNotOneFolderName_ThrowsArgumentException(string runId, string? phase)
     {
-        var act = () => _provider.StartNewRun("../evil");
+        var act = () => _provider.StartNewRun(runId, phase);
 
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*escapes*base*");
+        act.Should().Throw<ArgumentException>().WithMessage("*not a single folder name*");
+    }
+
+    [Fact]
+    public void StartNewRun_MarksTheRunAsTheProvidersOwn_AndReportsItAsCurrentUntilComplete()
+    {
+        _provider.StartNewRun("json-marked");
+
+        LogRunFolder.IsMarkedRun(Path.Combine(_tempDir, "json-marked"), StringComparison.Ordinal).Should().BeTrue();
+        _provider.CurrentRunId.Should().Be("json-marked");
+
+        _provider.CompleteRun();
+
+        _provider.CurrentRunId.Should().BeNull();
     }
 
     [Fact]

@@ -620,6 +620,16 @@
                             than writing to a row that is gone.
                         </li>
                         <li>
+                            <strong>Log files.</strong> A run under <code>AppConfig:Logging:LogsBasePath</code> that nothing
+                            has written to for <code>AppConfig:Logging:Retention:RetainFor</code> (default 30 days) is
+                            deleted, except the run either file provider is writing. A run counts only when the marker the
+                            providers write at its root names it, because the logs folder is also one the file-system tool
+                            can write into; runs from before the marker existed are never swept, and a run another process
+                            is writing into the same folder is protected only by its age. Run ids and phases must each be one
+                            folder name; a sibling-folder name such as <code>../logsX</code> used to pass the old check.
+                            Nothing in the shipped hosts starts a log run today.
+                        </li>
+                        <li>
                             <strong>Saved workflow state.</strong> A workflow nothing has saved for
                             <code>AppConfig:Infrastructure:StateManagement:Retention:RetainFor</code> (default 90 days)
                             loses its JSON checkpoint and its markdown rendering; anything else in its folder is kept.

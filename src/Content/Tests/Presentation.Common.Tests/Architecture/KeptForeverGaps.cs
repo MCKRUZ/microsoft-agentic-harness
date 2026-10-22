@@ -23,8 +23,6 @@ internal static class KeptForeverGaps
         ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "document-derived nodes follow their documents",
 
         // Off by default, file-based, or external.
-        ["Application.Common.Logging.FileLoggerProvider"] = "sweep of old run log directories",
-        ["Application.Common.Logging.StructuredJsonLoggerProvider"] = "sweep of old run log directories",
         ["Infrastructure.AI.RAG.Retrieval.AzureAISearchVectorStore"] = "kept as long as its source document, or an ingest-time expiry",
         ["Infrastructure.AI.RAG.Retrieval.AzureAISearchBm25Store"] = "kept as long as its source document, or an ingest-time expiry",
     };

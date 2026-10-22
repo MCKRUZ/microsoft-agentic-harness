@@ -2,7 +2,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Traces;
 using Domain.Common.Config;
 using Domain.Common.Config.MetaHarness;
@@ -11,6 +10,7 @@ using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Compliance;
+using Application.Common.Interfaces.Compliance;
 
 namespace Infrastructure.AI.Traces;
 

@@ -1,4 +1,4 @@
-namespace Application.AI.Common.Interfaces.Compliance;
+namespace Application.Common.Interfaces.Compliance;
 
 /// <summary>
 /// A store that can say, from its live configuration, how long it keeps a record (#901).

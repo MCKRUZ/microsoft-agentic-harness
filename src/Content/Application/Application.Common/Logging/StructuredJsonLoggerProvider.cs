@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Application.Common.Interfaces.Common;
+using Application.Common.Interfaces.Compliance;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,13 +21,13 @@ namespace Application.Common.Logging;
 /// A background thread drains a bounded queue (capacity 1000).
 /// </remarks>
 [PersonalDataStore(
-    "JSONL log entries with scope properties in {Logging:LogsBasePath}/{runId}/structured.jsonl, never deleted. Only written once a run is started (StartNewRun), which nothing in production calls today.",
+    "JSONL log entries with scope properties in {Logging:LogsBasePath}/{runId}/structured.jsonl. A run is deleted once nothing has written to it for Logging:Retention (30 days by default), except the run in progress; runs from before the run marker existed are never swept, and a run another process is writing is protected only by its age. Only written once a run is started (StartNewRun), which nothing in production calls today.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.NotSupported,
     ExportSupport.NotSupported)]
-public sealed class StructuredJsonLoggerProvider : ILoggerProvider
+public sealed class StructuredJsonLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
 {
     private readonly ConcurrentDictionary<string, StructuredJsonLogger> _loggers = new();
     private readonly BlockingCollection<string> _messageQueue = new(1000);
@@ -41,11 +42,30 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     };
 
     private StreamWriter? _writer;
+    private string? _currentRunId;
     private Thread? _backgroundThread;
     private CancellationTokenSource? _cts;
 
     /// <summary>Gets whether a run is currently active and accepting log entries.</summary>
     public bool IsRunActive => _writer is not null;
+
+    /// <summary>The run this provider is writing, which the retention sweep never deletes, or <see langword="null"/>.</summary>
+    public string? CurrentRunId
+    {
+        get
+        {
+            lock (_lock)
+                return _currentRunId;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>A period below the sweep's floor is refused by the sweep, so it is reported as no period at all.</remarks>
+    public TimeSpan? CurrentRetentionPeriod =>
+        _config.CurrentValue.Retention is { Enabled: true } retention
+        && retention.RetainFor >= RetentionPeriodConfig.MinimumRetainFor
+            ? retention.RetainFor
+            : null;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StructuredJsonLoggerProvider"/> class.
@@ -92,19 +112,13 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
             if (string.IsNullOrWhiteSpace(basePath))
                 return;
 
-            var runPath = phase is not null
-                ? Path.Combine(basePath, runId, phase)
-                : Path.Combine(basePath, runId);
-
-            var fullBase = Path.GetFullPath(basePath);
-            var fullRun = Path.GetFullPath(runPath);
-            if (!fullRun.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Resolved run path escapes the base log directory.");
-
+            var (runRoot, runPath) = LogRunFolder.Resolve(basePath, runId, phase);
             _directoryCreator.Create(runPath);
+            LogRunFolder.WriteMarker(runRoot, runId);
 
             _writer = new StreamWriter(
-                Path.Combine(runPath, "structured.jsonl"), append: false);
+                Path.Combine(runPath, LogRunFolder.StructuredFileName), append: false);
+            _currentRunId = runId;
 
             _cts = new CancellationTokenSource();
             _backgroundThread = new Thread(ProcessMessageQueue)
@@ -209,6 +223,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     {
         _writer?.Dispose();
         _writer = null;
+        _currentRunId = null;
     }
 
     /// <inheritdoc />

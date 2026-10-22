@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Generators;
@@ -8,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text;
 using Domain.Common.Compliance;
+using Application.Common.Interfaces.Compliance;
 
 namespace Infrastructure.AI.StateManagement;
 
