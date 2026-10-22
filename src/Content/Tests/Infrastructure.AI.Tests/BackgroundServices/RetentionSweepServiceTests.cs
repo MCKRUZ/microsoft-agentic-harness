@@ -6,6 +6,7 @@ using Domain.AI.Planner;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.BackgroundServices;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
 using Microsoft.Data.Sqlite;
@@ -136,6 +137,71 @@ public sealed class RetentionSweepServiceTests : IDisposable
         await StartAndTickAsync(service);
 
         removed.Contains("old").Should().Be(deleted);
+    }
+
+    [Theory]
+    [InlineData(30, false)]
+    [InlineData(0.5, true)]
+    public async Task Traces_AnIdleRunGoesOnTheTick_UnlessThePeriodIsUnderADay(double days, bool runLeft)
+    {
+        _config.MetaHarness.TraceDirectoryRoot = _dir;
+        _config.MetaHarness.TraceRetention.RetainFor = TimeSpan.FromDays(days);
+        _config.MetaHarness.TraceRetention.SweepInterval = TimeSpan.FromHours(1);
+        var run = Path.Combine(_dir, "executions", Guid.NewGuid().ToString("D"));
+        Directory.CreateDirectory(run);
+        var manifest = Path.Combine(run, "manifest.json");
+        await File.WriteAllTextAsync(manifest, "{}");
+        // Older than 30 days on the fake clock's calendar; the sweep compares against real file times.
+        File.SetLastWriteTimeUtc(manifest, Origin.AddDays(-45).UtcDateTime);
+        Directory.SetLastWriteTimeUtc(run, Origin.AddDays(-45).UtcDateTime);
+        var store = new Infrastructure.AI.Traces.FileSystemExecutionTraceStore(
+            Monitor(), Mock.Of<Application.AI.Common.Interfaces.ISecretRedactor>(),
+            NullLogger<Infrastructure.AI.Traces.FileSystemExecutionTraceStore>.Instance);
+        using var service = new Infrastructure.AI.Traces.ExecutionTraceRetentionService(
+            store, Monitor(), _clock, NullLogger<Infrastructure.AI.Traces.ExecutionTraceRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        Directory.Exists(run).Should().Be(runLeft);
+    }
+
+    [Theory]
+    [InlineData(90, 1)]
+    [InlineData(0.5, 0)]
+    public async Task Observability_InactiveSessionsAreDeletedOnTheTick_UnlessThePeriodIsUnderADay(double days, int calls)
+    {
+        _config.Observability.Retention.RetainFor = TimeSpan.FromDays(days);
+        _config.Observability.Retention.SweepInterval = TimeSpan.FromHours(1);
+        var store = new Mock<Application.AI.Common.Interfaces.IObservabilityStore>();
+        var swept = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.Setup(s => s.DeleteInactiveSinceAsync(It.IsAny<DateTimeOffset>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback<DateTimeOffset, int, CancellationToken>((cutoff, _, _) => swept.TrySetResult(cutoff))
+            .ReturnsAsync(0);
+        var services = new ServiceCollection().AddSingleton(store.Object).BuildServiceProvider();
+        using var service = new ObservabilityRetentionService(
+            services, Monitor(), _clock, NullLogger<ObservabilityRetentionService>.Instance);
+
+        await StartAndTickAsync(service);
+
+        store.Verify(
+            s => s.DeleteInactiveSinceAsync(
+                It.IsAny<DateTimeOffset>(), ObservabilityRetentionService.MaxSessionsPerSweep, It.IsAny<CancellationToken>()),
+            Times.Exactly(calls));
+        if (calls > 0)
+            (await swept.Task.WaitAsync(Patience)).Should().Be(_clock.GetUtcNow() - TimeSpan.FromDays(days));
+    }
+
+    [Fact]
+    public async Task Observability_WithNoStoreRegistered_TheSweepDoesNothing()
+    {
+        _config.Observability.Retention.SweepInterval = TimeSpan.FromHours(1);
+        using var service = new ObservabilityRetentionService(
+            new ServiceCollection().BuildServiceProvider(), Monitor(), _clock,
+            NullLogger<ObservabilityRetentionService>.Instance);
+
+        var act = () => StartAndTickAsync(service);
+
+        await act.Should().NotThrowAsync();
     }
 
     private async Task StartAndTickAsync(Microsoft.Extensions.Hosting.BackgroundService service)

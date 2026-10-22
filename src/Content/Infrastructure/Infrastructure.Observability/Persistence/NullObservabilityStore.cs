@@ -25,8 +25,13 @@ public sealed class NullObservabilityStore : IObservabilityStore
         => Task.CompletedTask;
 
     /// <inheritdoc />
-    public Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
-        => Task.CompletedTask;
+    public Task<bool> ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
+        => Task.FromResult(true);
+
+    /// <inheritdoc />
+    public Task<int> DeleteInactiveSinceAsync(
+        DateTimeOffset cutoff, int maxSessions, CancellationToken cancellationToken = default)
+        => Task.FromResult(0);
 
     /// <inheritdoc />
     public Task UpdateSessionMetricsAsync(

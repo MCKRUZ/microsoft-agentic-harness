@@ -65,6 +65,9 @@ public sealed class RunConversationDurableTests
             .Setup(o => o.StartSessionAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(NewSessionId);
+        _observability
+            .Setup(o => o.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
     }
 
     private RunConversationCommandHandler BuildSut(int maxHistoryMessages = 50) =>

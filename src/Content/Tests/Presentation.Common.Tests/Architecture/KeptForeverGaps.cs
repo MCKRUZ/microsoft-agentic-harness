@@ -23,8 +23,6 @@ internal static class KeptForeverGaps
         ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "document-derived nodes follow their documents",
 
         // Off by default, file-based, or external.
-        ["Infrastructure.Observability.Persistence.PostgresObservabilityStore"] = "age-based sweep of closed sessions and their rows",
-        ["Infrastructure.AI.Traces.FileSystemExecutionTraceStore"] = "sweep of completed trace runs",
         ["Application.Common.Logging.FileLoggerProvider"] = "sweep of old run log directories",
         ["Application.Common.Logging.StructuredJsonLoggerProvider"] = "sweep of old run log directories",
         ["Infrastructure.AI.StateManagement.Checkpoints.JsonCheckpointStateManager"] = "sweep of completed workflows",

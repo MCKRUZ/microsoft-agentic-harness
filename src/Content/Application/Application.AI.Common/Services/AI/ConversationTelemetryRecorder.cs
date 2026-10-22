@@ -90,7 +90,10 @@ public sealed class ConversationTelemetryRecorder : IConversationTelemetryRecord
             existing = await LoadAsync(conversationId, callerId, cancellationToken);
         }
 
-        if (existing.SessionId != Guid.Empty)
+        // A session retention or erasure has removed is not adopted (#901): every write to it would fail its foreign key
+        // and be dropped, for the rest of the conversation. A new one is started in its place, keeping the totals.
+        if (existing.SessionId != Guid.Empty
+            && await _observabilityStore.ResumeSessionAsync(existing.SessionId, cancellationToken))
         {
             // Adopting a session is an assertion that the conversation is live, so the row has to say
             // so. It may not: the session row is keyed one per conversation, but the decision to end
@@ -102,8 +105,6 @@ public sealed class ConversationTelemetryRecorder : IConversationTelemetryRecord
             // Un-ending belongs here rather than to a transport for the same reason adoption does: it
             // is the same rule for all three, and the store's own no-op-when-already-open guard means
             // the ordinary case — a session that was never ended — costs nothing but the statement.
-            await _observabilityStore.ResumeSessionAsync(existing.SessionId, cancellationToken);
-
             return new ConversationTelemetryState(
                 conversationId, callerId, existing.SessionId, existing.Totals, SessionOpened: false);
         }

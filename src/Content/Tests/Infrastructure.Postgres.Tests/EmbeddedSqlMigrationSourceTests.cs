@@ -37,10 +37,11 @@ public sealed class EmbeddedSqlMigrationSourceTests
                 "005_sessions_status_cancelled",
                 "006_context_snapshots_unattributed_tokens",
                 "007_session_messages_source_failed",
+                "008_retention_indexes",
             },
             scripts.Select(s => s.Id));
 
-        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7 }, scripts.Select(s => s.Ordinal));
+        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7, 8 }, scripts.Select(s => s.Ordinal));
         Assert.All(scripts, s => Assert.False(string.IsNullOrWhiteSpace(s.Sql)));
     }
 

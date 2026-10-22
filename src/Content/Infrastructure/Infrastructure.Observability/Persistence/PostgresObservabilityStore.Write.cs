@@ -82,9 +82,9 @@ public sealed partial class PostgresObservabilityStore
     }
 
     /// <inheritdoc />
-    public async Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    public async Task<bool> ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
-        if (sessionId == Guid.Empty) return;
+        if (sessionId == Guid.Empty) return true;
 
         // The WHERE clause is what makes this idempotent, and it is why no read is needed first: on a
         // session that is already open the statement matches nothing and the row — including its start
@@ -100,16 +100,35 @@ public sealed partial class PostgresObservabilityStore
         // dashboard's status badge reads this row, and a live conversation carrying a stale failure
         // reads as broken. The failure itself is not lost — it stays in the turn's own message row and
         // in the audit log, which is where a history of what went wrong belongs.
+        //
+        // The same statement says whether the row still exists (#901): retention or erasure may have
+        // removed it while the conversation sat idle, and every write to a missing session fails its
+        // foreign key and is swallowed, so the caller has to start a new one. A failed statement answers
+        // that it exists, so a database hiccup never restarts a live session.
         const string sql = """
-            UPDATE sessions
-            SET ended_at = NULL,
-                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000,
-                status = 'active',
-                error_message = NULL
-            WHERE id = $1 AND ended_at IS NOT NULL
+            WITH reopened AS (
+                UPDATE sessions
+                SET ended_at = NULL,
+                    duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000,
+                    status = 'active',
+                    error_message = NULL
+                WHERE id = $1 AND ended_at IS NOT NULL
+                RETURNING id
+            )
+            SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)
             """;
 
-        await ExecuteNonQuerySafe(sql, cancellationToken, sessionId);
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+            return await cmd.ExecuteScalarAsync(cancellationToken) is not false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resume session {SessionId}", sessionId);
+            return true;
+        }
     }
 
     /// <inheritdoc />

@@ -79,6 +79,16 @@ public class ObservabilityConfig
     public string? PostgresConnectionString { get; set; }
 
     /// <summary>
+    /// How long the observability database keeps a session after its last activity (#901). Defaults to 90 days.
+    /// </summary>
+    /// <remarks>
+    /// A session goes whole, with its messages, tool executions, safety events and audit rows; context snapshots and
+    /// audit rows without a session go by their own age. Conversation expiry and erasure remove a conversation's rows
+    /// sooner; this catches what they cannot reach, such as sessions of conversations that were never stored.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; set; } = new();
+
+    /// <summary>
     /// Gets or sets whether sensitive telemetry data (e.g., GenAI prompt/completion content)
     /// is recorded in traces. Controls the <c>Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnosticsSensitive</c>
     /// AppContext switch. When <c>false</c>, only non-sensitive GenAI metadata (model, token counts)
