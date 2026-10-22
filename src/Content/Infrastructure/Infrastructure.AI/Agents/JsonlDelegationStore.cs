@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Agents;
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Orchestration;
 using Domain.Common.Config;
 using Infrastructure.AI.Helpers;
@@ -32,14 +33,65 @@ namespace Infrastructure.AI.Agents;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Append-only JSONL of subagent delegations under {Subagent:DelegationStoragePath} (default .agent-sessions/delegations), holding model-written task descriptions and failure reasons. Records carry no user or conversation id; nothing deletes them.",
+    "Append-only JSONL of subagent delegations under {Subagent:DelegationStoragePath} (default .agent-sessions/delegations), holding model-written task descriptions and failure reasons. Records carry no user or conversation id; a session file nothing has written to for Subagent:DelegationRetention:RetainFor (default 90 days) is deleted.",
     PersonalDataCategories.ConversationContent | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.NotSupported,
     ExportSupport.NotSupported)]
-public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
+public sealed class JsonlDelegationStore : IDelegationStore, IStoreRetentionPeriod, IDisposable
 {
+    /// <inheritdoc />
+    public TimeSpan? CurrentRetentionPeriod =>
+        Retention is { Enabled: true } retention ? retention.RetainFor : null;
+
+    private RetentionPeriodConfig Retention => _config.CurrentValue.AI.Orchestration.Subagent.DelegationRetention;
+
+    /// <summary>
+    /// Deletes every session file nothing has written to since <paramref name="cutoff"/> (#901), then any supervisor
+    /// folder left empty.
+    /// </summary>
+    /// <remarks>
+    /// Each file is checked again under its own lock before it is deleted, so a record appended in between keeps it. A
+    /// file this process still appends to may be deleted when it has been idle that long; the next record recreates it.
+    /// </remarks>
+    /// <param name="cutoff">Files last written before this instant are deleted.</param>
+    /// <param name="ct">Stops between files.</param>
+    /// <returns>How many files were deleted.</returns>
+    public async Task<int> DeleteNotWrittenSinceAsync(DateTimeOffset cutoff, CancellationToken ct)
+    {
+        var deleted = 0;
+        foreach (var file in GetAllSessionFiles())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (File.GetLastWriteTimeUtc(file) >= cutoff.UtcDateTime)
+                continue;
+
+            var semaphore = GetFileLock(file);
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                if (File.Exists(file) && File.GetLastWriteTimeUtc(file) < cutoff.UtcDateTime)
+                {
+                    File.Delete(file);
+                    deleted++;
+                }
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        foreach (var directory in Directory.Exists(_basePath) ? Directory.GetDirectories(_basePath) : [])
+        {
+            if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                Directory.Delete(directory);
+        }
+
+        return deleted;
+    }
+
     private const int MaxLockCacheEntries = 100;
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
@@ -57,6 +109,7 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     };
 
     private readonly string _basePath;
+    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<JsonlDelegationStore> _logger;
     private readonly ConcurrentDictionary<string, string> _sessionFiles = new();
     private readonly ConcurrentDictionary<string, (SemaphoreSlim Semaphore, long LastUsed)> _fileLocks = new();
@@ -71,6 +124,7 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
         ILogger<JsonlDelegationStore> logger)
     {
         _basePath = config.CurrentValue.AI.Orchestration.Subagent.DelegationStoragePath;
+        _config = config;
         _logger = logger;
     }
 

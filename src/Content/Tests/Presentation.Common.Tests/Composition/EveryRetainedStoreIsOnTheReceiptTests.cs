@@ -90,6 +90,28 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
             "the default composition runs log files, traces, the response cache and several audit trails");
     }
 
+    [Fact]
+    public async Task TheResponseCacheAndDelegationRecords_AreListedWithTheirLivePeriods()
+    {
+        // #901: both now age out by default, so the receipt says how long, and neither makes it Partial on its own.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:AI:Orchestration:Subagent:DelegationStoragePath"] = Path.Combine(_workingDir, "delegations"),
+        });
+        await using var scope = provider.CreateAsyncScope();
+
+        var lines = scope.ServiceProvider.GetServices<RetainedPersonalData>()
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .ToDictionary(o => o.Store);
+
+        lines["chat response cache"].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
+        lines["chat response cache"].Reason.Should().EndWith("within 1 hour of being written");
+        lines["agent delegation records"].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
+        lines["agent delegation records"].Reason.Should().EndWith("within 90 days of being written");
+    }
+
     private static bool IsRetainedStore(Type type) =>
         type is { IsClass: true, IsAbstract: false }
         && !typeof(IPersonalDataEraser).IsAssignableFrom(type)

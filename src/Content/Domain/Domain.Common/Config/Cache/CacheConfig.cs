@@ -30,6 +30,17 @@ public class CacheConfig
     /// Only used when <see cref="CacheType"/> is <see cref="Cache.CacheType.RedisCache"/>.
     /// </summary>
     public RedisClientConfig RedisClient { get; set; } = new();
+
+    /// <summary>
+    /// The longest a cached model response is kept (#901). Defaults to one hour.
+    /// </summary>
+    /// <remarks>
+    /// The chat response cache stores model responses, including tool-call arguments, under a hash of the request, and
+    /// cannot be searched for one person. Without an expiry Redis kept every entry for good. A cached response is only
+    /// reused for an identical request, which in practice happens within minutes, so an hour costs little in hit rate.
+    /// Must be positive.
+    /// </remarks>
+    public TimeSpan ChatResponseExpiry { get; set; } = TimeSpan.FromHours(1);
 }
 
 /// <summary>

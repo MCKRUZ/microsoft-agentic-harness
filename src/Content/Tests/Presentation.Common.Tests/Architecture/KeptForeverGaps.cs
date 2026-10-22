@@ -14,11 +14,6 @@ internal static class KeptForeverGaps
     public static readonly IReadOnlyDictionary<string, string> Entries = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         // On by default.
-        ["Infrastructure.AI.Planner.EfCorePlanStateStore"] = "sweep of finished plans",
-        ["Infrastructure.AI.Agents.JsonlDelegationStore"] = "sweep of closed delegation session files",
-        ["Application.AI.Common.Factories.AgentFactory"] = "an expiry on every cached chat response",
-        ["Infrastructure.AI.Runs.EfScheduleStore"] = "sweep of disabled schedules; enabled ones kept by design",
-        ["Infrastructure.AI.Governance.EfCoreToolCallLedger"] = "rows leave with their conversation or run",
 
         // Knowledge graph and memory.
         ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "enforce the expires_at it already writes",

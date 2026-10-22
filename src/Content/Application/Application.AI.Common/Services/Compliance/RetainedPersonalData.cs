@@ -32,6 +32,12 @@ public sealed class RetainedPersonalData
     public const string ConfiguredReason =
         "cannot be searched for one person; open records are kept, and closed ones only until a retention period that can be switched off";
 
+    /// <summary>
+    /// Start of the reason for <see cref="StoreErasureStatus.RetainedUntilExpiry"/> on a store whose configured retention is
+    /// running (#901); the period is appended, read from the store's live configuration.
+    /// </summary>
+    public const string ExpiringReason = "cannot be searched for one person; each record is deleted within";
+
     /// <summary>Reason for <see cref="StoreErasureStatus.RetainedUntilExpiry"/> for a store held only in memory.</summary>
     public const string VolatileReason =
         "cannot be searched for one person; held in process memory only and gone when the process restarts";
@@ -78,11 +84,24 @@ public sealed class RetainedPersonalData
             { Erasure: ErasureSupport.Exempt } =>
                 (StoreErasureStatus.RetainedByObligation, $"{ObligationReason}; it holds {Describe(descriptor.Holds)}"),
             { Retention: RetentionBasis.Volatile } => (StoreErasureStatus.RetainedUntilExpiry, VolatileReason),
+            { Retention: RetentionBasis.Configured } when Store is IStoreRetentionPeriod { CurrentRetentionPeriod: { } period }
+                && period > TimeSpan.Zero =>
+                (StoreErasureStatus.RetainedUntilExpiry, $"{ExpiringReason} {Describe(period)} of being written"),
             { Retention: RetentionBasis.Configured } => (StoreErasureStatus.RetainedIndefinitely, ConfiguredReason),
             _ => (StoreErasureStatus.RetainedIndefinitely, IndefiniteReason),
         };
         return new StoreErasureOutcome(StoreName, status, 0, reason);
     }
+
+    /// <summary>A period as plain words, for example "90 days" or "1 hour".</summary>
+    private static string Describe(TimeSpan period) => period switch
+    {
+        { TotalDays: >= 1 } when period.TotalDays % 1 == 0 => Plural((int)period.TotalDays, "day"),
+        { TotalHours: >= 1 } when period.TotalHours % 1 == 0 => Plural((int)period.TotalHours, "hour"),
+        _ => Plural((int)Math.Ceiling(period.TotalMinutes), "minute"),
+    };
+
+    private static string Plural(int count, string unit) => count == 1 ? $"1 {unit}" : $"{count} {unit}s";
 
     /// <summary>The categories as plain words, for example "identifiers, tool inputs and outputs".</summary>
     private static string Describe(PersonalDataCategories categories) =>

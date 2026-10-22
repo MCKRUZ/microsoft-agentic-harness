@@ -186,4 +186,48 @@ public sealed class JsonlDelegationStoreTests : IDisposable
 
         result.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task DeleteNotWrittenSinceAsync_DeletesOnlyIdleSessionFiles_AndEmptyFolders()
+    {
+        // Retention (#901): a session nothing has written to past the period goes; one still being written stays.
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+        await _store.AppendAsync(BuildRecord(supervisorId: "busy"));
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(90);
+        var idleFile = Directory.GetFiles(Path.Combine(_tempDir, "idle")).Single();
+        File.SetLastWriteTimeUtc(idleFile, cutoff.UtcDateTime.AddSeconds(-1));
+
+        var deleted = await _store.DeleteNotWrittenSinceAsync(cutoff, CancellationToken.None);
+
+        deleted.Should().Be(1);
+        Directory.Exists(Path.Combine(_tempDir, "idle")).Should().BeFalse("an emptied supervisor folder is removed too");
+        (await _store.GetBySessionAsync("busy")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task DeleteNotWrittenSinceAsync_ASessionStillOpenInThisProcess_IsRecreatedByItsNextRecord()
+    {
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(90);
+        File.SetLastWriteTimeUtc(Directory.GetFiles(Path.Combine(_tempDir, "idle")).Single(), cutoff.UtcDateTime.AddDays(-1));
+        await _store.DeleteNotWrittenSinceAsync(cutoff, CancellationToken.None);
+
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+
+        (await _store.GetBySessionAsync("idle")).Should().ContainSingle("only the record written after the sweep remains");
+    }
+
+    [Fact]
+    public void CurrentRetentionPeriod_FollowsTheSwitch()
+    {
+        var config = new AppConfig();
+        config.AI.Orchestration.Subagent.DelegationStoragePath = _tempDir;
+        config.AI.Orchestration.Subagent.DelegationRetention.RetainFor = TimeSpan.FromDays(30);
+        using var store = new JsonlDelegationStore(
+            Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config), Mock.Of<ILogger<JsonlDelegationStore>>());
+
+        store.CurrentRetentionPeriod.Should().Be(TimeSpan.FromDays(30));
+        config.AI.Orchestration.Subagent.DelegationRetention.Enabled = false;
+        store.CurrentRetentionPeriod.Should().BeNull("a switched-off sweep must not be reported as ageing records out");
+    }
 }

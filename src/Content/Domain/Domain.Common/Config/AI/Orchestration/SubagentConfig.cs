@@ -44,6 +44,15 @@ public class SubagentConfig
     public string DelegationStoragePath { get; set; } = ".agent-sessions/delegations";
 
     /// <summary>
+    /// How long a delegation session file is kept after its last record (#901). Defaults to 90 days.
+    /// </summary>
+    /// <remarks>
+    /// The records hold model-written task descriptions, which can repeat what a person asked. They serve debugging and
+    /// recent history; a session nothing has written to for this long is deleted whole.
+    /// </remarks>
+    public RetentionPeriodConfig DelegationRetention { get; set; } = new();
+
+    /// <summary>
     /// Maximum time in seconds to wait for a delegated agent to complete.
     /// Expired delegations are cancelled and recorded as failed.
     /// </summary>

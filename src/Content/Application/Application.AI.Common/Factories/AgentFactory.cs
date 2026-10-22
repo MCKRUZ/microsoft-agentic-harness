@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -34,14 +35,22 @@ namespace Application.AI.Common.Factories;
 /// </list>
 /// </remarks>
 [PersonalDataStore(
-    "Turns on the chat response cache: model responses, including tool-call arguments, cached as JSON under a hash of the request. Process memory by default; Redis when CacheType is RedisCache, with no expiry set. Not tied to any user.",
+    "Turns on the chat response cache: model responses, including tool-call arguments, cached as JSON under a hash of the request. Process memory by default; Redis when CacheType is RedisCache. Every entry expires after Cache:ChatResponseExpiry (default one hour). Not tied to any user.",
     PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.NotSupported,
     ExportSupport.NotSupported)]
-public partial class AgentFactory : IAgentFactory
+public partial class AgentFactory : IAgentFactory, IStoreRetentionPeriod
 {
+    /// <inheritdoc />
+    /// <remarks>Always set: the cache has no switch, so every response it holds expires.</remarks>
+    public TimeSpan? CurrentRetentionPeriod => ChatResponseExpiry;
+
+    /// <summary>The configured maximum lifetime of a cached response, falling back to one hour when unset or invalid.</summary>
+    private TimeSpan ChatResponseExpiry =>
+        _appConfig.CurrentValue.Cache?.ChatResponseExpiry is { } expiry && expiry > TimeSpan.Zero ? expiry : TimeSpan.FromHours(1);
+
     /// <summary>
     /// Key under which the per-conversation scope identifier is expected in
     /// <see cref="AgentExecutionContext.AdditionalProperties"/>. This value scopes

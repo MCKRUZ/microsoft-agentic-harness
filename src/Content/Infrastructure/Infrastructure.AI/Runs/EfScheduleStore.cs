@@ -21,10 +21,10 @@ namespace Infrastructure.AI.Runs;
 /// the same pattern <c>EfCorePlanStateStore</c> uses.
 /// </remarks>
 [PersonalDataStore(
-    "The schedules SQLite table: recurring run schedules with owner and tenant ids, target id, cron expression, time zone and the capability envelope. A schedule stays until its owner deletes it; owner erasure removes all of them in every tenant.",
+    "The schedules SQLite table: recurring run schedules with owner and tenant ids, target id, cron expression, time zone and the capability envelope. Kept by design until its owner deletes it: a schedule is the owner's standing instruction, like an account setting, not a record of what they did, and it holds identifiers only. Owner erasure removes all of them in every tenant.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
 public sealed partial class EfScheduleStore : IScheduleStore
