@@ -65,20 +65,11 @@ public sealed class FileLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
     private Thread? _backgroundThread;
     private CancellationTokenSource? _cts;
     private string? _currentRunId;
+    private string? _currentRunRoot;
     private int _logEntryCount;
 
     /// <summary>Gets whether a run is currently active and accepting log entries.</summary>
     public bool IsRunActive => _structuredWriter is not null;
-
-    /// <summary>The run this provider is writing, which the retention sweep never deletes, or <see langword="null"/>.</summary>
-    public string? CurrentRunId
-    {
-        get
-        {
-            lock (_lock)
-                return _currentRunId;
-        }
-    }
 
     /// <inheritdoc />
     /// <remarks>A period below the sweep's floor is refused by the sweep, so it is reported as no period at all.</remarks>
@@ -128,13 +119,28 @@ public sealed class FileLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
                 return;
 
             var (runRoot, runPath) = LogRunFolder.Resolve(basePath, runId, phase);
-            _directoryCreator.Create(runPath);
-            LogRunFolder.WriteMarker(runRoot, runId);
 
-            _structuredWriter = new StreamWriter(
-                Path.Combine(runPath, LogRunFolder.LogFileName), append: false);
-            _consoleWriter = new StreamWriter(
-                Path.Combine(runPath, LogRunFolder.ConsoleFileName), append: false);
+            // Live before any file exists, so the retention sweep cannot delete the folder while it is being opened.
+            LogRunFolder.BeginRun(runRoot);
+            try
+            {
+                _directoryCreator.Create(runPath);
+                LogRunFolder.WriteMarker(runRoot, runId);
+
+                _structuredWriter = new StreamWriter(
+                    Path.Combine(runPath, LogRunFolder.LogFileName), append: false);
+                _consoleWriter = new StreamWriter(
+                    Path.Combine(runPath, LogRunFolder.ConsoleFileName), append: false);
+            }
+            catch
+            {
+                _structuredWriter?.Dispose();
+                _structuredWriter = null;
+                LogRunFolder.EndRun(runRoot);
+                throw;
+            }
+
+            _currentRunRoot = runRoot;
 
             _currentRunId = runId;
             _logEntryCount = 0;
@@ -157,21 +163,27 @@ public sealed class FileLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
     {
         lock (_lock)
         {
-            FlushPendingMessages();
-
-            if (manifest is not null && _currentRunId is not null)
+            try
             {
-                var basePath = _config.CurrentValue.LogsBasePath;
-                if (!string.IsNullOrWhiteSpace(basePath))
+                FlushPendingMessages();
+
+                if (manifest is not null && _currentRunId is not null)
                 {
-                    var manifestWithCount = manifest with { LogEntryCount = _logEntryCount };
-                    var manifestPath = Path.Combine(basePath, _currentRunId, LogRunFolder.ManifestFileName);
-                    var json = JsonSerializer.Serialize(manifestWithCount, ManifestJsonOptions);
-                    File.WriteAllText(manifestPath, json);
+                    var basePath = _config.CurrentValue.LogsBasePath;
+                    if (!string.IsNullOrWhiteSpace(basePath))
+                    {
+                        var manifestWithCount = manifest with { LogEntryCount = _logEntryCount };
+                        var manifestPath = Path.Combine(basePath, _currentRunId, LogRunFolder.ManifestFileName);
+                        var json = JsonSerializer.Serialize(manifestWithCount, ManifestJsonOptions);
+                        File.WriteAllText(manifestPath, json);
+                    }
                 }
             }
-
-            CloseCurrentRun();
+            finally
+            {
+                // A manifest that cannot be written must not leave the run's files and drain thread open.
+                CloseCurrentRun();
+            }
         }
     }
 
@@ -245,6 +257,9 @@ public sealed class FileLoggerProvider : ILoggerProvider, IStoreRetentionPeriod
         _structuredWriter = null;
         _consoleWriter = null;
         _currentRunId = null;
+        if (_currentRunRoot is not null)
+            LogRunFolder.EndRun(_currentRunRoot);
+        _currentRunRoot = null;
         _cts?.Dispose();
         _cts = null;
     }

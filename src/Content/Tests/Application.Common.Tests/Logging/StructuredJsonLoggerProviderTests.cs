@@ -112,11 +112,11 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
         _provider.StartNewRun("json-marked");
 
         LogRunFolder.IsMarkedRun(Path.Combine(_tempDir, "json-marked"), StringComparison.Ordinal).Should().BeTrue();
-        _provider.CurrentRunId.Should().Be("json-marked");
+        LogRunFolder.IsLive(Path.Combine(_tempDir, "json-marked")).Should().BeTrue();
 
         _provider.CompleteRun();
 
-        _provider.CurrentRunId.Should().BeNull();
+        LogRunFolder.IsLive(Path.Combine(_tempDir, "json-marked")).Should().BeFalse();
     }
 
     [Fact]

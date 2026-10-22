@@ -1,7 +1,6 @@
 using Application.Common.Logging;
 using Domain.Common.Config;
 using Infrastructure.AI.Helpers;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -14,12 +13,10 @@ namespace Infrastructure.AI.BackgroundServices;
 /// <remarks>
 /// <para>
 /// A run is a folder whose <see cref="LogRunFolder.MarkerFileName"/> names it, so other content in the logs folder (the
-/// file-system tool may write there) is never reached. The run either file provider is writing is skipped; a run another
-/// process is writing into the same folder is protected only by its age.
-/// </para>
-/// <para>
-/// The providers are resolved when the sweep runs and are registered only when a logs folder is configured, so a host
-/// without file logging sweeps nothing.
+/// file-system tool may write there) is never reached. Each run is deleted through
+/// <see cref="LogRunFolder.DeleteUnlessLive"/>, so a run a provider in this process is writing, or starts while the
+/// sweep is deciding, is never touched; a run another process is writing into the same folder is protected only by its
+/// age.
 /// </para>
 /// </remarks>
 internal sealed class LogRunRetentionService : PeriodicSweepService
@@ -29,27 +26,22 @@ internal sealed class LogRunRetentionService : PeriodicSweepService
 
     private static readonly TimeSpan MinInterval = TimeSpan.FromMinutes(1);
 
-    private readonly IServiceProvider _services;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<LogRunRetentionService> _logger;
 
     /// <summary>Initializes a new <see cref="LogRunRetentionService"/>.</summary>
-    /// <param name="services">Resolves the file log providers when the sweep runs.</param>
     /// <param name="config">Supplies the folder, period and interval, read live on every tick.</param>
     /// <param name="timeProvider">Drives the wait and the cutoff.</param>
     /// <param name="logger">Receives the per-sweep result and any failure.</param>
     public LogRunRetentionService(
-        IServiceProvider services,
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
         ILogger<LogRunRetentionService> logger)
         : base(MinInterval, timeProvider, logger)
     {
-        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(config);
 
-        _services = services;
         _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -88,12 +80,12 @@ internal sealed class LogRunRetentionService : PeriodicSweepService
 
             try
             {
-                if (IsCurrentRun(run)
-                    || !LogRunFolder.IsMarkedRun(run, RetentionDirectories.PathComparison)
+                if (!LogRunFolder.IsMarkedRun(run, RetentionDirectories.PathComparison)
                     || RetentionDirectories.NewestWriteUtc(run) >= cutoff)
                     continue;
 
-                if (RetentionDirectories.DeleteOwnFiles(run, LogRunFolder.MarkerFileName, LogRunFolder.IsOwnFile, cutoff))
+                if (LogRunFolder.DeleteUnlessLive(run, () =>
+                        RetentionDirectories.DeleteOwnFiles(run, LogRunFolder.MarkerFileName, LogRunFolder.IsOwnFile, cutoff)))
                     deleted++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -103,18 +95,6 @@ internal sealed class LogRunRetentionService : PeriodicSweepService
         }
 
         return deleted;
-    }
-
-    /// <summary>Whether either file provider is writing this run now.</summary>
-    private bool IsCurrentRun(string run)
-    {
-        var name = Path.GetFileName(run);
-        return new[]
-            {
-                _services.GetService<FileLoggerProvider>()?.CurrentRunId,
-                _services.GetService<StructuredJsonLoggerProvider>()?.CurrentRunId,
-            }
-            .Any(current => string.Equals(current, name, RetentionDirectories.PathComparison));
     }
 
     /// <inheritdoc />

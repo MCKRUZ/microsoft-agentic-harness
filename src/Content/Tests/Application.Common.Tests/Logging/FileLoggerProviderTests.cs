@@ -84,6 +84,10 @@ public sealed class FileLoggerProviderTests : IDisposable
     [InlineData("..", null)]
     [InlineData("run", "../../logsX")]
     [InlineData("run", "a/b")]
+    [InlineData("run.", null)]
+    [InlineData("run ", null)]
+    [InlineData("CON", null)]
+    [InlineData("nul.txt", null)]
     public void StartNewRun_ARunIdOrPhaseThatIsNotOneFolderName_ThrowsArgumentException(string runId, string? phase)
     {
         // "../logsX" used to pass: the escape check compared prefixes without a separator, and a sibling folder of the
@@ -95,6 +99,37 @@ public sealed class FileLoggerProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task StartNewRun_WhileTheSweepIsDeletingTheSameFolder_WaitsAndRecreatesIt()
+    {
+        // A run restarted under an id whose folder the sweep judged expired: without the shared lock the sweep would
+        // delete the files the provider had just opened, and on Linux the run's logs would go nowhere, silently.
+        var runRoot = Path.Combine(_tempDir, "restarted");
+        Task? start = null;
+
+        LogRunFolder.DeleteUnlessLive(runRoot, () =>
+        {
+            start = Task.Run(() => _provider.StartNewRun("restarted"));
+            start.Wait(TimeSpan.FromMilliseconds(300)).Should().BeFalse("the run must wait for the sweep to finish");
+            return true;
+        }).Should().BeTrue();
+
+        await start!.WaitAsync(TimeSpan.FromSeconds(10));
+        File.Exists(Path.Combine(runRoot, LogRunFolder.LogFileName)).Should().BeTrue();
+        LogRunFolder.IsLive(runRoot).Should().BeTrue();
+    }
+
+    [Fact]
+    public void StartNewRun_WhenSomethingHoldsTheMarkersName_StillStarts()
+    {
+        Directory.CreateDirectory(Path.Combine(_tempDir, "occupied", LogRunFolder.MarkerFileName));
+
+        var act = () => _provider.StartNewRun("occupied");
+
+        act.Should().NotThrow();
+        _provider.IsRunActive.Should().BeTrue();
+    }
+
+    [Fact]
     public void StartNewRun_MarksTheRunAsTheProvidersOwn_AndReportsItAsCurrentUntilComplete()
     {
         _provider.StartNewRun("marked-run", "phase-1");
@@ -102,11 +137,11 @@ public sealed class FileLoggerProviderTests : IDisposable
         LogRunFolder.IsMarkedRun(Path.Combine(_tempDir, "marked-run"), StringComparison.Ordinal).Should().BeTrue();
         File.Exists(Path.Combine(_tempDir, "marked-run", "phase-1", LogRunFolder.MarkerFileName))
             .Should().BeFalse("the marker sits at the run root");
-        _provider.CurrentRunId.Should().Be("marked-run");
+        LogRunFolder.IsLive(Path.Combine(_tempDir, "marked-run")).Should().BeTrue();
 
         _provider.CompleteRun();
 
-        _provider.CurrentRunId.Should().BeNull();
+        LogRunFolder.IsLive(Path.Combine(_tempDir, "marked-run")).Should().BeFalse();
     }
 
     [Fact]

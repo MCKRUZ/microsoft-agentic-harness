@@ -3,7 +3,6 @@ using Domain.Common.Config;
 using Domain.Common.Models;
 using FluentAssertions;
 using Infrastructure.AI.BackgroundServices;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -138,9 +137,7 @@ public sealed class LogRunRetentionServiceTests : IDisposable
 
     private async Task SweepAsync()
     {
-        var services = new ServiceCollection().AddSingleton(_files).AddSingleton(_json).BuildServiceProvider();
-        using var service = new LogRunRetentionService(
-            services, Monitor(), _clock, NullLogger<LogRunRetentionService>.Instance);
+        using var service = new LogRunRetentionService(Monitor(), _clock, NullLogger<LogRunRetentionService>.Instance);
         var armed = _clock.NextTimer;
         await service.StartAsync(CancellationToken.None);
         await armed.WaitAsync(Patience);

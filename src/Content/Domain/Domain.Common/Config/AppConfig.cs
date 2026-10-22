@@ -188,7 +188,8 @@ public class LoggingConfig
     /// </summary>
     /// <remarks>
     /// Log text can carry message and tool content that cannot be found per person, so age is the only control on it;
-    /// the period is kept well under a conversation's. The run a provider is writing is never deleted.
+    /// the period is kept well under a conversation's. A run a provider in this process is writing is never deleted; one
+    /// another process writes into the same folder is protected only by its age.
     /// </remarks>
     public RetentionPeriodConfig Retention { get; set; } = new() { RetainFor = TimeSpan.FromDays(30) };
 

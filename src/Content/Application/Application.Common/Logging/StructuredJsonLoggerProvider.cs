@@ -42,22 +42,12 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider, IStoreRetent
     };
 
     private StreamWriter? _writer;
-    private string? _currentRunId;
+    private string? _currentRunRoot;
     private Thread? _backgroundThread;
     private CancellationTokenSource? _cts;
 
     /// <summary>Gets whether a run is currently active and accepting log entries.</summary>
     public bool IsRunActive => _writer is not null;
-
-    /// <summary>The run this provider is writing, which the retention sweep never deletes, or <see langword="null"/>.</summary>
-    public string? CurrentRunId
-    {
-        get
-        {
-            lock (_lock)
-                return _currentRunId;
-        }
-    }
 
     /// <inheritdoc />
     /// <remarks>A period below the sweep's floor is refused by the sweep, so it is reported as no period at all.</remarks>
@@ -113,12 +103,24 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider, IStoreRetent
                 return;
 
             var (runRoot, runPath) = LogRunFolder.Resolve(basePath, runId, phase);
-            _directoryCreator.Create(runPath);
-            LogRunFolder.WriteMarker(runRoot, runId);
 
-            _writer = new StreamWriter(
-                Path.Combine(runPath, LogRunFolder.StructuredFileName), append: false);
-            _currentRunId = runId;
+            // Live before any file exists, so the retention sweep cannot delete the folder while it is being opened.
+            LogRunFolder.BeginRun(runRoot);
+            try
+            {
+                _directoryCreator.Create(runPath);
+                LogRunFolder.WriteMarker(runRoot, runId);
+
+                _writer = new StreamWriter(
+                    Path.Combine(runPath, LogRunFolder.StructuredFileName), append: false);
+            }
+            catch
+            {
+                LogRunFolder.EndRun(runRoot);
+                throw;
+            }
+
+            _currentRunRoot = runRoot;
 
             _cts = new CancellationTokenSource();
             _backgroundThread = new Thread(ProcessMessageQueue)
@@ -223,7 +225,9 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider, IStoreRetent
     {
         _writer?.Dispose();
         _writer = null;
-        _currentRunId = null;
+        if (_currentRunRoot is not null)
+            LogRunFolder.EndRun(_currentRunRoot);
+        _currentRunRoot = null;
     }
 
     /// <inheritdoc />
