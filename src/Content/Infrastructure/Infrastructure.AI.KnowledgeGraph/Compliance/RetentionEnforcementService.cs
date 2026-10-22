@@ -1,3 +1,4 @@
+using System.Globalization;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Common.Helpers;
 using Domain.AI.KnowledgeGraph.Models;
@@ -15,9 +16,10 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 /// <remarks>
 /// <para>
 /// <strong>What expires.</strong> A node expires when its stamped <see cref="GraphNode.ExpiresAt"/> has passed (types
-/// listed in <c>RetentionPolicies</c>), or when it is personal knowledge (an owner, no chunk references, a type with no
-/// listed policy and not a learning) last written longer ago than <c>PersonalKnowledgeRetention</c>. The second rule is
-/// computed here, from <see cref="GraphNode.CreatedAt"/>, so it also reaches nodes written before it existed.
+/// listed in <c>RetentionPolicies</c>), or when it is personal knowledge (remembered facts, work episodes and episodic
+/// segments; see <c>IsPersonalKnowledge</c>) last written longer ago than <c>PersonalKnowledgeRetention</c>. The second
+/// rule is computed here from the time every write stamps, or a node's creation when it predates that, so it also
+/// reaches nodes written before it existed. A node with neither is never treated as old.
 /// </para>
 /// <para>
 /// <strong>Nodes only, never their documents.</strong> Expired nodes go through
@@ -41,7 +43,8 @@ public sealed class RetentionEnforcementService : BackgroundService
 
     private static readonly TimeSpan MinInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan OffInterval = TimeSpan.FromHours(1);
-    private static readonly HashSet<string> LearningTypes = new(StringComparer.Ordinal) { "LearningEntry", "LearningIndex" };
+    private const string RememberedIdPrefix = "memory:";
+    private static readonly HashSet<string> PersonalTypes = new(StringComparer.Ordinal) { "WorkEpisode", "EpisodicSegment" };
 
     private readonly IKnowledgeGraphStore _graphStore;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -125,11 +128,11 @@ public sealed class RetentionEnforcementService : BackgroundService
     /// <returns>How many nodes were removed.</returns>
     public async Task<int> EnforceRetentionAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var personal = _config.CurrentValue.AI.Rag.GraphRag.PersonalKnowledgeRetention;
+        var personalCutoff = PersonalCutoff(_config.CurrentValue.AI.Rag.GraphRag.PersonalKnowledgeRetention, now);
         var listedTypes = _config.CurrentValue.AI.Rag.GraphRag.RetentionPolicies.Keys.ToHashSet(StringComparer.Ordinal);
 
         var expired = (await _graphStore.GetAllNodesAsync(cancellationToken))
-            .Where(n => HasExpired(n, now, personal, listedTypes))
+            .Where(n => HasExpired(n, now, personalCutoff, listedTypes))
             .Take(BatchSize)
             .ToList();
 
@@ -148,25 +151,63 @@ public sealed class RetentionEnforcementService : BackgroundService
         return receipt.NodesDeleted;
     }
 
-    /// <summary>Whether a node's stamped expiry has passed, or it is personal knowledge older than the personal period.</summary>
-    private static bool HasExpired(GraphNode node, DateTimeOffset now, TimeSpan personal, HashSet<string> listedTypes)
+    /// <summary>
+    /// The instant personal knowledge must have been written after, or <see langword="null"/> when the personal rule does
+    /// not run: switched off (zero), or below the one-day floor. A reloaded value is not re-validated, so a mistyped
+    /// period (minutes meant as days) must not delete everyone's memories; it is refused here and logged. A period too
+    /// long to subtract from now keeps everything rather than aborting the run.
+    /// </summary>
+    private DateTimeOffset? PersonalCutoff(TimeSpan personal, DateTimeOffset now)
+    {
+        if (personal == TimeSpan.Zero)
+            return null;
+
+        if (personal < RetentionPeriodConfig.MinimumRetainFor)
+        {
+            _logger.LogError(
+                "PersonalKnowledgeRetention {Period} is under the one-day minimum; personal knowledge is not expired until it is corrected.",
+                personal);
+            return null;
+        }
+
+        return personal >= now - DateTimeOffset.MinValue ? DateTimeOffset.MinValue : now - personal;
+    }
+
+    /// <summary>
+    /// Whether a node's stamped expiry has passed, or it is personal knowledge last written before
+    /// <paramref name="personalCutoff"/> (<see langword="null"/> when the personal rule is off).
+    /// </summary>
+    private static bool HasExpired(GraphNode node, DateTimeOffset now, DateTimeOffset? personalCutoff, HashSet<string> listedTypes)
     {
         if (node.ExpiresAt is { } expiresAt)
             return expiresAt < now;
 
-        return personal > TimeSpan.Zero
+        return personalCutoff is { } cutoff
             && IsPersonalKnowledge(node, listedTypes)
-            && node.CreatedAt is { } created
-            && created < now - personal;
+            && LastWritten(node) is { } written
+            && written < cutoff;
     }
 
     /// <summary>
-    /// Knowledge held about one person: it has an owner, was not extracted from a document, its type has no listed
-    /// policy of its own, and it is not a learning, which has its own lifecycle.
+    /// When the node was last written: the time every write stamps, or for a node written before that existed, its
+    /// creation. <see langword="null"/> when neither is known, and then it never counts as old.
+    /// </summary>
+    private static DateTimeOffset? LastWritten(GraphNode node) =>
+        node.Properties.TryGetValue(ComplianceAwareGraphStore.LastWrittenAtProperty, out var text)
+        && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var written)
+            ? written
+            : node.CreatedAt;
+
+    /// <summary>
+    /// Knowledge held about one person, named rather than inferred: what <c>KnowledgeMemoryService</c> remembered for
+    /// someone (ids <c>memory:{tenant}:{user}:{key}</c>, including skill-training experience it stores), their work
+    /// episodes and their episodic conversation segments. Each also needs an owner and no chunk references. Other owned
+    /// nodes are not about a person (a drift event's owner is an agent or skill scope), and a type with a listed policy
+    /// is governed by that policy.
     /// </summary>
     private static bool IsPersonalKnowledge(GraphNode node, HashSet<string> listedTypes) =>
         !string.IsNullOrEmpty(node.OwnerId)
         && node.ChunkIds.Count == 0
         && !listedTypes.Contains(node.Type)
-        && !LearningTypes.Contains(node.Type);
+        && (node.Id.StartsWith(RememberedIdPrefix, StringComparison.Ordinal) || PersonalTypes.Contains(node.Type));
 }

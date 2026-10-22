@@ -229,6 +229,26 @@ public sealed class ErasureCompletenessTests
     }
 
     [Fact]
+    public async Task ExpireNodes_IsAuditedAsExpiry_NotAsAnErasureRequest()
+    {
+        // #901: the audit trail is the evidence of how erasure requests were handled; routine expiry must not pad it.
+        var auditSink = new Mock<IMemoryAuditSink>();
+        MemoryAuditEvent? captured = null;
+        auditSink.Setup(a => a.EmitAsync(It.IsAny<MemoryAuditEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<MemoryAuditEvent, CancellationToken>((e, _) => captured = e)
+            .Returns(Task.CompletedTask);
+        var orchestrator = new DefaultErasureOrchestrator(
+            _graphStore, _feedbackStore, vectorStore: null, auditSink.Object, TimeProvider.System,
+            NullLogger<DefaultErasureOrchestrator>.Instance);
+        await _graphStore.AddNodesAsync([Node("n1", "user-1")]);
+
+        await orchestrator.ExpireNodesAsync([(await _graphStore.GetNodeAsync("n1"))!]);
+
+        captured!.Action.Should().Be(MemoryAuditAction.Expiry);
+        captured.AffectedNodeCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task EraseByOwner_PurgesFeedbackWeightsForOwnerScopedEdges()
     {
         await _graphStore.AddNodesAsync([Node("s1"), Node("s2"), Node("u1-node", "user-1")]);

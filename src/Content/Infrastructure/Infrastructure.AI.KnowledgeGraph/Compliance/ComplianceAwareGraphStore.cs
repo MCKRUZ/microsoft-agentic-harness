@@ -27,6 +27,12 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 [PersonalDataChannel("Decorates the configured knowledge-graph store, stamping retention and provenance before writing through to it; the inner store describes the data.")]
 public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
 {
+    /// <summary>
+    /// The node property each write stamps with its time (#901), read by <see cref="RetentionEnforcementService"/> as
+    /// when the node was last written.
+    /// </summary>
+    public const string LastWrittenAtProperty = "last_written_at";
+
     private readonly IKnowledgeGraphStore _inner;
     private readonly IMemoryAuditSink _auditSink;
     private readonly IAmbientRequestScope _ambientScope;
@@ -280,6 +286,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         var policy = _retentionProvider.GetPolicy(node.Type);
         return node with
         {
+            // Every write records when it happened (#901). CreatedAt keeps the first write on every backend, so a node
+            // rewritten weekly would still look as old as its first version to retention.
+            Properties = new Dictionary<string, string>(node.Properties) { [LastWrittenAtProperty] = now.ToString("O") },
             CreatedAt = node.CreatedAt ?? now,
             ExpiresAt = node.ExpiresAt ?? (policy.AllowIndefinite ? null : now + policy.RetentionPeriod),
             // Canonicalize owner/tenant to the shared form so the case-insensitive authorization gate

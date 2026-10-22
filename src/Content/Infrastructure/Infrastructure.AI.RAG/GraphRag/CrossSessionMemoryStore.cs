@@ -332,15 +332,19 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
     /// <returns>How many memories were deleted.</returns>
     public async Task<int> DeleteNotAccessedSinceAsync(DateTimeOffset cutoff, CancellationToken cancellationToken)
     {
-        var cacheVictims = _cache.Values.Where(r => r.LastAccessedAt < cutoff).Select(r => r.Id).ToList();
-        foreach (var id in cacheVictims)
+        // Removed only if unchanged since read: a recall in between renews the record, and must keep it.
+        var cacheVictims = new List<string>();
+        foreach (var stale in _cache.Values.Where(r => r.LastAccessedAt < cutoff).ToList())
         {
-            _cache.TryRemove(id, out _);
-            _dirty.TryRemove(id, out _);
+            if (!_cache.TryRemove(new KeyValuePair<string, MemoryRecord>(stale.Id, stale)))
+                continue;
+            _dirty.TryRemove(stale.Id, out _);
+            cacheVictims.Add(stale.Id);
         }
 
+        // Memory nodes have no chunk references; a document-derived entity an extractor happened to type "Memory" does.
         var backendVictims = (await _graphBackend.GetAllNodesAsync(cancellationToken).ConfigureAwait(false))
-            .Where(n => string.Equals(n.Type, MemoryNodeType, StringComparison.Ordinal))
+            .Where(n => string.Equals(n.Type, MemoryNodeType, StringComparison.Ordinal) && n.ChunkIds.Count == 0)
             .Where(n => LastAccess(n) < cutoff)
             .Where(n => !_cache.TryGetValue(n.Id, out var live) || live.LastAccessedAt < cutoff)
             .Select(n => n.Id)

@@ -248,6 +248,16 @@ public static partial class DependencyInjection
 
         // Retention enforcement (#901). Registered whenever the compliance layer is on, which is what stamps the creation
         // and expiry times it judges by; the interval is read live, so zero switches it off without a restart.
+        // Checked at startup as well as in the sweep: a period under a day is a typo (minutes meant as days), and the
+        // sweep would delete everyone's personal knowledge with it.
+        var personal = appConfig.AI.Rag.GraphRag.PersonalKnowledgeRetention;
+        if (personal != TimeSpan.Zero && personal < Domain.Common.Config.RetentionPeriodConfig.MinimumRetainFor)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(appConfig),
+                "AppConfig:AI:Rag:GraphRag:PersonalKnowledgeRetention must be zero (keep indefinitely) or at least one day.");
+        }
+
         if (appConfig.AI.Rag.GraphRag.ComplianceEnabled)
         {
             services.TryAddSingleton(TimeProvider.System);

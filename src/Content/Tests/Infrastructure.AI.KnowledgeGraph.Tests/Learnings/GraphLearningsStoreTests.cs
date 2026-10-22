@@ -598,14 +598,18 @@ public sealed class GraphLearningsStoreTests
     }
 
     [Fact]
-    public async Task PurgeDeleted_ALearningDeletedBeforeDeletionTimesWereRecorded_IsRemoved()
+    public async Task PurgeDeleted_ALearningWithNoRecordedDeletionTime_GetsTheGracePeriodFromNow()
     {
+        // Deleted before times were recorded: removing it at once would skip the grace period.
         await _graphStore.AddNodesAsync([new GraphNode
         {
             Id = "learning:legacy", Name = "legacy", Type = "LearningEntry",
             Properties = new Dictionary<string, string> { ["IsDeleted"] = "true", ["Content"] = "old" },
         }]);
 
-        (await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddDays(-30), CancellationToken.None)).Value.Should().Be(1);
+        (await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddDays(-30), CancellationToken.None)).Value
+            .Should().Be(0, "the first pass only records when it was found deleted");
+        (await _sut.PurgeDeletedAsync(DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None)).Value
+            .Should().Be(1, "a later pass past the grace period removes it");
     }
 }

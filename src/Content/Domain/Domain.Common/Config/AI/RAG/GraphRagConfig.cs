@@ -131,14 +131,20 @@ public class GraphRagConfig
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Applies to nodes that belong to someone (<c>OwnerId</c> set), were not extracted from a document (no chunk
-    /// references), and whose type has no entry in <see cref="RetentionPolicies"/>: facts, preferences and memories the
-    /// agent remembered. Knowledge extracted from a document stays while its document stays and goes with it.
-    /// Learnings have their own lifecycle and are not affected.
+    /// Applies to knowledge held about one person, named rather than inferred: what the agent remembered for someone
+    /// (facts, preferences, and the skill-training experience stored the same way), their work episodes and their
+    /// episodic conversation segments, each with an owner, no chunk references and a type with no entry in
+    /// <see cref="RetentionPolicies"/>. Knowledge extracted from a document, learnings and system records such as drift
+    /// events are not affected.
     /// </para>
     /// <para>
-    /// "Last written" is the node's stored creation time, which the compliance layer stamps on a write that does not carry
-    /// one, so writing the node again afresh renews it. Reading a node does not: the graph does not record reads.
+    /// "Last written" is the time the compliance layer stamps on every write, so writing the node again renews it; a node
+    /// written before that stamp existed is aged from its creation. Reading a node does not renew it: the graph does not
+    /// record reads.
+    /// </para>
+    /// <para>
+    /// Zero keeps it indefinitely. Any other value under a day is refused at startup and, if reloaded while running, by
+    /// the sweep, which then expires no personal knowledge until it is corrected.
     /// </para>
     /// </remarks>
     public TimeSpan PersonalKnowledgeRetention { get; set; } = TimeSpan.FromDays(730);

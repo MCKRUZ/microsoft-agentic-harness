@@ -305,7 +305,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         await _auditSink.EmitAsync(new MemoryAuditEvent
         {
             EventId = requestId,
-            Action = MemoryAuditAction.Erasure,
+            // Retention expiry is recorded as such, so the trail still shows how erasure requests were handled.
+            Action = purgeDocumentContent ? MemoryAuditAction.Erasure : MemoryAuditAction.Expiry,
             ActorId = ErasureAuditScope,
             Timestamp = receipt.CompletedAt,
             ScopeId = ErasureAuditScope,
@@ -314,11 +315,11 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         }, cancellationToken);
 
         _logger.LogInformation(
-            "Erasure completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
+            "{Kind} completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
             "Edges={Edges}, FeedbackWeights={FeedbackWeights}, VectorChunks={VectorChunks}, " +
             "Bm25Rows={Bm25Rows}, CrossSessionMemories={CrossSessionMemories}, " +
             "UnmatchedDocuments={UnmatchedDocuments}{Reason}",
-            requestId, completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
+            purgeDocumentContent ? "Erasure" : "Retention expiry", requestId, completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
             receipt.FeedbackWeightsDeleted, vectorChunksDeleted, bm25RowsDeleted, crossSessionDeleted,
             unmatchedDocumentIds.Count,
             completenessReason is null ? string.Empty : $", Reason={completenessReason}");

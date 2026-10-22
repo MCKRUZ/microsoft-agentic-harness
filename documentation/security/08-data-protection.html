@@ -577,11 +577,13 @@
                             expiry; flush the cache once after upgrading.
                         </li>
                         <li>
-                            <strong>What the agent knows about a person.</strong> In the knowledge graph, a node that belongs
-                            to someone, was not extracted from a document, and whose type has no period of its own (facts,
-                            preferences, memories) is deleted once it has not been written for
-                            <code>AppConfig:AI:Rag:GraphRag:PersonalKnowledgeRetention</code> (default two years); the
-                            graph records writes, not reads. Cross-session memories go once not recalled or written for
+                            <strong>What the agent knows about a person.</strong> In the knowledge graph, what the agent
+                            remembered for someone (facts, preferences, skill-training experience), their work episodes and
+                            their episodic conversation segments are deleted once not written for
+                            <code>AppConfig:AI:Rag:GraphRag:PersonalKnowledgeRetention</code> (default two years). Every
+                            write stamps its time, so re-remembering a fact renews it; reads do not, because the graph does
+                            not record them. Knowledge extracted from documents, learnings and system records such as
+                            drift events are not affected. A period under a day is refused at startup and by the sweep. Cross-session memories go once not recalled or written for
                             <code>AppConfig:AI:Rag:CrossSessionMemory:Retention:RetainFor</code> (default two years), from
                             the cache and the graph database. A learning that decayed or that someone asked the agent to
                             forget is hidden at once and removed for good after

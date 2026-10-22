@@ -63,6 +63,16 @@ public sealed class CrossSessionMemoryStoreRetentionTests : IDisposable
     }
 
     [Fact]
+    public async Task ADocumentEntityAnExtractorTypedMemory_IsNotTouched()
+    {
+        // Entity types come from free-text extraction; a memory node never has chunk references.
+        var entity = Memory("doc-entity", Cutoff.AddDays(-100)) with { ChunkIds = ["doc_chunk_0"] };
+        Backend(entity);
+
+        (await _store.DeleteNotAccessedSinceAsync(Cutoff, CancellationToken.None)).Should().Be(0);
+    }
+
+    [Fact]
     public async Task AMemoryRecalledSinceTheCutoff_IsKept_EvenBeforeTheRecallIsSynced()
     {
         // The backend still holds the old access time; the cache knows about the recall.

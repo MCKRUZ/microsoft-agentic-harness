@@ -211,18 +211,29 @@ public sealed class GraphLearningsStore : ILearningsStore
 
     /// <inheritdoc />
     /// <remarks>
-    /// Removes the learning nodes; the graph store removes their index edges with them. Reads the store undecorated by
-    /// scope: learnings of every owner, as retention requires.
+    /// <para>
+    /// Removes the learning nodes; the graph store removes their index edges with them. The store is scope-filtered, and
+    /// outside a request (the pruning service) the filter lets every owner's learnings through; called inside a request
+    /// it would purge only what that caller can see.
+    /// </para>
+    /// <para>
+    /// A deleted learning with no recorded deletion time (deleted before times were recorded, or a backend that replaced
+    /// its properties on a later write) is given one now and removed on a later pass, so it still gets the grace period.
+    /// </para>
     /// </remarks>
     public async Task<Result<int>> PurgeDeletedAsync(DateTimeOffset deletedBefore, CancellationToken ct)
     {
         try
         {
-            var victims = (await _graphStore.GetAllNodesAsync(ct))
+            var deleted = (await _graphStore.GetAllNodesAsync(ct))
                 .Where(n => n.Type == NodeType && n.Properties.GetValueOrDefault("IsDeleted", "false") == "true")
-                .Where(n => DeletedAt(n) < deletedBefore)
-                .Select(n => n.Id)
                 .ToList();
+
+            var undated = deleted.Where(n => DeletedAt(n) is null).ToList();
+            if (undated.Count > 0)
+                await _graphStore.AddNodesAsync(undated.Select(StampDeletedNow).ToList(), ct);
+
+            var victims = deleted.Where(n => DeletedAt(n) is { } at && at < deletedBefore).Select(n => n.Id).ToList();
             if (victims.Count > 0)
                 await _graphStore.DeleteNodesAsync(victims, ct);
             return Result<int>.Success(victims.Count);
@@ -234,12 +245,22 @@ public sealed class GraphLearningsStore : ILearningsStore
         }
     }
 
-    /// <summary>When a learning was soft-deleted; one deleted before the time was recorded counts as long ago.</summary>
-    private static DateTimeOffset DeletedAt(GraphNode node) =>
+    /// <summary>When a learning was soft-deleted, or <see langword="null"/> when that was not recorded.</summary>
+    private static DateTimeOffset? DeletedAt(GraphNode node) =>
         DateTimeOffset.TryParse(node.Properties.GetValueOrDefault(DeletedAtKey, ""), CultureInfo.InvariantCulture,
             DateTimeStyles.RoundtripKind, out var at)
             ? at
-            : DateTimeOffset.MinValue;
+            : null;
+
+    /// <summary>The same deleted learning with its deletion time set to now, keeping its owner.</summary>
+    private static GraphNode StampDeletedNow(GraphNode node) => new()
+    {
+        Id = node.Id,
+        Name = node.Name,
+        Type = node.Type,
+        Properties = new Dictionary<string, string>(node.Properties) { [DeletedAtKey] = DateTimeOffset.UtcNow.ToString("O") },
+        OwnerId = node.OwnerId,
+    };
 
     public async Task<Result> SoftDeleteAsync(Guid learningId, string reason, CancellationToken ct)
     {
