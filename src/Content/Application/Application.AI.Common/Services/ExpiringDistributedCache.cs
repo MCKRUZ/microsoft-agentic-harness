@@ -62,12 +62,17 @@ public sealed class ExpiringDistributedCache : IDistributedCache
     /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken token = default) => _inner.RemoveAsync(key, token);
 
+    /// <summary><paramref name="instant"/> plus <paramref name="span"/>, saturating rather than overflowing.</summary>
+    private static DateTimeOffset Add(DateTimeOffset instant, TimeSpan span) =>
+        span > DateTimeOffset.MaxValue - instant ? DateTimeOffset.MaxValue : instant + span;
+
     /// <summary>The caller's options with an absolute expiry no later than <see cref="MaxLifetime"/> from now.</summary>
     private DistributedCacheEntryOptions Bounded(DistributedCacheEntryOptions? options)
     {
-        var latest = _timeProvider.GetUtcNow() + MaxLifetime;
+        var now = _timeProvider.GetUtcNow();
+        var latest = Add(now, MaxLifetime);
         var requested = options?.AbsoluteExpiration
-            ?? (options?.AbsoluteExpirationRelativeToNow is { } relative ? _timeProvider.GetUtcNow() + relative : null);
+            ?? (options?.AbsoluteExpirationRelativeToNow is { } relative ? Add(now, relative) : null);
 
         return new DistributedCacheEntryOptions
         {

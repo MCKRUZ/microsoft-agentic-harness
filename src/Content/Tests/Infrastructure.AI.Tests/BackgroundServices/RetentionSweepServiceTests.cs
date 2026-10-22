@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Orchestration;
 using Domain.AI.Planner;
 using Domain.Common.Config;
@@ -71,18 +72,29 @@ public sealed class RetentionSweepServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(90, 0)]
-    [InlineData(0.5, 1)]
-    public async Task Plans_AnIdlePlanGoesOnTheTick_UnlessThePeriodIsUnderADay(double days, int plansLeft)
+    [InlineData(90, 0, false)]
+    [InlineData(0.5, 1, false)]
+    [InlineData(90, 1, true)]
+    public async Task Plans_AnIdlePlanGoesOnTheTick_UnlessThePeriodIsUnderADayOrAScheduleRunsIt(
+        double days, int plansLeft, bool scheduled)
     {
         _config.AI.Planner.Retention.RetainFor = TimeSpan.FromDays(days);
         var factory = new PlannerFactory(new DbContextOptionsBuilder<PlannerDbContext>().UseSqlite(_planner).Options);
         var savedAt = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Origin.AddDays(-100));
         var store = new EfCorePlanStateStore(
             factory, NullLogger<EfCorePlanStateStore>.Instance, savedAt, new Scope(), new SchemaInitializer<PlannerDbContext>(factory));
-        (await store.SavePlanAsync(Plan(), CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var plan = Plan();
+        (await store.SavePlanAsync(plan, CancellationToken.None)).IsSuccess.Should().BeTrue();
 
-        var services = new ServiceCollection().AddScoped<IPlanStateStore>(_ => store).BuildServiceProvider();
+        // A quarterly schedule waits longer than the period between runs; the plan it runs must survive the wait. The
+        // target is stored as the caller sent it, so it is upper-cased here to prove the match is by id, not by text.
+        var schedules = new Mock<IScheduleStore>();
+        schedules.Setup(s => s.ListTargetIdsAsync(Domain.AI.Runs.RunKind.Workflow, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(scheduled ? [plan.Id.Value.ToString().ToUpperInvariant()] : []);
+        var services = new ServiceCollection()
+            .AddScoped<IPlanStateStore>(_ => store)
+            .AddSingleton(schedules.Object)
+            .BuildServiceProvider();
         using var service = new PlanRetentionService(
             services.GetRequiredService<IServiceScopeFactory>(), Monitor(), _clock, NullLogger<PlanRetentionService>.Instance);
 

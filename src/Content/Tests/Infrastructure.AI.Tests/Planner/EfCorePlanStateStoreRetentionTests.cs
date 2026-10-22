@@ -37,6 +37,23 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
 
     private DateTimeOffset Cutoff => _clock.GetUtcNow() - TimeSpan.FromDays(90);
 
+    private static bool NothingInUse(Guid _) => false;
+
+    [Fact]
+    public async Task AnIdlePlanSomethingStillRefersTo_IsKept()
+    {
+        // A quarterly schedule waits longer between runs than the period; its plan must survive the wait.
+        var scheduled = await SaveRunPlanAsync();
+        var unreferenced = await SaveRunPlanAsync();
+        _clock.Advance(TimeSpan.FromDays(100));
+
+        var removed = await _store.DeleteIdleSinceAsync(Cutoff, id => id == scheduled.Id.Value, CancellationToken.None);
+
+        removed.Should().Be(1);
+        (await CountAsync(scheduled)).Plans.Should().Be(1);
+        (await CountAsync(unreferenced)).Plans.Should().Be(0);
+    }
+
     [Fact]
     public async Task APlanNothingHasHappenedTo_IsDeletedWithEveryChildRow_AndARecentOneIsKept()
     {
@@ -44,7 +61,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _clock.Advance(TimeSpan.FromDays(100));
         var recent = await SaveRunPlanAsync();
 
-        var removed = await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None);
+        var removed = await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None);
 
         removed.Should().Be(1);
         (await CountAsync(old)).Should().Be((0, 0, 0, 0, 0), "no child row of an expired plan may survive");
@@ -58,7 +75,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _clock.Advance(TimeSpan.FromDays(100));
         await SetActivityAsync(plan, startedAt: _clock.GetUtcNow());
 
-        (await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None)).Should().Be(0);
+        (await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None)).Should().Be(0);
     }
 
     [Fact]
@@ -68,7 +85,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _clock.Advance(TimeSpan.FromDays(100));
         await SetActivityAsync(plan, completedAt: _clock.GetUtcNow());
 
-        (await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None)).Should().Be(0);
+        (await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None)).Should().Be(0);
     }
 
     [Fact]
@@ -78,7 +95,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _clock.Advance(TimeSpan.FromDays(100));
         await SetActivityAsync(plan, logAt: _clock.GetUtcNow());
 
-        (await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None)).Should().Be(0);
+        (await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None)).Should().Be(0);
     }
 
     [Fact]
@@ -88,7 +105,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         (await _store.SavePlanAsync(neverRun, CancellationToken.None)).IsSuccess.Should().BeTrue();
         _clock.Advance(TimeSpan.FromDays(91));
 
-        (await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None)).Should().Be(1);
+        (await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None)).Should().Be(1);
     }
 
     [Fact]
@@ -98,7 +115,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _clock.Advance(TimeSpan.FromDays(100));
         (await _store.SavePlanAsync(CreateGraph(), CancellationToken.None)).IsSuccess.Should().BeTrue();
 
-        (await _store.DeleteIdleSinceAsync(Cutoff, CancellationToken.None)).Should().Be(0);
+        (await _store.DeleteIdleSinceAsync(Cutoff, NothingInUse, CancellationToken.None)).Should().Be(0);
     }
 
     /// <summary>Saves a plan and records a step state and log at the clock's current time, as a run does.</summary>

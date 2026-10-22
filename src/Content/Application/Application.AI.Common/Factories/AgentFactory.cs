@@ -47,9 +47,17 @@ public partial class AgentFactory : IAgentFactory, IStoreRetentionPeriod
     /// <remarks>Always set: the cache has no switch, so every response it holds expires.</remarks>
     public TimeSpan? CurrentRetentionPeriod => ChatResponseExpiry;
 
-    /// <summary>The configured maximum lifetime of a cached response, falling back to one hour when unset or invalid.</summary>
+    /// <summary>The longest a cached response may be kept, whatever is configured.</summary>
+    private static readonly TimeSpan MaxChatResponseExpiry = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// The configured maximum lifetime of a cached response: one hour when unset or not positive, and at most
+    /// <see cref="MaxChatResponseExpiry"/>, so a mistyped huge value cannot make every cache write overflow.
+    /// </summary>
     private TimeSpan ChatResponseExpiry =>
-        _appConfig.CurrentValue.Cache?.ChatResponseExpiry is { } expiry && expiry > TimeSpan.Zero ? expiry : TimeSpan.FromHours(1);
+        _appConfig.CurrentValue.Cache?.ChatResponseExpiry is { } expiry && expiry > TimeSpan.Zero
+            ? (expiry < MaxChatResponseExpiry ? expiry : MaxChatResponseExpiry)
+            : TimeSpan.FromHours(1);
 
     /// <summary>
     /// Key under which the per-conversation scope identifier is expected in

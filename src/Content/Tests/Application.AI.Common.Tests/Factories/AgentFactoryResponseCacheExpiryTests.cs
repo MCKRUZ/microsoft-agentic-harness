@@ -55,6 +55,14 @@ public sealed class AgentFactoryResponseCacheExpiryTests
     }
 
     [Fact]
+    public void AHugeConfiguredExpiry_IsCappedAtThirtyDays()
+    {
+        _config.Cache.ChatResponseExpiry = TimeSpan.MaxValue;
+
+        CreateFactory().CurrentRetentionPeriod.Should().Be(TimeSpan.FromDays(30));
+    }
+
+    [Fact]
     public void TheReceipt_IsToldTheLivePeriod()
     {
         _config.Cache.ChatResponseExpiry = TimeSpan.FromMinutes(20);

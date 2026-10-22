@@ -4,6 +4,9 @@ namespace Infrastructure.AI.Planner;
 
 public sealed partial class EfCorePlanStateStore
 {
+    /// <summary>The most plans one retention call deletes.</summary>
+    public const int RetentionBatchSize = 500;
+
     /// <summary>
     /// Deletes every plan nothing has happened to since <paramref name="cutoff"/> (#901): not saved, no step started or
     /// finished, and no execution-log entry. Every owner, and plans with no owner.
@@ -20,16 +23,25 @@ public sealed partial class EfCorePlanStateStore
     /// </para>
     /// </remarks>
     /// <param name="cutoff">Plans with no activity at or after this instant are deleted.</param>
+    /// <param name="isInUse">
+    /// True for a plan something still refers to: a schedule that runs it, or a run queued or parked on it. Such a plan
+    /// is kept however long it has been idle; a quarterly schedule waits longer than the period between its runs.
+    /// </param>
     /// <param name="ct">Cancels the delete.</param>
-    /// <returns>How many plans were deleted.</returns>
-    public async Task<int> DeleteIdleSinceAsync(DateTimeOffset cutoff, CancellationToken ct)
+    /// <returns>How many plans were deleted, at most <see cref="RetentionBatchSize"/> per call.</returns>
+    public async Task<int> DeleteIdleSinceAsync(DateTimeOffset cutoff, Func<Guid, bool> isInUse, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(isInUse);
         await using var context = await _factory.CreateDbContextAsync(ct);
 
         // The idle check runs inside the write transaction (Microsoft.Data.Sqlite begins it IMMEDIATE), so no step can
-        // start on a plan between the check and the delete.
+        // start on a plan between the check and the delete. Bounded per call so the write lock is held briefly; the rest
+        // go on later sweeps.
         await using var transaction = await context.Database.BeginTransactionAsync(ct);
-        var planIds = await IdlePlanIdsAsync(context, cutoff, ct);
+        var planIds = (await IdlePlanIdsAsync(context, cutoff, ct))
+            .Where(id => !isInUse(id))
+            .Take(RetentionBatchSize)
+            .ToList();
         if (planIds.Count == 0)
             return 0;
 

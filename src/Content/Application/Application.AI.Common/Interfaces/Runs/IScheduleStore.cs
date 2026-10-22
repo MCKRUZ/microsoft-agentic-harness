@@ -102,6 +102,15 @@ public interface IScheduleStore
     Task<IReadOnlyList<ScheduleRecord>> GetDueSchedulesAsync(DateTimeOffset now, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Lists the target of every schedule of <paramref name="kind"/>, enabled or not, for every owner — the plan retention
+    /// sweep's question (#901): a plan a schedule runs is in use however long it waits between runs. Unscoped by caller
+    /// for the same reason <see cref="GetDueSchedulesAsync"/> is.
+    /// </summary>
+    /// <param name="kind">The kind of work the schedules run.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<string>> ListTargetIdsAsync(RunKind kind, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Atomically claims one tick of a due schedule: advances it to <paramref name="nextFireAt"/> and
     /// stamps <paramref name="firedAt"/>, but only if the stored row is still at
     /// <paramref name="expectedVersion"/>. Returns <see langword="true"/> to the winner and

@@ -109,7 +109,8 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
         lines["chat response cache"].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
         lines["chat response cache"].Reason.Should().EndWith("within 1 hour of being written");
         lines["agent delegation records"].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
-        lines["agent delegation records"].Reason.Should().EndWith("within 90 days of being written");
+        lines["agent delegation records"].Reason.Should().EndWith("within 91 days of being written",
+            "90 days after the day's file was last written, which is up to a day after the record");
     }
 
     private static bool IsRetainedStore(Type type) =>

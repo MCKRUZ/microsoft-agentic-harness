@@ -1,4 +1,6 @@
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Runs;
+using Domain.AI.Runs;
 using Domain.Common.Config;
 using Infrastructure.AI.BackgroundServices;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,13 +56,34 @@ internal sealed class PlanRetentionService : PeriodicSweepService
         ArgumentOutOfRangeException.ThrowIfLessThan(gracePeriod, RetentionPeriodConfig.MinimumRetainFor);
 
         await using var scope = _scopes.CreateAsyncScope();
-        if (scope.ServiceProvider.GetRequiredService<IPlanStateStore>() is not EfCorePlanStateStore store)
+        var services = scope.ServiceProvider;
+        if (services.GetRequiredService<IPlanStateStore>() is not EfCorePlanStateStore store)
         {
             _logger.LogWarning("Plan retention is enabled, but the plan store is not the built-in one; no plan will be deleted.");
             return 0;
         }
 
-        return await store.DeleteIdleSinceAsync(_timeProvider.GetUtcNow() - gracePeriod, cancellationToken);
+        var inUse = await PlansInUseAsync(services, cancellationToken);
+        return await store.DeleteIdleSinceAsync(_timeProvider.GetUtcNow() - gracePeriod, inUse, cancellationToken);
+    }
+
+    /// <summary>
+    /// Plans something still refers to: every schedule's workflow target, enabled or not, and every live or parked run's.
+    /// Read before the delete, so a schedule created after this read is answered by the next sweep; a plan it names was
+    /// already idle for the whole period.
+    /// </summary>
+    private static async Task<Func<Guid, bool>> PlansInUseAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var targets = new List<string>();
+        if (services.GetService<IScheduleStore>() is { } schedules)
+            targets.AddRange(await schedules.ListTargetIdsAsync(RunKind.Workflow, cancellationToken));
+
+        var runs = services.GetService<IRunJobStore>();
+        if (runs is not null)
+            targets.AddRange(runs.GetParkedRuns().Where(r => r.Kind == RunKind.Workflow).Select(r => r.TargetId));
+
+        var scheduled = targets.Select(t => Guid.TryParse(t, out var id) ? id : (Guid?)null).OfType<Guid>().ToHashSet();
+        return id => scheduled.Contains(id) || runs?.FindLiveRunForTarget(RunKind.Workflow, id.ToString()) is not null;
     }
 
     /// <inheritdoc />

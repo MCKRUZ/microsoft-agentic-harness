@@ -28,7 +28,7 @@ namespace Infrastructure.AI.Governance;
     "The call-once ledger in governance-state SQLite (off unless call-once enforcement is durable): one row per conversation or run id, tool name and time. Never pruned by age, since deleting a row re-arms a call-once tool; a conversation's rows go when the conversation expires (Conversations:Retention) or its owner is erased, only after the conversation is gone. Rows scoped to a workflow run carry a run id and a tool name, nothing that names a person, and are kept by design. Operational, so not exported.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Configured,
+    RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotApplicable)]
 public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser, IPersonalDataScrubber

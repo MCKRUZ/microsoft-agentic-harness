@@ -557,17 +557,24 @@
                             <strong>Plans.</strong> A plan nothing has happened to for
                             <code>AppConfig:AI:Planner:Retention:RetainFor</code> (default 90 days) is deleted with its
                             steps, outputs and execution log, whatever its state: finished, never run, or stopped waiting on
-                            an approval. Saving it, a step starting or finishing, and a log entry all count as activity.
+                            an approval. Saving it, a step starting or finishing, and a log entry all count as activity. A
+                            plan a schedule runs, or a run is queued or parked on, is kept however long it waits: a
+                            quarterly schedule's gap is longer than the period. A plan deleted between being loaded and
+                            started is not run.
                         </li>
                         <li>
-                            <strong>Delegation records.</strong> A session file nothing has written to for
+                            <strong>Delegation records.</strong> Each supervisor writes one file per UTC day, and a file
+                            nothing has written to for
                             <code>AppConfig:AI:Orchestration:Subagent:DelegationRetention:RetainFor</code> (default 90
-                            days) is deleted.
+                            days) is deleted, so a record goes within the period plus a day. The sweep deletes only files
+                            it named, one folder below the storage path, and never follows a link, so a storage path set to
+                            a parent of the audit trails cannot reach them.
                         </li>
                         <li>
                             <strong>The chat response cache.</strong> Every cached model response expires after
-                            <code>AppConfig:Cache:ChatResponseExpiry</code> (default one hour), in process memory and in
-                            Redis alike.
+                            <code>AppConfig:Cache:ChatResponseExpiry</code> (default one hour, at most 30 days), in process
+                            memory and in Redis alike. Entries a Redis cache already holds from before this change have no
+                            expiry; flush the cache once after upgrading.
                         </li>
                         <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's

@@ -79,6 +79,14 @@ public sealed class ExpiringDistributedCacheTests
     }
 
     [Fact]
+    public async Task AHugeRequestedLifetime_IsCappedWithoutOverflowing()
+    {
+        await Cache.SetAsync("k", [1], new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.MaxValue });
+
+        _written!.AbsoluteExpiration.Should().Be(_time.GetUtcNow() + Hour);
+    }
+
+    [Fact]
     public void ANonPositiveLifetime_IsRefused()
     {
         var act = () => new ExpiringDistributedCache(_inner.Object, TimeSpan.Zero, _time);

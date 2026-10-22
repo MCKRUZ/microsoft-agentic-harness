@@ -172,6 +172,24 @@ public sealed class PlanExecutorTests : IDisposable
         Assert.Equal(plan.Steps[2].Id, _executionOrder[2]);
     }
 
+    [Fact]
+    public async Task Execute_PlanDeletedBetweenLoadAndResume_RunsNoStep()
+    {
+        // Plan retention (#901) can delete a plan after it was loaded. Running it would execute every step, side effects
+        // included, while nothing could be saved.
+        RegisterCompletingExecutor();
+        var sut = CreateSut();
+        var plan = BuildLinearPlan(2);
+        _stateStore.SetupSequence(s => s.LoadPlanAsync(plan.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<PlanGraph?>.Success(plan))
+            .ReturnsAsync(Result<PlanGraph?>.Success(null));
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Empty(_executionOrder);
+    }
+
     // === Scheduling: parallel ===
 
     [Fact]

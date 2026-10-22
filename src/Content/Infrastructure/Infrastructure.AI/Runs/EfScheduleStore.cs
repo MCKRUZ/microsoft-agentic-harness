@@ -150,6 +150,19 @@ public sealed partial class EfScheduleStore : IScheduleStore
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListTargetIdsAsync(RunKind kind, CancellationToken cancellationToken)
+    {
+        var stored = kind.ToString();
+        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        return await ctx.Schedules
+            .AsNoTracking()
+            .Where(e => e.Kind == stored)
+            .Select(e => e.TargetId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<bool> TryClaimAsync(
         string scheduleId, int expectedVersion, DateTimeOffset nextFireAt, DateTimeOffset firedAt,
         CancellationToken cancellationToken)
