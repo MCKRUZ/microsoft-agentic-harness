@@ -131,6 +131,8 @@ public static class IServiceCollectionExtensions
     internal static readonly IReadOnlyList<string> RetentionPeriodSections =
     [
         "AppConfig:AI:PromptUsage:Retention",
+        "AppConfig:AI:Orchestration:Subagent:DelegationRetention",
+        "AppConfig:AI:Planner:Retention",
     ];
 
     /// <summary>

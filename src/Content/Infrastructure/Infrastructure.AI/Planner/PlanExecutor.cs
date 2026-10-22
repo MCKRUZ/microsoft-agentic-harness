@@ -449,6 +449,11 @@ public sealed partial class PlanExecutor : IPlanExecutor
             ? resumeResult.Value
             : null;
 
+        // Plan retention (#901) can delete a plan between the load above and the resume. Running it then would execute
+        // every step, with its side effects, while none of it could be saved, so a plan that is gone now is not run.
+        if (existingStates is null && (await _stateStore.LoadPlanAsync(planId, ct)).Value is null)
+            return Result<PlanExecutionSummary>.Fail("Plan not found.");
+
         var stepStates = new ConcurrentDictionary<PlanStepId, StepExecutionState>();
         InitializeStepStates(plan, stepStates, existingStates);
 

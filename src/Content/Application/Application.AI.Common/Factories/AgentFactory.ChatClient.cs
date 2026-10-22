@@ -235,7 +235,9 @@ public partial class AgentFactory
                     _loggerFactory.CreateLogger<Middleware.SkillPrerequisiteMiddleware>()));
         }
 
-        chatClientBuilder = chatClientBuilder.UseDistributedCache(_distributedCache);
+        // Every cached response expires (#901): the caching client sets no expiry of its own.
+        chatClientBuilder = chatClientBuilder.UseDistributedCache(new Services.ExpiringDistributedCache(
+            _distributedCache, ChatResponseExpiry, TimeProvider.System));
 
         return chatClientBuilder.Build();
     }

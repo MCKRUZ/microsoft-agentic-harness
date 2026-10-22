@@ -29,4 +29,15 @@ public sealed class PlannerOptions
 
     /// <summary>Persist plan state after every step transition for crash recovery.</summary>
     public bool CheckpointAfterEachStep { get; set; } = true;
+
+    /// <summary>
+    /// How long a plan is kept after anything last happened to it (#901). Defaults to 90 days.
+    /// </summary>
+    /// <remarks>
+    /// A plan holds its steps' prompts, outputs and errors, which can repeat what a person asked or what a tool returned.
+    /// "Anything happened" is the plan being saved, a step starting or finishing, or an execution-log entry. A plan nothing
+    /// has happened to for this long is deleted whatever its state: finished, never run, or stopped waiting on an approval
+    /// nobody gave. Lengthen it if your users save plans to run much later.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; set; } = new();
 }

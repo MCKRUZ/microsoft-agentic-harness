@@ -439,8 +439,12 @@ public static partial class DependencyInjection
 
         // --- Delegation and supervision ---
 
-        services.AddSingleton<IDelegationStore, JsonlDelegationStore>();
+        // Concrete with the interface forwarding to it, so the retention sweep and every caller share one instance and one
+        // set of file locks. Session files idle past Subagent:DelegationRetention are deleted (#901).
+        services.AddSingleton<JsonlDelegationStore>();
+        services.AddSingleton<IDelegationStore>(sp => sp.GetRequiredService<JsonlDelegationStore>());
         services.AddRetainedPersonalData<IDelegationStore>("agent delegation records");
+        services.AddHostedService<DelegationRetentionService>();
         services.AddKeyedSingleton<ISupervisorStrategy>("capability-match", (sp, _) =>
             new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
         services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();

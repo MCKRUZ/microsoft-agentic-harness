@@ -186,4 +186,97 @@ public sealed class JsonlDelegationStoreTests : IDisposable
 
         result.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task DeleteNotWrittenSinceAsync_DeletesOnlyIdleSessionFiles_AndEmptyFolders()
+    {
+        // Retention (#901): a session nothing has written to past the period goes; one still being written stays.
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+        await _store.AppendAsync(BuildRecord(supervisorId: "busy"));
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(90);
+        var idleFile = Directory.GetFiles(Path.Combine(_tempDir, "idle")).Single();
+        File.SetLastWriteTimeUtc(idleFile, cutoff.UtcDateTime.AddSeconds(-1));
+
+        var deleted = await _store.DeleteNotWrittenSinceAsync(cutoff, CancellationToken.None);
+
+        deleted.Should().Be(1);
+        Directory.GetFiles(Path.Combine(_tempDir, "idle")).Should().BeEmpty();
+        (await _store.GetBySessionAsync("busy")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task DeleteNotWrittenSinceAsync_NeverTouchesFilesItDidNotName()
+    {
+        // A storage path pointed at a parent of other JSONL logs, such as the audit trails' yyyy-MM-dd day files, must not
+        // let the sweep delete them.
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(90);
+        var old = cutoff.UtcDateTime.AddDays(-1);
+        var auditDay = Path.Combine(_tempDir, "governance", "2026-01-01.jsonl");
+        var topLevel = Path.Combine(_tempDir, "20260101T000000Z.jsonl");
+        var nested = Path.Combine(_tempDir, "a", "b", "20260101T000000Z.jsonl");
+        foreach (var file in new[] { auditDay, topLevel, nested })
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            await File.WriteAllTextAsync(file, "{}\n");
+            File.SetLastWriteTimeUtc(file, old);
+        }
+
+        var deleted = await _store.DeleteNotWrittenSinceAsync(cutoff, CancellationToken.None);
+
+        deleted.Should().Be(0);
+        File.Exists(auditDay).Should().BeTrue();
+        File.Exists(topLevel).Should().BeTrue();
+        File.Exists(nested).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AppendAsync_StartsANewFileEachDay_SoAFileStopsBeingWrittenAndCanAge()
+    {
+        // A long-running process appending to one file forever would keep that file's last write recent, so its oldest
+        // records would never age out.
+        var clock = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2026, 10, 21, 23, 0, 0, TimeSpan.Zero));
+        var config = new AppConfig();
+        config.AI.Orchestration.Subagent.DelegationStoragePath = _tempDir;
+        using var store = new JsonlDelegationStore(
+            Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config), Mock.Of<ILogger<JsonlDelegationStore>>(), clock);
+
+        await store.AppendAsync(BuildRecord(supervisorId: "daily"));
+        await store.AppendAsync(BuildRecord(supervisorId: "daily"));
+        Directory.GetFiles(Path.Combine(_tempDir, "daily")).Should().ContainSingle("records on one day share a file");
+
+        clock.Advance(TimeSpan.FromHours(2));
+        await store.AppendAsync(BuildRecord(supervisorId: "daily"));
+
+        Directory.GetFiles(Path.Combine(_tempDir, "daily")).Should().HaveCount(2, "the next day's record starts a new file");
+    }
+
+    [Fact]
+    public async Task DeleteNotWrittenSinceAsync_ASessionStillOpenInThisProcess_IsRecreatedByItsNextRecord()
+    {
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(90);
+        File.SetLastWriteTimeUtc(Directory.GetFiles(Path.Combine(_tempDir, "idle")).Single(), cutoff.UtcDateTime.AddDays(-1));
+        await _store.DeleteNotWrittenSinceAsync(cutoff, CancellationToken.None);
+
+        await _store.AppendAsync(BuildRecord(supervisorId: "idle"));
+
+        (await _store.GetBySessionAsync("idle")).Should().ContainSingle("only the record written after the sweep remains");
+    }
+
+    [Fact]
+    public void CurrentRetentionPeriod_FollowsTheSwitch()
+    {
+        var config = new AppConfig();
+        config.AI.Orchestration.Subagent.DelegationStoragePath = _tempDir;
+        config.AI.Orchestration.Subagent.DelegationRetention.RetainFor = TimeSpan.FromDays(30);
+        using var store = new JsonlDelegationStore(
+            Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config), Mock.Of<ILogger<JsonlDelegationStore>>());
+
+        store.CurrentRetentionPeriod.Should().Be(TimeSpan.FromDays(31), "a day's file is last written up to a day after its first record");
+        config.AI.Orchestration.Subagent.DelegationRetention.RetainFor = TimeSpan.FromHours(12);
+        store.CurrentRetentionPeriod.Should().BeNull("the sweep refuses a period under a day, so none is enforced");
+        config.AI.Orchestration.Subagent.DelegationRetention.RetainFor = TimeSpan.FromDays(30);
+        config.AI.Orchestration.Subagent.DelegationRetention.Enabled = false;
+        store.CurrentRetentionPeriod.Should().BeNull("a switched-off sweep must not be reported as ageing records out");
+    }
 }

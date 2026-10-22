@@ -191,6 +191,9 @@ public static partial class DependencyInjection
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();
         services.AddPersonalDataEraser<IPlanStateStore>();
+
+        // Plans nothing has happened to for Planner:Retention are deleted (#901); the switch is read live on every tick.
+        services.AddHostedService<PlanRetentionService>();
         services.AddScoped<PlanExecutionContext>();
 
         services.AddKeyedScoped<IPlanStepExecutor>(StepType.LlmCall,

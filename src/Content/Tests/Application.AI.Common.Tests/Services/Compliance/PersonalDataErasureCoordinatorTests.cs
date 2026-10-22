@@ -120,6 +120,50 @@ public sealed class PersonalDataErasureCoordinatorTests
             .Which.Status.Should().Be(StoreErasureStatus.RetainedIndefinitely);
     }
 
+    [PersonalDataStore("Test cache: unkeyed, every record expires.", PersonalDataCategories.ConversationContent,
+        PersonalDataKey.Unkeyed, RetentionBasis.Configured, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
+    private sealed class PeriodStore(TimeSpan? period) : IStoreRetentionPeriod
+    {
+        public TimeSpan? CurrentRetentionPeriod { get; } = period;
+    }
+
+    [Fact]
+    public async Task StoreWithARunningRetentionPeriod_IsListedWithThePeriod_AndTheReceiptStaysFull()
+    {
+        // #901: a store whose live configuration deletes every record within a period ages out; it says how long.
+        _retained.Add(new RetainedPersonalData("chat response cache", new PeriodStore(TimeSpan.FromDays(90))));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+        var line = receipt.Stores.Should().ContainSingle(s => s.Store == "chat response cache").Subject;
+        line.Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
+        line.Reason.Should().EndWith("deleted within 90 days of being written");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public async Task StoreWhoseRetentionIsSwitchedOff_IsKeptIndefinitely(int? days)
+    {
+        _retained.Add(new RetainedPersonalData("delegation log", new PeriodStore(days is { } d ? TimeSpan.FromDays(d) : null)));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Single(s => s.Store == "delegation log").Status.Should().Be(StoreErasureStatus.RetainedIndefinitely);
+    }
+
+    [Theory]
+    [InlineData(1, "1 hour")]
+    [InlineData(48, "2 days")]
+    [InlineData(36, "36 hours")]
+    public void ThePeriod_IsWrittenInPlainWords(int hours, string expected)
+    {
+        new RetainedPersonalData("cache", new PeriodStore(TimeSpan.FromHours(hours))).ToOutcome()!
+            .Reason.Should().EndWith($"within {expected} of being written");
+    }
+
     [Fact]
     public async Task AuditTrail_IsListedWithTheKindsOfDataItHolds()
     {

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Agents;
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Orchestration;
 using Domain.Common.Config;
 using Infrastructure.AI.Helpers;
@@ -32,14 +33,88 @@ namespace Infrastructure.AI.Agents;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Append-only JSONL of subagent delegations under {Subagent:DelegationStoragePath} (default .agent-sessions/delegations), holding model-written task descriptions and failure reasons. Records carry no user or conversation id; nothing deletes them.",
+    "Append-only JSONL of subagent delegations under {Subagent:DelegationStoragePath} (default .agent-sessions/delegations), holding model-written task descriptions and failure reasons. Records carry no user or conversation id. Each supervisor writes one file per UTC day; a file nothing has written to for Subagent:DelegationRetention:RetainFor (default 90 days) is deleted.",
     PersonalDataCategories.ConversationContent | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
-    RetentionBasis.Unbounded,
+    RetentionBasis.Configured,
     ErasureSupport.NotSupported,
     ExportSupport.NotSupported)]
-public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
+public sealed class JsonlDelegationStore : IDelegationStore, IStoreRetentionPeriod, IDisposable
 {
+    /// <inheritdoc />
+    /// <remarks>
+    /// A session file takes records for one UTC day, so a record is gone at most a day after the period: its file's last
+    /// write is no later than the end of the day it was written. A period below the sweep's floor is refused by the sweep,
+    /// so it is reported as no period at all rather than one that is not enforced.
+    /// </remarks>
+    public TimeSpan? CurrentRetentionPeriod =>
+        Retention is { Enabled: true } retention && retention.RetainFor >= RetentionPeriodConfig.MinimumRetainFor
+            ? retention.RetainFor + TimeSpan.FromDays(1)
+            : null;
+
+    private RetentionPeriodConfig Retention => _config.CurrentValue.AI.Orchestration.Subagent.DelegationRetention;
+
+    /// <summary>The names this store gives session files: <c>{yyyyMMddTHHmmssZ}.jsonl</c>. Nothing else is ever deleted.</summary>
+    private static readonly System.Text.RegularExpressions.Regex SessionFileName =
+        new(@"^\d{8}T\d{6}Z\.jsonl$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Deletes every session file nothing has written to since <paramref name="cutoff"/> (#901).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only files this store names, exactly one folder below the storage path, and never through a link: a storage path
+    /// pointed at a parent of other JSONL logs (the hash-chained audit trails among them) must not let this delete them.
+    /// </para>
+    /// <para>
+    /// Each file is checked again under its own lock before it is deleted, so a record appended in between keeps it. The
+    /// supervisor folders are left in place; their names are fixed and say nothing about anyone.
+    /// </para>
+    /// </remarks>
+    /// <param name="cutoff">Files last written before this instant are deleted.</param>
+    /// <param name="ct">Stops between files.</param>
+    /// <returns>How many files were deleted.</returns>
+    public async Task<int> DeleteNotWrittenSinceAsync(DateTimeOffset cutoff, CancellationToken ct)
+    {
+        var deleted = 0;
+        foreach (var file in OwnSessionFiles())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (File.GetLastWriteTimeUtc(file) >= cutoff.UtcDateTime)
+                continue;
+
+            var semaphore = GetFileLock(file);
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                if (File.Exists(file) && File.GetLastWriteTimeUtc(file) < cutoff.UtcDateTime)
+                {
+                    File.Delete(file);
+                    deleted++;
+                }
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        return deleted;
+    }
+
+    /// <summary>The session files this store wrote: named by it, one folder deep, links skipped.</summary>
+    private IEnumerable<string> OwnSessionFiles()
+    {
+        if (!Directory.Exists(_basePath))
+            return [];
+
+        var noLinks = new EnumerationOptions { RecurseSubdirectories = false, AttributesToSkip = FileAttributes.ReparsePoint };
+        return Directory.EnumerateDirectories(_basePath, "*", noLinks)
+            .SelectMany(directory => Directory.EnumerateFiles(directory, "*.jsonl", noLinks))
+            .Where(file => SessionFileName.IsMatch(Path.GetFileName(file)))
+            .ToList();
+    }
+
     private const int MaxLockCacheEntries = 100;
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
@@ -57,6 +132,7 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     };
 
     private readonly string _basePath;
+    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<JsonlDelegationStore> _logger;
     private readonly ConcurrentDictionary<string, string> _sessionFiles = new();
     private readonly ConcurrentDictionary<string, (SemaphoreSlim Semaphore, long LastUsed)> _fileLocks = new();
@@ -66,13 +142,19 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     /// </summary>
     /// <param name="config">Application configuration providing the delegation storage path.</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
+    /// <param name="timeProvider">The clock that decides which day's file a record goes to; the system clock when omitted.</param>
     public JsonlDelegationStore(
         IOptionsMonitor<AppConfig> config,
-        ILogger<JsonlDelegationStore> logger)
+        ILogger<JsonlDelegationStore> logger,
+        TimeProvider? timeProvider = null)
     {
         _basePath = config.CurrentValue.AI.Orchestration.Subagent.DelegationStoragePath;
+        _config = config;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
+
+    private readonly TimeProvider _timeProvider;
 
     /// <inheritdoc />
     public async Task AppendAsync(DelegationRecord record, CancellationToken ct = default)
@@ -181,12 +263,21 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     /// </summary>
     private string ResolveSessionFile(string supervisorId)
     {
-        return _sessionFiles.GetOrAdd(supervisorId, id =>
+        // One file per supervisor per UTC day (#901): retention deletes a file by its last write, so a file a long-running
+        // process kept appending to would never age and its oldest records would outlive the period.
+        var now = _timeProvider.GetUtcNow();
+        var key = $"{supervisorId}|{now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture)}";
+        return _sessionFiles.GetOrAdd(key, _ =>
         {
+            // Earlier days' entries for this supervisor are no longer written to.
+            foreach (var stale in _sessionFiles.Keys.Where(k => k.StartsWith(supervisorId + "|", StringComparison.Ordinal) && k != key))
+                _sessionFiles.TryRemove(stale, out string? _);
+
+            var id = supervisorId;
             var dir = Path.Combine(_basePath, SanitizeSupervisorId(id));
             OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
 
-            var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmss'Z'");
+            var timestamp = now.ToString("yyyyMMddTHHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
             var filePath = Path.Combine(dir, $"{timestamp}.jsonl");
 
             _logger.LogInformation(
