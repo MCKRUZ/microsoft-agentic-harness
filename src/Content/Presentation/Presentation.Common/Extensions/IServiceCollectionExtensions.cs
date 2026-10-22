@@ -138,6 +138,7 @@ public static class IServiceCollectionExtensions
         "AppConfig:Observability:Retention",
         "AppConfig:Infrastructure:StateManagement:Retention",
         "AppConfig:AI:Changes:EvidenceRetention",
+        "AppConfig:Logging:Retention",
     ];
 
     /// <summary>

@@ -32,6 +32,10 @@ internal static class HoldsNoPersonalData
             "Runs a write-ahead-log checkpoint after an erasure on the calling store's database; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
 
+        // Retention markers (#901): they record which folder a store owns, nothing about anyone.
+        ["Application.Common/Application.Common.Logging.LogRunFolder"] = new(
+            "Writes the marker at a log run's root naming the run id the caller chose, so the retention sweep can tell the providers' run folders from other content; the log text itself is written by the providers.",
+            "System.IO.FileStream::.ctor"),
         // Schema, registration and client construction: they touch a storage API but hold no rows.
         ["Infrastructure.AI/Infrastructure.AI.Persistence.SqliteAdditiveSchemaReconciler"] = new(
             "Schema maintenance only: adds missing tables, columns and indexes to existing SQLite databases and never reads or writes row data.",

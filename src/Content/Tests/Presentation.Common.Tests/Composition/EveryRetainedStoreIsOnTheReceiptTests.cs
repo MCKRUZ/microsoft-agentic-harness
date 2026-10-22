@@ -114,6 +114,34 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
     }
 
     [Fact]
+    public async Task LogFiles_AreListedWithTheirLivePeriod_AndTheSweepSeesTheProvidersTheLoggersWriteThrough()
+    {
+        // The retention sweep skips the run a provider is writing by asking the concrete provider; if that were a second
+        // instance, it would always say "no run" and the live run would be deleted under the writer.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:Logging:LogsBasePath"] = Path.Combine(_workingDir, "logs"),
+            ["AppConfig:Logging:EnableStructuredJson"] = "true",
+        });
+        await using var scope = provider.CreateAsyncScope();
+
+        var lines = scope.ServiceProvider.GetServices<RetainedPersonalData>()
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .ToDictionary(o => o.Store);
+        foreach (var store in new[] { "application log files", "structured application logs" })
+        {
+            lines[store].Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry);
+            lines[store].Reason.Should().EndWith("within 30 days of being written");
+        }
+
+        var writers = provider.GetServices<Microsoft.Extensions.Logging.ILoggerProvider>().ToList();
+        writers.Should().Contain(w => ReferenceEquals(w, provider.GetRequiredService<Application.Common.Logging.FileLoggerProvider>()));
+        writers.Should().Contain(w => ReferenceEquals(w, provider.GetRequiredService<Application.Common.Logging.StructuredJsonLoggerProvider>()));
+    }
+
+    [Fact]
     public async Task SavedWorkflowState_IsListedWithItsLivePeriod()
     {
         // The host reaches both stores only through the composite state manager, so the interface scan above cannot see

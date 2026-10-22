@@ -130,6 +130,7 @@ public static partial class DependencyInjection
         // are deleted (#901). Both resolve their store and do nothing when it keeps nothing.
         services.AddHostedService<Traces.ExecutionTraceRetentionService>();
         services.AddHostedService<BackgroundServices.ObservabilityRetentionService>();
+        services.AddHostedService<BackgroundServices.LogRunRetentionService>();
 
         // Security-review finding (#574): the page-fetch cache below must NOT be the ambient app-wide
         // IMemoryCache (AgentConversationCache and any future consumer also share that instance) — a

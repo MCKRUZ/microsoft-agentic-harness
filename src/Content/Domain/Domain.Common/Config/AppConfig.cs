@@ -183,6 +183,17 @@ public class LoggingConfig
     public string? LogsBasePath { get; set; }
 
     /// <summary>
+    /// How long a run's log files under <see cref="LogsBasePath"/> are kept after the last write (#901). Defaults to 30
+    /// days.
+    /// </summary>
+    /// <remarks>
+    /// Log text can carry message and tool content that cannot be found per person, so age is the only control on it;
+    /// the period is kept well under a conversation's. A run a provider in this process is writing is never deleted; one
+    /// another process writes into the same folder is protected only by its age.
+    /// </remarks>
+    public RetentionPeriodConfig Retention { get; set; } = new() { RetainFor = TimeSpan.FromDays(30) };
+
+    /// <summary>
     /// Gets or sets the name of the named pipe for real-time log streaming.
     /// </summary>
     /// <value>Default: "agentic-harness-logs".</value>

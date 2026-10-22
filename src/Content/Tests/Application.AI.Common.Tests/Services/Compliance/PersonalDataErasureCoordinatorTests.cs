@@ -10,6 +10,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Application.Common.Interfaces.Compliance;
 
 namespace Application.AI.Common.Tests.Services.Compliance;
 

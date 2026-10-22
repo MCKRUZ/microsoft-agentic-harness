@@ -1,5 +1,4 @@
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -14,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Compliance;
+using Application.Common.Interfaces.Compliance;
 
 namespace Application.AI.Common.Factories;
 
