@@ -200,7 +200,7 @@ public sealed class AuditedErasure
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
-            ["initiator"] = actor.IsOperator ? "operator" : "data_subject",
+            ["initiator"] = actor.Initiator,
         };
         if (subjectReference is not null)
             metadata["subject_reference"] = subjectReference;

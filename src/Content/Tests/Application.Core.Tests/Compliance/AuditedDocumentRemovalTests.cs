@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Models;
@@ -19,6 +20,8 @@ public sealed class AuditedDocumentRemovalTests
     private const string DocumentId = "0123456789ABCDEF";
 
     private readonly Mock<IErasureOrchestrator> _orchestrator = new();
+    private readonly Mock<IDocumentLoadLedger> _ledger = new();
+    private readonly Microsoft.Extensions.Time.Testing.FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 23, 0, 0, 0, TimeSpan.Zero));
     private readonly List<AuditEntry> _records = [];
     private readonly Mock<IAuditSink> _sink = new();
     private readonly CapturingLogger<AuditedDocumentRemoval> _logger = new();
@@ -30,7 +33,52 @@ public sealed class AuditedDocumentRemovalTests
             .Returns(ValueTask.CompletedTask);
     }
 
-    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _sink.Object, TimeProvider.System, _logger);
+    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _clock, _logger);
+
+    [Fact]
+    public async Task RemoveAsync_Complete_ForgetsTheLoadRecord_UpToWhenTheRemovalStarted()
+    {
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        _ledger.Verify(l => l.ForgetAsync(DocumentId, _clock.GetUtcNow(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_WithTheLoadTheCallerJudged_ForgetsOnlyUpToIt()
+    {
+        // The age limit passes the load time it judged old, so a load recorded since keeps its record.
+        var judged = _clock.GetUtcNow().AddYears(-4);
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None, judged);
+
+        _ledger.Verify(l => l.ForgetAsync(DocumentId, judged, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_Partial_KeepsTheLoadRecord_SoTheAgeLimitTriesAgain()
+    {
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Receipt() with { Completeness = ErasureCompleteness.Partial });
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _ledger.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task RemoveAsync_LoadRecordCannotBeForgotten_StillSucceeds()
+    {
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+        _ledger.Setup(l => l.ForgetAsync(It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("database locked"));
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("the document is gone; a stale record only finds nothing later");
+    }
 
     private static ErasureReceipt Receipt(IReadOnlyList<string>? unmatched = null) => new()
     {

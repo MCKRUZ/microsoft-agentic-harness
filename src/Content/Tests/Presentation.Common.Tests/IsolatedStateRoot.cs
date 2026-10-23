@@ -14,6 +14,9 @@ namespace Presentation.Common.Tests;
 /// </remarks>
 internal static class IsolatedStateRoot
 {
+    /// <summary>This run's state directory, removed when the test process exits.</summary>
+    internal static string Root { get; private set; } = string.Empty;
+
     [ModuleInitializer]
-    internal static void Redirect() => TestStateRoot.Redirect("presentation-common-tests-");
+    internal static void Redirect() => Root = TestStateRoot.Redirect("presentation-common-tests-");
 }

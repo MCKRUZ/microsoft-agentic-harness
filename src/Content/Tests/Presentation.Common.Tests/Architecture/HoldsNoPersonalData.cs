@@ -184,6 +184,14 @@ internal static class HoldsNoPersonalData
         ["Infrastructure.AI/Infrastructure.AI.SkillTraining.SkillTrainingRunLease"] = new(
             "Lease row only (run id, random owner token, expiry), deleted on dispose; holds no personal data.",
             "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions::ExecuteSqlInterpolatedAsync"),
+        ["Infrastructure.AI/Infrastructure.AI.Documents.EfCoreDocumentLoadLedger"] = new(
+            "When each document was last loaded (#901): a document id, which is a hash of where the document came from, and a time. Not who loaded it, the location, or the tenant; nothing that names a person. A row goes when its document is removed completely.",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::AsNoTracking",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ExecuteDeleteAsync",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::FirstOrDefaultAsync",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ToListAsync",
+            "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions::ExecuteSqlInterpolatedAsync",
+            "calls channel Infrastructure.AI.Persistence.DocumentLoadDbContext"),
         ["Infrastructure.AI/Infrastructure.AI.Persistence.GovernanceStatePruner"] = new(
             "A retention sweeper that only deletes expired governance-state rows and holds nothing itself.",
             "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ExecuteDeleteAsync",

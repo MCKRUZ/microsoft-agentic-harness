@@ -563,6 +563,10 @@ public static partial class DependencyInjection
         RegisterPlannerDbContext(services, appConfig);
         RegisterScheduleDbContext(services, appConfig);
         RegisterPlannerServices(services);
+
+        // --- Loaded documents: when each was last loaded, and the optional age limit (#901) ---
+
+        RegisterDocumentRetention(services, appConfig);
         RegisterSandboxServices(services);
 
         services.AddOptions<Planner.PlannerOptions>()

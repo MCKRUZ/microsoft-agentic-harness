@@ -107,6 +107,7 @@ public sealed class IngestDocumentCommandHandlerGraphStagesTests
             _vectorStore.Object,
             _bm25Store.Object,
             new Mock<IKnowledgeScope>().Object,
+            Mock.Of<IDocumentLoadLedger>(),
             NullLogger<IngestDocumentCommandHandler>.Instance,
             monitor.Object,
             services.BuildServiceProvider());
