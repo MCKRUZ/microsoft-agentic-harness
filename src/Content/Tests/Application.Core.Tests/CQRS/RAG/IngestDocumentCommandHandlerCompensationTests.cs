@@ -85,6 +85,7 @@ public sealed class IngestDocumentCommandHandlerCompensationTests
             _vectorStore.Object,
             _bm25Store.Object,
             new Mock<IKnowledgeScope>().Object,
+            Mock.Of<IDocumentLoadLedger>(),
             NullLogger<IngestDocumentCommandHandler>.Instance,
             monitor.Object,
             new ServiceCollection().BuildServiceProvider());

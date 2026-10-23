@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.RemoveDocument;
 using Domain.AI.KnowledgeGraph.Models;
@@ -29,7 +30,7 @@ public sealed class RemoveDocumentCommandTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         return new RemoveDocumentCommandHandler(new AuditedDocumentRemoval(
-            _orchestrator.Object, sink.Object, TimeProvider.System, NullLogger<AuditedDocumentRemoval>.Instance));
+            _orchestrator.Object, Mock.Of<IDocumentLoadLedger>(), sink.Object, TimeProvider.System, NullLogger<AuditedDocumentRemoval>.Instance));
     }
 
     [Fact]

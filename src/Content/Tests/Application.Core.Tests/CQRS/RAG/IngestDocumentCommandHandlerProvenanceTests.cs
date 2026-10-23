@@ -88,6 +88,7 @@ public sealed class IngestDocumentCommandHandlerProvenanceTests
             _vectorStore.Object,
             _bm25Store.Object,
             _scope.Object,
+            Mock.Of<IDocumentLoadLedger>(),
             NullLogger<IngestDocumentCommandHandler>.Instance,
             monitor.Object,
             new ServiceCollection().BuildServiceProvider());

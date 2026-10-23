@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using Domain.Common.Models;
@@ -15,7 +16,7 @@ namespace Application.Core.Compliance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>What the record holds.</strong> Who asked, the document id, the receipt's request id, its completeness,
+/// <strong>What the record holds.</strong> Who asked (an operator, or the document age limit), the document id, the receipt's request id, its completeness,
 /// whether the id matched anything, and per-store counts. A document id is a hash of where the document came from, not a person's identity, so it is kept: an
 /// audit record that could not say which document went would prove little.
 /// </para>
@@ -24,6 +25,12 @@ namespace Application.Core.Compliance;
 /// an outcome after, sharing one correlation id, so a request that dies part-way leaves a trace that it began. Writing a
 /// record is best-effort: a broken audit sink is logged and never stops the removal. Store faults are logged in full and
 /// surfaced as a fixed message, because store exceptions can carry connection strings and paths.
+/// </para>
+/// <para>
+/// <strong>The load record.</strong> A complete removal forgets the document in <see cref="IDocumentLoadLedger"/>, so the
+/// document age limit does not reach for it again; a <c>Partial</c> one keeps it, so the age limit tries again. Only a
+/// record no later than the load the caller decided on is forgotten, so a document loaded again meanwhile keeps its new
+/// load time.
 /// </para>
 /// </remarks>
 public sealed class AuditedDocumentRemoval
@@ -42,27 +49,32 @@ public sealed class AuditedDocumentRemoval
         "^[0-9A-F]{16}\\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private readonly IErasureOrchestrator _orchestrator;
+    private readonly IDocumentLoadLedger _loadLedger;
     private readonly IAuditSink _auditSink;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedDocumentRemoval> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="AuditedDocumentRemoval"/> class.</summary>
     /// <param name="orchestrator">Removes the document from every store.</param>
+    /// <param name="loadLedger">When each document was last loaded; a complete removal forgets the document there.</param>
     /// <param name="auditSink">The audit trail the attempt and outcome are written to.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedDocumentRemoval(
         IErasureOrchestrator orchestrator,
+        IDocumentLoadLedger loadLedger,
         IAuditSink auditSink,
         TimeProvider timeProvider,
         ILogger<AuditedDocumentRemoval> logger)
     {
         ArgumentNullException.ThrowIfNull(orchestrator);
+        ArgumentNullException.ThrowIfNull(loadLedger);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _orchestrator = orchestrator;
+        _loadLedger = loadLedger;
         _auditSink = auditSink;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -76,12 +88,17 @@ public sealed class AuditedDocumentRemoval
     /// <param name="documentId">The document to remove.</param>
     /// <param name="actor">Who asked for the removal.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="loadedNoLaterThan">
+    /// The latest load the caller decided to remove; the document age limit passes the load time it judged. A load recorded
+    /// after it keeps its record. When omitted, the moment the removal starts.
+    /// </param>
     /// <returns>The receipt, or a scrubbed failure when a fault stopped the request.</returns>
     public async Task<Result<ErasureReceipt>> RemoveAsync(
-        string documentId, ErasureActor actor, CancellationToken cancellationToken)
+        string documentId, ErasureActor actor, CancellationToken cancellationToken, DateTimeOffset? loadedNoLaterThan = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
         ArgumentNullException.ThrowIfNull(actor);
+        var forgetLoadsUpTo = loadedNoLaterThan ?? _timeProvider.GetUtcNow();
 
         var correlationId = Guid.NewGuid().ToString("N");
         var record = new AuditEntry
@@ -92,7 +109,7 @@ public sealed class AuditedDocumentRemoval
             CorrelationId = correlationId,
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Attempted,
-            Metadata = Metadata("attempt", documentId, receipt: null),
+            Metadata = Metadata("attempt", actor, documentId, receipt: null),
         };
         await RecordSafelyAsync(record);
 
@@ -103,13 +120,13 @@ public sealed class AuditedDocumentRemoval
         }
         catch (OperationCanceledException)
         {
-            await RecordFailureAsync(record, documentId, "cancelled");
+            await RecordFailureAsync(record, actor, documentId, "cancelled");
             throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Document removal {CorrelationId} failed for document {DocumentId}.", correlationId, documentId);
-            await RecordFailureAsync(record, documentId, ex.GetType().Name);
+            await RecordFailureAsync(record, actor, documentId, ex.GetType().Name);
             return Result<ErasureReceipt>.Fail(FailedMessage);
         }
 
@@ -120,10 +137,29 @@ public sealed class AuditedDocumentRemoval
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
-            Metadata = Metadata("outcome", documentId, receipt),
+            Metadata = Metadata("outcome", actor, documentId, receipt),
         });
 
+        if (receipt.Completeness == ErasureCompleteness.Full)
+            await ForgetLoadAsync(documentId, forgetLoadsUpTo);
+
         return Result<ErasureReceipt>.Success(receipt);
+    }
+
+    /// <summary>
+    /// Forgets the document's load record. A failure is logged, not returned: the document is already gone, and a record
+    /// left behind only means the age limit finds nothing there later.
+    /// </summary>
+    private async Task ForgetLoadAsync(string documentId, DateTimeOffset loadedNoLaterThan)
+    {
+        try
+        {
+            await _loadLedger.ForgetAsync(documentId, loadedNoLaterThan, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Document removal could not forget the load record of document {DocumentId}.", documentId);
+        }
     }
 
     /// <summary>Records a request refused before anything was removed.</summary>
@@ -146,25 +182,26 @@ public sealed class AuditedDocumentRemoval
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Denied,
             FailureReason = reason,
-            Metadata = Metadata("outcome", IsDocumentId(documentId) ? documentId! : DocumentInvalid, receipt: null),
+            Metadata = Metadata("outcome", actor, IsDocumentId(documentId) ? documentId! : DocumentInvalid, receipt: null),
         });
     }
 
-    private Task RecordFailureAsync(AuditEntry attempt, string documentId, string reason) =>
+    private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason) =>
         RecordSafelyAsync(attempt with
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
-            Metadata = Metadata("outcome", documentId, receipt: null),
+            Metadata = Metadata("outcome", actor, documentId, receipt: null),
         });
 
-    private static Dictionary<string, string> Metadata(string phase, string documentId, ErasureReceipt? receipt)
+    private static Dictionary<string, string> Metadata(
+        string phase, ErasureActor actor, string documentId, ErasureReceipt? receipt)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
-            ["initiator"] = "operator",
+            ["initiator"] = actor.Initiator,
             ["document_id"] = documentId,
         };
         if (receipt is null)

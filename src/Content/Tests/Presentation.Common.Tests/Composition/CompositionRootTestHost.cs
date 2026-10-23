@@ -68,7 +68,7 @@ internal static class CompositionRootTestHost
         IEnumerable<KeyValuePair<string, string?>> settings)
     {
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(settings)
+            .AddInMemoryCollection(WithOwnDocumentLoadDatabase(settings))
             .Build();
 
         var services = new ServiceCollection();
@@ -83,6 +83,27 @@ internal static class CompositionRootTestHost
         services.BuildGlobalSolutionServices(appConfig, includeHealthChecksUI: false);
 
         return (services, configuration);
+    }
+
+    private const string DocumentLoadDatabaseKey = "AppConfig:AI:Rag:Documents:LoadLedgerDatabasePath";
+
+    /// <summary>
+    /// Gives each composition its own document load database unless the test chose one. Every composition opens it (the
+    /// ingest handler and the document removal both depend on it), and compositions run in parallel: on one shared file
+    /// their schema creation raced each other and the tests that clear SQLite's connection pools, and failed
+    /// intermittently where main, without that database, did not. Placed under this run's state root, which is removed
+    /// when the run ends.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, string?>> WithOwnDocumentLoadDatabase(
+        IEnumerable<KeyValuePair<string, string?>> settings)
+    {
+        var list = settings.ToList();
+        if (list.Any(s => string.Equals(s.Key, DocumentLoadDatabaseKey, StringComparison.OrdinalIgnoreCase)))
+            return list;
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(IsolatedStateRoot.Root, nameof(IsolatedStateRoot.Root));
+        var path = Path.Combine(IsolatedStateRoot.Root, $"documents-{Guid.NewGuid():N}.db");
+        return [.. list, new(DocumentLoadDatabaseKey, path)];
     }
 
     /// <summary>

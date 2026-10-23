@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.Core.Compliance;
 using Application.Core.Workflows.KnowledgeGraph;
 using Domain.AI.RAG.Models;
 using Domain.AI.Telemetry.Conventions;
@@ -30,6 +31,11 @@ namespace Application.Core.CQRS.RAG.IngestDocument;
 /// command validator has already rejected any caller-supplied collection name in that
 /// mode.
 /// </para>
+/// <para>
+/// Before any store is written, the load is recorded in <see cref="IDocumentLoadLedger"/> (#901), so the optional document
+/// age limit can find every document the corpus holds. A failure to record fails the ingest: a document stored with no
+/// load time could never age out.
+/// </para>
 /// </remarks>
 public sealed class IngestDocumentCommandHandler
 	: IRequestHandler<IngestDocumentCommand, IngestDocumentResult>
@@ -45,6 +51,7 @@ public sealed class IngestDocumentCommandHandler
 	private readonly IVectorStore _vectorStore;
 	private readonly IBm25Store _bm25Store;
 	private readonly IKnowledgeScope _knowledgeScope;
+	private readonly IDocumentLoadLedger _loadLedger;
 	private readonly ILogger<IngestDocumentCommandHandler> _logger;
 	private readonly IOptionsMonitor<AppConfig> _appConfigMonitor;
 	private readonly IServiceProvider _serviceProvider;
@@ -59,6 +66,7 @@ public sealed class IngestDocumentCommandHandler
 		IVectorStore vectorStore,
 		IBm25Store bm25Store,
 		IKnowledgeScope knowledgeScope,
+		IDocumentLoadLedger loadLedger,
 		ILogger<IngestDocumentCommandHandler> logger,
 		IOptionsMonitor<AppConfig> appConfigMonitor,
 		IServiceProvider serviceProvider)
@@ -72,6 +80,7 @@ public sealed class IngestDocumentCommandHandler
 		_vectorStore = vectorStore;
 		_bm25Store = bm25Store;
 		_knowledgeScope = knowledgeScope;
+		_loadLedger = loadLedger;
 		_logger = logger;
 		_appConfigMonitor = appConfigMonitor;
 		// The graph-build stages resolve their collaborators lazily from the provider:
@@ -93,6 +102,11 @@ public sealed class IngestDocumentCommandHandler
 
 		// Captured once chunks exist so the catch path can compensate partial store writes.
 		string? documentId = null;
+
+		// Set just before the store writes begin. Compensation undoes THIS ingest's writes, so it runs only once they have
+		// started: a failure before then has written nothing, and deleting by document id would instead remove the copy a
+		// previous load left in place.
+		var storesWritten = false;
 
 		// Ambient identity is captured ONCE, up front, so the collection resolution and the
 		// provenance stamps (applied after several awaits) are guaranteed to agree even if
@@ -153,7 +167,12 @@ public sealed class IngestDocumentCommandHandler
 			// stamped too. Provenance only — retrieval never filters on these fields.
 			chunks = StampProvenance(chunks, ownerId, tenantId);
 
+			// 6.6. Record the load before any store is written: a document stored without a load time could never
+			// age out. An id no chunker forms cannot be removed by id at all, so it is not recorded.
+			await RecordLoadAsync(documentId, jobId, cancellationToken);
+
 			// 7. Index in vector store and BM25 store in parallel
+			storesWritten = true;
 			await Task.WhenAll(
 				_vectorStore.IndexAsync(chunks, effectiveCollection, cancellationToken),
 				_bm25Store.IndexAsync(chunks, effectiveCollection, cancellationToken));
@@ -208,7 +227,7 @@ public sealed class IngestDocumentCommandHandler
 			// RAPTOR summaries) persisted with no clean way to erase them later. Both deletes
 			// are document-scoped and idempotent, so calling them is safe even for the store
 			// that wrote nothing.
-			if (documentId is not null)
+			if (documentId is not null && storesWritten)
 			{
 				await CompensatePartialIngestAsync(documentId, effectiveCollection, jobId);
 			}
@@ -248,6 +267,29 @@ public sealed class IngestDocumentCommandHandler
 				Metadata = c.Metadata with { OwnerId = ownerId, TenantId = tenantId },
 			})
 			.ToList();
+	}
+
+	/// <summary>
+	/// Records that <paramref name="documentId"/> was loaded now. A document id no chunker forms cannot be removed by id, so
+	/// it is logged rather than recorded.
+	/// </summary>
+	private async Task RecordLoadAsync(string? documentId, string jobId, CancellationToken cancellationToken)
+	{
+		if (documentId is null)
+		{
+			return;
+		}
+
+		if (!AuditedDocumentRemoval.IsDocumentId(documentId))
+		{
+			_logger.LogWarning(
+				"RAG ingestion {JobId}: document id is not in the form the built-in chunkers give it, so the document " +
+				"cannot be removed by id or reached by the document age limit",
+				jobId);
+			return;
+		}
+
+		await _loadLedger.RecordLoadedAsync(documentId, cancellationToken);
 	}
 
 	/// <summary>

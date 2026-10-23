@@ -134,6 +134,7 @@ public static class IServiceCollectionExtensions
         "AppConfig:AI:Orchestration:Subagent:DelegationRetention",
         "AppConfig:AI:Planner:Retention",
         "AppConfig:AI:Rag:CrossSessionMemory:Retention",
+        "AppConfig:AI:Rag:Documents:Retention",
         "AppConfig:MetaHarness:TraceRetention",
         "AppConfig:Observability:Retention",
         "AppConfig:Infrastructure:StateManagement:Retention",

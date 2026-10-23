@@ -676,6 +676,40 @@
                             30 requests an hour per operator. It is never an agent tool.
                         </li>
                         <li>
+                            <strong>An optional age limit for loaded documents, off by default.</strong> A loaded document
+                            is the organisation's own business content, so by default it is kept until someone removes it.
+                            An organisation whose policy limits how long such content may be held sets
+                            <code>AppConfig:AI:Rag:Documents:Retention:Enabled</code>; each document not loaded for
+                            <code>RetainFor</code> (default three years) is then removed by the same audited removal an
+                            operator runs, recorded with <code>retention</code> as the actor. Loading a document again
+                            restarts its clock. The time of each load is kept in its own small database
+                            (<code>AppConfig:AI:Rag:Documents:LoadLedgerDatabasePath</code>, default
+                            <code>data/documents.db</code>), holding a document id and a time only, written before the
+                            document reaches any store; a load that cannot be recorded fails the ingest and leaves any copy
+                            an earlier load indexed untouched. (Before, any failure ahead of the store writes, such as an
+                            embedding error, also deleted that earlier copy; clean-up now runs only once this load's own
+                            writes have started.) A removal forgets the record only up to the load it judged, so a document
+                            loaded again meanwhile keeps its new time. A removal that ends Partial keeps the record and is
+                            tried again on the next sweep; at most 200 documents go per sweep, oldest first.
+                        </li>
+                        <li>
+                            <strong>The load record is one process's file, so the age limit refuses shared stores.</strong>
+                            A removal deletes from every tenant and collection of the document stores, but the record lives
+                            under one host's folder. Where another process can write the same stores (Azure AI Search, a
+                            Postgres or Neo4j graph, another host beside this one), that host's recent load would be missing
+                            here and the document deleted for everyone. The host therefore refuses to start with the limit on
+                            unless every store is in-process (the FAISS index with the in-memory graph), a shared
+                            <code>IDocumentLoadLedger</code> is registered, or the deployment sets
+                            <code>AppConfig:AI:Rag:Documents:LoadLedgerSharedByEveryWriter</code> because every writer uses
+                            the same file on one machine; the sweep re-checks this every run. This is the same single-instance
+                            rule the architecture guide states for the other SQLite stores. Limits that remain: documents
+                            loaded before this release, or whose record was lost with a cleared base folder, have no load
+                            time and are never reached (remove them by id, or load them again); a document whose id a custom
+                            chunker formed in another shape cannot be removed by id at all, so it is not recorded and a
+                            warning is logged; and a load that lands after a removal has started but before its chunks are
+                            deleted loses that copy while keeping its record, so it should be loaded again.
+                        </li>
+                        <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's
                             standing instruction, identifiers only, kept until they delete it or are erased) and the
                             call-once ledger's workflow-run rows (a run id and tool name, nothing that names a person;

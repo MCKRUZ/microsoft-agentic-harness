@@ -33,6 +33,7 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
     [InlineData("AppConfig:Infrastructure:StateManagement:Retention")]
     [InlineData("AppConfig:AI:Changes:EvidenceRetention")]
     [InlineData("AppConfig:Logging:Retention")]
+    [InlineData("AppConfig:AI:Rag:Documents:Retention")]
     public void ARetentionPeriodUnderADay_StopsTheHost(string section)
     {
         using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
@@ -58,6 +59,35 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
     }
 
     [Fact]
+    public async Task TheDocumentAgeLimit_OverSharedStoresWithTheLocalLoadRecord_StopsTheHost()
+    {
+        // The default vector store is Azure AI Search, which other processes can write; the shipped load record is this
+        // process's own file, so a removal could delete a document another host loaded yesterday.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = "true",
+        });
+
+        var act = () => provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>().ToList();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*LoadLedgerSharedByEveryWriter*");
+    }
+
+    [Fact]
+    public async Task TheDocumentAgeLimit_WhenEveryWriterSharesTheLoadRecord_StartsTheHost()
+    {
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = "true",
+            ["AppConfig:AI:Rag:Documents:LoadLedgerSharedByEveryWriter"] = "true",
+        });
+
+        var act = () => provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>().ToList();
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheDefaults_StartTheHost()
     {
         using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>());
@@ -68,5 +98,7 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
         var app = provider.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
         app.MetaHarness.TraceRetention.RetainFor.Should().Be(TimeSpan.FromDays(30));
         app.Observability.Retention.RetainFor.Should().Be(TimeSpan.FromDays(90));
+        app.AI.Rag.Documents.Retention.Enabled.Should().BeFalse("loaded documents are kept until removed unless an organisation sets a limit");
+        app.AI.Rag.Documents.Retention.RetainFor.Should().Be(TimeSpan.FromDays(1095));
     }
 }

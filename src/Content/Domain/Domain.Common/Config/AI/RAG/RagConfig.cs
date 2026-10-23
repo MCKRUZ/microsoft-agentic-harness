@@ -121,4 +121,9 @@ public class RagConfig
     /// caller's tenant and caller-supplied collection names are rejected.
     /// </summary>
     public ScopedCollectionsConfig ScopedCollections { get; set; } = new();
+
+    /// <summary>
+    /// Loaded documents: the record of when each was last loaded, and the optional age limit (off by default) (#901).
+    /// </summary>
+    public DocumentsConfig Documents { get; set; } = new();
 }

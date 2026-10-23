@@ -66,6 +66,8 @@ public static class TestStateRoot
             "AppConfig__AI__Conversations__DatabasePath", Path.Combine(root, "conversations.db"));
         Environment.SetEnvironmentVariable(
             "AppConfig__AI__Rag__GraphDatabase__DataDirectory", Path.Combine(root, "graph"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath", Path.Combine(root, "documents.db"));
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => TryDelete(root);
 
