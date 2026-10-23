@@ -283,14 +283,16 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     }
 
     /// <summary>
-    /// Whether a line means the subject's data may remain with no end date. A store whose records age out, or an audit
-    /// trail kept on purpose, is listed on the receipt without making it <c>Partial</c>.
+    /// Whether a line means the subject's data may remain with no end date. A store whose records age out, an audit
+    /// trail kept on purpose, or the organisation's own business content, is listed on the receipt without making it
+    /// <c>Partial</c>.
     /// </summary>
     private static bool LeavesDataBehind(StoreErasureStatus status) => status switch
     {
         StoreErasureStatus.Erased => false,
         StoreErasureStatus.RetainedUntilExpiry => false,
         StoreErasureStatus.RetainedByObligation => false,
+        StoreErasureStatus.RetainedAsBusinessContent => false,
         StoreErasureStatus.Failed => true,
         StoreErasureStatus.Skipped => true,
         StoreErasureStatus.NotSupported => true,

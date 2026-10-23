@@ -19,6 +19,11 @@ namespace Application.AI.Common.Services.Compliance;
 /// A store that can erase, or one keyed to the owner, is not listed here: the first appears as an erasure line, the second
 /// as <see cref="StoreErasureStatus.NotSupported"/> through <see cref="NonErasableStore"/>.
 /// </para>
+/// <para>
+/// One line is not a store at all: <see cref="BusinessContent"/> tells the person that documents other people loaded may
+/// still mention them, and why they are kept (#901). The document indexes erase the person's own uploads by owner, so
+/// nothing else on the receipt would say so.
+/// </para>
 /// </remarks>
 public sealed class RetainedPersonalData
 {
@@ -50,6 +55,17 @@ public sealed class RetainedPersonalData
     public const string ObligationReason =
         "a tamper-evident accountability record kept on purpose; removing one person would break the evidence it provides";
 
+    /// <summary>
+    /// Reason for <see cref="StoreErasureStatus.RetainedAsBusinessContent"/>. When the document age limit runs, its period
+    /// is appended.
+    /// </summary>
+    public const string BusinessContentReason =
+        "documents other people loaded, and what was drawn from them, may mention you; they are the organisation's own "
+        + "business content, kept until it removes them";
+
+    private readonly bool _businessContent;
+    private readonly TimeSpan? _businessContentAgeLimit;
+
     /// <summary>Initializes a new instance of the <see cref="RetainedPersonalData"/> class.</summary>
     /// <param name="storeName">The store, as a reviewer would name it.</param>
     /// <param name="store">The instance the host resolved, or <see langword="null"/> when it runs none.</param>
@@ -59,6 +75,24 @@ public sealed class RetainedPersonalData
         StoreName = storeName;
         Store = store;
     }
+
+    private RetainedPersonalData(string storeName, TimeSpan? ageLimit)
+        : this(storeName, store: null)
+    {
+        _businessContent = true;
+        _businessContentAgeLimit = ageLimit;
+    }
+
+    /// <summary>
+    /// The receipt line for documents other people loaded (#901): they may mention the person, and are kept as the
+    /// organisation's business content.
+    /// </summary>
+    /// <param name="storeName">The line's name, as a reviewer would name it.</param>
+    /// <param name="ageLimit">
+    /// The document age limit when it is running, or <see langword="null"/> when documents are kept until removed.
+    /// </param>
+    /// <returns>The line's source.</returns>
+    public static RetainedPersonalData BusinessContent(string storeName, TimeSpan? ageLimit) => new(storeName, ageLimit);
 
     /// <summary>Gets the store as the person reading the receipt would name it.</summary>
     public string StoreName { get; }
@@ -73,6 +107,14 @@ public sealed class RetainedPersonalData
     /// <returns>The line, or <see langword="null"/>.</returns>
     public StoreErasureOutcome? ToOutcome()
     {
+        if (_businessContent)
+        {
+            var businessReason = _businessContentAgeLimit is { } limit
+                ? $"{BusinessContentReason}, or until {Describe(limit)} after they were last loaded"
+                : BusinessContentReason;
+            return new StoreErasureOutcome(StoreName, StoreErasureStatus.RetainedAsBusinessContent, 0, businessReason);
+        }
+
         if (Store is null or IPersonalDataEraser)
             return null;
 

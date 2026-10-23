@@ -717,16 +717,72 @@
                             conversation.
                         </li>
                         <li>
+                            <strong>Loaded documents, and the knowledge drawn from them, are kept by design.</strong> They
+                            are the organisation's own business content, so the Azure AI Search indexes, the GraphRAG corpus
+                            graph and the document-derived nodes of the Postgres and Neo4j knowledge graphs keep them until
+                            the organisation removes the document, or until the optional age limit above does. Each store's
+                            entry in the inventory says so, and says what does age out beside it (personal knowledge, two
+                            years). A person's erasure still removes everything they loaded, by owner; documents other
+                            people loaded may mention them, and the erasure receipt now tells them so (below).
+                        </li>
+                        <li>
                             Spilled tool results (7 days), resolved escalations and terminal change proposals (90 days),
                             orphaned token budgets (30 days) and the knowledge-graph entity types listed above already
                             had periods.
                         </li>
                     </ul>
                     <p>
-                        The stores still on the gap list, with what will close each one, are in
-                        <code>src/Content/Tests/Presentation.Common.Tests/Architecture/KeptForeverGaps.cs</code>. Until it is
-                        empty, a deployment that must meet storage limitation should set its own periods for them.
+                        Every store in the inventory now has a retention period or a written reason to be kept. The guard
+                        that enforced this one store at a time keeps an empty list of exceptions
+                        (<code>src/Content/Tests/Presentation.Common.Tests/Architecture/KeptForeverGaps.cs</code>), so a new
+                        store that keeps data with neither fails the build.
                     </p>
+
+                    <h3 id="audit-archive-retention">The audit archive: why erasure does not reach it, and how long to keep it</h3>
+                    <p>
+                        The audit trails (governance, escalation, change, egress and drift) are hash-chained, and the audit
+                        archiver moves their finished days into write-once storage (<code>Presentation.AuditArchiver</code>,
+                        #416). Removing one person's records from them would break the evidence they exist to provide, so
+                        erasure lists them on the receipt rather than editing them. The basis is GDPR Article 17(3): the
+                        right to erasure does not apply where processing is necessary for compliance with a legal
+                        obligation (point (b)), or for the establishment, exercise or defence of legal claims (point (e)).
+                        That basis does not remove storage limitation (Article 5(1)(e)): the archive needs an end date too,
+                        set by the deploying organisation.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Where the period lives.</strong> In the storage, not in the application: the archive's
+                            Azure Blob container carries a locked time-based retention policy, and a lifecycle management
+                            rule deletes day-files once that period has passed. The application never deletes from the
+                            archive; it mounts it read-only.
+                        </li>
+                        <li>
+                            <strong>Recommended periods.</strong> Pick the longest obligation that applies and set both the
+                            lock and the deletion rule to it. As reference points: the EU AI Act requires providers and
+                            deployers of high-risk AI systems to keep the logs those systems generate for at least six
+                            months (Articles 19 and 26(6)); PCI DSS 4.0 requires twelve months of audit log history, the last
+                            three immediately available (requirement 10.5.1); sector rules (financial services, health) can
+                            require years. Where nothing longer applies, twelve months covers both of the first two. Agree
+                            the period with your data protection officer; the template cannot know it.
+                        </li>
+                        <li>
+                            <strong>What the deletion rule must leave.</strong> Delete only the day-files
+                            (<code>{log}/{yyyy-MM-dd}.jsonl</code>). Keep the archive's marker file
+                            (<code>.audit-archive</code>), each log's <code>witnesses/</code> and <code>accepted/</code>
+                            folders: they hold sequence numbers, hashes and operator decisions, not the records, and
+                            verification depends on them. Verification starts at the oldest day-file that remains and logs
+                            that earlier records expired, so deleting old days does not break it (pinned by
+                            <code>AuditArchiverTests.Verify_AfterTheOldestArchivedDayExpires_StillPasses_WithItsWitnessesAndMarkerKept</code>).
+                        </li>
+                        <li>
+                            <strong>Live day-files.</strong> The archiver deletes each live copy once its archived copy is
+                            safely written, so the live folder holds only days not yet archived. Without the archiver, live
+                            audit files are never deleted; running it is how they get a retention period.
+                        </li>
+                        <li>
+                            <strong>Reducing what the trails hold</strong> in the first place is tracked in #903.
+                        </li>
+                    </ul>
                     <p>
                         The erasure receipt reads each unsearchable store's live period: a store whose retention is
                         running is listed as <code>RetainedUntilExpiry</code> with "each record is deleted within N", and
@@ -816,17 +872,23 @@
                                     go away on their own, such as a store held only in memory) and
                                     <code>RetainedByObligation</code> (the tamper-evident audit trails, kept on purpose;
                                     the line names the kinds of data each holds, for example tool inputs or the network
-                                    addresses a tool reached).
+                                    addresses a tool reached). One more line is always there:
+                                    <code>RetainedAsBusinessContent</code>, "documents other people loaded", telling the
+                                    person that documents others loaded, and what was drawn from them, may mention them and
+                                    are kept as the organisation's business content until it removes them; with the document
+                                    age limit running, it adds how long.
                                 </li>
                                 <li>
                                     <code>Completeness</code> and <code>CompletenessReason</code>. <code>Full</code> means
                                     every store that can find the person erased them <em>and</em> no store the host runs can
-                                    still hold their data with no end date, <strong>other than the audit trails</strong>,
-                                    which are listed with what they hold rather than counted. Any failed, held-back or
-                                    unsupported store, or any store retained indefinitely, makes it <code>Partial</code>
-                                    and names it. Until every store on the gap list has a retention limit (#901), a
-                                    default deployment's receipts read <code>Partial</code> for that reason,
-                                    deliberately. Reducing what the audit trails record is tracked in #903.
+                                    still hold their data with no end date, <strong>other than the audit trails and the
+                                    organisation's business content</strong>, which are listed with what they hold rather
+                                    than counted. Any failed, held-back or unsupported store, or any store retained
+                                    indefinitely, makes it <code>Partial</code> and names it. An earlier version of this
+                                    page said that the stores on the retention gap list made every default receipt
+                                    <code>Partial</code>; they could not, because each of them erases by owner and so
+                                    appeared as an erasure line. They are now kept by design, with the reason above.
+                                    Reducing what the audit trails record is tracked in #903.
                                 </li>
                             </ul>
                         </div>

@@ -1,10 +1,12 @@
 using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.Services.Compliance;
 using Domain.Common.Config;
 using Infrastructure.AI.Documents;
 using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI;
 
@@ -24,5 +26,21 @@ public static partial class DependencyInjection
         services.AddSingleton<SchemaInitializer<DocumentLoadDbContext>>();
         services.AddSingleton<IDocumentLoadLedger, EfCoreDocumentLoadLedger>();
         services.AddHostedService<DocumentRetentionService>();
+
+        // The erasure receipt says that documents other people loaded may still mention the person, and why they are kept;
+        // with the age limit running, how long. Read per request, so a reloaded setting is reported as it now stands.
+        services.AddScoped(sp => RetainedPersonalData.BusinessContent(
+            "documents other people loaded", RunningAgeLimit(sp)));
+    }
+
+    /// <summary>The document age limit when the sweep would actually run it, or <see langword="null"/>.</summary>
+    private static TimeSpan? RunningAgeLimit(IServiceProvider services)
+    {
+        var config = services.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
+        var retention = config.AI.Rag.Documents.Retention;
+        var runs = retention.Enabled
+            && retention.RetainFor >= RetentionPeriodConfig.MinimumRetainFor
+            && DocumentRetentionSafety.Refusal(config, services.GetRequiredService<IDocumentLoadLedger>()) is null;
+        return runs ? retention.RetainFor : null;
     }
 }

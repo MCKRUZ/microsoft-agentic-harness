@@ -30,10 +30,10 @@ namespace Infrastructure.AI.KnowledgeGraph.PostgreSql;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Knowledge-graph tables in PostgreSQL: extracted entities, facts and per-user memories with owner and tenant ids. Listed entity types expire after their period (Fact 365d, Concept 730d); remembered facts, work episodes and episodic segments about one person after Rag:GraphRag:PersonalKnowledgeRetention since last written (default two years); learnings by their own lifecycle. Nodes extracted from documents carry no period: they are not deleted when their document is. Export returns nodes only.",
+    "Knowledge-graph tables in PostgreSQL: extracted entities, facts and per-user memories with owner and tenant ids. Listed entity types expire after their period (Fact 365d, Concept 730d); remembered facts, work episodes and episodic segments about one person after Rag:GraphRag:PersonalKnowledgeRetention since last written (default two years); learnings by their own lifecycle. Nodes extracted from documents are kept by design with their documents, as the organisation's business content: removing a document deletes the nodes only it produced and the edges drawn from it, and trims its references from nodes other documents also produced. Export returns nodes only.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
 public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
