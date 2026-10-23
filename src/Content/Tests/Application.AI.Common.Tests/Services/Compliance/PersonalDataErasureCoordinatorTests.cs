@@ -177,6 +177,26 @@ public sealed class PersonalDataErasureCoordinatorTests
             .Which.Reason.Should().Contain("identifiers").And.Contain("tool inputs and outputs");
     }
 
+    [Fact]
+    public async Task DocumentsOthersLoaded_AreListedWithTheReason_AndTheReceiptStaysFull()
+    {
+        // #901: the person's own uploads are erased by owner; documents others loaded are the organisation's business
+        // content. The person is told, without the receipt claiming an erasure failed.
+        _retained.Add(RetainedPersonalData.BusinessContent("documents other people loaded", ageLimit: null));
+
+        var receipt = await Create().EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+        var line = receipt.Stores.Should().ContainSingle(s => s.Store == "documents other people loaded").Subject;
+        line.Status.Should().Be(StoreErasureStatus.RetainedAsBusinessContent);
+        line.Reason.Should().Be(RetainedPersonalData.BusinessContentReason);
+    }
+
+    [Fact]
+    public void DocumentsOthersLoaded_WithTheAgeLimitRunning_SayHowLong() =>
+        RetainedPersonalData.BusinessContent("documents other people loaded", TimeSpan.FromDays(1095)).ToOutcome()!
+            .Reason.Should().Be($"{RetainedPersonalData.BusinessContentReason}, or until 1095 days after they were last loaded");
+
     [PersonalDataStore("Test store keyed to the owner that cannot erase.", PersonalDataCategories.Identifiers,
         PersonalDataKey.Owner, RetentionBasis.Unbounded, ErasureSupport.NotSupported, ExportSupport.NotSupported)]
     private sealed class OwnerKeyedStore;

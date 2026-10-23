@@ -42,4 +42,13 @@ public enum StoreErasureStatus
     /// clear of the subject, and says so of the audit trails only through their listed lines.
     /// </summary>
     RetainedByObligation,
+
+    /// <summary>
+    /// The organisation's own business content: documents other people loaded, and what was drawn from them, which may
+    /// mention the subject (#901). The subject's own uploads are erased by owner; these are kept until the organisation
+    /// removes them, or until the optional document age limit does. Listed with that reason so the subject knows; it does
+    /// not make the receipt <c>Partial</c>, because keeping them is the organisation's decision about its own records,
+    /// not a store failing to find the subject.
+    /// </summary>
+    RetainedAsBusinessContent,
 }

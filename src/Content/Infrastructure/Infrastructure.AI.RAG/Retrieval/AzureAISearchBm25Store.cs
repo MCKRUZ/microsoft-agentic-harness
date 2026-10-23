@@ -36,10 +36,10 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Owner erasure deletes every chunk carrying the person's stamp; chunks ingested without an identity carry none and are not reached.",
+    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Kept by design: loaded documents are the deploying organisation's own business content, kept until it removes them (POST /api/compliance/document-removals) or, when switched on, until the document age limit (Rag:Documents:Retention) removes those not loaded for its period. Owner erasure deletes every chunk carrying the person's stamp; chunks ingested without an identity carry none and are not reached, and the erasure receipt tells the person that documents others loaded may still mention them.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
-    RetentionBasis.Unbounded,
+    RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.NotSupported)]
 public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser

@@ -165,6 +165,31 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false, false, "kept until it removes them")]
+    [InlineData(true, true, "or until 1095 days after they were last loaded")]
+    [InlineData(true, false, "kept until it removes them")]
+    public async Task DocumentsOthersLoaded_AreOnTheReceipt_WithTheAgeLimitOnlyWhenItRuns(
+        bool ageLimitOn, bool everyWriterSharesTheRecord, string reasonEnd)
+    {
+        // #901. The last case: the limit is switched on but refused over shared stores, so the receipt must not claim it.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = ageLimitOn.ToString(),
+            ["AppConfig:AI:Rag:Documents:LoadLedgerSharedByEveryWriter"] = everyWriterSharesTheRecord.ToString(),
+        });
+        await using var scope = provider.CreateAsyncScope();
+
+        var line = scope.ServiceProvider.GetServices<RetainedPersonalData>()
+            .Select(r => r.ToOutcome())
+            .OfType<StoreErasureOutcome>()
+            .Should().ContainSingle(o => o.Status == StoreErasureStatus.RetainedAsBusinessContent).Subject;
+
+        line.Store.Should().Be("documents other people loaded");
+        line.Reason.Should().EndWith(reasonEnd);
+    }
+
     private static bool IsRetainedStore(Type type) =>
         type is { IsClass: true, IsAbstract: false }
         && !typeof(IPersonalDataEraser).IsAssignableFrom(type)

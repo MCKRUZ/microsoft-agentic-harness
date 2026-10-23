@@ -379,6 +379,33 @@ public sealed class AuditArchiverTests : IDisposable
     }
 
     [Fact]
+    public async Task Verify_AfterTheOldestArchivedDayExpires_StillPasses_WithItsWitnessesAndMarkerKept()
+    {
+        // #901: the archive's retention is the storage's own: once the locked period passes, a deletion rule removes the
+        // oldest day-files. Verification must then start at the oldest remaining record, not report the chain broken.
+        using var sut = Writer();
+        await ThreeDaysAsync(sut);
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        (await _archiver.WitnessAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        (await _archiver.VerifyAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done, "control");
+
+        // Long before a retention period ends, the archiver has deleted the live copies of the days it archived.
+        _clock.Advance(TimeSpan.FromHours(1));
+        ArchivedAt(_clock.GetUtcNow() - TimeSpan.FromHours(1));
+        (await _archiver.ArchiveAsync(Chain, CancellationToken.None)).Status.Should().Be(AuditArchiveStatus.Done);
+        File.Exists(LiveDay("2026-10-19")).Should().BeFalse("control: the live copy of an archived day is gone");
+
+        ReadOnlyArchiveRoot.Unlock(_archiveRoot);
+        File.Delete(ArchivedDay("2026-10-19"));
+        ReadOnlyArchiveRoot.Lock(_archiveRoot);
+
+        var result = await _archiver.VerifyAsync(Chain, CancellationToken.None);
+        result.Status.Should().Be(AuditArchiveStatus.Done, result.Problem);
+        var verified = await sut.VerifyChainAsync(CancellationToken.None);
+        verified.IsValid.Should().BeTrue(verified.FailureReason);
+    }
+
+    [Fact]
     public async Task Verify_ChecksArchivedFilesAgainstWitnessesTheyHaveAlreadyPassed()
     {
         using var sut = Writer();
