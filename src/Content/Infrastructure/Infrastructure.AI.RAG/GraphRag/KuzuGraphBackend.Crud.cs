@@ -411,6 +411,51 @@ public sealed partial class KuzuGraphBackend
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, source_node_id, target_node_id, predicate, chunk_id, properties_json, owner_id, created_at, expires_at
+            FROM Edges
+            """;
+
+        var edges = new List<GraphEdge>();
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            edges.Add(new GraphEdge
+            {
+                Id = reader.GetString(0),
+                SourceNodeId = reader.GetString(1),
+                TargetNodeId = reader.GetString(2),
+                Predicate = reader.GetString(3),
+                ChunkId = reader.GetString(4),
+                Properties = DeserializeDict(reader.GetString(5)),
+                OwnerId = reader.IsDBNull(6) ? null : reader.GetString(6),
+                CreatedAt = ParseDate(reader.IsDBNull(7) ? null : reader.GetString(7)),
+                ExpiresAt = ParseDate(reader.IsDBNull(8) ? null : reader.GetString(8)),
+            });
+        }
+
+        return edges;
+    }
+
+    /// <inheritdoc />
+    public async Task ReplaceChunkIdsAsync(
+        string nodeId,
+        IReadOnlyList<string> chunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkIds);
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "UPDATE Nodes SET chunk_ids_json = @chunks WHERE id = @id";
+        cmd.Parameters.AddWithValue("@chunks", JsonSerializer.Serialize(chunkIds, _jsonOptions));
+        cmd.Parameters.AddWithValue("@id", nodeId);
+        await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task UpdateNodeWeightAsync(
         string nodeId,
         double weight,

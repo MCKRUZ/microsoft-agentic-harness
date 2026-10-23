@@ -53,4 +53,26 @@ public interface IErasureOrchestrator
     /// <param name="nodes">The store-sourced nodes to remove.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<ErasureReceipt> ExpireNodesAsync(IReadOnlyList<GraphNode> nodes, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes one source document from the corpus (#901): its chunks from every vector and full-text collection, and the
+    /// knowledge extracted from it in the knowledge graph and in the GraphRAG corpus graph.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A node only this document produced is deleted with its edges and feedback weights. A node another document also
+    /// produced keeps that document's chunk references and loses this one's, so shared knowledge survives. An edge drawn
+    /// from this document's text goes. In the corpus graph, every community a removed or changed node belongs to is
+    /// deleted, because its summary was written from text that may repeat the document.
+    /// </para>
+    /// <para>
+    /// A document id is derived from its source alone, so this reaches every collection the document was loaded into.
+    /// Run it without an ambient request scope, as the erasure paths are, or a tenant-isolated graph shows it only the
+    /// caller's tenant.
+    /// </para>
+    /// </remarks>
+    /// <param name="documentId">The document to remove.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>What each store actually removed.</returns>
+    Task<ErasureReceipt> RemoveDocumentAsync(string documentId, CancellationToken cancellationToken = default);
 }

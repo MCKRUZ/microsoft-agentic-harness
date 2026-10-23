@@ -653,7 +653,18 @@
                             expired graph nodes through <code>IErasureOrchestrator.ExpireNodesAsync</code>, which leaves
                             the document content behind their chunk references. Before #901 it used erasure, which deleted
                             the whole source document from both indexes when one node extracted from it aged, while it was
-                            still the source of every other node. Owner and document erasure still remove it.
+                            still the source of every other node. Owner erasure still removes it.
+                        </li>
+                        <li>
+                            <strong>Removing a document.</strong> <code>IErasureOrchestrator.RemoveDocumentAsync</code>
+                            takes one source document out of the corpus: its chunks from every vector and full-text
+                            collection (every page of the Azure AI Search index, which before stopped at the first thousand
+                            chunks), and what was extracted from it in the knowledge graph and the GraphRAG corpus graph. A
+                            node only that document produced is deleted; a node another document also produced keeps that
+                            document's references and survives; edges drawn from its text go; and in the corpus graph every
+                            community a changed node belongs to is deleted, because its summary was written from that text.
+                            A document id is derived from where the document came from, so this reaches every collection it
+                            was loaded into.
                         </li>
                         <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's

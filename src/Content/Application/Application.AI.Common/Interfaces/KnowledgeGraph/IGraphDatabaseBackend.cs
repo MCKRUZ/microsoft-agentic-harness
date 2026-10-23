@@ -25,4 +25,12 @@ public interface IGraphDatabaseBackend : IKnowledgeGraphStore
 
     /// <summary>Persists a community record (including summary) to the graph backend.</summary>
     Task SaveCommunityAsync(Community community, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes every community, with its summary and assignments, that any of <paramref name="nodeIds"/> belongs to
+    /// (#901). A summary is written from its members' text, so once a source document is removed, a summary built over
+    /// the knowledge drawn from it would still repeat that document. Rebuilding communities brings them back.
+    /// </summary>
+    /// <returns>How many communities were removed.</returns>
+    Task<int> DeleteCommunitiesContainingAsync(IReadOnlyCollection<string> nodeIds, CancellationToken cancellationToken = default);
 }

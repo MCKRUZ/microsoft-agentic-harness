@@ -89,6 +89,25 @@ public sealed class PostgreSqlGraphStoreTests : IClassFixture<PostgreSqlStoreFix
     }
 
     [Fact]
+    public async Task ReplaceChunkIds_DropsReferencesAnAddCouldOnlyMerge_AndEdgesAreListedWithTheirChunk()
+    {
+        // Adding a node merges chunk references as a union, so removing a document (#901) needs a replace.
+        await _store.AddNodesAsync([
+            new GraphNode { Id = "pg-rc-a", Name = "A", Type = "Entity", ChunkIds = ["doc1_chunk_0", "doc2_chunk_0"] },
+            new GraphNode { Id = "pg-rc-b", Name = "B", Type = "Entity" }
+        ]);
+        await _store.AddEdgesAsync([new GraphEdge
+        {
+            Id = "pg-rc-e", SourceNodeId = "pg-rc-a", TargetNodeId = "pg-rc-b", Predicate = "rel", ChunkId = "doc1_chunk_3"
+        }]);
+
+        await _store.ReplaceChunkIdsAsync("pg-rc-a", ["doc2_chunk_0"]);
+
+        (await _store.GetNodeAsync("pg-rc-a"))!.ChunkIds.Should().Equal("doc2_chunk_0");
+        (await _store.GetAllEdgesAsync()).Single(e => e.Id == "pg-rc-e").ChunkId.Should().Be("doc1_chunk_3");
+    }
+
+    [Fact]
     public async Task GetAllNodes_ReturnsInsertedNodesWithTenant()
     {
         await _store.AddNodesAsync([

@@ -321,6 +321,39 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
         return Filter(nodes);
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var edges = await _inner.GetAllEdgesAsync(cancellationToken);
+        var scope = CurrentScope;
+        return scope is null ? edges : edges.Where(e => CanAccess(e.TenantId, e.OwnerId, scope)).ToList();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Gated like <see cref="DeleteNodeAsync"/>: a scoped caller may only change a node it can access.</remarks>
+    public async Task ReplaceChunkIdsAsync(
+        string nodeId,
+        IReadOnlyList<string> chunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = CurrentScope;
+        if (scope is not null)
+        {
+            var node = await _inner.GetNodeAsync(nodeId, cancellationToken);
+            if (node is null) return;
+            if (!CanAccess(node.TenantId, node.OwnerId, scope))
+            {
+                _logger.LogWarning(
+                    "Tenant isolation: blocked change of foreign node {NodeId} for User={UserId}",
+                    nodeId, scope.UserId);
+                return;
+            }
+        }
+
+        await _inner.ReplaceChunkIdsAsync(nodeId, chunkIds, cancellationToken);
+    }
+
     private IReadOnlyList<GraphNode> Filter(IReadOnlyList<GraphNode> nodes)
     {
         var scope = CurrentScope;

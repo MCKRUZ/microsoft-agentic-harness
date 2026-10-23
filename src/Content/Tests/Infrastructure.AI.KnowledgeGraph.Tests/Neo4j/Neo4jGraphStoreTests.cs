@@ -81,6 +81,25 @@ public sealed class Neo4jGraphStoreTests : IClassFixture<Neo4jStoreFixture>
     }
 
     [Fact]
+    public async Task ReplaceChunkIds_DropsReferencesAnAddCouldOnlyMerge_AndEdgesAreListedWithTheirChunk()
+    {
+        // Adding a node merges chunk references as a union, so removing a document (#901) needs a replace.
+        await _store.AddNodesAsync([
+            new GraphNode { Id = "neo-rc-a", Name = "A", Type = "Entity", ChunkIds = ["doc1_chunk_0", "doc2_chunk_0"] },
+            new GraphNode { Id = "neo-rc-b", Name = "B", Type = "Entity" }
+        ]);
+        await _store.AddEdgesAsync([new GraphEdge
+        {
+            Id = "neo-rc-e", SourceNodeId = "neo-rc-a", TargetNodeId = "neo-rc-b", Predicate = "rel", ChunkId = "doc1_chunk_3"
+        }]);
+
+        await _store.ReplaceChunkIdsAsync("neo-rc-a", ["doc2_chunk_0"]);
+
+        (await _store.GetNodeAsync("neo-rc-a"))!.ChunkIds.Should().Equal("doc2_chunk_0");
+        (await _store.GetAllEdgesAsync()).Single(e => e.Id == "neo-rc-e").ChunkId.Should().Be("doc1_chunk_3");
+    }
+
+    [Fact]
     public async Task GetAllNodes_ReturnsInsertedNodes()
     {
         await _store.AddNodesAsync([

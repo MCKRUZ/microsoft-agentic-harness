@@ -46,6 +46,26 @@ public sealed class AzureSearchOwnerErasureTests
         _deleteBatches[1].Should().Equal(["chunk-1000", "chunk-1001"], "an already-deleted id is not sent again");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeleteDocument_MoreThanOnePageOfChunks_DeletesEveryPage(bool vectorStore)
+    {
+        // A single search page was all a document delete used to remove (#901): a document of more than a thousand chunks
+        // was left part-indexed while the removal reported success.
+        var firstPage = Enumerable.Range(0, 1000).Select(i => $"doc-1_chunk_{i}").ToArray();
+        GivenSearchPages(firstPage, ["doc-1_chunk_1000"], []);
+        GivenDeletesSucceed();
+
+        var removed = vectorStore
+            ? await VectorStore().DeleteFromAllCollectionsAsync("doc-1", CancellationToken.None)
+            : await Bm25Store().DeleteFromAllCollectionsAsync("doc-1", CancellationToken.None);
+
+        removed.Should().Be(1001);
+        _searches.Should().AllSatisfy(s => s.Filter.Should().Be("documentId eq 'doc-1'"));
+        _deleteBatches.Should().HaveCount(2);
+    }
+
     [Fact]
     public async Task EraseSubjectAsync_PagesOnlyRepeatDeletedChunks_RetriesThenThrowsInsteadOfReportingACount()
     {

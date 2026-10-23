@@ -173,4 +173,26 @@ public interface IKnowledgeGraphStore
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<IReadOnlyList<GraphNode>> GetAllNodesAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves all edges in the graph store. Used when a source document is removed (#901), to find the edges extracted
+    /// from it; which edges those are is decided by the caller from <see cref="GraphEdge.ChunkId"/>, so the chunk-id grammar
+    /// lives in one place rather than in each backend's query language.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces a node's <see cref="GraphNode.ChunkIds"/> outright, leaving everything else about it as it is (#901). Adding
+    /// a node merges chunk references as a union, so this is the only way to drop the references to a removed document
+    /// from a node another document also produced. No-op if the node does not exist.
+    /// </summary>
+    /// <param name="nodeId">The node to change.</param>
+    /// <param name="chunkIds">The chunk references the node keeps.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task ReplaceChunkIdsAsync(
+        string nodeId,
+        IReadOnlyList<string> chunkIds,
+        CancellationToken cancellationToken = default);
 }

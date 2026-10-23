@@ -70,6 +70,53 @@ public sealed partial class KuzuGraphBackend
     }
 
     /// <inheritdoc />
+    public async Task<int> DeleteCommunitiesContainingAsync(
+        IReadOnlyCollection<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(nodeIds);
+        if (nodeIds.Count == 0)
+            return 0;
+
+        var touched = new HashSet<string>(StringComparer.Ordinal);
+        using (var read = _connection.CreateCommand())
+        {
+            read.CommandText = "SELECT id, node_ids_json FROM Communities";
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var members = JsonSerializer.Deserialize<List<string>>(reader.GetString(1), _jsonOptions) ?? [];
+                if (members.Any(nodeIds.Contains))
+                    touched.Add(reader.GetString(0));
+            }
+        }
+
+        using (var assigned = _connection.CreateCommand())
+        {
+            assigned.CommandText = "SELECT DISTINCT community_id, node_id FROM CommunityAssignments";
+            using var reader = await assigned.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (nodeIds.Contains(reader.GetString(1)))
+                    touched.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (var communityId in touched)
+        {
+            using var delete = _connection.CreateCommand();
+            delete.CommandText = """
+                DELETE FROM CommunityAssignments WHERE community_id = @id;
+                DELETE FROM Communities WHERE id = @id;
+                """;
+            delete.Parameters.AddWithValue("@id", communityId);
+            await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return touched.Count;
+    }
+
+    /// <inheritdoc />
     public async Task SaveCommunityAsync(
         Community community,
         CancellationToken cancellationToken = default)

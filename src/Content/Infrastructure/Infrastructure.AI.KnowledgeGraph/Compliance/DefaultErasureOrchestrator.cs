@@ -27,6 +27,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     private readonly IVectorStore? _vectorStore;
     private readonly IBm25Store? _bm25Store;
     private readonly ICrossSessionMemoryStore? _crossSessionMemory;
+    private readonly IGraphDatabaseBackend? _corpusGraph;
     private readonly IMemoryAuditSink _auditSink;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<DefaultErasureOrchestrator> _logger;
@@ -51,6 +52,10 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     /// Optional cross-session memory store. <see langword="null"/> when cross-session memory is
     /// not enabled, in which case there is no memory to purge. Only ever swept on the owner path.
     /// </param>
+    /// <param name="corpusGraph">
+    /// Optional GraphRAG corpus graph, a store of its own beside the knowledge graph. <see langword="null"/> when the
+    /// graph database is off. Only reached when a document is removed.
+    /// </param>
     public DefaultErasureOrchestrator(
         IKnowledgeGraphStore graphStore,
         IFeedbackStore feedbackStore,
@@ -59,7 +64,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         TimeProvider timeProvider,
         ILogger<DefaultErasureOrchestrator> logger,
         IBm25Store? bm25Store = null,
-        ICrossSessionMemoryStore? crossSessionMemory = null)
+        ICrossSessionMemoryStore? crossSessionMemory = null,
+        IGraphDatabaseBackend? corpusGraph = null)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
         ArgumentNullException.ThrowIfNull(feedbackStore);
@@ -72,6 +78,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         _vectorStore = vectorStore;
         _bm25Store = bm25Store;
         _crossSessionMemory = crossSessionMemory;
+        _corpusGraph = corpusGraph;
         _auditSink = auditSink;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -156,6 +163,132 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         return ExecuteErasureAsync(
             Guid.NewGuid().ToString(), "retention", ownerId: null, ownerScopeRequested: false,
             nodes, nodeIds, _timeProvider.GetUtcNow(), cancellationToken, purgeDocumentContent: false);
+    }
+
+    /// <inheritdoc />
+    public async Task<ErasureReceipt> RemoveDocumentAsync(string documentId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        var requestedAt = _timeProvider.GetUtcNow();
+        var requestId = Guid.NewGuid().ToString();
+
+        var knowledge = await RemoveDocumentFromGraphAsync(_graphStore, documentId, cancellationToken);
+        var corpus = _corpusGraph is null || ReferenceEquals(_corpusGraph, _graphStore)
+            ? GraphRemoval.None
+            : await RemoveDocumentFromGraphAsync(_corpusGraph, documentId, cancellationToken);
+        var communitiesDeleted = _corpusGraph is not null && corpus.ChangedNodeIds.Count > 0
+            ? await _corpusGraph.DeleteCommunitiesContainingAsync(corpus.ChangedNodeIds, cancellationToken)
+            : 0;
+
+        var nodeIds = knowledge.DeletedNodeIds.Concat(corpus.DeletedNodeIds).ToList();
+        var edgeIds = knowledge.DeletedEdgeIds.Concat(corpus.DeletedEdgeIds).Distinct(StringComparer.Ordinal).ToList();
+        var weightsDeleted =
+            (nodeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByNodeIdsAsync(nodeIds, cancellationToken) : 0)
+            + (edgeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByEdgeIdsAsync(edgeIds, cancellationToken) : 0);
+
+        var vectorDeleted = _vectorStore is not null
+            ? await _vectorStore.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+            : 0;
+        var bm25Deleted = _bm25Store is not null
+            ? await _bm25Store.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+            : 0;
+        var matchedNothing = vectorDeleted == 0 && bm25Deleted == 0 && nodeIds.Count == 0 && edgeIds.Count == 0
+            && knowledge.TrimmedNodes + corpus.TrimmedNodes == 0;
+
+        var receipt = new ErasureReceipt
+        {
+            RequestId = requestId,
+            ScopeId = "document",
+            RequestedAt = requestedAt,
+            CompletedAt = _timeProvider.GetUtcNow(),
+            NodesDeleted = nodeIds.Count,
+            EdgesDeleted = edgeIds.Count,
+            FeedbackWeightsDeleted = weightsDeleted,
+            VectorEmbeddingsDeleted = vectorDeleted,
+            Bm25DocumentsDeleted = bm25Deleted,
+            UnmatchedDocumentIds = matchedNothing ? [documentId] : [],
+            Completeness = ErasureCompleteness.Full,
+        };
+
+        // The document id is the hash of where the document came from, not anyone's identity.
+        await _auditSink.EmitAsync(new MemoryAuditEvent
+        {
+            EventId = requestId,
+            Action = MemoryAuditAction.DocumentRemoval,
+            ActorId = ErasureAuditScope,
+            Timestamp = receipt.CompletedAt,
+            ScopeId = ErasureAuditScope,
+            AffectedNodeCount = nodeIds.Count,
+            AffectedEdgeCount = edgeIds.Count
+        }, cancellationToken);
+
+        _logger.LogInformation(
+            "Document removal completed: RequestId={RequestId}, Nodes={Nodes}, TrimmedNodes={Trimmed}, Edges={Edges}, " +
+            "Communities={Communities}, FeedbackWeights={FeedbackWeights}, VectorChunks={VectorChunks}, Bm25Rows={Bm25Rows}, " +
+            "Matched={Matched}",
+            requestId, nodeIds.Count, knowledge.TrimmedNodes + corpus.TrimmedNodes, edgeIds.Count, communitiesDeleted,
+            weightsDeleted, vectorDeleted, bm25Deleted, !matchedNothing);
+
+        return receipt;
+    }
+
+    /// <summary>
+    /// Takes one document out of one graph: nodes only it produced are deleted, nodes it shares with another document lose
+    /// its chunk references, and edges drawn from its text are deleted. Which chunk belongs to which document is decided
+    /// here, by <see cref="DeriveDocumentId"/>, for every backend alike.
+    /// </summary>
+    private static async Task<GraphRemoval> RemoveDocumentFromGraphAsync(
+        IKnowledgeGraphStore graph, string documentId, CancellationToken cancellationToken)
+    {
+        var toDelete = new List<string>();
+        var changed = new List<string>();
+        var trimmed = 0;
+        foreach (var node in await graph.GetAllNodesAsync(cancellationToken))
+        {
+            var kept = node.ChunkIds.Where(c => !FromDocument(c, documentId)).ToList();
+            if (kept.Count == node.ChunkIds.Count)
+                continue;
+
+            changed.Add(node.Id);
+            if (kept.Count == 0)
+            {
+                toDelete.Add(node.Id);
+            }
+            else
+            {
+                await graph.ReplaceChunkIdsAsync(node.Id, kept, cancellationToken);
+                trimmed++;
+            }
+        }
+
+        var deletion = toDelete.Count > 0
+            ? await graph.DeleteNodesAsync(toDelete, cancellationToken)
+            : NodeDeletionResult.Empty;
+        var cascaded = deletion.DeletedEdgeIds.ToHashSet(StringComparer.Ordinal);
+        var edgeIds = new List<string>(deletion.DeletedEdgeIds);
+        foreach (var edge in await graph.GetAllEdgesAsync(cancellationToken))
+        {
+            if (cascaded.Contains(edge.Id) || !FromDocument(edge.ChunkId, documentId))
+                continue;
+
+            await graph.DeleteEdgeAsync(edge.Id, cancellationToken);
+            edgeIds.Add(edge.Id);
+        }
+
+        return new GraphRemoval(deletion.DeletedNodeIds.ToList(), edgeIds, changed, trimmed);
+    }
+
+    private static bool FromDocument(string? chunkId, string documentId) =>
+        !string.IsNullOrEmpty(chunkId) && string.Equals(DeriveDocumentId(chunkId), documentId, StringComparison.Ordinal);
+
+    /// <summary>What removing a document took out of one graph.</summary>
+    private sealed record GraphRemoval(
+        IReadOnlyList<string> DeletedNodeIds,
+        IReadOnlyList<string> DeletedEdgeIds,
+        IReadOnlyList<string> ChangedNodeIds,
+        int TrimmedNodes)
+    {
+        public static readonly GraphRemoval None = new([], [], [], 0);
     }
 
     private async Task<ErasureReceipt> ExecuteErasureAsync(

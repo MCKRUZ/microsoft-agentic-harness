@@ -307,6 +307,30 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         return Task.FromResult<IReadOnlyList<GraphNode>>(_nodes.Values.ToList());
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<GraphEdge>>(_edges.Values.ToList());
+    }
+
+    /// <inheritdoc />
+    public Task ReplaceChunkIdsAsync(
+        string nodeId,
+        IReadOnlyList<string> chunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkIds);
+
+        // Compare-and-swap, so a concurrent merge is either kept or retried against, never silently overwritten.
+        while (_nodes.TryGetValue(nodeId, out var current)
+            && !_nodes.TryUpdate(nodeId, current with { ChunkIds = chunkIds.ToList() }, current))
+        {
+        }
+
+        return Task.CompletedTask;
+    }
+
     private static IReadOnlyDictionary<string, string> MergeProperties(
         IReadOnlyDictionary<string, string> existing,
         IReadOnlyDictionary<string, string> incoming)
