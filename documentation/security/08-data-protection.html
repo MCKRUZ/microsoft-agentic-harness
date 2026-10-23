@@ -663,8 +663,10 @@
                             node only that document produced is deleted; a node another document also produced keeps that
                             document's references and survives; edges drawn from its text go; and in the corpus graph every
                             community a changed node belongs to is deleted, because its summary was written from that text.
-                            A document id is derived from where the document came from, so this reaches every collection it
-                            was loaded into.
+                            An edge records only one source, so a relationship another document also asserts goes too, until
+                            that document is loaded again. A document id is derived from where the document came from, so
+                            this reaches every tenant and collection it was loaded into; it runs system-scoped, a store that
+                            cannot delete the chunks makes the result Partial, and every removal is audited.
                         </li>
                         <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's

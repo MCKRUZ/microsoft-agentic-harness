@@ -332,9 +332,9 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
 
     /// <inheritdoc />
     /// <remarks>Gated like <see cref="DeleteNodeAsync"/>: a scoped caller may only change a node it can access.</remarks>
-    public async Task ReplaceChunkIdsAsync(
+    public async Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default)
     {
         var scope = CurrentScope;
@@ -351,7 +351,7 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
             }
         }
 
-        await _inner.ReplaceChunkIdsAsync(nodeId, chunkIds, cancellationToken);
+        await _inner.RemoveChunkIdsAsync(nodeId, chunkIds, cancellationToken);
     }
 
     private IReadOnlyList<GraphNode> Filter(IReadOnlyList<GraphNode> nodes)

@@ -442,14 +442,23 @@ public sealed partial class KuzuGraphBackend
     }
 
     /// <inheritdoc />
-    public async Task ReplaceChunkIdsAsync(
+    public async Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(chunkIds);
         using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "UPDATE Nodes SET chunk_ids_json = @chunks WHERE id = @id";
+        // One statement against the stored list, so a reference merged in meanwhile survives.
+        cmd.CommandText = """
+            UPDATE Nodes
+            SET chunk_ids_json = (
+                SELECT COALESCE(json_group_array(value), '[]')
+                FROM (SELECT value FROM json_each(Nodes.chunk_ids_json)
+                      WHERE value NOT IN (SELECT value FROM json_each(@chunks))
+                      ORDER BY key))
+            WHERE id = @id
+            """;
         cmd.Parameters.AddWithValue("@chunks", JsonSerializer.Serialize(chunkIds, _jsonOptions));
         cmd.Parameters.AddWithValue("@id", nodeId);
         await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

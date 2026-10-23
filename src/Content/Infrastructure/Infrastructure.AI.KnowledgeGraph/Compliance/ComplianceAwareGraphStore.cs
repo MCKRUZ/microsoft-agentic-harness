@@ -280,11 +280,11 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     /// Not a new write of knowledge: the node keeps its write time, so personal-knowledge retention still ages it from
     /// when something last wrote it.
     /// </remarks>
-    public Task ReplaceChunkIdsAsync(
+    public Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default) =>
-        _inner.ReplaceChunkIdsAsync(nodeId, chunkIds, cancellationToken);
+        _inner.RemoveChunkIdsAsync(nodeId, chunkIds, cancellationToken);
 
     /// <inheritdoc />
     public Task<IReadOnlyList<GraphNode>> GetAllNodesAsync(

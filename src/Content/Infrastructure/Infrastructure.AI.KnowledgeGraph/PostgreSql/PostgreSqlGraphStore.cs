@@ -445,15 +445,22 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     }
 
     /// <inheritdoc />
-    public async Task ReplaceChunkIdsAsync(
+    public async Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(chunkIds);
         await using var conn = await OpenConnectionAsync(cancellationToken);
-        await using var cmd = new NpgsqlCommand(
-            "UPDATE kg_nodes SET chunk_ids = @chunkIds WHERE id = @id", conn);
+        // One statement against the stored array, in its order, so a reference merged in meanwhile survives.
+        await using var cmd = new NpgsqlCommand("""
+            UPDATE kg_nodes
+            SET chunk_ids = ARRAY(
+                SELECT c FROM unnest(chunk_ids) WITH ORDINALITY AS t(c, i)
+                WHERE NOT (c = ANY(@chunkIds))
+                ORDER BY i)
+            WHERE id = @id
+            """, conn);
         cmd.Parameters.AddWithValue("chunkIds", chunkIds.ToArray());
         cmd.Parameters.AddWithValue("id", nodeId);
         await cmd.ExecuteNonQueryAsync(cancellationToken);

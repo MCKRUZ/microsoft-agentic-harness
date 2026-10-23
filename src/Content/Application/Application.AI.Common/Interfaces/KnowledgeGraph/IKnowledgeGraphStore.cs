@@ -184,15 +184,16 @@ public interface IKnowledgeGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Replaces a node's <see cref="GraphNode.ChunkIds"/> outright, leaving everything else about it as it is (#901). Adding
-    /// a node merges chunk references as a union, so this is the only way to drop the references to a removed document
-    /// from a node another document also produced. No-op if the node does not exist.
+    /// Removes <paramref name="chunkIds"/> from a node's <see cref="GraphNode.ChunkIds"/>, leaving everything else about it
+    /// as it is (#901). Adding a node merges chunk references as a union, so this is the only way to drop a removed
+    /// document's references from a node another document also produced. Applied as one operation against the stored
+    /// list, so a reference another document merges in meanwhile is kept. No-op if the node does not exist.
     /// </summary>
     /// <param name="nodeId">The node to change.</param>
-    /// <param name="chunkIds">The chunk references the node keeps.</param>
+    /// <param name="chunkIds">The chunk references to remove.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task ReplaceChunkIdsAsync(
+    Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default);
 }

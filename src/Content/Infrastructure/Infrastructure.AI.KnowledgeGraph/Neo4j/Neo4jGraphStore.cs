@@ -448,9 +448,9 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public async Task ReplaceChunkIdsAsync(
+    public async Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(chunkIds);
@@ -458,7 +458,7 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (n:Entity {id: $id}) SET n.chunk_ids = $chunkIds",
+                "MATCH (n:Entity {id: $id}) SET n.chunk_ids = [c IN coalesce(n.chunk_ids, []) WHERE NOT c IN $chunkIds]",
                 new { id = nodeId, chunkIds = chunkIds.ToList() });
         });
     }

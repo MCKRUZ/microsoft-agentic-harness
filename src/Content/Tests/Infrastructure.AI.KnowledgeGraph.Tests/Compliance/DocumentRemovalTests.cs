@@ -1,6 +1,13 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Services;
 using Application.Common.Interfaces.Common;
+using Domain.AI.KnowledgeGraph.Scoping;
+using Domain.Common.Config;
+using Infrastructure.AI.KnowledgeGraph.Scoping;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using FluentAssertions;
@@ -21,8 +28,9 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Compliance;
 /// </summary>
 public sealed class DocumentRemovalTests : IDisposable
 {
-    private const string Removed = "doc-a";
-    private const string Kept = "doc-b";
+    // Document ids as every chunker forms them: the first 16 upper-case hex digits of a SHA-256.
+    private const string Removed = "AAAAAAAAAAAAAAAA";
+    private const string Kept = "BBBBBBBBBBBBBBBB";
 
     private readonly string _corpusDir = Path.Combine(Path.GetTempPath(), $"document-removal-{Guid.NewGuid():N}");
     private readonly InMemoryGraphStore _graph = new(NullLogger<InMemoryGraphStore>.Instance);
@@ -40,7 +48,7 @@ public sealed class DocumentRemovalTests : IDisposable
         _bm25.Setup(b => b.DeleteFromAllCollectionsAsync(Removed, It.IsAny<CancellationToken>())).ReturnsAsync(3);
         _sut = new DefaultErasureOrchestrator(
             _graph, _feedback, _vectors.Object, _audit.Object, TimeProvider.System,
-            NullLogger<DefaultErasureOrchestrator>.Instance, _bm25.Object, crossSessionMemory: null, corpusGraph: _corpus);
+            NullLogger<DefaultErasureOrchestrator>.Instance, _bm25.Object, crossSessionMemory: null, corpusGraph: () => _corpus);
     }
 
     public void Dispose()
@@ -97,9 +105,9 @@ public sealed class DocumentRemovalTests : IDisposable
     }
 
     [Theory]
-    [InlineData("doc-a_v2")]
-    [InlineData("doc")]
-    [InlineData("xdoc-a")]
+    [InlineData("AAAAAAAAAAAAAAAA_v2")]
+    [InlineData("AAAAAAAAAAAAAAA")]
+    [InlineData("XAAAAAAAAAAAAAAAA")]
     public async Task ADocumentWhoseIdMerelyResemblesTheRemovedOne_IsUntouched(string otherDocument)
     {
         // Which document a chunk belongs to is read from its id by one rule; a prefix or substring match would reach
@@ -147,9 +155,83 @@ public sealed class DocumentRemovalTests : IDisposable
     [Fact]
     public async Task ADocumentNothingHolds_IsReportedAsUnmatched()
     {
-        var receipt = await _sut.RemoveDocumentAsync("never-loaded");
+        var receipt = await _sut.RemoveDocumentAsync("CCCCCCCCCCCCCCCC");
 
-        receipt.UnmatchedDocumentIds.Should().Equal("never-loaded");
+        receipt.UnmatchedDocumentIds.Should().Equal("CCCCCCCCCCCCCCCC");
+    }
+
+    [Theory]
+    [InlineData("learningindex")]
+    [InlineData("aaaaaaaaaaaaaaaa")]
+    [InlineData("AAAAAAAAAAAAAAA")]
+    [InlineData("AAAAAAAAAAAAAAAA_chunk_0")]
+    public async Task AnythingButADocumentId_IsRefused_BeforeAnythingIsTouched(string notADocument)
+    {
+        // Fixed edge ids such as the learnings index's carry no chunk marker; taken as a document id they would match
+        // every such edge.
+        await _graph.AddNodesAsync([Node("x", Chunk(Kept, 0)), Node("y", Chunk(Kept, 1))]);
+        await _graph.AddEdgesAsync([Edge("index", "x", "y", "learningindex")]);
+
+        var act = () => _sut.RemoveDocumentAsync(notADocument);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        (await _graph.GetAllEdgesAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task AChunkIdWithoutAMarker_IsNeverTheDocuments_EvenWhenItEqualsTheId()
+    {
+        await _graph.AddNodesAsync([Node("x", Chunk(Kept, 0)), Node("y", Chunk(Kept, 1))]);
+        await _graph.AddEdgesAsync([Edge("bare", "x", "y", Removed)]);
+
+        await _sut.RemoveDocumentAsync(Removed);
+
+        (await _graph.GetAllEdgesAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CalledInsideAnotherTenantsRequest_StillRemovesWhatEveryTenantDrewFromTheDocument()
+    {
+        // The endpoint runs inside the operator's request; a tenant-isolated graph would otherwise hide every other
+        // tenant's knowledge from the scan while the receipt still read Full.
+        var config = new AppConfig();
+        config.AI.Rag.GraphRag.MultiTenantIsolation = true;
+        var ambient = new AmbientRequestScope();
+        var isolated = new TenantIsolatedGraphStore(
+            _graph, ambient,
+            new KnowledgeScopeValidator(Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config)),
+            NullLogger<TenantIsolatedGraphStore>.Instance);
+        await _graph.AddNodesAsync([
+            new GraphNode { Id = "tenant-a-node", Name = "a", Type = "Entity", TenantId = "tenant-a", ChunkIds = [Chunk(Removed, 0)] },
+        ]);
+        var orchestrator = new DefaultErasureOrchestrator(
+            isolated, _feedback, _vectors.Object, _audit.Object, TimeProvider.System,
+            NullLogger<DefaultErasureOrchestrator>.Instance, _bm25.Object, ambientScope: ambient);
+        var operatorRequest = new ServiceCollection()
+            .AddSingleton(Mock.Of<IKnowledgeScope>(k => k.UserId == "operator" && k.TenantId == "tenant-b"))
+            .BuildServiceProvider();
+
+        using (ambient.BeginScope(operatorRequest))
+            (await orchestrator.RemoveDocumentAsync(Removed)).NodesDeleted.Should().Be(1);
+
+        (await _graph.GetNodeAsync("tenant-a-node")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AStoreThatCannotDeleteTheChunks_MakesTheReceiptPartial_AndTheRemovalIsStillAudited()
+    {
+        await _graph.AddNodesAsync([Node("only-a", Chunk(Removed, 0))]);
+        _vectors.Setup(v => v.DeleteFromAllCollectionsAsync(Removed, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("index unavailable"));
+
+        var receipt = await _sut.RemoveDocumentAsync(Removed);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.CompletenessReason.Should().Contain("vector store");
+        receipt.NodesDeleted.Should().Be(1, "what the graph steps did is still reported");
+        _audit.Verify(a => a.EmitAsync(
+            It.Is<MemoryAuditEvent>(e => e.Action == MemoryAuditAction.DocumentRemoval), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     private static string Chunk(string documentId, int index) => $"{documentId}_chunk_{index}";

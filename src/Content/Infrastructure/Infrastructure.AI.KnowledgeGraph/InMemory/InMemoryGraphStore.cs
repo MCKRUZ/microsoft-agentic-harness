@@ -315,16 +315,19 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
     }
 
     /// <inheritdoc />
-    public Task ReplaceChunkIdsAsync(
+    public Task RemoveChunkIdsAsync(
         string nodeId,
-        IReadOnlyList<string> chunkIds,
+        IReadOnlyCollection<string> chunkIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(chunkIds);
+        var removed = chunkIds.ToHashSet(StringComparer.Ordinal);
 
-        // Compare-and-swap, so a concurrent merge is either kept or retried against, never silently overwritten.
+        // Compare-and-swap, recomputed from the node as it stands on each attempt, so a reference a concurrent merge adds
+        // is kept.
         while (_nodes.TryGetValue(nodeId, out var current)
-            && !_nodes.TryUpdate(nodeId, current with { ChunkIds = chunkIds.ToList() }, current))
+            && !_nodes.TryUpdate(
+                nodeId, current with { ChunkIds = current.ChunkIds.Where(c => !removed.Contains(c)).ToList() }, current))
         {
         }
 
