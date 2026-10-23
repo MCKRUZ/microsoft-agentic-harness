@@ -667,6 +667,13 @@
                             that document is loaded again. A document id is derived from where the document came from, so
                             this reaches every tenant and collection it was loaded into; it runs system-scoped, a store that
                             cannot delete the chunks makes the result Partial, and every removal is audited.
+                            Operators run it through <code>POST /api/compliance/document-removals</code> with the
+                            document id in the body. It requires its own role,
+                            <code>Harness.Compliance.RemoveDocument</code> (the erasure role does not grant it, nor it
+                            erasure), and a sign-in from a tenant in <code>AppConfig:AI:Erasure:OperatorTenantIds</code>,
+                            the same trusted operators as erasure. It is refused while sign-in is bypassed, every request
+                            that reaches it is audited with the document id (refusals included), and it is rate limited to
+                            30 requests an hour per operator. It is never an agent tool.
                         </li>
                         <li>
                             <strong>Kept by design, with the reason in the inventory:</strong> schedules (the owner's

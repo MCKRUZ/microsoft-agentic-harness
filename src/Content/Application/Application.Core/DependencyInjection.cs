@@ -54,6 +54,10 @@ public static class DependencyInjection
 		// the operator command. Scoped because the erasure coordinator it drives is scoped.
 		services.AddScoped<Compliance.AuditedErasure>();
 
+		// Document removal (#901): an operator removes one source document and the knowledge drawn from it; same
+		// audit shape as erasure. Scoped because the erasure orchestrator it drives is scoped.
+		services.AddScoped<Compliance.AuditedDocumentRemoval>();
+
 		// Evaluation dataset path guard — decides which dataset files a run may read. Registered
 		// unconditionally so the confinement rule is applied by the handler on EVERY dispatch, not
 		// only the ones a caller remembered to route through it. Unconfined until an operator sets
