@@ -241,7 +241,9 @@ public static partial class DependencyInjection
                 sp.GetService<TimeProvider>() ?? TimeProvider.System,
                 sp.GetRequiredService<ILogger<DefaultErasureOrchestrator>>(),
                 sp.GetService<IBm25Store>(),
-                sp.GetService<ICrossSessionMemoryStore>()));
+                sp.GetService<ICrossSessionMemoryStore>(),
+                () => sp.GetService<IGraphDatabaseBackend>(),
+                sp.GetService<Application.AI.Common.Interfaces.IAmbientRequestScope>()));
 
         // Right-to-erasure across every store (#900): the graph above, then each registered IPersonalDataEraser.
         services.AddScoped<IPersonalDataErasure, PersonalDataErasureCoordinator>();

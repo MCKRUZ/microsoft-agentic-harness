@@ -431,6 +431,38 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         });
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var session = _driver.AsyncSession();
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("MATCH (:Entity)-[r:RELATES]->(:Entity) RETURN r");
+
+            var results = new List<GraphEdge>();
+            while (await cursor.FetchAsync())
+                results.Add(MapEdge(cursor.Current["r"].As<IRelationship>()));
+            return (IReadOnlyList<GraphEdge>)results;
+        });
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveChunkIdsAsync(
+        string nodeId,
+        IReadOnlyCollection<string> chunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkIds);
+        await using var session = _driver.AsyncSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync(
+                "MATCH (n:Entity {id: $id}) SET n.chunk_ids = [c IN coalesce(n.chunk_ids, []) WHERE NOT c IN $chunkIds]",
+                new { id = nodeId, chunkIds = chunkIds.ToList() });
+        });
+    }
+
     /// <inheritdoc cref="IAsyncDisposable.DisposeAsync"/>
     public async ValueTask DisposeAsync()
     {

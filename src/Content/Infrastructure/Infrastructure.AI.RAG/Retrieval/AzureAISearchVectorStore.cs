@@ -187,42 +187,15 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
     }
 
     /// <inheritdoc />
+    /// <remarks>Fails, rather than reporting a partial count, when any chunk of the document cannot be deleted.</remarks>
     public async Task<int> DeleteAsync(
         string documentId,
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
-        var options = new SearchOptions
-        {
-            Filter = $"documentId eq '{documentId.Replace("'", "''")}'",
-            Select = { "id" },
-            Size = 1000,
-        };
-
-        var response = await _searchClient.SearchAsync<SearchDocument>(
-            searchText: "*", options, cancellationToken);
-
-        var keysToDelete = new List<SearchDocument>();
-
-        await foreach (var result in response.Value.GetResultsAsync())
-        {
-            keysToDelete.Add(new SearchDocument { ["id"] = result.Document["id"] });
-        }
-
-        if (keysToDelete.Count == 0) return 0;
-
-        var deleteResponse = await _searchClient.DeleteDocumentsAsync(
-            keysToDelete, cancellationToken: cancellationToken);
-
-        // Only confirmed deletions count — erasure receipts must never over-report.
-        var deleted = deleteResponse.Value.Results.Count(r => r.Succeeded);
-        var failed = keysToDelete.Count - deleted;
-        if (failed > 0)
-        {
-            _logger.LogError(
-                "Azure AI Search delete for document {DocumentId} failed for {FailedCount} of {Total} chunks",
-                documentId, failed, keysToDelete.Count);
-        }
+        // Every page, not the first thousand chunks; any chunk that fails to delete throws, so a receipt never counts it.
+        var deleted = await AzureSearchOwnerErasure.DeleteByDocumentAsync(
+            _searchClient, documentId, _logger, cancellationToken);
 
         _logger.LogInformation(
             "Deleted {Count} chunks for document {DocumentId} from Azure AI Search",

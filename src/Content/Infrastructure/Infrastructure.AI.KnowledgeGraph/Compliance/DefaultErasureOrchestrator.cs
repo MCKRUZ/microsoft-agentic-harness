@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph;
@@ -27,6 +29,12 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     private readonly IVectorStore? _vectorStore;
     private readonly IBm25Store? _bm25Store;
     private readonly ICrossSessionMemoryStore? _crossSessionMemory;
+    private readonly Func<IGraphDatabaseBackend?> _corpusGraph;
+    private readonly IAmbientRequestScope? _ambientScope;
+
+    /// <summary>A document id as every chunker forms it: the first 16 upper-case hex digits of a SHA-256.</summary>
+    private static readonly Regex DocumentIdFormat = new(
+        "^[0-9A-F]{16}\\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private readonly IMemoryAuditSink _auditSink;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<DefaultErasureOrchestrator> _logger;
@@ -51,6 +59,15 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     /// Optional cross-session memory store. <see langword="null"/> when cross-session memory is
     /// not enabled, in which case there is no memory to purge. Only ever swept on the owner path.
     /// </param>
+    /// <param name="corpusGraph">
+    /// Resolves the optional GraphRAG corpus graph, a store of its own beside the knowledge graph, or
+    /// <see langword="null"/> when the graph database is off. Resolved only when a document is removed, so a corpus graph
+    /// that cannot open never stops a person's erasure.
+    /// </param>
+    /// <param name="ambientScope">
+    /// Suspended while a document is removed, so a tenant-isolated graph shows every tenant's knowledge drawn from it.
+    /// <see langword="null"/> where no request scope is ever set.
+    /// </param>
     public DefaultErasureOrchestrator(
         IKnowledgeGraphStore graphStore,
         IFeedbackStore feedbackStore,
@@ -59,7 +76,9 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         TimeProvider timeProvider,
         ILogger<DefaultErasureOrchestrator> logger,
         IBm25Store? bm25Store = null,
-        ICrossSessionMemoryStore? crossSessionMemory = null)
+        ICrossSessionMemoryStore? crossSessionMemory = null,
+        Func<IGraphDatabaseBackend?>? corpusGraph = null,
+        IAmbientRequestScope? ambientScope = null)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
         ArgumentNullException.ThrowIfNull(feedbackStore);
@@ -72,6 +91,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         _vectorStore = vectorStore;
         _bm25Store = bm25Store;
         _crossSessionMemory = crossSessionMemory;
+        _corpusGraph = corpusGraph ?? (() => null);
+        _ambientScope = ambientScope;
         _auditSink = auditSink;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -156,6 +177,201 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         return ExecuteErasureAsync(
             Guid.NewGuid().ToString(), "retention", ownerId: null, ownerScopeRequested: false,
             nodes, nodeIds, _timeProvider.GetUtcNow(), cancellationToken, purgeDocumentContent: false);
+    }
+
+    /// <inheritdoc />
+    public async Task<ErasureReceipt> RemoveDocumentAsync(string documentId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        if (!DocumentIdFormat.IsMatch(documentId))
+            throw new ArgumentException($"'{documentId}' is not a document id.", nameof(documentId));
+
+        // A document id is the same for every tenant that loaded the source, so this runs system-scoped, as erasure does:
+        // a tenant-isolated graph would otherwise show only the caller's tenant and the receipt would still read Full.
+        using var systemScoped = _ambientScope?.SuspendScope();
+
+        var requestedAt = _timeProvider.GetUtcNow();
+        var requestId = Guid.NewGuid().ToString();
+        var partialReasons = new List<string>();
+        var knowledge = GraphRemoval.None;
+        var corpus = GraphRemoval.None;
+        var communitiesDeleted = 0;
+        var weightsDeleted = 0;
+        var vectorDeleted = 0;
+        var bm25Deleted = 0;
+        try
+        {
+            knowledge = await RemoveDocumentFromGraphAsync(_graphStore, documentId, cancellationToken);
+            var corpusGraph = _corpusGraph();
+            if (corpusGraph is not null && !ReferenceEquals(corpusGraph, _graphStore))
+            {
+                corpus = await RemoveDocumentFromGraphAsync(corpusGraph, documentId, cancellationToken);
+                if (corpus.ChangedNodeIds.Count > 0)
+                    communitiesDeleted = await corpusGraph.DeleteCommunitiesContainingAsync(corpus.ChangedNodeIds, cancellationToken);
+            }
+
+            var nodeIds = DeletedNodeIds(knowledge, corpus);
+            var edgeIds = DeletedEdgeIds(knowledge, corpus);
+            weightsDeleted =
+                (nodeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByNodeIdsAsync(nodeIds, cancellationToken) : 0)
+                + (edgeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByEdgeIdsAsync(edgeIds, cancellationToken) : 0);
+
+            vectorDeleted = await DeleteChunksAsync(
+                "vector store", _vectorStore is null ? null : ct => _vectorStore.DeleteFromAllCollectionsAsync(documentId, ct),
+                partialReasons, cancellationToken);
+            bm25Deleted = await DeleteChunksAsync(
+                "full-text store", _bm25Store is null ? null : ct => _bm25Store.DeleteFromAllCollectionsAsync(documentId, ct),
+                partialReasons, cancellationToken);
+        }
+        finally
+        {
+            // Recorded whatever happened: a removal that failed part-way has still changed the stores. The document id is
+            // the hash of where the document came from, not anyone's identity.
+            await _auditSink.EmitAsync(new MemoryAuditEvent
+            {
+                EventId = requestId,
+                Action = MemoryAuditAction.DocumentRemoval,
+                ActorId = ErasureAuditScope,
+                Timestamp = _timeProvider.GetUtcNow(),
+                ScopeId = ErasureAuditScope,
+                AffectedNodeCount = DeletedNodeIds(knowledge, corpus).Count,
+                AffectedEdgeCount = DeletedEdgeIds(knowledge, corpus).Count
+            }, CancellationToken.None);
+        }
+
+        var deletedNodes = DeletedNodeIds(knowledge, corpus).Count;
+        var deletedEdges = DeletedEdgeIds(knowledge, corpus).Count;
+        var trimmedNodes = knowledge.TrimmedNodes + corpus.TrimmedNodes;
+        var matchedNothing = vectorDeleted == 0 && bm25Deleted == 0 && deletedNodes == 0 && deletedEdges == 0
+            && trimmedNodes == 0 && partialReasons.Count == 0;
+
+        var receipt = new ErasureReceipt
+        {
+            RequestId = requestId,
+            ScopeId = "document",
+            RequestedAt = requestedAt,
+            CompletedAt = _timeProvider.GetUtcNow(),
+            NodesDeleted = deletedNodes,
+            EdgesDeleted = deletedEdges,
+            FeedbackWeightsDeleted = weightsDeleted,
+            VectorEmbeddingsDeleted = vectorDeleted,
+            Bm25DocumentsDeleted = bm25Deleted,
+            UnmatchedDocumentIds = matchedNothing ? [documentId] : [],
+            Completeness = partialReasons.Count == 0 ? ErasureCompleteness.Full : ErasureCompleteness.Partial,
+            CompletenessReason = partialReasons.Count == 0 ? null : string.Join("; ", partialReasons),
+        };
+
+        _logger.LogInformation(
+            "Document removal completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
+            "TrimmedNodes={Trimmed}, Edges={Edges}, Communities={Communities}, FeedbackWeights={FeedbackWeights}, " +
+            "VectorChunks={VectorChunks}, Bm25Rows={Bm25Rows}, Matched={Matched}",
+            requestId, receipt.Completeness, deletedNodes, trimmedNodes, deletedEdges, communitiesDeleted, weightsDeleted,
+            vectorDeleted, bm25Deleted, !matchedNothing);
+
+        return receipt;
+    }
+
+    /// <summary>
+    /// Deletes the document's chunks from one store, reporting a failure on the receipt instead of losing what the graph
+    /// steps already did.
+    /// </summary>
+    private async Task<int> DeleteChunksAsync(
+        string store, Func<CancellationToken, Task<int>>? delete, List<string> partialReasons, CancellationToken cancellationToken)
+    {
+        if (delete is null)
+            return 0;
+
+        try
+        {
+            return await delete(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Document removal could not delete the document's chunks from the {Store}.", store);
+            partialReasons.Add($"the {store} could not delete the document's chunks");
+            return 0;
+        }
+    }
+
+    private static IReadOnlyList<string> DeletedNodeIds(GraphRemoval knowledge, GraphRemoval corpus) =>
+        knowledge.DeletedNodeIds.Concat(corpus.DeletedNodeIds).Distinct(StringComparer.Ordinal).ToList();
+
+    private static IReadOnlyList<string> DeletedEdgeIds(GraphRemoval knowledge, GraphRemoval corpus) =>
+        knowledge.DeletedEdgeIds.Concat(corpus.DeletedEdgeIds).Distinct(StringComparer.Ordinal).ToList();
+
+    /// <summary>
+    /// Takes one document out of one graph. Its chunk references are removed from every node that holds them, as one
+    /// operation per node against the stored list, so a reference another document merges in meanwhile is kept; a node left
+    /// with none is then deleted, re-read just before so a node another document has just claimed survives. Edges drawn
+    /// from its text are deleted. Which chunk belongs to which document is decided here, by <see cref="DeriveDocumentId"/>,
+    /// for every backend alike.
+    /// </summary>
+    /// <remarks>
+    /// An edge records one chunk, the first document to assert the relationship (the last, in Neo4j). When another
+    /// document asserts the same relationship, removing the recorded one deletes it anyway; loading the other document
+    /// again restores it. A document loaded again while it is being removed can be partly restored.
+    /// </remarks>
+    private static async Task<GraphRemoval> RemoveDocumentFromGraphAsync(
+        IKnowledgeGraphStore graph, string documentId, CancellationToken cancellationToken)
+    {
+        var changed = new List<string>();
+        var trimmed = 0;
+        foreach (var node in await graph.GetAllNodesAsync(cancellationToken))
+        {
+            var fromDocument = node.ChunkIds.Where(c => FromDocument(c, documentId)).ToList();
+            if (fromDocument.Count == 0)
+                continue;
+
+            changed.Add(node.Id);
+            await graph.RemoveChunkIdsAsync(node.Id, fromDocument, cancellationToken);
+            if (fromDocument.Count < node.ChunkIds.Count)
+                trimmed++;
+        }
+
+        var toDelete = new List<string>();
+        foreach (var nodeId in changed)
+        {
+            if (await graph.GetNodeAsync(nodeId, cancellationToken) is { ChunkIds.Count: 0 })
+                toDelete.Add(nodeId);
+        }
+
+        var deletion = toDelete.Count > 0
+            ? await graph.DeleteNodesAsync(toDelete, cancellationToken)
+            : NodeDeletionResult.Empty;
+        var cascaded = deletion.DeletedEdgeIds.ToHashSet(StringComparer.Ordinal);
+        var edgeIds = new List<string>(deletion.DeletedEdgeIds);
+        foreach (var edge in await graph.GetAllEdgesAsync(cancellationToken))
+        {
+            if (cascaded.Contains(edge.Id) || !FromDocument(edge.ChunkId, documentId))
+                continue;
+
+            await graph.DeleteEdgeAsync(edge.Id, cancellationToken);
+            edgeIds.Add(edge.Id);
+        }
+
+        return new GraphRemoval(deletion.DeletedNodeIds.ToList(), edgeIds, changed, trimmed);
+    }
+
+    /// <summary>
+    /// Whether a chunk id is one of <paramref name="documentId"/>'s: it carries a chunk or RAPTOR marker and the id before
+    /// it is exactly the document's. Fixed ids such as the learnings index's carry no marker and are never a document's.
+    /// </summary>
+    private static bool FromDocument(string? chunkId, string documentId) =>
+        !string.IsNullOrEmpty(chunkId) && HasChunkMarker(chunkId)
+        && string.Equals(DeriveDocumentId(chunkId), documentId, StringComparison.Ordinal);
+
+    private static bool HasChunkMarker(string chunkId) =>
+        chunkId.LastIndexOf("_chunk_", StringComparison.Ordinal) > 0
+        || chunkId.LastIndexOf("_raptor_", StringComparison.Ordinal) > 0;
+
+    /// <summary>What removing a document took out of one graph.</summary>
+    private sealed record GraphRemoval(
+        IReadOnlyList<string> DeletedNodeIds,
+        IReadOnlyList<string> DeletedEdgeIds,
+        IReadOnlyList<string> ChangedNodeIds,
+        int TrimmedNodes)
+    {
+        public static readonly GraphRemoval None = new([], [], [], 0);
     }
 
     private async Task<ErasureReceipt> ExecuteErasureAsync(

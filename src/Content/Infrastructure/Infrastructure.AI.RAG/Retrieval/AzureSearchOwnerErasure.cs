@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace Infrastructure.AI.RAG.Retrieval;
 
 /// <summary>
-/// Removes every chunk an owner ingested from an Azure AI Search index, by the <c>ownerId</c> stamp written at ingest
-/// (#900). Shared by the vector and BM25 stores, which use the same index.
+/// Removes chunks from an Azure AI Search index by a field written at ingest: every chunk an owner ingested, by the
+/// <c>ownerId</c> stamp (#900), or every chunk of one document, by <c>documentId</c> (#901). Shared by the vector and BM25
+/// stores, which use the same index.
 /// </summary>
 [PersonalDataChannel("Deletes an owner's chunks from the Azure AI Search index for the vector and BM25 stores that call it; they describe the data.")]
 internal static class AzureSearchOwnerErasure
@@ -17,6 +18,21 @@ internal static class AzureSearchOwnerErasure
     private static readonly TimeSpan StaleRetryDelay = TimeSpan.FromSeconds(1);
 
     /// <summary>Deletes every chunk stamped with <paramref name="ownerId"/> and returns how many were confirmed deleted.</summary>
+    /// <remarks>See <see cref="DeleteMatchingAsync"/> for how it pages and fails.</remarks>
+    public static Task<int> DeleteByOwnerAsync(
+        SearchClient searchClient, string ownerId, ILogger logger, CancellationToken cancellationToken) =>
+        DeleteMatchingAsync(searchClient, "ownerId", ownerId, logger, cancellationToken);
+
+    /// <summary>
+    /// Deletes every chunk of <paramref name="documentId"/> and returns how many were confirmed deleted. A single search
+    /// page used to be all a document delete removed, so a document of more than a thousand chunks was left part-indexed.
+    /// </summary>
+    /// <remarks>See <see cref="DeleteMatchingAsync"/> for how it pages and fails.</remarks>
+    public static Task<int> DeleteByDocumentAsync(
+        SearchClient searchClient, string documentId, ILogger logger, CancellationToken cancellationToken) =>
+        DeleteMatchingAsync(searchClient, "documentId", documentId, logger, cancellationToken);
+
+    /// <summary>Deletes every chunk whose <paramref name="field"/> equals <paramref name="value"/>.</summary>
     /// <remarks>
     /// <para>
     /// <strong>Pages until nothing new matches.</strong> A single search returns at most <see cref="PageSize"/> results,
@@ -29,14 +45,14 @@ internal static class AzureSearchOwnerErasure
     /// <strong>Any per-chunk failure throws.</strong> A partially failed batch would otherwise be retried forever or
     /// reported as done; throwing makes the erasure receipt say this store failed.
     /// </para>
-    /// <para>The owner is quoted for OData with single quotes doubled, so a crafted id cannot widen the filter.</para>
+    /// <para>The value is quoted for OData with single quotes doubled, so a crafted id cannot widen the filter.</para>
     /// </remarks>
-    public static async Task<int> DeleteByOwnerAsync(
-        SearchClient searchClient, string ownerId, ILogger logger, CancellationToken cancellationToken)
+    private static async Task<int> DeleteMatchingAsync(
+        SearchClient searchClient, string field, string value, ILogger logger, CancellationToken cancellationToken)
     {
         var options = new SearchOptions
         {
-            Filter = $"ownerId eq '{ownerId.Replace("'", "''", StringComparison.Ordinal)}'",
+            Filter = $"{field} eq '{value.Replace("'", "''", StringComparison.Ordinal)}'",
             Select = { "id" },
             Size = PageSize,
         };
@@ -65,7 +81,7 @@ internal static class AzureSearchOwnerErasure
                 if (++staleRounds > MaxStaleRounds)
                 {
                     throw new InvalidOperationException(
-                        "Azure AI Search kept returning chunks already deleted; the owner's remaining chunks could not be confirmed gone.");
+                        $"Azure AI Search kept returning chunks already deleted; the remaining chunks matching {field} could not be confirmed gone.");
                 }
 
                 await Task.Delay(StaleRetryDelay, cancellationToken);
@@ -80,7 +96,7 @@ internal static class AzureSearchOwnerErasure
             if (failed > 0)
             {
                 logger.LogError(
-                    "Azure AI Search owner erasure failed for {FailedCount} of {Total} chunks.", failed, batch.Count);
+                    "Azure AI Search delete by {Field} failed for {FailedCount} of {Total} chunks.", field, failed, batch.Count);
                 throw new InvalidOperationException($"Azure AI Search failed to delete {failed} of {batch.Count} chunks.");
             }
 

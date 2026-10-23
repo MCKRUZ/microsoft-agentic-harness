@@ -19,5 +19,10 @@ public enum MemoryAuditAction
     /// Nodes past their retention period were removed by the retention sweep (#901). Kept apart from
     /// <see cref="Erasure"/> so the audit trail still shows how erasure requests were handled.
     /// </summary>
-    Expiry
+    Expiry,
+    /// <summary>
+    /// A source document was removed from the corpus, with the knowledge extracted from it (#901). Kept apart from
+    /// <see cref="Erasure"/>: it is about a document, not a person.
+    /// </summary>
+    DocumentRemoval
 }

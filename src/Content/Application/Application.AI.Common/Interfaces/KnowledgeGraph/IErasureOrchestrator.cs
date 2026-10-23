@@ -53,4 +53,27 @@ public interface IErasureOrchestrator
     /// <param name="nodes">The store-sourced nodes to remove.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<ErasureReceipt> ExpireNodesAsync(IReadOnlyList<GraphNode> nodes, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes one source document from the corpus (#901): its chunks from every vector and full-text collection, and the
+    /// knowledge extracted from it in the knowledge graph and in the GraphRAG corpus graph.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A node only this document produced is deleted with its edges and feedback weights. A node another document also
+    /// produced keeps that document's chunk references and loses this one's, so shared knowledge survives. An edge drawn
+    /// from this document's text goes; an edge records only one source, so a relationship another document also asserts
+    /// goes too, until that document is loaded again. In the corpus graph, every community a removed or changed node
+    /// belongs to is deleted, because its summary was written from text that may repeat the document.
+    /// </para>
+    /// <para>
+    /// A document id is derived from its source alone, so this reaches every tenant and collection the document was loaded
+    /// into; it suspends any ambient request scope itself. A store that cannot delete the document's chunks makes the
+    /// receipt <see cref="ErasureCompleteness.Partial"/>, and the removal is audited whatever happens.
+    /// </para>
+    /// </remarks>
+    /// <param name="documentId">The document to remove: 16 upper-case hex digits, as the chunkers form it.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>What each store actually removed.</returns>
+    Task<ErasureReceipt> RemoveDocumentAsync(string documentId, CancellationToken cancellationToken = default);
 }

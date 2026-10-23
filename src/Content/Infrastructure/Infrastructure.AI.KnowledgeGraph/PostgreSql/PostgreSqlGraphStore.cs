@@ -427,6 +427,45 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         return results;
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GraphEdge>> GetAllEdgesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = await OpenConnectionAsync(cancellationToken);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT id, source_node_id, target_node_id, predicate, properties, chunk_id, provenance, " +
+            "owner_id, tenant_id, created_at, expires_at FROM kg_edges", conn);
+
+        var results = new List<GraphEdge>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            results.Add(ReadEdgeAt(reader, 0));
+
+        return results;
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveChunkIdsAsync(
+        string nodeId,
+        IReadOnlyCollection<string> chunkIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkIds);
+        await using var conn = await OpenConnectionAsync(cancellationToken);
+        // One statement against the stored array, in its order, so a reference merged in meanwhile survives.
+        await using var cmd = new NpgsqlCommand("""
+            UPDATE kg_nodes
+            SET chunk_ids = ARRAY(
+                SELECT c FROM unnest(chunk_ids) WITH ORDINALITY AS t(c, i)
+                WHERE NOT (c = ANY(@chunkIds))
+                ORDER BY i)
+            WHERE id = @id
+            """, conn);
+        cmd.Parameters.AddWithValue("chunkIds", chunkIds.ToArray());
+        cmd.Parameters.AddWithValue("id", nodeId);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct)
     {
         var conn = new NpgsqlConnection(_connectionString);
