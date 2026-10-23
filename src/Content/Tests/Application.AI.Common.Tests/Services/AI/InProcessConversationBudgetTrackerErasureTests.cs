@@ -54,6 +54,24 @@ public sealed class InProcessConversationBudgetTrackerErasureTests
     }
 
     [Fact]
+    public async Task EraseSubjectAsync_PlannedTaskSteps_AndTheirRunsKey_AreReleased_AnotherRunsKeyIsKept()
+    {
+        // #906. Released when a run ends; left only by a run that crashed, and then the person's to have erased.
+        await _tracker.RecordUsageAsync("plan-1:step-a", 100);
+        await _tracker.RecordUsageAsync("planrun:plan-1", 200);
+        await _tracker.RecordUsageAsync("planrun:plan-2", 300);
+
+        var removed = await _tracker.EraseSubjectAsync(
+            new ErasureSubject("user-a", [], new PlanRunTraces(["plan-1:step-a"], ["job-1"], ["planrun:plan-1"])),
+            CancellationToken.None);
+
+        removed.Should().Be(2);
+        (await ConsumedAsync("plan-1:step-a")).Should().Be(0);
+        (await ConsumedAsync("planrun:plan-1")).Should().Be(0);
+        (await ConsumedAsync("planrun:plan-2")).Should().Be(300, "another person's run keeps its total");
+    }
+
+    [Fact]
     public async Task EraseSubjectAsync_NoConversations_ReturnsZeroAndChangesNothing()
     {
         await _tracker.RecordUsageAsync("conv-other", 300);

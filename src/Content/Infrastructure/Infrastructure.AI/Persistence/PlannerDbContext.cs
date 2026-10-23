@@ -28,6 +28,9 @@ public sealed class PlannerDbContext : DbContext
     /// <summary>Append-only plan execution audit log.</summary>
     public DbSet<PlanExecutionLogEntity> PlanExecutionLogs => Set<PlanExecutionLogEntity>();
 
+    /// <summary>Who ran each plan, and the ids each run recorded data under (#906).</summary>
+    public DbSet<PlanRunEntity> PlanRuns => Set<PlanRunEntity>();
+
     public PlannerDbContext(DbContextOptions<PlannerDbContext> options) : base(options)
     {
     }
@@ -40,7 +43,7 @@ public sealed class PlannerDbContext : DbContext
     /// unrelated databases, and a scan pulls in every <see cref="IEntityTypeConfiguration{TEntity}"/>
     /// it finds — so any configuration added anywhere in this assembly, for any other subsystem,
     /// would silently acquire a table in the planner's database. The other contexts here already
-    /// route around the scan by configuring themselves inline; the planner declares its five.
+    /// route around the scan by configuring themselves inline; the planner declares its six.
     /// <c>PlannerDbContext_Model_ContainsOnlyPlannerEntities</c> fails if that stops being true.
     /// </remarks>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -50,5 +53,6 @@ public sealed class PlannerDbContext : DbContext
         modelBuilder.ApplyConfiguration(new PlanEdgeEntityConfiguration());
         modelBuilder.ApplyConfiguration(new StepExecutionStateEntityConfiguration());
         modelBuilder.ApplyConfiguration(new PlanExecutionLogEntityConfiguration());
+        modelBuilder.ApplyConfiguration(new PlanRunEntityConfiguration());
     }
 }

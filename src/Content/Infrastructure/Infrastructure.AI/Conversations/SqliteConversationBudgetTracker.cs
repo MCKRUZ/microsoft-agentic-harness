@@ -74,16 +74,17 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
 
     /// <inheritdoc />
     /// <remarks>
-    /// A conversation's budget key is its conversation id, so the person's rows are exactly those keyed by
-    /// <see cref="ErasureSubject.ConversationIds"/>. Plan-run budgets use their own keys and are not touched.
+    /// A conversation's budget key is its conversation id, so the person's rows are those keyed by
+    /// <see cref="ErasureSubject.AllConversationIds"/>, which include their planned tasks' model steps, and by the run
+    /// budget keys of those tasks (#906). Both are released when a run ends; a row is left only by a run that crashed.
     /// </remarks>
     public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
-        if (subject.ConversationIds.Count == 0)
+        var keys = subject.AllConversationIds.Concat(subject.PlanRuns.RunBudgetKeys).ToList();
+        if (keys.Count == 0)
             return 0;
 
-        var keys = subject.ConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
         return await context.ConversationBudgets
             .Where(e => keys.Contains(e.BudgetKey))

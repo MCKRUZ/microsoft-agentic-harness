@@ -1,4 +1,6 @@
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Compliance;
+using Domain.Common.Compliance;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -190,7 +192,11 @@ public static partial class DependencyInjection
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();
-        services.AddPersonalDataEraser<IPlanStateStore>();
+
+        // Their own stage (#906): the plans' run records lead to the step sessions erasure reaches through them, so a
+        // replacement store that cannot erase must hold back what the stage after would erase through them.
+        services.AddPersonalDataEraser<IPlanStateStore>(ErasureStage.PlannedTasks);
+        services.AddScoped<IPlanRunTraceSource>(sp => sp.GetRequiredService<IPlanStateStore>());
 
         // Plans nothing has happened to for Planner:Retention are deleted (#901); the switch is read live on every tick.
         services.AddHostedService<PlanRetentionService>();

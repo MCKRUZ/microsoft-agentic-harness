@@ -300,6 +300,215 @@ public sealed class PersonalDataErasureCoordinatorTests
         receipt.NodesDeleted.Should().Be(1, "the graph's own counts are kept on the combined receipt");
     }
 
+    private static readonly PlanRunTraces Runs = new(["plan-1:step-a"], ["job-1"], ["planrun:plan-1"]);
+
+    private Mock<IPlanRunTraceSource> _planRunSource = new();
+
+    private PersonalDataErasureCoordinator CreateWithPlanRuns(PlanRunTraces runs, params IPersonalDataEraser?[] erasers)
+    {
+        // Listed once before anything is deleted, and once afterwards to find runs made meanwhile.
+        _planRunSource = new Mock<IPlanRunTraceSource>();
+        _planRunSource.SetupSequence(s => s.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(runs)
+            .ReturnsAsync(PlanRunTraces.Empty);
+        return new(_graph.Object, erasers!, _retained, _ambientScope, TimeProvider.System,
+            NullLogger<PersonalDataErasureCoordinator>.Instance, _conversations.Object, _planRunSource.Object);
+    }
+
+    /// <summary>An eraser that records the subject it was handed, keyed by conversation like every shipped one.</summary>
+    private Mock<IPersonalDataEraser> RecordingEraser(string name, ErasureStage stage, List<ErasureSubject> seen)
+    {
+        var eraser = EraserMock(name, stage);
+        eraser.SetupGet(e => e.ErasureReach).Returns(ErasureReach.NamedConversations);
+        eraser.Setup(e => e.EraseSubjectAsync(It.IsAny<ErasureSubject>(), It.IsAny<CancellationToken>()))
+            .Callback<ErasureSubject, CancellationToken>((s, _) => { _calls.Add(name); seen.Add(s); })
+            .ReturnsAsync(1);
+        return eraser;
+    }
+
+    [Fact]
+    public async Task PlannedTaskRuns_AreReadBeforeAnythingIsDeleted_AndEveryStoreIsGivenThem()
+    {
+        // #906. The plan store leads to the runs' step sessions, spills and budgets; read after a delete, it might lead
+        // nowhere.
+        var subjects = new List<ErasureSubject>();
+        var spills = RecordingEraser("spills", ErasureStage.BeforeConversations, subjects);
+        _graph.Setup(g => g.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => _planRunSource.Verify(s => s.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()), Times.Once))
+            .ReturnsAsync(GraphReceipt(ErasureCompleteness.Full));
+
+        await CreateWithPlanRuns(Runs, spills.Object, Eraser("plans", ErasureStage.PlannedTasks))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("spills", "plans");
+        var subject = subjects.Should().ContainSingle().Subject;
+        subject.PlanRuns.Should().BeSameAs(Runs);
+        subject.AllConversationIds.Should().Equal("c-1", "c-2", "plan-1:step-a");
+        subject.ConversationIds.Should().Equal(["c-1", "c-2"], "the conversation stores must not be handed a step's id");
+    }
+
+    [Fact]
+    public async Task ThePlans_AreErasedAfterTheConversations_AndBeforeTheStageAfter()
+    {
+        await CreateWithPlanRuns(Runs,
+                Eraser("ledger", ErasureStage.AfterConversations),
+                Eraser("plans", ErasureStage.PlannedTasks),
+                Eraser("conversations", ErasureStage.Conversations),
+                Eraser("spills", ErasureStage.BeforeConversations))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("spills", "conversations", "plans", "ledger");
+    }
+
+    [Fact]
+    public async Task AStoreReachedThroughThePlansFails_ThePlansAndTheStageAfterAreHeldBack()
+    {
+        // Deleting the plans after a failure would leave the failed store's step records with nothing that leads to them.
+        var receipt = await CreateWithPlanRuns(Runs,
+                Eraser("observability", ErasureStage.BeforeConversations, failure: new InvalidOperationException("down")),
+                Eraser("plans", ErasureStage.PlannedTasks),
+                Eraser("budgets", ErasureStage.AfterConversations))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Equal("observability");
+        receipt.Stores.Select(s => (s.Store, s.Status)).Should().Equal(
+            ("observability", StoreErasureStatus.Failed),
+            ("plans", StoreErasureStatus.Skipped),
+            ("budgets", StoreErasureStatus.Skipped));
+    }
+
+    [Fact]
+    public async Task ThePlansFail_TheStageAfterStillClearsTheErasedConversations_ButNotThePlannedTasks()
+    {
+        // The conversations are gone; held back, their ledger rows could never be found again. The plans are not, so
+        // their steps' ledger rows must stay until a retry erases them.
+        var seen = new List<ErasureSubject>();
+        var receipt = await CreateWithPlanRuns(Runs,
+                Eraser("conversations", ErasureStage.Conversations),
+                Eraser("plans", ErasureStage.PlannedTasks, failure: new InvalidOperationException("locked")),
+                RecordingEraser("ledger", ErasureStage.AfterConversations, seen).Object)
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        var after = seen.Should().ContainSingle().Subject;
+        after.AllConversationIds.Should().Equal("c-1", "c-2");
+        after.PlanRuns.IsEmpty.Should().BeTrue();
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial, "the plans' own line failed");
+        var ledger = receipt.Stores.Single(s => s.Store == "ledger");
+        ledger.Status.Should().Be(StoreErasureStatus.Skipped, "the ledger still holds the planned tasks' rows");
+        ledger.Reason.Should().StartWith("partly kept");
+    }
+
+    [Fact]
+    public async Task TheConversationsFail_TheStageAfterStillClearsTheErasedPlannedTasks_ButNotTheConversations()
+    {
+        var seen = new List<ErasureSubject>();
+        await CreateWithPlanRuns(Runs,
+                Eraser("conversations", ErasureStage.Conversations, failure: new InvalidOperationException("locked")),
+                Eraser("plans", ErasureStage.PlannedTasks),
+                RecordingEraser("ledger", ErasureStage.AfterConversations, seen).Object)
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        var after = seen.Should().ContainSingle().Subject;
+        after.ConversationIds.Should().BeEmpty();
+        after.AllConversationIds.Should().Equal("plan-1:step-a");
+        after.PlanRuns.RunBudgetKeys.Should().Equal("planrun:plan-1");
+    }
+
+    [Fact]
+    public async Task APlannedTaskStillRecordedAfterThePlansStage_IsLeftOutOfTheStageAfter()
+    {
+        // A run in progress, or made meanwhile: its plan was kept, and its budget and once-only claims are live. Clearing
+        // them would reset its token ceiling and let a once-only tool run again inside it.
+        var seen = new List<ErasureSubject>();
+        var coordinator = CreateWithPlanRuns(
+            new PlanRunTraces(["plan-1:step-a", "plan-2:step-b"], [], ["planrun:plan-1", "planrun:plan-2"]),
+            Eraser("conversations", ErasureStage.Conversations),
+            Eraser("plans", ErasureStage.PlannedTasks),
+            RecordingEraser("ledger", ErasureStage.AfterConversations, seen).Object);
+        _planRunSource.SetupSequence(s => s.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PlanRunTraces(["plan-1:step-a", "plan-2:step-b"], [], ["planrun:plan-1", "planrun:plan-2"]))
+            .ReturnsAsync(new PlanRunTraces(["plan-2:step-b"], [], ["planrun:plan-2"]));
+
+        var receipt = await coordinator.EraseOwnerAsync(Owner, CancellationToken.None);
+
+        var after = seen.Should().ContainSingle().Subject;
+        after.AllConversationIds.Should().Equal("c-1", "c-2", "plan-1:step-a");
+        after.PlanRuns.RunBudgetKeys.Should().Equal("planrun:plan-1");
+        receipt.Stores.Single(s => s.Store == "ledger").Status.Should().Be(StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
+    public async Task ThePlansCannotBeReadAgain_TheirIdsAreLeftOutOfTheStageAfter_AndTheReceiptSaysSo()
+    {
+        // The deletes are done, so the receipt must still come back; without the second reading nothing shows which runs
+        // are still live, so none of the planned tasks' ids is cleared.
+        var seen = new List<ErasureSubject>();
+        var coordinator = CreateWithPlanRuns(Runs,
+            Eraser("conversations", ErasureStage.Conversations),
+            Eraser("plans", ErasureStage.PlannedTasks),
+            RecordingEraser("ledger", ErasureStage.AfterConversations, seen).Object);
+        _planRunSource.SetupSequence(s => s.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Runs)
+            .ThrowsAsync(new InvalidOperationException("C:\\secret\\planner.db locked"));
+
+        var receipt = await coordinator.EraseOwnerAsync(Owner, CancellationToken.None);
+
+        seen.Should().ContainSingle().Which.PlanRuns.IsEmpty.Should().BeTrue();
+        receipt.Stores.Should().Contain(s => s.Store == "planned tasks run during erasure" && s.Status == StoreErasureStatus.Failed);
+        receipt.CompletenessReason.Should().NotContain("secret");
+    }
+
+    [Fact]
+    public async Task OnlyPartOfTheStageAfterMayRun_AStoreThatErasesTheWholePersonIsHeldBack()
+    {
+        // It cannot be narrowed to the ids of the lead that is gone, so running it would clear what the surviving lead
+        // still leads to.
+        var receipt = await CreateWithPlanRuns(Runs,
+                Eraser("conversations", ErasureStage.Conversations),
+                Eraser("plans", ErasureStage.PlannedTasks, failure: new InvalidOperationException("locked")),
+                Eraser("owner-wide", ErasureStage.AfterConversations))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().NotContain("owner-wide");
+        receipt.Stores.Single(s => s.Store == "owner-wide").Status.Should().Be(StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
+    public async Task BothLeadsFail_TheStageAfterIsHeldBack()
+    {
+        var receipt = await CreateWithPlanRuns(Runs,
+                Eraser("conversations", ErasureStage.Conversations, failure: new InvalidOperationException("locked")),
+                Eraser("plans", ErasureStage.PlannedTasks, failure: new InvalidOperationException("locked")),
+                Eraser("ledger", ErasureStage.AfterConversations))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Single(s => s.Store == "ledger").Status.Should().Be(StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
+    public async Task APlannedTaskRunDuringErasure_IsKeptAndTheReceiptSaysToRunAgain()
+    {
+        // The plan store keeps a run recorded after it was read; the second reading finds it.
+        var coordinator = CreateWithPlanRuns(Runs, Eraser("plans", ErasureStage.PlannedTasks));
+        _planRunSource.SetupSequence(s => s.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Runs)
+            .ReturnsAsync(new PlanRunTraces([], ["job-new"], ["planrun:plan-1"]));
+
+        var receipt = await coordinator.EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Should().Contain(s => s.Store == "planned tasks run during erasure" && s.Status == StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
+    public async Task NoPlannedTaskRunDuringErasure_TheReceiptIsFull()
+    {
+        var receipt = await CreateWithPlanRuns(Runs, Eraser("plans", ErasureStage.PlannedTasks))
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Full);
+    }
+
     [Fact]
     public async Task StagesRunInOrder_RegardlessOfRegistrationOrder()
     {

@@ -17,7 +17,8 @@ public enum ErasureReach
     Owner,
 
     /// <summary>
-    /// Removes only what belongs to <see cref="ErasureSubject.ConversationIds"/>, and nothing when that list is empty.
+    /// Removes only what belongs to <see cref="ErasureSubject.AllConversationIds"/> (and, for the tool-result and budget
+    /// stores, the subject's planned-task run ids), and nothing when those are empty.
     /// </summary>
     NamedConversations,
 }

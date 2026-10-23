@@ -131,7 +131,7 @@ public sealed class PlanExecutorSolutionReviewFixTests
             notifier.Object,
             escalation.Object,
             provider,
-            new PlanRunCancellationRegistry(),
+            new PlanRunCancellationRegistry(), new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

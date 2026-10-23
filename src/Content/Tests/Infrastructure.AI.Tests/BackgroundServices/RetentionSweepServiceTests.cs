@@ -83,7 +83,7 @@ public sealed class RetentionSweepServiceTests : IDisposable
         var factory = new PlannerFactory(new DbContextOptionsBuilder<PlannerDbContext>().UseSqlite(_planner).Options);
         var savedAt = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Origin.AddDays(-100));
         var store = new EfCorePlanStateStore(
-            factory, NullLogger<EfCorePlanStateStore>.Instance, savedAt, new Scope(), new SchemaInitializer<PlannerDbContext>(factory));
+            factory, NullLogger<EfCorePlanStateStore>.Instance, savedAt, new Scope(), new SchemaInitializer<PlannerDbContext>(factory), Planner.PlannerTestConfig.Monitor());
         var plan = Plan();
         (await store.SavePlanAsync(plan, CancellationToken.None)).IsSuccess.Should().BeTrue();
 

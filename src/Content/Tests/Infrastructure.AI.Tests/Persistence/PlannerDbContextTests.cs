@@ -77,6 +77,7 @@ public sealed class PlannerDbContextTests : IDisposable
                 nameof(PlanEdgeEntity),
                 nameof(PlanExecutionLogEntity),
                 nameof(PlanGraphEntity),
+                nameof(PlanRunEntity),
                 nameof(PlanStepEntity),
                 nameof(StepExecutionStateEntity)
             ],

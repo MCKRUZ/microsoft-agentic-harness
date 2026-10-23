@@ -56,6 +56,9 @@ public sealed class PlanGraphEntity
     /// <summary>Append-only execution audit log entries.</summary>
     public ICollection<PlanExecutionLogEntity> ExecutionLogs { get; set; } = [];
 
+    /// <summary>Who ran this plan, and the ids each run recorded data under (#906).</summary>
+    public ICollection<PlanRunEntity> Runs { get; set; } = [];
+
     /// <summary>Self-referencing parent plan navigation.</summary>
     public PlanGraphEntity? ParentPlan { get; set; }
 

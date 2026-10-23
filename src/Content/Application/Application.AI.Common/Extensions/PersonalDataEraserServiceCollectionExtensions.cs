@@ -34,8 +34,9 @@ public static class PersonalDataEraserServiceCollectionExtensions
     /// <typeparam name="TService">The service the store is registered as.</typeparam>
     /// <param name="services">The service collection.</param>
     /// <param name="stageIfNotErasable">
-    /// The stage a <see cref="NonErasableStore"/> stand-in takes. Only matters for a conversation store, whose stand-in must
-    /// occupy <see cref="ErasureStage.Conversations"/> so the stage after it is held back.
+    /// The stage a <see cref="NonErasableStore"/> stand-in takes. Only matters for a store that leads to others, the
+    /// conversation and plan stores, whose stand-in must occupy <see cref="ErasureStage.Conversations"/> or
+    /// <see cref="ErasureStage.PlannedTasks"/> so the stage after holds back what they lead to.
     /// </param>
     /// <returns>The same collection, for chaining.</returns>
     public static IServiceCollection AddPersonalDataEraser<TService>(

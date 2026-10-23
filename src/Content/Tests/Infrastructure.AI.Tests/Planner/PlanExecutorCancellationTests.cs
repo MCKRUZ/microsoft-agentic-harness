@@ -657,7 +657,7 @@ public sealed class PlanExecutorCancellationTests
                 Mock.Of<IPlanProgressNotifier>(),
                 Mock.Of<IEscalationService>(),
                 services.BuildServiceProvider(),
-                _registry,
+                _registry, new Application.AI.Common.Services.Agent.AgentExecutionContext(),
                 TimeProvider.System,
                 NullLogger<PlanExecutor>.Instance);
         }

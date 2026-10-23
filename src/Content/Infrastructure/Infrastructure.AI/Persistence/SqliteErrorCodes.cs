@@ -19,4 +19,10 @@ internal static class SqliteErrorCodes
 
     /// <summary>SQLite's <c>SQLITE_CONSTRAINT_UNIQUE</c> extended result code.</summary>
     public const int ConstraintUnique = 2067;
+
+    /// <summary>
+    /// SQLite's <c>SQLITE_CONSTRAINT_FOREIGNKEY</c> extended result code: a row naming a parent that is gone, such as a
+    /// plan's run record written after the plan was deleted.
+    /// </summary>
+    public const int ConstraintForeignKey = 787;
 }

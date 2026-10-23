@@ -115,6 +115,24 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
     }
 
     [Fact]
+    public async Task EraseSubjectAsync_PlannedTaskSteps_AndTheirRunsToolScope_AreRemoved_AnotherRunsAreKept()
+    {
+        // #906. A model step spills under its own conversation id; a tool step under the run's id.
+        await SpillAsync("plan-1:step-a");
+        await SpillAsync("job-1");
+        await SpillAsync("job-2");
+
+        var removed = await _sut.EraseSubjectAsync(
+            new ErasureSubject("user-a", [], new PlanRunTraces(["plan-1:step-a"], ["job-1"], ["planrun:plan-1"])),
+            CancellationToken.None);
+
+        removed.Should().Be(2);
+        SpillFiles("plan-1~step-a").Should().BeEmpty();
+        SpillFiles("job-1").Should().BeEmpty();
+        SpillFiles("job-2").Should().ContainSingle("another run's spill must survive");
+    }
+
+    [Fact]
     public async Task EraseSubjectAsync_NothingSpilled_ReturnsZeroAndChangesNothing()
     {
         await SpillAsync("conv-b");

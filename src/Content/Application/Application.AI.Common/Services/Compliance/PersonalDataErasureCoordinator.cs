@@ -14,10 +14,12 @@ namespace Application.AI.Common.Services.Compliance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Order.</strong> The subject's conversation ids are read first, before anything is deleted, because several
-/// stores carry only a conversation id. Then the knowledge graph and every <see cref="ErasureStage.BeforeConversations"/>
-/// store run. The conversations are erased next, only when every earlier store succeeded: deleting them after a failure
-/// would leave the failed store's data with nothing left that leads to it. <see cref="ErasureStage.AfterConversations"/>
+/// <strong>Order.</strong> The subject's conversation ids and the ids their planned-task runs used are read first, before
+/// anything is deleted, because several stores carry only such an id. Then the knowledge graph and every
+/// <see cref="ErasureStage.BeforeConversations"/> store run. The conversations, then the plans, are erased next, only when
+/// every earlier store succeeded: deleting them after a failure would leave the failed store's data with nothing left
+/// that leads to it. The stage after acts only on the ids of whichever of the two was erased, so one failing never
+/// strands the other's records. <see cref="ErasureStage.AfterConversations"/>
 /// stores run last, only when the conversations are gone. Every <see cref="IPersonalDataScrubber"/> then clears the bytes
 /// its deletes left in its files, on every request, so a store whose files are busy fails only its own line.
 /// </para>
@@ -49,6 +51,10 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private const string FailedReason = "the store could not be erased; the failure has been logged";
     private const string StartedMeanwhileReason =
         "the person started a conversation while erasure ran; it and what it produced were kept, so run erasure again";
+    private const string PartlyHeldBackReason =
+        "partly kept: what the erased conversations or plans led to was removed, but what a store that failed, or a planned task still running, leads to was kept so a retry can still find it";
+    private const string RunMeanwhileReason =
+        "a planned task was running or was run while erasure ran; its plan and what it recorded since were kept, so run erasure again";
     private const string ScrubFailedReason =
         "the records were deleted, but their bytes could not yet be cleared from the store's files; the failure has been logged, so run erasure again";
     private const string HeldBackReason =
@@ -56,6 +62,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
 
     private readonly IErasureOrchestrator _graph;
     private readonly IConversationStore? _conversations;
+    private readonly IPlanRunTraceSource? _planRuns;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -73,6 +80,10 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     /// The conversation store, used to read the subject's conversation ids before anything is deleted.
     /// <see langword="null"/> in a host without conversations, in which case there is nothing to find through them.
     /// </param>
+    /// <param name="planRuns">
+    /// The plan store's record of the subject's planned-task runs, read before anything is deleted (#906).
+    /// <see langword="null"/> in a host without plans.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -80,7 +91,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         IAmbientRequestScope ambientScope,
         TimeProvider timeProvider,
         ILogger<PersonalDataErasureCoordinator> logger,
-        IConversationStore? conversations = null)
+        IConversationStore? conversations = null,
+        IPlanRunTraceSource? planRuns = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -97,6 +109,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         _timeProvider = timeProvider;
         _logger = logger;
         _conversations = conversations;
+        _planRuns = planRuns;
     }
 
     /// <inheritdoc />
@@ -107,11 +120,15 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         using var systemScoped = _ambientScope.SuspendScope();
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
-        // stores reached through conversations are unreachable, and the conversations must not be deleted either.
+        // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
+        // deleted either.
         var conversationIds = _conversations is null
             ? []
             : (await _conversations.ListAsync(ownerId, cancellationToken)).Select(c => c.Id).ToList();
-        var subject = new ErasureSubject(ownerId, conversationIds);
+        var planRuns = _planRuns is null
+            ? PlanRunTraces.Empty
+            : await _planRuns.ListRunTracesAsync(ownerId, cancellationToken);
+        var subject = new ErasureSubject(ownerId, conversationIds, planRuns);
 
         var requestedAt = _timeProvider.GetUtcNow();
         var (graphReceipt, graphOutcome) = await EraseGraphAsync(ownerId, requestedAt, cancellationToken);
@@ -131,12 +148,23 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         // From here on, deletion is not interrupted by the caller going away: a request cancelled between the
         // conversations and the stage after them would leave that stage's records with nothing that leads to them.
         var conversationsErased = await RunStageAsync(ErasureStage.Conversations, beforeSucceeded, outcomes, subject, CancellationToken.None);
+        var plansErased = await RunStageAsync(ErasureStage.PlannedTasks, beforeSucceeded, outcomes, subject, CancellationToken.None);
 
-        // Safe only when the person's conversations are really gone: none existed, or a conversation eraser ran and
-        // succeeded. A host whose conversation store cannot erase leaves them standing, and they keep their ledger rows.
+        // The stage after acts only on what an erased lead led to. A host whose conversation store cannot erase leaves the
+        // conversations standing, and they keep their ledger rows; a plan store that failed keeps its runs' rows. Each
+        // lead that is gone (or never existed) contributes its ids, so one failing never strands the other's records.
+        // What the plan store still records after its stage (a run in progress, or made meanwhile) is left out too: its
+        // budget and once-only claims are live.
         var conversationsGone = subject.ConversationIds.Count == 0
             || (conversationsErased && _erasers.Any(e => e.ErasureStage == ErasureStage.Conversations));
-        await RunStageAsync(ErasureStage.AfterConversations, beforeSucceeded && conversationsGone, outcomes, subject, CancellationToken.None);
+        var stillRecorded = plansErased ? await PlannedTasksStillRecordedAsync(ownerId, outcomes) : PlanRunTraces.Empty;
+        var plannedTasksGone = subject.PlanRuns.IsEmpty
+            || (plansErased && stillRecorded is not null && _erasers.Any(e => e.ErasureStage == ErasureStage.PlannedTasks));
+        var plannedPart = plannedTasksGone ? subject.PlanRuns.Except(stillRecorded ?? PlanRunTraces.Empty) : PlanRunTraces.Empty;
+        var partly = !conversationsGone || !plannedTasksGone || stillRecorded is not { IsEmpty: true };
+        await RunStageAfterAsync(
+            new ErasureSubject(ownerId, conversationsGone ? subject.ConversationIds : [], plannedPart),
+            beforeSucceeded, partly, outcomes);
 
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
@@ -161,12 +189,57 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         if (_conversations is null)
             return;
 
-        var remaining = (await _conversations.ListAsync(ownerId, CancellationToken.None)).Count;
+        int remaining;
+        try
+        {
+            remaining = (await _conversations.ListAsync(ownerId, CancellationToken.None)).Count;
+        }
+        catch (Exception ex)
+        {
+            // The deletes are done; losing the receipt over this check would hide them.
+            _logger.LogError(ex, "Erasure could not check for conversations started meanwhile.");
+            outcomes.Add(new StoreErasureOutcome(
+                "conversations started during erasure", StoreErasureStatus.Failed, 0, FailedReason));
+            return;
+        }
+
         if (remaining > 0)
         {
             outcomes.Add(new StoreErasureOutcome(
                 "conversations started during erasure", StoreErasureStatus.Skipped, 0, StartedMeanwhileReason));
         }
+    }
+
+    /// <summary>
+    /// The same rule for planned tasks (#906), read before the stage after. The plan store erased only the runs it listed
+    /// that had finished, and kept a plan with a run in progress or made since, so the next request still finds it; the
+    /// receipt says so. Returns what is still recorded, or <see langword="null"/> when it could not be read, in which case
+    /// the planned tasks are treated as not gone.
+    /// </summary>
+    private async Task<PlanRunTraces?> PlannedTasksStillRecordedAsync(string ownerId, List<StoreErasureOutcome> outcomes)
+    {
+        if (_planRuns is null)
+            return PlanRunTraces.Empty;
+
+        PlanRunTraces remaining;
+        try
+        {
+            remaining = await _planRuns.ListRunTracesAsync(ownerId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erasure could not check for planned tasks run meanwhile.");
+            outcomes.Add(new StoreErasureOutcome("planned tasks run during erasure", StoreErasureStatus.Failed, 0, FailedReason));
+            return null;
+        }
+
+        if (!remaining.IsEmpty)
+        {
+            outcomes.Add(new StoreErasureOutcome(
+                "planned tasks run during erasure", StoreErasureStatus.Skipped, 0, RunMeanwhileReason));
+        }
+
+        return remaining;
     }
 
     /// <summary>
@@ -192,6 +265,32 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
                 _logger.LogError(ex, "Erasure failed in store {Store}.", store);
                 outcomes.Add(new StoreErasureOutcome(store, StoreErasureStatus.Failed, 0, ScrubFailedReason));
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs <see cref="ErasureStage.AfterConversations"/> for <paramref name="narrowed"/>: the ids of whichever lead (the
+    /// conversations, the plans) is gone, less what the plan store still records. When nothing is left out it is an
+    /// ordinary stage. When something is (<paramref name="partly"/>), it runs only if the narrowed ids name anything; each
+    /// line then says the rest was kept, since the store still holds what the surviving lead leads to and a retry finds it
+    /// there, and a store that erases the whole person is held back, since it cannot be narrowed.
+    /// </summary>
+    private async Task RunStageAfterAsync(
+        ErasureSubject narrowed, bool beforeSucceeded, bool partly, List<StoreErasureOutcome> outcomes)
+    {
+        var mayRun = beforeSucceeded && (!partly || narrowed.AllConversationIds.Count > 0 || !narrowed.PlanRuns.IsEmpty);
+        foreach (var eraser in _erasers.Where(e => e.ErasureStage == ErasureStage.AfterConversations))
+        {
+            if (!mayRun || (partly && eraser.ErasureReach == ErasureReach.Owner))
+            {
+                outcomes.Add(new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason));
+                continue;
+            }
+
+            var outcome = await EraseAsync(eraser, narrowed, CancellationToken.None);
+            outcomes.Add(partly && outcome.Status == StoreErasureStatus.Erased
+                ? outcome with { Status = StoreErasureStatus.Skipped, Reason = PartlyHeldBackReason }
+                : outcome);
         }
     }
 

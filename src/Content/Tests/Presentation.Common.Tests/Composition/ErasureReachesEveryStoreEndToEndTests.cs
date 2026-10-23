@@ -153,6 +153,97 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task PlannedTaskRunRecords_AreErasedWithThePersonWhoRanThem_AndEveryoneElsesAreKept()
+    {
+        // #906. A planned task's model steps each run as their own conversation, "{runScope}:{stepId}", and its tool steps
+        // spill under the run's own id; none of these is one of the person's conversations. Each person runs their own
+        // workflow, so the run scope is the plan id, as WorkflowRunKindExecutor arms it.
+        await using var provider = BuildProvider();
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var subject = await SeedPlannedTaskRunAsync(provider, Subject, $"subjectrun{run}");
+        var bystander = await SeedPlannedTaskRunAsync(provider, Bystander, $"bystanderrun{run}");
+        (await PlannedTaskRecordsAsync(provider, subject)).Should().AllSatisfy(r => r.Value.Should().BeGreaterThan(0,
+            $"{r.Key} must hold the seed before erasing"));
+
+        ErasureReceipt receipt;
+        await using (var scope = provider.CreateAsyncScope())
+            receipt = await scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>().EraseOwnerAsync(Subject, CancellationToken.None);
+
+        receipt.Stores.Should().NotContain(s => s.Status == Domain.Common.Compliance.StoreErasureStatus.Failed
+            || s.Status == Domain.Common.Compliance.StoreErasureStatus.Skipped);
+        (await PlannedTaskRecordsAsync(provider, subject)).Should().AllSatisfy(r => r.Value.Should().Be(0,
+            $"{r.Key} must keep nothing of the subject's planned task"));
+        (await PlannedTaskRecordsAsync(provider, bystander)).Should().AllSatisfy(r => r.Value.Should().BeGreaterThan(0,
+            $"{r.Key} must keep everyone else's"));
+    }
+
+    /// <summary>A person's planned-task run: their plan, a model step's conversation id and the run's tool-result scope.</summary>
+    private sealed record SeededRun(Seeded Person, string StepConversationId, string RunBudgetKey, string ToolResultScopeId);
+
+    /// <summary>
+    /// What a workflow run leaves behind, written the way the run writes it: the plan store records the run before any
+    /// step runs, then a model step's turn spends budget, spills and is recorded for prompt usage under its own
+    /// conversation id, and a tool step spills under the run's id.
+    /// </summary>
+    private static async Task<SeededRun> SeedPlannedTaskRunAsync(ServiceProvider provider, string ownerId, string label)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var sp = scope.ServiceProvider;
+        var person = new Seeded(ownerId, "", PlanId.New(), label);
+        var plan = Plan(person.PlanId, label);
+        var runScope = person.PlanId.Value.ToString();
+        var toolResultScopeId = $"job{label}";
+
+        using (sp.GetRequiredService<IKnowledgeScopeWriter>().SetScope(userId: ownerId))
+        {
+            var plans = sp.GetRequiredService<IPlanStateStore>();
+            (await plans.SavePlanAsync(plan, CancellationToken.None)).IsSuccess.Should().BeTrue();
+            (await plans.RecordRunAsync(person.PlanId, runScope, toolResultScopeId, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        // The run's steps write next, and it ends before erasure; one still in progress would keep its plan by design.
+
+        var stepConversationId = PlanRunKeys.StepConversationId(runScope, plan.Steps[1].Id);
+        var runBudgetKey = PlanRunKeys.RunBudgetKey(runScope);
+        var budget = sp.GetRequiredService<IConversationBudgetTracker>();
+        await budget.RecordUsageAsync(stepConversationId, 100);
+        await budget.RecordUsageAsync(runBudgetKey, 100);
+        var spills = sp.GetRequiredService<IToolResultStore>();
+        foreach (var scopeId in new[] { stepConversationId, toolResultScopeId })
+        {
+            (await spills.StoreIfLargeAsync(scopeId, "search", null, new string('x', 500), scopeIsRetrievable: true))
+                .IsPersistedToDisk.Should().BeTrue("the seed must actually spill");
+        }
+
+        await sp.GetRequiredService<IPromptUsageStore>().AppendAsync(PromptUsage($"{stepConversationId}:1"), CancellationToken.None);
+        using (sp.GetRequiredService<IKnowledgeScopeWriter>().SetScope(userId: ownerId))
+        {
+            (await sp.GetRequiredService<IPlanStateStore>().RecordRunEndedAsync(
+                person.PlanId, runScope, toolResultScopeId, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        return new SeededRun(person, stepConversationId, runBudgetKey, toolResultScopeId);
+    }
+
+    private async Task<Dictionary<string, int>> PlannedTaskRecordsAsync(ServiceProvider provider, SeededRun run)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var sp = scope.ServiceProvider;
+        var budget = sp.GetRequiredService<IConversationBudgetTracker>();
+        await using var usage = await sp.GetRequiredService<IDbContextFactory<PromptUsageDbContext>>().CreateDbContextAsync();
+        await using var planner = await sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContextAsync();
+        return new Dictionary<string, int>
+        {
+            ["step budget"] = (await budget.GetStatusAsync(run.StepConversationId)).ConsumedTokens,
+            ["run budget"] = (await budget.GetStatusAsync(run.RunBudgetKey)).ConsumedTokens,
+            ["model step spills"] = SpilledFiles(run.StepConversationId.Replace(':', '~')),
+            ["tool step spills"] = SpilledFiles(run.ToolResultScopeId),
+            ["prompt usage"] = await usage.PromptUsages.CountAsync(u => u.CaseId == $"{run.StepConversationId}:1"),
+            ["run records"] = await planner.PlanRuns.CountAsync(r => r.PlanGraphId == run.Person.PlanId.Value),
+        };
+    }
+
+    [Fact]
     public async Task ErasedText_IsNotLeftInTheDatabaseFilesOnDisk()
     {
         // SQLite marks deleted rows' pages free without overwriting them, and a write-ahead log keeps the frames that wrote
@@ -242,9 +333,9 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         return await Stores[store].Remaining(scope.ServiceProvider, person);
     }
 
-    private int SpilledFiles(string conversationId)
+    private int SpilledFiles(string scopeDirectory)
     {
-        var directory = Path.Combine(_workingDir, "spills", conversationId);
+        var directory = Path.Combine(_workingDir, "spills", scopeDirectory);
         return Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count() : 0;
     }
 

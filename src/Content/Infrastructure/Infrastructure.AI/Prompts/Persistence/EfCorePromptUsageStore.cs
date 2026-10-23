@@ -37,20 +37,21 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore, IPersonalDataEra
 
     /// <inheritdoc />
     /// <remarks>
-    /// Fact extraction writes the case id as <c>{conversationId}:{turn}</c>. A row belongs to one of the person's
-    /// conversations only when its case id is that conversation id, a colon, and a turn number; a bare prefix match would
+    /// Fact extraction writes the case id as <c>{conversationId}:{turn}</c>, for the person's conversations and their
+    /// planned tasks' model steps alike (<see cref="ErasureSubject.AllConversationIds"/>). A row belongs to one of them
+    /// only when its case id is that conversation id, a colon, and a turn number; a bare prefix match would
     /// also take <c>conv-1:…</c> rows when erasing <c>conv</c>, or rows of a conversation whose own id contains a colon.
     /// Candidates are narrowed by prefix in the database and confirmed exactly here.
     /// </remarks>
     public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
-        if (subject.ConversationIds.Count == 0)
+        if (subject.AllConversationIds.Count == 0)
             return 0;
 
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
         var rowIds = new List<long>();
-        foreach (var conversationId in subject.ConversationIds)
+        foreach (var conversationId in subject.AllConversationIds)
         {
             var prefix = conversationId + ":";
             var candidates = await context.PromptUsages

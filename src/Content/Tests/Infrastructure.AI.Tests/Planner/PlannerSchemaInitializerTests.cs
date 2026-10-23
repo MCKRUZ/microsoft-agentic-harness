@@ -65,7 +65,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             new FakeTimeProvider(new DateTimeOffset(2026, 7, 27, 12, 0, 0, TimeSpan.Zero)),
             new NullKnowledgeScope(),
-            new SchemaInitializer<PlannerDbContext>(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory), PlannerTestConfig.Monitor());
 
         var graph = CreateTestGraph();
         var saved = await store.SavePlanAsync(graph, CancellationToken.None);

@@ -65,11 +65,15 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
     public ErasureReach ErasureReach => ErasureReach.NamedConversations;
 
     /// <inheritdoc />
-    /// <remarks>A conversation's budget key is its conversation id; plan-run budgets use their own keys.</remarks>
+    /// <remarks>
+    /// A conversation's budget key is its conversation id, including a planned-task model step's; a planned-task run has
+    /// its own key (#906).
+    /// </remarks>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
-        return Task.FromResult(subject.ConversationIds.Count(id => _entries.TryRemove(id, out _)));
+        return Task.FromResult(subject.AllConversationIds.Concat(subject.PlanRuns.RunBudgetKeys)
+            .Count(id => _entries.TryRemove(id, out _)));
     }
 
     /// <summary>Maximum number of keys tracked before least-recently-used eviction kicks in.</summary>

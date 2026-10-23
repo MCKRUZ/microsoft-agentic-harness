@@ -16,9 +16,16 @@ public enum ErasureStage
     Conversations,
 
     /// <summary>
-    /// Records whose removal is only safe once the conversations are gone, such as the call-once ledger: deleting a
-    /// surviving conversation's ledger rows would let a once-only tool run again in it. Run only when the conversations
-    /// were erased.
+    /// The plans and their run records, which lead to the step sessions of the subject's planned tasks the way
+    /// conversations lead to theirs (#906). Run only when every earlier store succeeded. A separate stage from the
+    /// conversations so each lead's success is known on its own: the stage after acts only on what an erased lead led to.
+    /// </summary>
+    PlannedTasks,
+
+    /// <summary>
+    /// Records whose removal is only safe once what leads to them is gone, such as the call-once ledger: deleting a
+    /// surviving conversation's ledger rows would let a once-only tool run again in it. Run for the conversations' ids when
+    /// the conversations were erased, and for the planned tasks' ids when the plans were.
     /// </summary>
     AfterConversations,
 }

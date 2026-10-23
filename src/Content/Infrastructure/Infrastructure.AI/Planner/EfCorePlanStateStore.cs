@@ -8,7 +8,9 @@ using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Domain.Common.Compliance;
+using Domain.Common.Config;
 
 namespace Infrastructure.AI.Planner;
 
@@ -35,7 +37,7 @@ namespace Infrastructure.AI.Planner;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "The planner SQLite database: plan graphs, step configurations (including LLM-call prompts), step outputs, error messages, attestations and an execution log, each plan stamped with the caller's owner and tenant. A plan nothing has happened to for Planner:Retention:RetainFor (default 90 days) is deleted, whoever owns it; owner erasure removes every plan the person owns. Plans run without a caller carry no owner and are reached only by retention.",
+    "The planner SQLite database: plan graphs, step configurations (including LLM-call prompts), step outputs, error messages, attestations, an execution log, and a record of who ran each plan under which run ids, each plan stamped with the caller's owner and tenant. A plan nothing has happened to for Planner:Retention:RetainFor (default 90 days) is deleted with its run records, whoever owns it; owner erasure removes every plan the person owns and every run they made, after the stores those runs lead to. Plans run without a caller carry no owner and are reached only by retention.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Owner,
     RetentionBasis.Configured,
@@ -53,19 +55,32 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
     private readonly ILogger<EfCorePlanStateStore> _logger;
     private readonly TimeProvider _timeProvider;
     private readonly IKnowledgeScope _scope;
+    private readonly IOptionsMonitor<AppConfig> _config;
 
+    /// <summary>Initializes a new instance of the <see cref="EfCorePlanStateStore"/> class.</summary>
+    /// <param name="factory">Creates the short-lived planner contexts.</param>
+    /// <param name="logger">Structured logger.</param>
+    /// <param name="timeProvider">Clock for saved and run times.</param>
+    /// <param name="scope">The ambient caller, stamped on every plan and run.</param>
+    /// <param name="schemaInitializer">Forces the schema into existence before the first operation.</param>
+    /// <param name="config">
+    /// Read for the spill sweep's period, which bounds how long a run's tool-result scope is remembered.
+    /// </param>
     public EfCorePlanStateStore(
         IDbContextFactory<PlannerDbContext> factory,
         ILogger<EfCorePlanStateStore> logger,
         TimeProvider timeProvider,
         IKnowledgeScope scope,
-        SchemaInitializer<PlannerDbContext> schemaInitializer)
+        SchemaInitializer<PlannerDbContext> schemaInitializer,
+        IOptionsMonitor<AppConfig> config)
     {
         ArgumentNullException.ThrowIfNull(schemaInitializer);
+        ArgumentNullException.ThrowIfNull(config);
         _factory = factory;
         _logger = logger;
         _timeProvider = timeProvider;
         _scope = scope;
+        _config = config;
     }
 
     /// <inheritdoc />
