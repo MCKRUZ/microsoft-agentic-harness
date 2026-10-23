@@ -206,7 +206,7 @@ public static class DependencyInjection
             // Applied at 10 POST requests/min per IP on /api/mcp/tools/*.
             options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             {
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/mcp/tools"))
                 {
                     var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -223,7 +223,7 @@ public static class DependencyInjection
                 // authenticated user so a compromised or misused token cannot spam deletions. Runs
                 // after auth + KnowledgeScopeMiddleware, so User is populated; partition on the caller's
                 // object id (falling back to IP for the unauthenticated case the [Authorize] gate rejects).
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/compliance/erase-my-data"))
                 {
                     var partitionKey = context.User.GetUserIdOrNull()
@@ -243,7 +243,7 @@ public static class DependencyInjection
                 // flood the audit trail and one with it cannot sweep through people faster than a human
                 // working a request queue would. Its own partition, so an operator's own self-service
                 // erasure does not spend this allowance.
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/compliance/erasures"))
                 {
                     var operatorKey = context.User.GetUserIdOrNull()
@@ -258,11 +258,28 @@ public static class DependencyInjection
                     });
                 }
 
+                // Document removal (#901) deletes content across every tenant and writes an audit record per request,
+                // refused or not: the same per-operator cap as operator erasure, in its own partition.
+                if (HttpMethods.IsPost(context.Request.Method) &&
+                    context.Request.Path.StartsWithSegments("/api/compliance/document-removals"))
+                {
+                    var operatorKey = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"remove-document:{operatorKey}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
                 // Memory writes run the write gate's prompt-injection scan on every request and
                 // create durable graph nodes; cap them per authenticated user so a scripted caller
                 // cannot flood the graph store or burn gate-scan cycles. Reads (GET search) and
                 // deletes are cheap and idempotent and stay unthrottled, matching the documents API.
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/memory"))
                 {
                     var memoryCaller = context.User.GetUserIdOrNull()
@@ -282,7 +299,7 @@ public static class DependencyInjection
                 // authenticated caller so a scripted or stuck client cannot hammer the approval
                 // loop or flood the audit store. Reads (pending list, detail polling after a 202)
                 // stay unthrottled, matching the memory API's write-only posture.
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/escalations"))
                 {
                     var escalationCaller = context.User.GetUserIdOrNull()
@@ -303,7 +320,7 @@ public static class DependencyInjection
                 // hammer the decision loop or flood the audit trail. Reads (list, detail polling
                 // after an approval) stay unthrottled, matching the escalation API's write-only
                 // posture and its 30/min budget.
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/change-proposals"))
                 {
                     var proposalCaller = context.User.GetUserIdOrNull()
@@ -324,7 +341,7 @@ public static class DependencyInjection
                 // authenticated caller so even a role-holding operator cannot bulk-shift a
                 // baseline or flood the audit store in one burst. Reads stay unthrottled,
                 // matching the escalation API's write-only posture.
-                if (context.Request.Method == HttpMethods.Post &&
+                if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/drift"))
                 {
                     // Partition on the SAME claim the controller stamps into the audit trail,
@@ -351,7 +368,7 @@ public static class DependencyInjection
                 // (1+N uncached embedding calls), so even a role-holding operator can loop the
                 // endpoint into real provider spend. Cap reads per authenticated user, matching
                 // the memory-write limiter's 30/min posture (both are per-request AI-cost paths).
-                if (context.Request.Method == HttpMethods.Get &&
+                if (HttpMethods.IsGet(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/learnings"))
                 {
                     var learningsCaller = context.User.GetUserIdOrNull()

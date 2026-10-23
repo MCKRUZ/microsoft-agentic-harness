@@ -42,6 +42,19 @@ public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIn
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task RemoveDocument_SelfHostedBypass_IsForbidden()
+    {
+        // Under bypass the audit trail could not say which operator removed the document (#901).
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/compliance/document-removals", new { documentId = "0123456789ABCDEF" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("Document removal is not available");
+    }
+
     [Theory]
     [InlineData("Dev", true)]
     [InlineData("SelfHosted", true)]
