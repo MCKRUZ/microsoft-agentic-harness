@@ -73,7 +73,12 @@ public sealed class RunBundleCommandValidator : AbstractValidator<RunBundleComma
                 .Must(id => !Path.IsPathRooted(id))
                     .WithMessage("ConversationId must not be an absolute or drive-rooted path.")
                 .Must(id => !StorageSegmentSafety.HasTrailingDot(id))
-                    .WithMessage("ConversationId must not have a trailing dot.");
+                    .WithMessage("ConversationId must not have a trailing dot.")
+                // A named conversation is stored, and erasing it erases what the stores without an owner hold under its
+                // id; ':' is kept for the ids planned-task runs derive (#907). The store refuses it too; refusing here
+                // answers 400 instead of failing the run after it is accepted.
+                .Must(id => !ReservedConversationIds.IsReserved(id!))
+                    .WithMessage("ConversationId must not contain ':'.");
         });
     }
 }

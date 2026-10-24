@@ -57,6 +57,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         "a planned task was running or was run while erasure ran; its plan and what it recorded since were kept, so run erasure again";
     private const string ScrubFailedReason =
         "the records were deleted, but their bytes could not yet be cleared from the store's files; the failure has been logged, so run erasure again";
+    private const string WithheldReason =
+        "the person had a conversation whose id is shaped like a planned task's; the conversation was erased, but what other stores hold under its id was kept, because those stores record no owner and the records may be another person's planned task";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
@@ -168,6 +170,13 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
 
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
+
+        // #907: never followed into the stores without an owner, so the receipt must not read Full.
+        if (subject.WithheldConversationIds.Count > 0)
+        {
+            outcomes.Add(new StoreErasureOutcome(
+                "conversations with a reserved id", StoreErasureStatus.Skipped, 0, WithheldReason));
+        }
 
         await ScrubAsync(outcomes);
 

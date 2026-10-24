@@ -33,8 +33,11 @@ namespace Domain.AI.Planner;
 public static class PlanRunKeys
 {
     /// <summary>
-    /// Prefix marking a budget entry as owned by a plan run rather than by a conversation. Also
-    /// guarantees the key cannot collide with a real conversation id.
+    /// Prefix marking a budget entry as owned by a plan run rather than by a conversation. It contains
+    /// <see cref="Domain.Common.Helpers.ReservedConversationIds.Separator"/>, which no conversation a caller
+    /// names may contain, so the key cannot be a stored conversation's id (#907). A conversation created
+    /// before that rule existed could have one; erasure does not follow such an id into the stores
+    /// without an owner.
     /// </summary>
     public const string RunBudgetPrefix = "planrun:";
 
@@ -44,9 +47,12 @@ public static class PlanRunKeys
     /// </summary>
     /// <param name="runScope">Identity of the enclosing run (its conversation id or plan id).</param>
     /// <param name="stepId">The step being executed.</param>
-    /// <returns>The step's conversation id.</returns>
+    /// <returns>
+    /// The step's conversation id. It contains the reserved separator, so no conversation a caller names can
+    /// take it and have the step's records erased with their own (#907).
+    /// </returns>
     public static string StepConversationId(string runScope, PlanStepId stepId) =>
-        $"{runScope}:{stepId.Value}";
+        $"{runScope}{Domain.Common.Helpers.ReservedConversationIds.Separator}{stepId.Value}";
 
     /// <summary>
     /// The budget key accumulating token spend across every step of one plan run. Owned by the plan

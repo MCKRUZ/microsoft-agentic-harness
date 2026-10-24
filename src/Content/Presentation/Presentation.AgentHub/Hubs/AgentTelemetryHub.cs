@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Application.AI.Common.Models.Conversations;
+using Application.Common.Exceptions.ExceptionTypes;
 using Presentation.AgentHub.DTOs;
 using Presentation.Common.Extensions;
 using Presentation.AgentHub.Interfaces;
@@ -123,8 +124,18 @@ public sealed class AgentTelemetryHub : Hub
         var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
 
-        var (record, history) = await _orchestrator.StartConversationAsync(
-            Context.ConnectionId, agentName, conversationId, callerId, ct);
+        ConversationRecord record;
+        IReadOnlyList<ConversationMessage> history;
+        try
+        {
+            (record, history) = await _orchestrator.StartConversationAsync(
+                Context.ConnectionId, agentName, conversationId, callerId, ct);
+        }
+        catch (ReservedConversationIdException)
+        {
+            // The store refuses a new conversation named like a planned task's step (#907); the caller can pick another id.
+            throw new HubException(ReservedConversationIdException.Refusal);
+        }
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(record.Id), ct);
 

@@ -169,6 +169,7 @@ public sealed partial class EfCoreConversationStore : IConversationStore
         ConversationOwnership.RequireCallerId(userId);
 
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
+        ConversationOwnership.RequireCreatableId(id);
         var now = _timeProvider.GetUtcNow();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
@@ -243,6 +244,7 @@ public sealed partial class EfCoreConversationStore : IConversationStore
         if (existing is not null)
             return existing;
 
+        ConversationOwnership.RequireCreatableId(conversationId);
         var now = _timeProvider.GetUtcNow();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);

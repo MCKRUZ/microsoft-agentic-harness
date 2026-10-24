@@ -585,6 +585,41 @@ public sealed class PersonalDataErasureCoordinatorTests
     }
 
     [Fact]
+    public async Task AConversationWithAReservedId_IsErased_ButNotFollowedIntoStoresWithoutAnOwner_AndTheReceiptSaysSo()
+    {
+        // #907. Only a conversation created before the shape was refused can have one. Under its id the stores without an
+        // owner may hold another person's planned-task records, so they are not given it.
+        _conversations.SetupSequence(c => c.ListAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([Conversation("c-1"), Conversation("run-9:step-1")])
+            .ReturnsAsync([]);
+        var seen = new Dictionary<string, ErasureSubject>();
+        Mock<IPersonalDataEraser> Seeing(string name, ErasureStage stage)
+        {
+            var eraser = EraserMock(name, stage);
+            eraser.SetupGet(e => e.ErasureReach).Returns(ErasureReach.NamedConversations);
+            eraser.Setup(e => e.EraseSubjectAsync(It.IsAny<ErasureSubject>(), It.IsAny<CancellationToken>()))
+                .Callback<ErasureSubject, CancellationToken>((s, _) => seen[name] = s)
+                .ReturnsAsync(1);
+            return eraser;
+        }
+
+        var receipt = await Create(
+                Seeing("observability", ErasureStage.BeforeConversations).Object,
+                Seeing("conversations", ErasureStage.Conversations).Object,
+                Seeing("ledger", ErasureStage.AfterConversations).Object)
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        seen["observability"].AllConversationIds.Should().Equal("c-1");
+        seen["ledger"].AllConversationIds.Should().Equal("c-1");
+        seen["conversations"].ConversationIds.Should().Equal("c-1", "run-9:step-1");
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+        receipt.Stores.Should().ContainSingle(s => s.Store == "conversations with a reserved id")
+            .Which.Status.Should().Be(StoreErasureStatus.Skipped);
+        receipt.Stores.Single(s => s.Store == "ledger").Status.Should().Be(StoreErasureStatus.Erased,
+            "the stage after is not narrowed by the withheld id; it was simply never given it");
+    }
+
+    [Fact]
     public async Task AStoreReachedThroughConversationsFails_ConversationsAndLedgerAreHeldBack()
     {
         var receipt = await Create(

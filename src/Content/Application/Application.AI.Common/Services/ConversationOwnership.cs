@@ -1,4 +1,5 @@
 using Application.Common.Exceptions.ExceptionTypes;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services;
@@ -41,6 +42,24 @@ public static class ConversationOwnership
                 "A caller id is required: conversations are never read or written unscoped.",
                 nameof(callerId));
         }
+    }
+
+    /// <summary>
+    /// Refuses to create a conversation whose id has the shape the harness keeps for ids it derives from planned-task
+    /// runs (#907). Call it on the create branch only, so a conversation created before the rule existed still opens.
+    /// </summary>
+    /// <param name="conversationId">The id the new conversation would take.</param>
+    /// <exception cref="ReservedConversationIdException">The id contains <see cref="ReservedConversationIds.Separator"/>.</exception>
+    /// <remarks>
+    /// Enforced in the stores rather than at each entry point for the same reason ownership is: one entry point (the
+    /// AgentHub hub) reached the store with no shape check at all. Erasing a conversation erases what the stores without
+    /// an owner hold under its id, so a person who could name one after a planned task's step would have that task's
+    /// records erased with their own; see <see cref="ReservedConversationIds"/>.
+    /// </remarks>
+    public static void RequireCreatableId(string conversationId)
+    {
+        if (ReservedConversationIds.IsReserved(conversationId))
+            throw new ReservedConversationIdException(nameof(conversationId));
     }
 
     /// <summary>

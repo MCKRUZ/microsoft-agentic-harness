@@ -254,6 +254,30 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         }
     }
 
+    /// <summary>
+    /// StartConversation refuses an id shaped like a planned task's step (#907), with a message the caller can act on.
+    /// The hub had no shape check of its own; the store's refusal is what reaches the caller.
+    /// </summary>
+    [Fact]
+    public async Task StartConversation_ReservedId_IsRefusedWithTheReasonAndNothingIsStored()
+    {
+        var connection = CreateConnection("test-user");
+        await connection.StartAsync();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<HubException>(() =>
+                connection.InvokeAsync("StartConversation", "test-agent", "plan-1:step-1"));
+
+            ex.Message.Should().EndWith($"HubException: {Application.Common.Exceptions.ExceptionTypes.ReservedConversationIdException.Refusal}");
+            (await _store.GetAsync("plan-1:step-1", "test-user")).Should().BeNull();
+        }
+        finally
+        {
+            await connection.StopAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
     // ── Chat flow ─────────────────────────────────────────────────────────────
 
     /// <summary>StartConversation creates and persists a new conversation record in the store.</summary>
