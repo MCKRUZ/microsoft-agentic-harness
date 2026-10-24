@@ -100,6 +100,24 @@ public sealed class PersonalDataErasureCoordinatorListingTests
     }
 
     [Fact]
+    public async Task UnreadableConversations_HoldBackAStageAfterStoreThatErasesTheWholePerson()
+    {
+        // Security review: such a store cannot be narrowed to the readable conversations, so it would take an unreadable
+        // conversation's records with nothing left that leads to them.
+        ListsIds(new ConversationIdListing(["c-1"], 1), ConversationIdListing.Empty);
+        var wholePerson = new Mock<IPersonalDataEraser>();
+        wholePerson.SetupGet(e => e.ErasureStoreName).Returns("owner-keyed");
+        wholePerson.SetupGet(e => e.ErasureStage).Returns(ErasureStage.AfterConversations);
+        wholePerson.SetupGet(e => e.ErasureReach).Returns(ErasureReach.Owner);
+
+        var receipt = await Create(Eraser("conversations", ErasureStage.Conversations), wholePerson.Object)
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        wholePerson.Verify(e => e.EraseSubjectAsync(It.IsAny<ErasureSubject>(), It.IsAny<CancellationToken>()), Times.Never);
+        receipt.Stores.Single(s => s.Store == "owner-keyed").Status.Should().Be(StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
     public async Task AConversationStartedMeanwhile_IsFoundThroughTheErasureListingToo()
     {
         ListsIds(new ConversationIdListing(["c-1"], 0), new ConversationIdListing(["c-new"], 0));

@@ -60,6 +60,22 @@ public sealed class FileSystemConversationStoreErasureTests : IDisposable
         listing.Unreadable.Should().Be(1);
     }
 
+    [Fact]
+    public async Task ListConversationIdsAsync_AFileWhoseIdNamesAnotherConversation_IsCountedNotListed()
+    {
+        // Security review: the stores keyed by conversation id check no owner, so a file claiming another conversation's
+        // id would lead them to that conversation's records.
+        var theirs = await SeedAsync("user-b", "theirs");
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "mine.json"),
+            $$"""{"id":"{{theirs}}","agentName":"agent","userId":"user-a","createdAt":"2026-10-20T12:00:00+00:00","updatedAt":"2026-10-20T12:00:00+00:00","messages":[]}""");
+
+        var listing = await _store.ListConversationIdsAsync("user-a", CancellationToken.None);
+
+        listing.Ids.Should().BeEmpty();
+        listing.Unreadable.Should().Be(1);
+    }
+
     [SkippableFact]
     public async Task ListConversationIdsAsync_ALockedFile_IsCountedNotSkipped()
     {

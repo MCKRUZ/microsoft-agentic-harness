@@ -61,7 +61,13 @@ public sealed partial class FileSystemConversationStore : IPersonalDataEraser, I
         {
             var json = await File.ReadAllTextAsync(file, cancellationToken);
             var header = JsonSerializer.Deserialize<StoredOwner>(json, ConversationJson.Options);
-            return header is { Id.Length: > 0, UserId.Length: > 0 } ? header : null;
+
+            // The file's name is the conversation's id; the id inside must agree. One that names another conversation
+            // would lead the stores keyed by conversation id, which check no owner, to that other conversation's records.
+            return header is { Id.Length: > 0, UserId.Length: > 0 }
+                && string.Equals(header.Id, Path.GetFileNameWithoutExtension(file), StringComparison.Ordinal)
+                    ? header
+                    : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {

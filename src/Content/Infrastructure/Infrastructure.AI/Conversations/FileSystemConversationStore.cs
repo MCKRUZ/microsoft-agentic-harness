@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
@@ -371,7 +372,8 @@ public sealed partial class FileSystemConversationStore : IConversationStore
             }
             catch (JsonException ex)
             {
-                _logger.LogWarning(ex,
+                // Erasure reaches this too (#907), so the parser's message, which can quote the file, is withheld.
+                _logger.LogWarning(MessageWithheldException.From(ex),
                     "Conversation {ConversationId} could not be deserialized; deleting it unverified.",
                     conversationId);
                 existing = null;

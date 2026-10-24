@@ -837,6 +837,16 @@
                         another's randomly generated job id could still name a conversation after it.
                     </p>
                     <p>
+                        The conversation ids are read through each store's id-only erasure listing
+                        (<code>IConversationIdSource</code>, #907). It loads no transcripts, and it never skips a record it
+                        cannot read: a stored conversation that cannot be read is left untouched, along with what it
+                        leads to, and the receipt gets a failed "could not be read" line. The same applies to a file whose
+                        contents name a different conversation than its file name. Failures on the erasure path are logged
+                        through <code>MessageWithheldException</code>, which keeps each exception's type, stack and inner
+                        chain but not its message. A store's message can name the person being erased, through a file
+                        path or an echoed owner filter, and the pattern-based log redaction does not catch ids.
+                    </p>
+                    <p>
                         Two ways in, both producing the same receipt:
                     </p>
                     <ul>

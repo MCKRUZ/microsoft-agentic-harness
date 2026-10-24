@@ -165,7 +165,10 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         var plannedTasksGone = subject.PlanRuns.IsEmpty
             || (plansErased && stillRecorded is not null && _erasers.Any(e => e.ErasureStage == ErasureStage.PlannedTasks));
         var plannedPart = plannedTasksGone ? subject.PlanRuns.Except(stillRecorded ?? PlanRunTraces.Empty) : PlanRunTraces.Empty;
-        var partly = !conversationsGone || !plannedTasksGone || stillRecorded is not { IsEmpty: true };
+        // A conversation the store could not read may be the person's and is still there (#907), so a store that erases
+        // the whole person is held back too: it would take that conversation's records with nothing left that leads to them.
+        var partly = !conversationsGone || !plannedTasksGone || stillRecorded is not { IsEmpty: true }
+            || conversations.Unreadable > 0;
         await RunStageAfterAsync(
             new ErasureSubject(ownerId, conversationsGone ? subject.ConversationIds : [], plannedPart),
             beforeSucceeded, partly, outcomes);
