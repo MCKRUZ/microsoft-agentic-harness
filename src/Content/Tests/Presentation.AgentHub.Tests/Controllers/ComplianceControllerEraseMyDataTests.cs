@@ -64,10 +64,8 @@ public sealed class ComplianceControllerEraseMyDataTests : IClassFixture<TestWeb
     [Theory]
     [InlineData("app-only")]
     [InlineData("app-idtyp")]
-    [InlineData(null)]
-    public async Task EraseMyData_ApplicationToken_Returns403SendsNothingAndRecordsTheRefusal(string? claimShape)
+    public async Task EraseMyData_ApplicationToken_Returns403SendsNothingAndRecordsTheRefusal(string claimShape)
     {
-        // null is the factory's default principal, whose mapped sub equals its oid: an app-only shape.
         var sent = CaptureSent();
         using var client = Client(claimShape);
 
@@ -85,7 +83,8 @@ public sealed class ComplianceControllerEraseMyDataTests : IClassFixture<TestWeb
     [InlineData("person")]
     [InlineData("oid-only")]
     [InlineData("sub-only")]
-    public async Task EraseMyData_APersonsToken_ReachesTheCommand(string claimShape)
+    [InlineData(null)]
+    public async Task EraseMyData_APersonsToken_ReachesTheCommand(string? claimShape)
     {
         // Including tokens with no oid, or no sub: a provider that issues only one of them is never read as an application.
         var sent = CaptureSent();

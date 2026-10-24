@@ -21,8 +21,7 @@ namespace Presentation.AgentHub.Tests;
 /// carrying <em>all</em> the identity claims cannot demonstrate that it reads the right one. Pass
 /// <c>oid-only</c> or <c>sub-only</c> to mint the single-claim token shapes real providers issue,
 /// <c>person</c> for a person's Entra token, or <c>app-only</c> / <c>app-idtyp</c> for an application's own token.
-/// The default set carries <c>sub</c>'s mapped form equal to <c>oid</c>, which is an app-only shape, so
-/// self-service erasure refuses it.
+/// The default set names no issuer, so it is never read as an Entra application token.
 ///
 /// Register as the default scheme in <c>ConfigureTestServices</c> to bypass Azure AD auth
 /// while supporting per-test identity and role customisation via HTTP headers.
@@ -47,6 +46,9 @@ public class TestAuthHandler(
     /// </summary>
     public const string ClaimShapeHeader = "x-test-claim-shape";
 
+    /// <summary>The Entra issuer the <c>person</c> and <c>app-*</c> claim shapes carry.</summary>
+    public const string EntraIssuer = "https://login.microsoftonline.com/test-tenant/v2.0";
+
     /// <summary>HTTP header carrying a tenant id, minted as a <c>tid</c> claim; absent mints none.</summary>
     public const string TenantHeader = "x-test-tenant";
 
@@ -63,11 +65,24 @@ public class TestAuthHandler(
         {
             "oid-only" => [new Claim("oid", userId)],
             "sub-only" => [new Claim("sub", userId)],
-            // #907 token shapes. A person's sub is a pairwise id that differs from their oid; an app-only token's sub is
-            // the service principal itself, so the two are equal, and a tenant may also turn on idtyp=app.
-            "person" => [new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}")],
-            "app-only" => [new Claim("oid", userId), new Claim("sub", userId)],
-            "app-idtyp" => [new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}"), new Claim("idtyp", "app")],
+            // #907 Entra token shapes. A person carries delegated scopes and a pairwise sub that differs from their oid; an
+            // app-only token carries roles but no scp, and its sub is the service principal itself. A tenant may also turn
+            // on idtyp=app.
+            "person" =>
+            [
+                new Claim("iss", EntraIssuer), new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}"),
+                new Claim("scp", "access_as_user"),
+            ],
+            "app-only" =>
+            [
+                new Claim("iss", EntraIssuer), new Claim("oid", userId), new Claim("sub", userId),
+                new Claim("roles", "access_as_application"),
+            ],
+            "app-idtyp" =>
+            [
+                new Claim("iss", EntraIssuer), new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}"),
+                new Claim("scp", "access_as_user"), new Claim("idtyp", "app"),
+            ],
             _ => new List<Claim>
             {
                 // ClaimsPrincipalExtensions.GetUserId() reads the "oid" claim first.

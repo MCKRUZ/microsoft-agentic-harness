@@ -126,20 +126,27 @@ public static class ClaimsPrincipalExtensions
     /// <returns><see langword="true"/> for an app-only token; <see langword="false"/> otherwise, including unauthenticated.</returns>
     /// <remarks>
     /// <para>
-    /// Two signals, both from Microsoft Entra's own guidance. The optional <c>idtyp</c> claim is <c>app</c> only in an
-    /// app-only token ("the most accurate way for an API to determine if a token is an app token or an app+user
-    /// token"), but a tenant must turn it on. Without it, Microsoft's documented check is that <c>oid</c> and
-    /// <c>sub</c> are equal: an app-only token's subject is the service principal itself, while a person's
-    /// <c>sub</c> is a pairwise id that differs from their <c>oid</c>.
+    /// <b>Any issuer.</b> The optional <c>idtyp</c> claim is <c>app</c> only in an app-only token, which Entra calls
+    /// "the most accurate way for an API to determine if a token is an app token or an app+user token"; a tenant must
+    /// turn it on. And a subject equal to the calling client's id (<c>azp</c>, <c>appid</c> or <c>client_id</c>) is
+    /// the client acting as itself, the shape RFC 9068 gives a client-credentials token from any provider. A person's
+    /// subject is never a client id.
     /// </para>
     /// <para>
-    /// The absence of <c>scp</c> is deliberately not a signal. Entra emits it only for user tokens, but other OpenID
-    /// Connect providers often omit it for people too, and refusing a real person their own erasure is the wrong way to
-    /// fail. A provider that issues no <c>oid</c> never matches the second check, for the same reason.
+    /// <b>Entra workforce and External ID issuers only</b> (<see cref="IsEntraIssued"/>). Entra emits <c>scp</c> "only
+    /// for user tokens", and Microsoft.Identity.Web refuses a bearer token carrying neither <c>scp</c> nor <c>roles</c>,
+    /// so an accepted token without <c>scp</c> is an application's. Microsoft's documented check also applies there:
+    /// an app-only token's <c>sub</c> is the service principal, equal to its <c>oid</c>, while a person's <c>sub</c> is
+    /// a pairwise id. Neither holds elsewhere: other providers often issue a person no <c>scp</c>, and Azure AD B2C
+    /// fills a person's <c>sub</c> with their object id by default, so <c>oid</c> equals <c>sub</c> for every B2C
+    /// user. Refusing a real person their own erasure is the wrong way to fail, so those checks stay behind the gate.
     /// </para>
     /// <para>
-    /// Every form of each claim is compared, as <see cref="GetUserIdOrNull"/> searches them, and any <c>oid</c> value
-    /// equal to any <c>sub</c> value counts: a token carrying two of either is already ambiguous, so this fails closed.
+    /// Every form of each claim is compared, as <see cref="GetUserIdOrNull"/> searches them, and any value equal to any
+    /// other counts: a token carrying two of either is already ambiguous, so this fails closed.
+    /// </para>
+    /// <para>
+    /// It cannot see a shared account signed in as a person (a "robot" user), which looks like anyone else's token.
     /// </para>
     /// </remarks>
     public static bool IsApplicationOnly(this ClaimsPrincipal principal)
@@ -152,8 +159,49 @@ public static class ClaimsPrincipalExtensions
         if (principal.FindAll("idtyp").Any(c => string.Equals(c.Value, "app", StringComparison.OrdinalIgnoreCase)))
             return true;
 
-        var objectIds = ValuesOf(principal, "oid");
-        return objectIds.Count > 0 && ValuesOf(principal, "sub").Overlaps(objectIds);
+        var subjects = ValuesOf(principal, "sub");
+        if (subjects.Overlaps(ClientIdClaimTypes.SelectMany(principal.FindAll).Select(c => c.Value)))
+            return true;
+
+        if (!IsEntraIssued(principal))
+            return false;
+
+        return !ScopeClaimTypes.Any(type => principal.HasClaim(c => c.Type == type))
+            || subjects.Overlaps(ValuesOf(principal, "oid"));
+    }
+
+    /// <summary>The claims naming the client that requested the token: v2 <c>azp</c>, v1 <c>appid</c>, RFC 9068 <c>client_id</c>.</summary>
+    private static readonly string[] ClientIdClaimTypes = ["azp", "appid", "client_id"];
+
+    /// <summary><c>scp</c> in its raw and JWT inbound-mapped forms.</summary>
+    private static readonly string[] ScopeClaimTypes = ["scp", "http://schemas.microsoft.com/identity/claims/scope"];
+
+    /// <summary>
+    /// The hosts that issue Microsoft Entra workforce and External ID tokens, in every cloud. Azure AD B2C
+    /// (<c>b2clogin.com</c> or a custom domain) is deliberately absent; see <see cref="IsApplicationOnly"/>.
+    /// </summary>
+    private static readonly string[] EntraIssuerHosts =
+    [
+        "login.microsoftonline.com", "sts.windows.net", "login.microsoftonline.us",
+        "login.partner.microsoftonline.cn", "login.chinacloudapi.cn", "sts.chinacloudapi.cn",
+    ];
+
+    /// <summary>
+    /// Whether the token came from Entra workforce or External ID (<c>*.ciamlogin.com</c>), read from the <c>iss</c>
+    /// claim or, when the handler did not keep it, from the issuer it stamped on the identity claims.
+    /// </summary>
+    private static bool IsEntraIssued(ClaimsPrincipal principal)
+    {
+        var issuers = principal.FindAll("iss").Select(c => c.Value)
+            .Concat(ApproverClaimTypes.EquivalentFormsOf("oid").Concat(ApproverClaimTypes.EquivalentFormsOf("sub"))
+                .SelectMany(principal.FindAll)
+                .Select(c => c.Issuer));
+
+        return issuers.Any(issuer =>
+            Uri.TryCreate(issuer, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && (EntraIssuerHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase)
+                || uri.Host.EndsWith(".ciamlogin.com", StringComparison.OrdinalIgnoreCase)));
     }
 
     private static HashSet<string> ValuesOf(ClaimsPrincipal principal, string claimType) =>
