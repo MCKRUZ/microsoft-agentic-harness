@@ -191,17 +191,29 @@ public sealed partial class EfScheduleStore : IScheduleStore
     /// identity provider issues it, so their next runs stop stamping what they write with the lower-cased form (#907).
     /// </summary>
     /// <remarks>
-    /// Every owner-scoped read and change passes the authenticated caller's id as issued, so the first time the owner
-    /// lists, reads, pauses or resumes their schedules is when the form becomes known. Two people whose ids differ only
-    /// by case already see and control the same schedules here (every lookup is case-insensitive), so whichever of them
-    /// arrives first adds no new conflation. The version is deliberately left alone: this changes nothing a claim or a
-    /// pause races over.
+    /// <para>
+    /// The owner-scoped callers (the schedules API and the agent's <c>manage_schedules</c> tool) pass the authenticated
+    /// caller's id as issued, so the first time the owner lists, reads, pauses or resumes their schedules is when the
+    /// form becomes known. Two people whose ids differ only by case already see and control the same schedules here
+    /// (every lookup is case-insensitive), so whichever of them arrives first adds no new conflation. The version is
+    /// deliberately left alone: this changes nothing a claim or a pause races over.
+    /// </para>
+    /// <para>
+    /// An id already in canonical form is never written. For such an id the fallback to <see cref="ScheduleEntity.OwnerId"/>
+    /// is the same value, so writing it gains nothing, and a caller that lower-cased before calling would otherwise settle
+    /// the column for good with the very form the column exists to replace.
+    /// </para>
     /// </remarks>
     private static Task BackfillIssuedOwnerAsync(
-        ScheduleDbContext ctx, string ownerId, string? tenantId, CancellationToken cancellationToken) =>
-        VisibleTo(ctx, ownerId, tenantId)
+        ScheduleDbContext ctx, string ownerId, string? tenantId, CancellationToken cancellationToken)
+    {
+        if (string.Equals(ownerId, ScopeIdentity.Canonicalize(ownerId), StringComparison.Ordinal))
+            return Task.CompletedTask;
+
+        return VisibleTo(ctx, ownerId, tenantId)
             .Where(e => e.IssuedOwnerId == null)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, ownerId), cancellationToken);
+    }
 
     private static IQueryable<ScheduleEntity> VisibleTo(ScheduleDbContext ctx, string ownerId, string? tenantId)
     {

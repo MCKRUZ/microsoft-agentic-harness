@@ -214,6 +214,24 @@ public sealed class EfScheduleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ALowerCasedCallerFirst_DoesNotSettleTheIssuedForm_SoTheIssuedIdStillWins()
+    {
+        // Correctness review of #931: a caller that lower-cases before calling must not fill the column with the very
+        // form it exists to replace, or the issued id arriving later finds it already set and is ignored.
+        await _store.CreateAsync(NewRecord("s-legacy", ownerId: "Alice-Mixed"), CancellationToken.None);
+        await using (var ctx = new ScheduleDbContext(_options))
+        {
+            await ctx.Schedules.ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, (string?)null));
+        }
+
+        await _store.ListForOwnerAsync("alice-mixed", null, CancellationToken.None);
+        await _store.ListForOwnerAsync("Alice-Mixed", null, CancellationToken.None);
+
+        await using var check = new ScheduleDbContext(_options);
+        (await check.Schedules.SingleAsync()).IssuedOwnerId.Should().Be("Alice-Mixed");
+    }
+
+    [Fact]
     public async Task AnotherOwnerTouchingTheirSchedules_DoesNotFillInSomeoneElsesOwner()
     {
         await _store.CreateAsync(NewRecord("s-alice", ownerId: "Alice-Mixed"), CancellationToken.None);

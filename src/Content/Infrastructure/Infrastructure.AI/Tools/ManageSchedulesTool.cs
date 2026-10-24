@@ -108,8 +108,10 @@ public sealed class ManageSchedulesTool : ITool
         CancellationToken cancellationToken = default)
     {
         var scope = ResolveScope();
-        var ownerId = ScopeIdentity.Canonicalize(scope?.UserId);
-        if (string.IsNullOrEmpty(ownerId))
+        // As issued, not canonicalized (#907): the store matches owners case-insensitively on its own, and learns an
+        // older schedule's issued owner from the id it is given, which its fired runs then carry.
+        var ownerId = scope?.UserId;
+        if (string.IsNullOrWhiteSpace(ownerId))
             return ToolResult.Fail("No caller identity is available for this call; schedules cannot be managed anonymously.");
 
         var tenantId = ScopeIdentity.Canonicalize(scope?.TenantId);
