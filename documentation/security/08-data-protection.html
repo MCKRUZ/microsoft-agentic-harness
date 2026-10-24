@@ -856,7 +856,27 @@
                     </ul>
                     <p>
                         Both are refused while sign-in is bypassed, because every caller is then the same synthetic
-                        person.
+                        person. Self-service erasure is also refused for an application's own token (#907): every caller
+                        of that application shares its identity, so "erase my data" would erase all of theirs
+                        (<code>ClaimsPrincipalExtensions.IsApplicationOnly</code>).
+                    </p>
+                    <ul>
+                            <li><b>Any issuer:</b> a token is an application's when it carries <code>idtyp=app</code>, when
+                                its subject is the calling client's own id (RFC 9068's client-credentials shape; Okta names
+                                the client in <code>cid</code>), or when it carries Auth0's
+                                <code>gty=client-credentials</code>. Other providers' service accounts, such as Keycloak's,
+                                are not recognised; a host using one should turn on an explicit marker.</li>
+                            <li><b>Entra workforce and External ID tokens only:</b> a token is also an application's when it
+                                has no <code>scp</code>, which Entra emits only for people, or when its <code>oid</code>
+                                equals its <code>sub</code>, which is Microsoft's documented check.</li>
+                            <li><b>Not applied elsewhere:</b> other providers often give a person no <code>scp</code>, and
+                                Azure AD B2C makes <code>oid</code> equal <code>sub</code> for every person, so refusing on
+                                those would deny people their own erasure.</li>
+                    </ul>
+                    <p>
+                        The refusal is recorded in the erasure audit trail. Operator erasure still accepts an application
+                        holding the erasure role, since an automated pipeline for data-subject requests is a legitimate
+                        caller there.
                     </p>
 
                     <div class="callout callout-tip">
