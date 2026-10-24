@@ -164,6 +164,11 @@ internal static class HoldsNoPersonalData
             "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::FirstOrDefaultAsync",
             "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ToListAsync",
             "calls channel Infrastructure.AI.Persistence.PlannerDbContext"),
+        ["Infrastructure.AI/Infrastructure.AI.Planner.PlannedTaskCanceller"] = new(
+            "Read-only: finds the plan ids of a person's runs in progress so erasure can stop them (#907); writes nothing and keeps nothing.",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::AsNoTracking",
+            "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ToListAsync",
+            "calls channel Infrastructure.AI.Persistence.PlannerDbContext"),
         ["Infrastructure.AI/Infrastructure.AI.Audit.AuditChainCheckpointStore"] = new(
             "One small JSON file per audit chain holding only the last verified sequence number and hash.",
             "System.IO.File::Move",

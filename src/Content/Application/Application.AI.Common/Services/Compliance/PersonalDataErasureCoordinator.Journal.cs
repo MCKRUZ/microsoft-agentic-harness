@@ -21,6 +21,28 @@ public sealed partial class PersonalDataErasureCoordinator
         "the ids this request read could not be recorded, so the conversations and plans were kept; a store that failed after deleting them could not otherwise be retried, so run erasure again";
 
     /// <summary>
+    /// Stops the person's planned tasks still running, so none keeps writing under the ids this request is about to read
+    /// and clear (#907). A failure is only logged: the plan store still keeps a plan with a run in progress, and the
+    /// receipt then says to run erasure again, as it did before this step existed.
+    /// </summary>
+    private async Task StopRunningTasksAsync(string ownerId, CancellationToken cancellationToken)
+    {
+        if (_runningTasks is null)
+            return;
+
+        try
+        {
+            var stillRunning = await _runningTasks.StopRunningTasksAsync(ownerId, cancellationToken);
+            if (stillRunning > 0)
+                _logger.LogWarning("Erasure went on with {Count} planned task(s) still running; their plans will be kept.", stillRunning);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not stop the person's running planned tasks.");
+        }
+    }
+
+    /// <summary>
     /// The ids earlier requests for <paramref name="ownerId"/> recorded and did not clear. A journal that cannot be read
     /// adds a failed line and contributes nothing: what it holds stays recorded for the next request, so this one need not
     /// hold anything back.

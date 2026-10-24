@@ -95,7 +95,7 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersona
     /// How long a run's in-progress mark is believed. Runs are bounded by their plan timeout (an hour at most by default),
     /// so a mark this old belongs to a run whose host stopped before it could end it.
     /// </summary>
-    private static readonly TimeSpan RunInProgressFor = TimeSpan.FromDays(1);
+    internal static readonly TimeSpan RunInProgressFor = TimeSpan.FromDays(1);
 
     /// <summary>
     /// Whether erasure may delete this run record: it was listed exactly as it is now and its run is not in progress. With

@@ -69,6 +69,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     private readonly IConversationStore? _conversations;
     private readonly IPlanRunTraceSource? _planRuns;
     private readonly IErasureJournal? _journal;
+    private readonly IPlannedTaskCanceller? _runningTasks;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -95,6 +96,10 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// deleting the conversations or plans can be retried (#907). <see langword="null"/> in a host without one, in which
     /// case such a failure strands the failed store's rows, as before.
     /// </param>
+    /// <param name="runningTasks">
+    /// Stops the person's planned tasks still running when the request starts, before anything is read (#907).
+    /// <see langword="null"/> in a host without plans.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -104,7 +109,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         ILogger<PersonalDataErasureCoordinator> logger,
         IConversationStore? conversations = null,
         IPlanRunTraceSource? planRuns = null,
-        IErasureJournal? journal = null)
+        IErasureJournal? journal = null,
+        IPlannedTaskCanceller? runningTasks = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -123,6 +129,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         _conversations = conversations;
         _planRuns = planRuns;
         _journal = journal;
+        _runningTasks = runningTasks;
     }
 
     /// <inheritdoc />
@@ -134,6 +141,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         // One request per person at a time (#907): overlapping ones could clear an id between another's read and record.
         using var turn = _journal is null ? null : await _journal.BeginRequestAsync(ownerId, cancellationToken);
+
+        // #907: a planned task already running would keep writing under the ids read below after their stores are cleared.
+        await StopRunningTasksAsync(ownerId, cancellationToken);
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
