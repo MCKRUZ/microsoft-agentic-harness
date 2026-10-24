@@ -118,6 +118,52 @@ public static class ClaimsPrincipalExtensions
     }
 
     /// <summary>
+    /// Whether <paramref name="principal"/> is an application acting as itself (a client-credentials, app-only token)
+    /// rather than a person. Every caller using that application shares its identity, so an action scoped to "this
+    /// caller" — erasing one's own data (#907) — would act on all of them.
+    /// </summary>
+    /// <param name="principal">The principal to check.</param>
+    /// <returns><see langword="true"/> for an app-only token; <see langword="false"/> otherwise, including unauthenticated.</returns>
+    /// <remarks>
+    /// <para>
+    /// Two signals, both from Microsoft Entra's own guidance. The optional <c>idtyp</c> claim is <c>app</c> only in an
+    /// app-only token ("the most accurate way for an API to determine if a token is an app token or an app+user
+    /// token"), but a tenant must turn it on. Without it, Microsoft's documented check is that <c>oid</c> and
+    /// <c>sub</c> are equal: an app-only token's subject is the service principal itself, while a person's
+    /// <c>sub</c> is a pairwise id that differs from their <c>oid</c>.
+    /// </para>
+    /// <para>
+    /// The absence of <c>scp</c> is deliberately not a signal. Entra emits it only for user tokens, but other OpenID
+    /// Connect providers often omit it for people too, and refusing a real person their own erasure is the wrong way to
+    /// fail. A provider that issues no <c>oid</c> never matches the second check, for the same reason.
+    /// </para>
+    /// <para>
+    /// Every form of each claim is compared, as <see cref="GetUserIdOrNull"/> searches them, and any <c>oid</c> value
+    /// equal to any <c>sub</c> value counts: a token carrying two of either is already ambiguous, so this fails closed.
+    /// </para>
+    /// </remarks>
+    public static bool IsApplicationOnly(this ClaimsPrincipal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+
+        if (principal.Identity?.IsAuthenticated != true)
+            return false;
+
+        if (principal.FindAll("idtyp").Any(c => string.Equals(c.Value, "app", StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        var objectIds = ValuesOf(principal, "oid");
+        return objectIds.Count > 0 && ValuesOf(principal, "sub").Overlaps(objectIds);
+    }
+
+    private static HashSet<string> ValuesOf(ClaimsPrincipal principal, string claimType) =>
+        ApproverClaimTypes.EquivalentFormsOf(claimType)
+            .SelectMany(principal.FindAll)
+            .Select(claim => claim.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>
     /// Returns the caller's approver identity — the name compared against escalation rosters — or
     /// <c>null</c> when the principal does not carry exactly one usable value for
     /// <paramref name="approverClaimType"/>.

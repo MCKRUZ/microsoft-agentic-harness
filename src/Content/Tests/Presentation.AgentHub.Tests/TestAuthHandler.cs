@@ -19,7 +19,10 @@ namespace Presentation.AgentHub.Tests;
 /// Reads <c>x-test-claim-shape</c> to narrow the minted claim set. The default emits every claim,
 /// which is convenient but hides attribution defects: an endpoint that only ever sees a principal
 /// carrying <em>all</em> the identity claims cannot demonstrate that it reads the right one. Pass
-/// <c>oid-only</c> or <c>sub-only</c> to mint the single-claim token shapes real providers issue.
+/// <c>oid-only</c> or <c>sub-only</c> to mint the single-claim token shapes real providers issue,
+/// <c>person</c> for a person's Entra token, or <c>app-only</c> / <c>app-idtyp</c> for an application's own token.
+/// The default set carries <c>sub</c>'s mapped form equal to <c>oid</c>, which is an app-only shape, so
+/// self-service erasure refuses it.
 ///
 /// Register as the default scheme in <c>ConfigureTestServices</c> to bypass Azure AD auth
 /// while supporting per-test identity and role customisation via HTTP headers.
@@ -60,6 +63,11 @@ public class TestAuthHandler(
         {
             "oid-only" => [new Claim("oid", userId)],
             "sub-only" => [new Claim("sub", userId)],
+            // #907 token shapes. A person's sub is a pairwise id that differs from their oid; an app-only token's sub is
+            // the service principal itself, so the two are equal, and a tenant may also turn on idtyp=app.
+            "person" => [new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}")],
+            "app-only" => [new Claim("oid", userId), new Claim("sub", userId)],
+            "app-idtyp" => [new Claim("oid", userId), new Claim("sub", $"pairwise-{userId}"), new Claim("idtyp", "app")],
             _ => new List<Claim>
             {
                 // ClaimsPrincipalExtensions.GetUserId() reads the "oid" claim first.

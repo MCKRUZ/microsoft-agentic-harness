@@ -856,7 +856,14 @@
                     </ul>
                     <p>
                         Both are refused while sign-in is bypassed, because every caller is then the same synthetic
-                        person.
+                        person. Self-service erasure is also refused for an application's own token (#907): every caller
+                        of that application shares its identity, so "erase my data" would erase all of theirs. A token is
+                        an application's when it carries <code>idtyp=app</code>, or when its <code>oid</code> and
+                        <code>sub</code> are equal, which is Microsoft Entra's documented check
+                        (<code>ClaimsPrincipalExtensions.IsApplicationOnly</code>). A missing <code>scp</code> is not
+                        used as a signal, because other identity providers omit it for people too. The refusal is recorded
+                        in the erasure audit trail. Operator erasure still accepts an application holding the erasure
+                        role, since an automated pipeline for data-subject requests is a legitimate caller there.
                     </p>
 
                     <div class="callout callout-tip">

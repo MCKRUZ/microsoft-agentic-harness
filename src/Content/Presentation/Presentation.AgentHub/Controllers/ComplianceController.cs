@@ -98,12 +98,14 @@ public sealed class ComplianceController : ControllerBase
     /// </summary>
     /// <remarks>
     /// Refused when sign-in is bypassed (<c>DevAuthHandler</c> or <c>SelfHostedAuthHandler</c>): every caller is then
-    /// the same synthetic person, so "my data" is everyone's.
+    /// the same synthetic person, so "my data" is everyone's. Refused for the same reason when the token is an
+    /// application's own rather than a person's (<see cref="ClaimsPrincipalExtensions.IsApplicationOnly"/>, #907): every
+    /// caller of that application shares its identity. Both refusals are recorded in the erasure audit trail.
     /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The erasure receipt with actual deleted counts.</returns>
     /// <response code="200">Erasure completed; body is the receipt.</response>
-    /// <response code="403">No authenticated user scope present, or sign-in is bypassed.</response>
+    /// <response code="403">No authenticated user scope present, sign-in is bypassed, or the token is an application's.</response>
     /// <response code="500">Erasure failed; see server logs (details are not leaked to the caller).</response>
     [HttpPost("erase-my-data")]
     [ProducesResponseType(typeof(ErasureReceipt), StatusCodes.Status200OK)]
@@ -116,6 +118,16 @@ public sealed class ComplianceController : ControllerBase
             await _erasure.RecordDeniedAsync(ErasureActor.DataSubject, nameof(EraseMyDataCommand), "sign-in is bypassed")
                 .ConfigureAwait(false);
             return RefusedUnderBypass();
+        }
+
+        if (User.IsApplicationOnly())
+        {
+            await _erasure.RecordDeniedAsync(ErasureActor.DataSubject, nameof(EraseMyDataCommand), "application token")
+                .ConfigureAwait(false);
+            return Problem(
+                detail: "Erasing your own data needs a person's sign-in. An application token is shared by every caller of " +
+                        "that application, so it would erase all of their data; ask an operator to erase a named person instead.",
+                statusCode: StatusCodes.Status403Forbidden);
         }
 
         var result = await _mediator
