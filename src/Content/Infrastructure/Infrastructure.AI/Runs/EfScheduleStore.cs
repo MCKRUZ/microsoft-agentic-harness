@@ -200,6 +200,9 @@ public sealed partial class EfScheduleStore : IScheduleStore
         // caller that supplies a differently-cased (but equal) identity on one path can never fail to
         // find what another path stored.
         OwnerId = ScopeIdentity.Canonicalize(record.OwnerId) ?? record.OwnerId,
+        // Kept as issued as well (#907): each fired run carries it, and what the run writes must be stamped in the form
+        // the person's erasure matches.
+        IssuedOwnerId = record.OwnerId,
         TenantId = ScopeIdentity.Canonicalize(record.TenantId),
         EnvelopeJson = JsonSerializer.Serialize(record.Envelope, JsonOptions),
         CronExpression = record.CronExpression,
@@ -220,7 +223,7 @@ public sealed partial class EfScheduleStore : IScheduleStore
         ScheduleId = entity.ScheduleId,
         Kind = Enum.Parse<RunKind>(entity.Kind),
         TargetId = entity.TargetId,
-        OwnerId = entity.OwnerId,
+        OwnerId = entity.IssuedOwnerId ?? entity.OwnerId,
         TenantId = entity.TenantId,
         Envelope = JsonSerializer.Deserialize<CapabilityEnvelope>(entity.EnvelopeJson, JsonOptions)
             ?? new CapabilityEnvelope(),

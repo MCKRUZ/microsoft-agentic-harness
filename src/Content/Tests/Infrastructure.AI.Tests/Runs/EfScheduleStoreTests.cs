@@ -158,6 +158,32 @@ public sealed class EfScheduleStoreTests : IDisposable
         (await _store.GetAsync("s-del", "alice", null, CancellationToken.None)).Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task OwnerId_IsKeptAsIssued_ForEveryRead_WhileLookupsStillIgnoreCase()
+    {
+        // #907: each fired run carries the schedule's owner, and documents it ingests are stamped with it. Erasure of
+        // documents matches the id as issued, so a lower-cased owner would leave them behind.
+        await _store.CreateAsync(NewRecord("s-issued", ownerId: " Alice-Mixed "), CancellationToken.None);
+
+        (await _store.GetAsync("s-issued", "alice-mixed", null, CancellationToken.None))!.OwnerId.Should().Be(" Alice-Mixed ");
+        (await _store.ListForOwnerAsync("ALICE-MIXED", null, CancellationToken.None)).Single().OwnerId.Should().Be(" Alice-Mixed ");
+        (await _store.GetDueSchedulesAsync(DateTimeOffset.MaxValue, CancellationToken.None))
+            .Single(r => r.ScheduleId == "s-issued").OwnerId.Should().Be(" Alice-Mixed ", "the tick service reads due schedules");
+    }
+
+    [Fact]
+    public async Task OwnerId_OfAScheduleCreatedBeforeTheIssuedFormWasKept_ReadsBackInTheOnlyFormItKept()
+    {
+        await _store.CreateAsync(NewRecord("s-legacy", ownerId: "Alice-Mixed"), CancellationToken.None);
+        await using (var ctx = new ScheduleDbContext(_options))
+        {
+            await ctx.Schedules.Where(e => e.ScheduleId == "s-legacy")
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, (string?)null));
+        }
+
+        (await _store.GetAsync("s-legacy", "alice-mixed", null, CancellationToken.None))!.OwnerId.Should().Be("alice-mixed");
+    }
+
     private static ScheduleRecord NewRecord(
         string scheduleId, string ownerId = "alice", DateTimeOffset? nextFireAt = null) => new()
     {

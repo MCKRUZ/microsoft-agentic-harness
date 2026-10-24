@@ -18,8 +18,19 @@ public sealed class ScheduleEntity
     /// <summary>Maps from <see cref="ScheduleRecord.TargetId"/>.</summary>
     public required string TargetId { get; set; }
 
-    /// <summary>Maps from <see cref="ScheduleRecord.OwnerId"/>. Never null — a schedule always has a creator.</summary>
+    /// <summary>
+    /// <see cref="ScheduleRecord.OwnerId"/> trimmed and lower-cased, the form every lookup and the schedule's own erasure
+    /// match. Never null — a schedule always has a creator.
+    /// </summary>
     public required string OwnerId { get; set; }
+
+    /// <summary>
+    /// <see cref="ScheduleRecord.OwnerId"/> exactly as the identity provider issued it, which each fired run carries (#907).
+    /// What that run writes is stamped with it, and the stores keyed by the issued form (ingested documents) can only erase
+    /// it in that form. <see langword="null"/> on a schedule created before the column existed; such a schedule's runs
+    /// fall back to <see cref="OwnerId"/>, the only form it kept.
+    /// </summary>
+    public string? IssuedOwnerId { get; set; }
 
     /// <summary>Maps from <see cref="ScheduleRecord.TenantId"/>.</summary>
     public string? TenantId { get; set; }

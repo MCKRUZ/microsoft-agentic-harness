@@ -33,7 +33,11 @@ public sealed record ScheduleRecord
     /// <summary>Identifier of the thing each enqueued run targets, interpreted the same way as <see cref="RunRecord.TargetId"/>.</summary>
     public required string TargetId { get; init; }
 
-    /// <summary>Stable identity of the caller that created the schedule.</summary>
+    /// <summary>
+    /// Stable identity of the caller that created the schedule, exactly as the identity provider issued it. Each enqueued
+    /// run carries it, so what the run writes is stamped in the same form the caller's own requests use and erasure
+    /// matches (#907). A schedule created before the store kept this form reads back trimmed and lower-cased.
+    /// </summary>
     public required string OwnerId { get; init; }
 
     /// <summary>Tenant of the caller that created the schedule, when the host resolves one.</summary>
