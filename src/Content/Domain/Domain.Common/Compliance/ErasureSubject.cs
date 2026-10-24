@@ -38,9 +38,13 @@ public sealed record ErasureSubject
         CanonicalOwnerId = ownerId.Trim().ToLowerInvariant();
         ConversationIds = conversationIds;
         PlanRuns = planRuns ?? PlanRunTraces.Empty;
-        AllConversationIds = PlanRuns.StepConversationIds.Count == 0
+        WithheldConversationIds = [.. conversationIds.Where(Helpers.ReservedConversationIds.IsReserved)];
+        AllConversationIds = PlanRuns.StepConversationIds.Count == 0 && WithheldConversationIds.Count == 0
             ? conversationIds
-            : [.. conversationIds.Concat(PlanRuns.StepConversationIds).Distinct(StringComparer.Ordinal)];
+            : [.. conversationIds
+                .Where(id => !Helpers.ReservedConversationIds.IsReserved(id))
+                .Concat(PlanRuns.StepConversationIds)
+                .Distinct(StringComparer.Ordinal)];
     }
 
     /// <summary>The user id exactly as the identity provider issued it.</summary>
@@ -60,7 +64,19 @@ public sealed record ErasureSubject
 
     /// <summary>
     /// Every conversation id the subject's data is recorded under: their own conversations and the model steps of their
-    /// planned tasks. What a store keyed by conversation id erases.
+    /// planned tasks. What a store keyed by conversation id erases. Leaves out <see cref="WithheldConversationIds"/>.
     /// </summary>
     public IReadOnlyList<string> AllConversationIds { get; }
+
+    /// <summary>
+    /// The subject's own conversations whose id has the shape kept for ids the harness derives from planned-task runs
+    /// (<see cref="Helpers.ReservedConversationIds"/>, #907): only one created before that shape was refused can have one.
+    /// </summary>
+    /// <remarks>
+    /// The conversation stores still erase these, matched on the owner. They are left out of
+    /// <see cref="AllConversationIds"/> because the stores keyed by conversation id carry no owner: under such an id they
+    /// may hold another person's planned-task records, and nothing there tells the two apart. What the subject's own
+    /// conversation left under that id is kept, and the receipt says so.
+    /// </remarks>
+    public IReadOnlyList<string> WithheldConversationIds { get; }
 }

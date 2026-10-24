@@ -167,6 +167,7 @@ public sealed partial class FileSystemConversationStore : IConversationStore
         ConversationOwnership.RequireCallerId(userId);
 
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
+        ConversationOwnership.RequireCreatableId(id);
         var now = _timeProvider.GetUtcNow();
         var record = new ConversationRecord(
             Id: id,
@@ -240,6 +241,7 @@ public sealed partial class FileSystemConversationStore : IConversationStore
                 }
             }
 
+            ConversationOwnership.RequireCreatableId(conversationId);
             var now = _timeProvider.GetUtcNow();
             var record = new ConversationRecord(
                 Id: conversationId,

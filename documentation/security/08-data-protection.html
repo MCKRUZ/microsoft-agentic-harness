@@ -826,6 +826,17 @@
                         hide the person's data from an operator acting on their behalf.
                     </p>
                     <p>
+                        Most of the stores reached through a conversation id record no owner, so erasing a conversation
+                        erases whatever they hold under its id. Every id a planned task derives contains <code>:</code>
+                        (<code>{run}:{step}</code>, <code>planrun:{run}</code>), and the conversation stores refuse to
+                        create a conversation whose id does (#907); the AgentHub hub and the bundle API answer with the
+                        reason. Without that, a person could name a conversation after someone else's planned-task step
+                        and have its records erased with their own. A conversation created with such an id before the
+                        rule still opens and is still erased, but erasure does not follow its id into the stores without
+                        an owner, and the receipt says so. The rule closes shapes, not knowledge: a person who learns
+                        another's randomly generated job id could still name a conversation after it.
+                    </p>
+                    <p>
                         Two ways in, both producing the same receipt:
                     </p>
                     <ul>

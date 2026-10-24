@@ -71,8 +71,11 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
         SpillFiles("conv-a").Should().HaveCount(2, "the seed must exist before erasing");
         SpillFiles("run~step-1").Should().ContainSingle("a colon is stored as '~'");
 
+        // A step id reaches erasure through the plan store's record of the subject's run, never as one of their own
+        // conversations: an own conversation with a ':' id is withheld from this store (#907).
         var removed = await _sut.EraseSubjectAsync(
-            new ErasureSubject("user-a", ["conv-a", "run:step-1", "conv-never-spilled"]), CancellationToken.None);
+            new ErasureSubject("user-a", ["conv-a", "conv-never-spilled"], new PlanRunTraces(["run:step-1"], [], [])),
+            CancellationToken.None);
 
         removed.Should().Be(3);
         Directory.Exists(Path.Combine(_root, "conv-a")).Should().BeFalse("an emptied conversation directory goes too");

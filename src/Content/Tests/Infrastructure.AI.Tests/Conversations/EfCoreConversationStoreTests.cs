@@ -71,6 +71,29 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_ConversationCreatedWithAReservedIdBeforeTheRule_StillOpensForItsOwnerOnly()
+    {
+        // #907 refuses the shape on the create branch only, so a person does not lose a conversation they already had.
+        await using (var context = _contextFactory.CreateDbContext())
+        {
+            context.Conversations.Add(new ConversationEntity
+            {
+                Id = "legacy:1",
+                AgentName = "agent",
+                UserId = Owner,
+                CreatedAt = FixedNow,
+                UpdatedAt = FixedNow,
+            });
+            await context.SaveChangesAsync();
+        }
+
+        (await _store.GetOrCreateAsync("agent", Owner, "legacy:1")).Id.Should().Be("legacy:1");
+
+        var stranger = () => _store.GetOrCreateAsync("agent", Stranger, "legacy:1");
+        await stranger.Should().ThrowAsync<Application.Common.Exceptions.ExceptionTypes.ConversationAccessDeniedException>();
+    }
+
+    [Fact]
     public async Task SeparateStoreInstance_ReadsWhatAnotherWrote()
     {
         // Durability across instances, which is what lets a second host continue a conversation the

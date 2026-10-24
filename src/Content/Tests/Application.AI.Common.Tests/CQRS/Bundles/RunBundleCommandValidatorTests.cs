@@ -70,38 +70,18 @@ public sealed class RunBundleCommandValidatorTests
             "an id reaches a store that may turn it into a file name");
     }
 
-    [Fact]
-    public void Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows()
+    [Theory]
+    [InlineData("C:")]
+    [InlineData("conv-1:step-5")]
+    [InlineData("planrun:plan-1")]
+    public void Validate_ConversationIdContainingTheReservedSeparator_IsRejectedOnEveryPlatform(string id)
     {
-        // Build-and-test finding (the exact bug class this codebase has already been bitten by —
-        // see RunConversationCommandValidatorTests' identical-shaped test): Path.IsPathRooted("C:") is
-        // true (drive-rooted) only on Windows. StorageSegmentSafety correctly measures it as NOT rooted
-        // on Linux/macOS, where drive letters do not exist and the allowed charset already excludes the
-        // only character ('/') that IS rooted there — a single-letter prefix before ':' is not, by
-        // itself, unsafe on that platform. A test asserting unconditional rejection here is exactly the
-        // hardcoded-Windows-assumption CI already failed on once for this shared validator's siblings.
-        var result = _validator.Validate(Command("C:"));
-
-        if (OperatingSystem.IsWindows())
-        {
-            result.IsValid.Should().BeFalse();
-        }
-        else
-        {
-            result.IsValid.Should().BeTrue();
-        }
-    }
-
-    [Fact]
-    public void Validate_ConversationIdWithMultiCharacterColonPrefix_IsValid()
-    {
-        // #576/reuse fix: this validator now shares Domain.Common.Helpers.StorageSegmentSafety with
-        // RunConversationCommandValidator/RunOrchestratedTaskCommandValidator, which admits ':' for
-        // PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape — safe because
-        // Path.IsPathRooted only measures a SINGLE-character prefix before ':' as a Windows drive root
-        // (see Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows above), not a
-        // multi-character one like this — true on every platform, not just Windows.
-        _validator.Validate(Command("conv-1:step-5")).IsValid.Should().BeTrue();
+        // #907. A bundle's named conversation is stored, and erasing it erases what the stores without an owner hold under
+        // its id. ':' is kept for the ids planned-task runs derive ("{runScope}:{stepId}", "planrun:{runScope}"), so a
+        // caller naming one would have that run's records erased with their own. This also settles "C:", which used to be
+        // rejected on Windows only (as a drive root) and accepted elsewhere.
+        // Only the outcome is asserted: on Windows "C:" stops at the earlier drive-root rule.
+        _validator.Validate(Command(id)).IsValid.Should().BeFalse();
     }
 
     [Fact]
