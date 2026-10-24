@@ -77,6 +77,20 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AFiredRun_CarriesTheOwnerExactlyAsIssued()
+    {
+        // #907: the run's scope is set from this owner, and documents the run ingests are stamped with it. Erasure of
+        // documents matches the id as issued, so a run carrying the lower-cased form would leave them behind.
+        await CreateSchedule("s-issued", nextFireAt: Origin, ownerId: "Alice-Mixed");
+
+        await StartAndWaitForFirstTimer();
+        await AdvanceAndSettle(TimeSpan.FromMinutes(1));
+
+        var jobId = _queue.Enqueued.Should().ContainSingle().Subject;
+        _runStore.Get(jobId, "Alice-Mixed", null)!.OwnerId.Should().Be("Alice-Mixed");
+    }
+
+    [Fact]
     public async Task ADisabledSchedule_NeverFires()
     {
         await CreateSchedule("s-2", nextFireAt: Origin, enabled: false);
@@ -229,14 +243,14 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
 
     private async Task CreateSchedule(
         string scheduleId, DateTimeOffset nextFireAt, bool enabled = true,
-        MissedRunPolicy missedRunPolicy = MissedRunPolicy.Skip)
+        MissedRunPolicy missedRunPolicy = MissedRunPolicy.Skip, string ownerId = "alice")
     {
         await _scheduleStore.CreateAsync(new ScheduleRecord
         {
             ScheduleId = scheduleId,
             Kind = RunKind.Workflow,
             TargetId = Guid.NewGuid().ToString(),
-            OwnerId = "alice",
+            OwnerId = ownerId,
             Envelope = new CapabilityEnvelope(),
             CronExpression = "*/30 * * * *",
             TimeZoneId = "UTC",

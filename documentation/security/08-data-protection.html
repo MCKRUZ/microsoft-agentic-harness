@@ -837,6 +837,15 @@
                         another's randomly generated job id could still name a conversation after it.
                     </p>
                     <p>
+                        Ingested documents record their owner exactly as the identity provider issued it, and their
+                        erasers match that form. A scheduled run writes under its schedule's owner, so a schedule keeps
+                        the owner as issued as well as lower-cased, and each fired run carries the issued form (#907). A
+                        schedule created before that runs under the lower-cased form until its owner next lists, reads,
+                        pauses or resumes their schedules, which fills the issued form in. Documents such a run ingested
+                        for a person whose id is not already lower-case are out of reach of erasure. Microsoft Entra
+                        object ids are always lower-case, so this only affects other identity providers.
+                    </p>
+                    <p>
                         Two ways in, both producing the same receipt:
                     </p>
                     <ul>
