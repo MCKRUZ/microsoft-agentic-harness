@@ -14,6 +14,9 @@ public sealed partial class PersonalDataErasureCoordinator
     private const string JournalWriteStore = "erasure journal";
     private const string JournalReadFailedReason =
         "what earlier erasure requests could not finish with could not be read; it stays recorded, so run erasure again";
+    private const string JournalKeptStore = "erasure journal entries";
+    private const string JournalKeptReason =
+        "the person's id and the conversation and planned-task ids this request read are kept in the erasure journal until a later request finishes with them, or, for conversations whose records were kept, until the journal's retention runs out";
     private const string JournalWriteFailedReason =
         "the ids this request read could not be recorded, so the conversations and plans were kept; a store that failed after deleting them could not otherwise be retried, so run erasure again";
 
@@ -73,22 +76,38 @@ public sealed partial class PersonalDataErasureCoordinator
     }
 
     /// <summary>
-    /// Clears this request's entries. A failure is only logged: the entries stay, the next request merges them in again,
-    /// and erasing what is already gone does no harm.
+    /// Clears this request's entries and returns whether it did. A failure is only logged: the entries stay, the next
+    /// request merges them in again, and erasing what is already gone does no harm.
     /// </summary>
-    private async Task ClearJournalAsync(string ownerId, string requestId)
+    private async Task<bool> ClearJournalAsync(string ownerId, string requestId)
     {
         if (_journal is null)
-            return;
+            return true;
 
         try
         {
             await _journal.ClearAsync(ownerId, requestId, CancellationToken.None);
+            return true;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(MessageWithheldException.From(ex), "Erasure could not clear its journal; the next request will retry it.");
+            return false;
         }
+    }
+
+    /// <summary>
+    /// Says on the receipt when the journal still holds the person's ids: those of this request when it could not finish,
+    /// and their withheld conversation ids, which age out instead. The journal is kept by design, with an end date, so the
+    /// line does not by itself make the receipt partial; whatever kept it there already has its own line.
+    /// </summary>
+    private void NoteJournalKept(bool requestKept, ErasureSubject subject, List<StoreErasureOutcome> outcomes)
+    {
+        var recordedAnything = subject.ConversationIds.Count > 0 || !subject.PlanRuns.IsEmpty;
+        if (_journal is null || (!(requestKept && recordedAnything) && subject.WithheldConversationIds.Count == 0))
+            return;
+
+        outcomes.Add(new StoreErasureOutcome(JournalKeptStore, StoreErasureStatus.RetainedUntilExpiry, 0, JournalKeptReason));
     }
 
     /// <summary>

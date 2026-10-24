@@ -137,6 +137,16 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
 
         _calls.Should().NotContain("clear");
         receipt.Stores.Single(s => s.Store == "ledger").Status.Should().Be(StoreErasureStatus.Failed);
+        receipt.Stores.Single(s => s.Store == "erasure journal entries").Status.Should().Be(StoreErasureStatus.RetainedUntilExpiry,
+            "the person's ids stay in the journal, and the receipt says so");
+    }
+
+    [Fact]
+    public async Task EveryStoreSucceeds_TheReceiptDoesNotMentionTheJournal()
+    {
+        var receipt = await Create(AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Should().NotContain(s => s.Store == "erasure journal entries");
     }
 
     [Fact]
@@ -173,6 +183,7 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
         var receipt = await Create(AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
 
         receipt.Stores.Should().Contain(s => s.Store == "conversations with a reserved id");
+        receipt.Stores.Should().Contain(s => s.Store == "erasure journal entries", "the withheld id stays in the journal until it ages out");
         _seen["spills"].AllConversationIds.Should().NotContain("run:9");
     }
 
@@ -210,6 +221,9 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
             RecordedRequest = requestId;
             return Task.CompletedTask;
         }
+
+        public Task<bool> HoldsForAnotherOwnerAsync(string conversationId, string ownerId, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
 
         public Task ClearAsync(string ownerId, string requestId, CancellationToken cancellationToken)
         {

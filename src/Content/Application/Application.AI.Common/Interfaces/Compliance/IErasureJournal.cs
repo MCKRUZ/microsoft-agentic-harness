@@ -42,6 +42,22 @@ public interface IErasureJournal
     Task RecordAsync(string ownerId, string requestId, ErasureJournalEntries entries, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Whether <paramref name="conversationId"/> is recorded for a person other than <paramref name="ownerId"/>, so that the
+    /// conversation stores can refuse to let <paramref name="ownerId"/> create a conversation under it.
+    /// </summary>
+    /// <param name="conversationId">The id a new conversation would take.</param>
+    /// <param name="ownerId">The person creating it.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> when another person's unfinished erasure holds the id.</returns>
+    /// <remarks>
+    /// The stores that record no owner keep the erased conversation's records under its id until a retry removes them.
+    /// Someone else opening a conversation with that id would have their own records filed under it too, and the retry
+    /// would erase them along with the erased person's. The id is recorded before the conversation is deleted, so it is
+    /// never free in between; the erased person may reuse it, since the records under it are theirs either way.
+    /// </remarks>
+    Task<bool> HoldsForAnotherOwnerAsync(string conversationId, string ownerId, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Removes what <paramref name="requestId"/> recorded for <paramref name="ownerId"/>, except withheld conversation ids,
     /// which age out on their own. Entries a later request has taken over are kept.
     /// </summary>

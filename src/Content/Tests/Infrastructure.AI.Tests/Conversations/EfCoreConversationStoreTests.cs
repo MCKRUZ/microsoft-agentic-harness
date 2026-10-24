@@ -241,5 +241,6 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
             _contextFactory,
             Clock,
             NullLogger<EfCoreConversationStore>.Instance,
-            new SchemaInitializer<ConversationDbContext>(_contextFactory));
+            new SchemaInitializer<ConversationDbContext>(_contextFactory),
+            ErasureJournal);
 }

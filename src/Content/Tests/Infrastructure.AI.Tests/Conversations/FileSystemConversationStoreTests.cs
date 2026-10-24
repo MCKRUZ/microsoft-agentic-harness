@@ -31,7 +31,8 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         _store = new FileSystemConversationStore(
             Options.Create(new ConversationsConfig { ConversationsPath = _tempDir }),
             Clock,
-            NullLogger<FileSystemConversationStore>.Instance);
+            NullLogger<FileSystemConversationStore>.Instance,
+            ErasureJournal);
     }
 
     /// <inheritdoc />

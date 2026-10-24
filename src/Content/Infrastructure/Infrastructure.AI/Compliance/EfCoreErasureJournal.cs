@@ -76,17 +76,33 @@ public sealed class EfCoreErasureJournal : IErasureJournal
         await using var transaction = await ctx.Database.BeginTransactionAsync(cancellationToken);
         foreach (var (kind, value) in Rows(entries))
         {
-            // An id already recorded is taken over: the request that read it most recently is the one that may clear it.
+            // An id already recorded is taken over: the request that read it most recently is the one that may clear it. Its
+            // time is refreshed too, except a withheld id's: those are only ever removed by age, and a person re-running
+            // erasure must not keep them forever.
             await ctx.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                  INSERT INTO ErasureJournal (OwnerId, Kind, Value, RequestId, RecordedAt)
                  VALUES ({ownerId}, {kind}, {value}, {requestId}, {ticks})
-                 ON CONFLICT(OwnerId, Kind, Value) DO UPDATE SET RequestId = excluded.RequestId, RecordedAt = excluded.RecordedAt
+                 ON CONFLICT(OwnerId, Kind, Value) DO UPDATE SET
+                     RequestId = excluded.RequestId,
+                     RecordedAt = CASE WHEN Kind = {Kinds.Withheld} THEN RecordedAt ELSE excluded.RecordedAt END
                  """,
                 cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> HoldsForAnotherOwnerAsync(string conversationId, string ownerId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        return await ctx.Entries.AnyAsync(
+            e => e.Value == conversationId && e.OwnerId != ownerId && (e.Kind == Kinds.Conversation || e.Kind == Kinds.Withheld),
+            cancellationToken);
     }
 
     /// <inheritdoc />

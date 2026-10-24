@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Infrastructure.AI.Persistence;
@@ -63,6 +64,10 @@ public sealed partial class EfCoreConversationStore : IConversationStore
     /// <param name="contextFactory">Factory for short-lived contexts, one per operation.</param>
     /// <param name="timeProvider">Clock used for <c>CreatedAt</c>/<c>UpdatedAt</c> stamps.</param>
     /// <param name="logger">Diagnostic logger.</param>
+    /// <param name="erasureJournal">
+    /// Holds an erased person's conversation ids until their erasure finishes, so no one else creates a conversation
+    /// under one (#907). <see langword="null"/> in a host without it.
+    /// </param>
     /// <param name="schemaInitializer">
     /// Demanded as a plain constructor dependency so that resolving this store forces the schema to
     /// be created exactly once, before the first query can hit a missing table. The instance itself
@@ -73,13 +78,18 @@ public sealed partial class EfCoreConversationStore : IConversationStore
         IDbContextFactory<ConversationDbContext> contextFactory,
         TimeProvider timeProvider,
         ILogger<EfCoreConversationStore> logger,
-        SchemaInitializer<ConversationDbContext> schemaInitializer)
+        SchemaInitializer<ConversationDbContext> schemaInitializer,
+        IErasureJournal? erasureJournal = null)
     {
         ArgumentNullException.ThrowIfNull(schemaInitializer);
         _contextFactory = contextFactory;
         _timeProvider = timeProvider;
         _logger = logger;
+        _erasureJournal = erasureJournal;
     }
+
+    /// <summary>Holds an erased person's conversation ids until their erasure finishes (#907); null in a host without it.</summary>
+    private readonly IErasureJournal? _erasureJournal;
 
     /// <inheritdoc/>
     public async Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default)
@@ -170,6 +180,7 @@ public sealed partial class EfCoreConversationStore : IConversationStore
 
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         ConversationOwnership.RequireCreatableId(id);
+        await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
         var now = _timeProvider.GetUtcNow();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
@@ -245,6 +256,7 @@ public sealed partial class EfCoreConversationStore : IConversationStore
             return existing;
 
         ConversationOwnership.RequireCreatableId(conversationId);
+        await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, conversationId, userId, ct);
         var now = _timeProvider.GetUtcNow();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);

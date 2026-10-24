@@ -68,8 +68,14 @@ public sealed class ErasureJournalEndToEndTests : IDisposable
         first.Stores.Single(s => s.Store == FailsOnceEraser.Name).Status.Should().Be(StoreErasureStatus.Failed);
         await using (var scope = provider.CreateAsyncScope())
         {
-            (await scope.ServiceProvider.GetRequiredService<IConversationStore>().ListAsync(Subject))
+            var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+            (await conversations.ListAsync(Subject))
                 .Should().BeEmpty("the conversations go before the stage after them; that is what strands the failed store");
+
+            // Security review: someone else opening a conversation under the erased id would have their records filed
+            // where the retry erases. The journal holds the id until the subject's erasure finishes.
+            var squat = () => conversations.GetOrCreateAsync("agent", "Someone-Else", conversationId);
+            await squat.Should().ThrowAsync<Application.Common.Exceptions.ExceptionTypes.ConversationAccessDeniedException>();
         }
 
         var second = await EraseAsync(provider);

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Application.Common.Exceptions.ExceptionTypes;
 using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
@@ -60,6 +61,27 @@ public static class ConversationOwnership
     {
         if (ReservedConversationIds.IsReserved(conversationId))
             throw new ReservedConversationIdException(nameof(conversationId));
+    }
+
+    /// <summary>
+    /// Refuses to create a conversation under an id another person's unfinished erasure still holds (#907), exactly as a
+    /// conversation owned by someone else is refused, so the refusal says nothing about whose erasure it is.
+    /// </summary>
+    /// <param name="journal">The erasure journal, or <see langword="null"/> in a host without one.</param>
+    /// <param name="conversationId">The id the new conversation would take.</param>
+    /// <param name="callerId">The person creating it.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="ConversationAccessDeniedException">Another person's erasure holds the id.</exception>
+    /// <remarks>
+    /// The stores that record no owner keep the erased conversation's records under the id until a retry removes them;
+    /// a new conversation under it would have its records filed there too, and the retry would erase them. Call it on the
+    /// create branch only, beside <see cref="RequireCreatableId"/>. See <see cref="IErasureJournal.HoldsForAnotherOwnerAsync"/>.
+    /// </remarks>
+    public static async Task RequireNotHeldByAnotherErasureAsync(
+        IErasureJournal? journal, string conversationId, string callerId, CancellationToken ct)
+    {
+        if (journal is not null && await journal.HoldsForAnotherOwnerAsync(conversationId, callerId, ct))
+            throw new ConversationAccessDeniedException();
     }
 
     /// <summary>

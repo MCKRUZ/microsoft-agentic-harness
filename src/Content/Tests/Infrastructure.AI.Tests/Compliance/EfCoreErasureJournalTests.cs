@@ -114,11 +114,38 @@ public sealed class EfCoreErasureJournalTests : IDisposable
     }
 
     [Fact]
-    public async Task RecordAsync_AnIdRecordedAgain_RefreshesItsTime()
+    public async Task HoldsForAnotherOwnerAsync_HoldsConversationAndWithheldIds_FromEveryoneButTheirOwner()
     {
+        await _journal.RecordAsync("user-a", "req-1", Entries("a"), CancellationToken.None);
+
+        (await _journal.HoldsForAnotherOwnerAsync("conv-a", "user-b", CancellationToken.None)).Should().BeTrue();
+        (await _journal.HoldsForAnotherOwnerAsync("run:a", "user-b", CancellationToken.None)).Should().BeTrue();
+        (await _journal.HoldsForAnotherOwnerAsync("conv-a", "user-a", CancellationToken.None)).Should().BeFalse(
+            "the person may reuse their own id; the records under it are theirs either way");
+        (await _journal.HoldsForAnotherOwnerAsync("job-a", "user-b", CancellationToken.None)).Should().BeFalse(
+            "only conversation ids name a conversation someone could create");
+        (await _journal.HoldsForAnotherOwnerAsync("conv-z", "user-b", CancellationToken.None)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RecordAsync_AWithheldIdRecordedAgain_KeepsItsFirstTime_SoItStillAgesOut()
+    {
+        // Withheld ids are only removed by age; a person re-running erasure must not keep them forever.
         await _journal.RecordAsync("user-a", "req-1", Entries("a"), CancellationToken.None);
         _clock.Advance(TimeSpan.FromDays(10));
         await _journal.RecordAsync("user-a", "req-2", Entries("a"), CancellationToken.None);
+
+        (await _journal.PurgeOlderThanAsync(TimeSpan.FromDays(5), CancellationToken.None)).Should().Be(1);
+        (await _journal.ReadAsync("user-a", CancellationToken.None)).WithheldConversationIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RecordAsync_AnIdRecordedAgain_RefreshesItsTime()
+    {
+        var unfinished = Entries("a") with { WithheldConversationIds = [] };
+        await _journal.RecordAsync("user-a", "req-1", unfinished, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromDays(10));
+        await _journal.RecordAsync("user-a", "req-2", unfinished, CancellationToken.None);
 
         (await _journal.PurgeOlderThanAsync(TimeSpan.FromDays(5), CancellationToken.None)).Should().Be(0);
     }

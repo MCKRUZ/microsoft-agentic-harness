@@ -214,8 +214,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         // reach. Something kept partly needs no extra rule: a store narrowed by it reports that on its own line, a planned
         // task still running keeps its plan (the next request lists it again), and an unreadable conversation's id was never
         // recorded. A request whose own record failed held its leads back, so its stores did not all succeed either.
-        if (EveryEraserSucceeded(outcomes))
-            await ClearJournalAsync(ownerId, requestId);
+        var journalCleared = EveryEraserSucceeded(outcomes) && await ClearJournalAsync(ownerId, requestId);
+        NoteJournalKept(journalRecorded && !journalCleared, subject, outcomes);
 
         await ScrubAsync(outcomes);
 

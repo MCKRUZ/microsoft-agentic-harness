@@ -24,5 +24,8 @@ public sealed class ErasureJournalEntryEntityConfiguration : IEntityTypeConfigur
         // Stored as UTC ticks so SQLite can compare and order it (see SqliteValueConverters).
         builder.Property(e => e.RecordedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
         builder.HasIndex(e => e.RecordedAt);
+
+        // The conversation stores ask, on every new conversation, whether another person's erasure holds its id.
+        builder.HasIndex(e => e.Value);
     }
 }
