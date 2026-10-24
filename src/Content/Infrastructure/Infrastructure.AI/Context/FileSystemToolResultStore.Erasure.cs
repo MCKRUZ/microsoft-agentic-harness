@@ -17,7 +17,8 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// Spills live under <c>{StoragePath}/{conversationId}/tool-results/</c>. Each id goes through the same segment
+    /// Spills live under <c>{StoragePath}/{scopeId}/tool-results/</c>, where the scope is a conversation, a planned-task
+    /// model step, or a planned-task run's own scope for its tool steps (#906). Each id goes through the same segment
     /// check a write does before it becomes a path, so an id can never reach outside the storage root; one the check
     /// refuses could never have been written to, and is skipped. Each removed file is also evicted from the page cache,
     /// or a copy would keep being served for up to its sliding expiry.
@@ -30,7 +31,7 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
 
         var root = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.StoragePath;
         var removed = 0;
-        foreach (var conversationId in subject.ConversationIds)
+        foreach (var conversationId in subject.AllConversationIds.Concat(subject.PlanRuns.ToolResultScopeIds))
         {
             cancellationToken.ThrowIfCancellationRequested();
 

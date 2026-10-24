@@ -812,16 +812,17 @@
                     <p>
                         <code>PersonalDataErasureCoordinator</code>
                         (<code>src/Content/Application/Application.AI.Common/Services/Compliance/</code>) runs the request.
-                        It reads the person's conversation ids first, then erases the knowledge graph (nodes, edges,
-                        feedback weights, the vector and full-text content of linked documents, and cross-session memory)
-                        through <code>DefaultErasureOrchestrator</code>, then every store registered as an
-                        <code>IPersonalDataEraser</code>: the document indexes by owner, plans, schedules, tool-result
+                        It reads the person's conversation ids first, and the ids their planned tasks ran under, which
+                        the plan store records against the person each time a plan starts (#906). It then erases the
+                        knowledge graph (nodes, edges, feedback weights, the vector and full-text content of linked
+                        documents, and cross-session memory) through <code>DefaultErasureOrchestrator</code>, then every
+                        store registered as an <code>IPersonalDataEraser</code>: the document indexes by owner,
+                        schedules, and, through the conversations and the planned tasks' model steps and runs, tool-result
                         spill files, prompt-usage records, token budgets, the call-once ledger and the observability
-                        database through the conversations (except the sessions of planned tasks' model steps, whose
-                        run is not yet recorded against the conversation, #906), and finally the conversations
-                        themselves. A store reached
-                        only through a conversation is erased before the conversation, so a failure part-way leaves
-                        something a retry can still find. It runs system-scoped, so the tenant-isolated graph does not
+                        database. The conversations and the plans go next, and the token budgets and call-once ledger
+                        last, for whichever of the two was actually erased. A store reached only through a conversation
+                        or a plan is erased before it, so a failure part-way leaves something a retry can still find. A
+                        planned task run while the request runs is kept, and the receipt says to run erasure again. It runs system-scoped, so the tenant-isolated graph does not
                         hide the person's data from an operator acting on their behalf.
                     </p>
                     <p>

@@ -40,7 +40,7 @@ public sealed class EfCorePlanStateStoreTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             _timeProvider,
             new NullKnowledgeScope(),
-            new SchemaInitializer<PlannerDbContext>(factory));
+            new SchemaInitializer<PlannerDbContext>(factory), PlannerTestConfig.Monitor());
     }
 
     public void Dispose() => _connection.Dispose();
@@ -167,7 +167,7 @@ public sealed class EfCorePlanStateStoreTests : IDisposable
                 NullLogger<EfCorePlanStateStore>.Instance,
                 _timeProvider,
                 new NullKnowledgeScope(),
-                new SchemaInitializer<PlannerDbContext>(fileFactory));
+                new SchemaInitializer<PlannerDbContext>(fileFactory), PlannerTestConfig.Monitor());
 
             var graph = CreateTestGraph(stepCount: 1, edgeCount: 0);
             await fileStore.SavePlanAsync(graph, CancellationToken.None);

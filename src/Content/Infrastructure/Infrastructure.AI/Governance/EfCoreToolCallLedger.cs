@@ -44,14 +44,18 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger, IPersonalDataEraser,
     public ErasureReach ErasureReach => ErasureReach.NamedConversations;
 
     /// <inheritdoc />
-    /// <remarks>An agent turn's ledger scope is its conversation id; workflow-run scopes use run ids and are untouched.</remarks>
+    /// <remarks>
+    /// An agent turn's ledger scope is its conversation id, and a planned-task model step's turn is one too, so both are in
+    /// <see cref="ErasureSubject.AllConversationIds"/>. A workflow run's tool steps claim under the run's id, which names
+    /// no one; those rows are kept by design.
+    /// </remarks>
     public async Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
-        if (subject.ConversationIds.Count == 0)
+        if (subject.AllConversationIds.Count == 0)
             return 0;
 
-        var ids = subject.ConversationIds.ToList();
+        var ids = subject.AllConversationIds.ToList();
         await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
         return await context.ToolCallLedger
             .Where(e => ids.Contains(e.ConversationId))

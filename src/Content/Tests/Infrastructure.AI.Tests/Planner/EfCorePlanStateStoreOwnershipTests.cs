@@ -47,7 +47,7 @@ public sealed class EfCorePlanStateStoreOwnershipTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             _timeProvider,
             _scope,
-            new SchemaInitializer<PlannerDbContext>(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory), PlannerTestConfig.Monitor());
     }
 
     public void Dispose() => _connection.Dispose();

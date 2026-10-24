@@ -30,7 +30,7 @@ public sealed class EfCorePlanStateStoreRetentionTests : IDisposable
         _connection.Open();
         _factory = new Factory(new DbContextOptionsBuilder<PlannerDbContext>().UseSqlite(_connection).Options);
         _store = new EfCorePlanStateStore(
-            _factory, NullLogger<EfCorePlanStateStore>.Instance, _clock, new Scope(), new SchemaInitializer<PlannerDbContext>(_factory));
+            _factory, NullLogger<EfCorePlanStateStore>.Instance, _clock, new Scope(), new SchemaInitializer<PlannerDbContext>(_factory), PlannerTestConfig.Monitor());
     }
 
     public void Dispose() => _connection.Dispose();

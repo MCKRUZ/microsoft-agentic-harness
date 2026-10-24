@@ -50,6 +50,33 @@ public sealed class PostgresObservabilityStoreErasureTests
     }
 
     [SkippableFact]
+    public async Task EraseSubjectAsync_PlannedTaskModelSteps_AreErasedLikeConversations()
+    {
+        // #906. A model step's session is recorded under its own conversation id, which only the plan store's record of the
+        // run leads to.
+        _fixture.SkipIfUnavailable();
+        var step = _fixture.NewConversationId();
+        var theirs = _fixture.NewConversationId();
+        try
+        {
+            await SeedConversationAsync(step);
+            await SeedConversationAsync(theirs);
+
+            using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+            await store.EraseSubjectAsync(
+                new ErasureSubject("user-a", [], new PlanRunTraces([step], ["job-1"], ["planrun:plan-1"])),
+                CancellationToken.None);
+
+            (await CountsAsync(step)).Should().Be(new TableCounts(0, 0, 0, 0, 0));
+            (await CountsAsync(theirs)).Should().Be(new TableCounts(1, 2, 1, 2, 2));
+        }
+        finally
+        {
+            await CleanUpLoadedBodiesAsync(step, theirs);
+        }
+    }
+
+    [SkippableFact]
     public async Task EraseSubjectAsync_NoConversations_ReturnsZeroAndChangesNothing()
     {
         _fixture.SkipIfUnavailable();

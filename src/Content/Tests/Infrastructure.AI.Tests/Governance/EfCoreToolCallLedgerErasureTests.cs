@@ -75,6 +75,23 @@ public sealed class EfCoreToolCallLedgerErasureTests : IDisposable
     }
 
     [Fact]
+    public async Task EraseSubjectAsync_PlannedTaskModelSteps_AreErasedLikeConversations_TheRunsOwnScopeIsKept()
+    {
+        // #906. A model step's turn claims under its own conversation id; the run's tool steps claim under the run id,
+        // which names no one and is kept by design.
+        await ClaimAsync("plan-1:step-a", ToolA);
+        await ClaimAsync("job-1", ToolA);
+        await ClaimAsync("plan-2:step-b", ToolA);
+
+        var removed = await _ledger.EraseSubjectAsync(
+            new ErasureSubject("user-a", [], new PlanRunTraces(["plan-1:step-a"], ["job-1"], ["planrun:plan-1"])),
+            CancellationToken.None);
+
+        removed.Should().Be(1);
+        (await ScopesAsync()).Should().Equal(["job-1", "plan-2:step-b"]);
+    }
+
+    [Fact]
     public async Task EraseSubjectAsync_ScopeIdsDifferingOnlyInCase_AreNotErased()
     {
         await ClaimAsync("conv-a", ToolA);

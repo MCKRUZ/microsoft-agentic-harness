@@ -40,7 +40,7 @@ public sealed class EfCorePlanStateStoreErasureTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             new FakeTimeProvider(new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.Zero)),
             _scope,
-            new SchemaInitializer<PlannerDbContext>(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory), PlannerTestConfig.Monitor());
     }
 
     public void Dispose() => _connection.Dispose();

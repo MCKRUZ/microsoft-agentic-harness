@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Planner;
 using Domain.Common;
 
@@ -8,7 +9,11 @@ namespace Application.AI.Common.Interfaces.Planner;
 /// Supports checkpoint/resume for fault-tolerant plan execution and optimistic
 /// concurrency for concurrent step updates.
 /// </summary>
-public interface IPlanStateStore
+/// <remarks>
+/// A plan store also lists the runs it recorded for right-to-erasure (<see cref="IPlanRunTraceSource"/>, #906), so a
+/// replacement cannot record runs that erasure would then never read.
+/// </remarks>
+public interface IPlanStateStore : IPlanRunTraceSource
 {
     /// <summary>Persists a new plan graph.</summary>
     /// <param name="plan">The plan to save.</param>
@@ -85,6 +90,38 @@ public interface IPlanStateStore
     /// <param name="ct">Cancels the query.</param>
     /// <returns>The number of plans owned by the ambient scope.</returns>
     Task<Result<int>> CountOwnedPlansAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Records that the plan is about to run under <paramref name="runScope"/> for the ambient caller, so right-to-erasure
+    /// can find what the run leaves behind (#906).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A run's model steps record data under conversation ids derived from its run scope, and its tool steps keep large
+    /// results under its tool-result scope. Neither is a conversation the caller owns, so this record, stamped with the
+    /// caller as the run's owner, is the only thing that leads erasure to them. The executor calls it before any step
+    /// runs and does not run the plan when it fails.
+    /// </para>
+    /// <para>
+    /// The run's owner is the ambient caller, not the plan's owner: a shared sub-plan run inside someone's workflow is
+    /// recorded against that person. A caller with no identity records nothing, since no person can ask to be erased.
+    /// </para>
+    /// </remarks>
+    /// <param name="planId">The plan about to run.</param>
+    /// <param name="runScope">The run scope its model steps derive their conversation ids and budget key from.</param>
+    /// <param name="toolResultScopeId">The scope its tool steps keep spilled results under.</param>
+    /// <param name="ct">Cancels the write.</param>
+    Task<Result> RecordRunAsync(PlanId planId, string runScope, string toolResultScopeId, CancellationToken ct);
+
+    /// <summary>
+    /// Records that a run <see cref="RecordRunAsync"/> recorded has ended, so erasure no longer keeps its plan for it and
+    /// its time reflects its last write (#906). Changes nothing when no such run is recorded.
+    /// </summary>
+    /// <param name="planId">The plan that ran.</param>
+    /// <param name="runScope">The run scope it ran under.</param>
+    /// <param name="toolResultScopeId">The tool-result scope it ran under.</param>
+    /// <param name="ct">Cancels the write.</param>
+    Task<Result> RecordRunEndedAsync(PlanId planId, string runScope, string toolResultScopeId, CancellationToken ct);
 
     Task<Result<IReadOnlyList<PlanGraph>>> ListPlansAsync(
         StepExecutionStatus? statusFilter = null,

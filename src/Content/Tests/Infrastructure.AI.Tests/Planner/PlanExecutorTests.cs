@@ -20,6 +20,7 @@ public sealed class PlanExecutorTests : IDisposable
     private readonly ServiceCollection _services = new();
     private ServiceProvider? _serviceProvider;
     private readonly List<PlanStepId> _executionOrder = [];
+    private readonly Application.AI.Common.Services.Agent.AgentExecutionContext _agentContext = new();
     private readonly PlanExecutor _sut;
 
     public PlanExecutorTests()
@@ -64,8 +65,87 @@ public sealed class PlanExecutorTests : IDisposable
             _escalation.Object,
             _serviceProvider,
             new PlanRunCancellationRegistry(),
+            _agentContext,
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AnArmedRun_IsRecordedWithTheScopesItsStepsUse_BeforeAnyStepRuns()
+    {
+        // #906. The record is what leads erasure to the steps' sessions and spills, so it must carry the very ids the steps
+        // read from this context, and exist before any step can write under them.
+        _agentContext.Initialize("workflow:x", "run-scope-1", turnNumber: 1, callOnceScopeId: "job-42");
+        var plan = BuildLinearPlan(1);
+        SetupPlanLoad(plan);
+        var records = new List<string>();
+        _stateStore.Setup(s => s.RecordRunAsync(plan.Id, "run-scope-1", "job-42", It.IsAny<CancellationToken>()))
+            .Callback(() => records.Add($"started after {_executionOrder.Count} steps"))
+            .ReturnsAsync(Result.Success());
+        _stateStore.Setup(s => s.RecordRunEndedAsync(plan.Id, "run-scope-1", "job-42", It.IsAny<CancellationToken>()))
+            .Callback(() => records.Add($"ended after {_executionOrder.Count} steps"))
+            .ReturnsAsync(Result.Success());
+        RegisterCompletingExecutor();
+        var sut = CreateSut();
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        // In progress before the first step, so erasure keeps the plan while it writes; ended after the last.
+        Assert.Equal(["started after 0 steps", "ended after 1 steps"], records);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecordingTheEndFails_TheRunStillSucceeds()
+    {
+        _agentContext.Initialize("workflow:x", "run-scope-1", turnNumber: 1, callOnceScopeId: "job-42");
+        var plan = BuildLinearPlan(1);
+        SetupPlanLoad(plan);
+        _stateStore.Setup(s => s.RecordRunAsync(plan.Id, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        _stateStore.Setup(s => s.RecordRunEndedAsync(plan.Id, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("database locked"));
+        RegisterCompletingExecutor();
+        var sut = CreateSut();
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TheRunCannotBeRecorded_RunsNoStep()
+    {
+        // A step run now would leave records erasure could never find.
+        _agentContext.Initialize("workflow:x", "run-scope-1", turnNumber: 1, callOnceScopeId: "job-42");
+        var plan = BuildLinearPlan(1);
+        SetupPlanLoad(plan);
+        _stateStore.Setup(s => s.RecordRunAsync(It.IsAny<PlanId>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("disk full"));
+        RegisterCompletingExecutor();
+        var sut = CreateSut();
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("disk full", result.Errors);
+        Assert.Empty(_executionOrder);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AnUnarmedRun_IsNotRecorded()
+    {
+        // No run scope means the steps take throwaway ids; there is nothing a record could lead to.
+        var plan = BuildLinearPlan(1);
+        SetupPlanLoad(plan);
+        RegisterCompletingExecutor();
+        var sut = CreateSut();
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        _stateStore.Verify(s => s.RecordRunAsync(It.IsAny<PlanId>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _stateStore.Verify(s => s.RecordRunEndedAsync(It.IsAny<PlanId>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private void RegisterStepExecutor(StepType type, Func<PlanStep, IReadOnlyDictionary<PlanStepId, string>, CancellationToken, Task<StepExecutionResult>> handler)
@@ -1091,7 +1171,7 @@ public sealed class PlanExecutorTests : IDisposable
 
         var sut = new PlanExecutor(
             _validator.Object, _stateStore.Object, _notifier.Object, _escalation.Object,
-            _serviceProvider, registry.Object, TimeProvider.System,
+            _serviceProvider, registry.Object, new Application.AI.Common.Services.Agent.AgentExecutionContext(), TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
 
         var result = await sut.CancelAsync(planId, CancellationToken.None);
@@ -1121,7 +1201,7 @@ public sealed class PlanExecutorTests : IDisposable
 
         var sut = new PlanExecutor(
             _validator.Object, _stateStore.Object, _notifier.Object, _escalation.Object,
-            _serviceProvider, registry.Object, TimeProvider.System,
+            _serviceProvider, registry.Object, new Application.AI.Common.Services.Agent.AgentExecutionContext(), TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
 
         var result = await sut.CancelAsync(planId, CancellationToken.None);

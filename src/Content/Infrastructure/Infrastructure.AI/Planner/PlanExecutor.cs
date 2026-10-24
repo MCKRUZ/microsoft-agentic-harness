@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Planner;
@@ -40,6 +41,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
     private readonly IEscalationService _escalationService;
     private readonly IServiceProvider _serviceProvider;
     private readonly IPlanRunCancellationRegistry _cancellationRegistry;
+    private readonly IAgentExecutionContext _agentContext;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PlanExecutor> _logger;
 
@@ -56,6 +58,10 @@ public sealed partial class PlanExecutor : IPlanExecutor
     /// registers each run here and <see cref="CancelAsync"/> signals it, which is what makes a
     /// cancel stop work rather than only rewrite state after the run ends.
     /// </param>
+    /// <param name="agentContext">
+    /// The run's execution context, read for the run scope and tool-result scope the steps will use, so the run can be
+    /// recorded for right-to-erasure before any step runs.
+    /// </param>
     /// <param name="timeProvider">Clock used for retry backoff delays; injectable for tests.</param>
     /// <param name="logger">Structured logger for execution auditing.</param>
     public PlanExecutor(
@@ -65,6 +71,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         IEscalationService escalationService,
         IServiceProvider serviceProvider,
         IPlanRunCancellationRegistry cancellationRegistry,
+        IAgentExecutionContext agentContext,
         TimeProvider timeProvider,
         ILogger<PlanExecutor> logger)
     {
@@ -74,6 +81,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         _escalationService = escalationService;
         _serviceProvider = serviceProvider;
         _cancellationRegistry = cancellationRegistry;
+        _agentContext = agentContext;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -121,6 +129,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
         finally
         {
+            await RefreshRunRecordAsync(planId);
             ReleasePlanLock(planId, planLock);
         }
     }
@@ -398,6 +407,48 @@ public sealed partial class PlanExecutor : IPlanExecutor
         public int RefCount { get; set; }
     }
 
+    /// <summary>
+    /// Records, before any step runs, the run scope and tool-result scope this run's steps will record data under, so
+    /// right-to-erasure can find them (#906). Read from the same execution context the step executors read, so the
+    /// recorded ids are the ones used.
+    /// </summary>
+    /// <remarks>
+    /// Only an armed run is recorded: without a run scope, model steps take throwaway conversation ids that nothing could
+    /// lead back to, and only <c>PlanRunExecutor</c> and the sub-plan executor arm one. A failure to record stops the
+    /// run, because steps run now would leave records erasure could not find.
+    /// </remarks>
+    private Task<Result> RecordRunAsync(PlanId planId, CancellationToken ct)
+    {
+        var runScope = _agentContext.ConversationId;
+        return string.IsNullOrEmpty(runScope)
+            ? Task.FromResult(Result.Success())
+            : _stateStore.RecordRunAsync(planId, runScope, _agentContext.ToolResultScopeId, ct);
+    }
+
+    /// <summary>
+    /// Records that the run ended: erasure stops keeping its plan for it, and its time becomes when its steps last wrote,
+    /// so a scope a long run spilled under late is not pruned before the spill sweep removes what it leads to. Never fails
+    /// the run, and never records a run that was not recorded at its start.
+    /// </summary>
+    private async Task RefreshRunRecordAsync(PlanId planId)
+    {
+        var runScope = _agentContext.ConversationId;
+        if (string.IsNullOrEmpty(runScope))
+            return;
+
+        try
+        {
+            var ended = await _stateStore.RecordRunEndedAsync(
+                planId, runScope, _agentContext.ToolResultScopeId, CancellationToken.None);
+            if (!ended.IsSuccess)
+                _logger.LogDebug("Plan {PlanId} run end not recorded: {Errors}", planId, string.Join("; ", ended.Errors));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Plan {PlanId} run end could not be recorded", planId);
+        }
+    }
+
     /// <param name="runCancellationToken">
     /// The registry token alone, without the caller's token folded in. <paramref name="ct"/> is the
     /// union of the two and drives the work; this one only answers "was this an operator cancel?",
@@ -453,6 +504,10 @@ public sealed partial class PlanExecutor : IPlanExecutor
         // every step, with its side effects, while none of it could be saved, so a plan that is gone now is not run.
         if (existingStates is null && (await _stateStore.LoadPlanAsync(planId, ct)).Value is null)
             return Result<PlanExecutionSummary>.Fail("Plan not found.");
+
+        var recorded = await RecordRunAsync(planId, ct);
+        if (!recorded.IsSuccess)
+            return Result<PlanExecutionSummary>.Fail(recorded.Errors.ToArray());
 
         var stepStates = new ConcurrentDictionary<PlanStepId, StepExecutionState>();
         InitializeStepStates(plan, stepStates, existingStates);

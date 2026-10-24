@@ -56,7 +56,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             _timeProvider,
             new Application.AI.Common.Services.KnowledgeGraph.NullKnowledgeScope(),
-            new SchemaInitializer<PlannerDbContext>(factory));
+            new SchemaInitializer<PlannerDbContext>(factory), PlannerTestConfig.Monitor());
 
         _validator.Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult { IsValid = true }));
@@ -514,7 +514,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
-            new PlanRunCancellationRegistry(),
+            new PlanRunCancellationRegistry(), new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }
@@ -536,7 +536,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
-            new PlanRunCancellationRegistry(),
+            new PlanRunCancellationRegistry(), new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

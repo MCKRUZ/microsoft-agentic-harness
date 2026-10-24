@@ -387,7 +387,7 @@ public sealed class PlanExecutorRetryPolicyTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             _serviceProvider,
-            new PlanRunCancellationRegistry(),
+            new PlanRunCancellationRegistry(), new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             _time,
             NullLogger<PlanExecutor>.Instance);
     }
