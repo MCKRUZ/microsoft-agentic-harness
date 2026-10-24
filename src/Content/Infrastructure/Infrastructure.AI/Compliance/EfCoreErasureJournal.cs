@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Compliance;
 using Domain.Common.Compliance;
+using Infrastructure.AI.Conversations;
 using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -24,22 +25,47 @@ namespace Infrastructure.AI.Compliance;
 public sealed class EfCoreErasureJournal : IErasureJournal
 {
     private readonly IDbContextFactory<ErasureJournalDbContext> _factory;
+    private readonly Lazy<SchemaInitializer<ErasureJournalDbContext>> _schema;
     private readonly TimeProvider _timeProvider;
+    private readonly KeyedAsyncLock _requests = new(StringComparer.Ordinal);
 
     /// <summary>Initializes a new instance of the <see cref="EfCoreErasureJournal"/> class.</summary>
     /// <param name="factory">Creates short-lived contexts over the journal database.</param>
-    /// <param name="schemaInitializer">Brings the database up to date before the first use.</param>
+    /// <param name="schemaInitializer">
+    /// Brings the database up to date on the first use, not at construction. The conversation stores depend on the
+    /// journal for their hold on erased ids, so a journal database that cannot open must fail erasure and new
+    /// conversations, never every read of an existing one.
+    /// </param>
     /// <param name="timeProvider">Stamps each recorded row.</param>
     public EfCoreErasureJournal(
         IDbContextFactory<ErasureJournalDbContext> factory,
-        SchemaInitializer<ErasureJournalDbContext> schemaInitializer,
+        Lazy<SchemaInitializer<ErasureJournalDbContext>> schemaInitializer,
         TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(schemaInitializer);
         ArgumentNullException.ThrowIfNull(timeProvider);
         _factory = factory;
+        _schema = schemaInitializer;
         _timeProvider = timeProvider;
+    }
+
+    /// <summary>The context factory, once the schema is in place.</summary>
+    private IDbContextFactory<ErasureJournalDbContext> Factory
+    {
+        get
+        {
+            _ = _schema.Value;
+            return _factory;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>In this process only, like the rest of this journal; see <see cref="IErasureJournal"/>.</remarks>
+    public Task<IDisposable> BeginRequestAsync(string ownerId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        return _requests.AcquireAsync(ownerId, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -47,7 +73,7 @@ public sealed class EfCoreErasureJournal : IErasureJournal
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
-        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await using var ctx = await Factory.CreateDbContextAsync(cancellationToken);
         var rows = await ctx.Entries
             .AsNoTracking()
             .Where(e => e.OwnerId == ownerId)
@@ -72,7 +98,7 @@ public sealed class EfCoreErasureJournal : IErasureJournal
         ArgumentNullException.ThrowIfNull(entries);
 
         var ticks = _timeProvider.GetUtcNow().UtcTicks;
-        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await using var ctx = await Factory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await ctx.Database.BeginTransactionAsync(cancellationToken);
         foreach (var (kind, value) in Rows(entries))
         {
@@ -99,7 +125,7 @@ public sealed class EfCoreErasureJournal : IErasureJournal
         ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
-        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await using var ctx = await Factory.CreateDbContextAsync(cancellationToken);
         return await ctx.Entries.AnyAsync(
             e => e.Value == conversationId && e.OwnerId != ownerId && (e.Kind == Kinds.Conversation || e.Kind == Kinds.Withheld),
             cancellationToken);
@@ -111,7 +137,7 @@ public sealed class EfCoreErasureJournal : IErasureJournal
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
 
-        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await using var ctx = await Factory.CreateDbContextAsync(cancellationToken);
         var removed = await ctx.Entries
             .Where(e => e.OwnerId == ownerId && e.RequestId == requestId && e.Kind != Kinds.Withheld)
             .ExecuteDeleteAsync(cancellationToken);
@@ -131,7 +157,7 @@ public sealed class EfCoreErasureJournal : IErasureJournal
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
 
         var cutoff = _timeProvider.GetUtcNow() - retention;
-        await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await using var ctx = await Factory.CreateDbContextAsync(cancellationToken);
         var removed = await ctx.Entries.Where(e => e.RecordedAt < cutoff).ExecuteDeleteAsync(cancellationToken);
         if (removed > 0)
             await ctx.Database.TruncateWriteAheadLogAsync(cancellationToken);

@@ -24,7 +24,8 @@ public sealed class EfCoreErasureJournalTests : IDisposable
         var factory = new Factory(new DbContextOptionsBuilder<ErasureJournalDbContext>()
             .UseSqlite($"DataSource={Path.Combine(_dir, "journal.db")};Pooling=False")
             .Options);
-        _journal = new EfCoreErasureJournal(factory, new SchemaInitializer<ErasureJournalDbContext>(factory), _clock);
+        _journal = new EfCoreErasureJournal(
+            factory, new Lazy<SchemaInitializer<ErasureJournalDbContext>>(() => new SchemaInitializer<ErasureJournalDbContext>(factory)), _clock);
     }
 
     public void Dispose()
@@ -148,6 +149,36 @@ public sealed class EfCoreErasureJournalTests : IDisposable
         await _journal.RecordAsync("user-a", "req-2", unfinished, CancellationToken.None);
 
         (await _journal.PurgeOlderThanAsync(TimeSpan.FromDays(5), CancellationToken.None)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task BeginRequestAsync_OneRequestPerPersonAtATime_AndOthersRunFreely()
+    {
+        // Overlapping requests for one person could interleave a clear between another's read and record.
+        using var first = await _journal.BeginRequestAsync("user-a", CancellationToken.None);
+
+        var second = _journal.BeginRequestAsync("user-a", CancellationToken.None);
+        using (await _journal.BeginRequestAsync("user-b", CancellationToken.None))
+        {
+            await Task.Delay(50);
+            second.IsCompleted.Should().BeFalse("the same person's next request waits for the first to end");
+        }
+
+        first.Dispose();
+        using var released = await second.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public void Construction_DoesNotOpenTheDatabase()
+    {
+        // The conversation stores depend on the journal; a journal database that cannot open must not break them.
+        var unopenable = new Factory(new DbContextOptionsBuilder<ErasureJournalDbContext>()
+            .UseSqlite($"DataSource={Path.Combine(_dir, "missing-folder", "journal.db")}").Options);
+
+        var act = () => new EfCoreErasureJournal(
+            unopenable, new Lazy<SchemaInitializer<ErasureJournalDbContext>>(() => new SchemaInitializer<ErasureJournalDbContext>(unopenable)), _clock);
+
+        act.Should().NotThrow();
     }
 
     private sealed class Factory(DbContextOptions<ErasureJournalDbContext> options) : IDbContextFactory<ErasureJournalDbContext>

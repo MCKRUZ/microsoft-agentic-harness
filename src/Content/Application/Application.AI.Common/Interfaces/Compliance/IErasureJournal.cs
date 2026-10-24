@@ -22,9 +22,30 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// configured journal retention, which must be at least as long as the longest retention among the stores they lead
 /// to, so a purge never strands anything those stores still hold.
 /// </para>
+/// <para>
+/// <strong>It must be shared exactly as widely as the conversation store.</strong> Its hold on erased conversation ids
+/// (<see cref="HoldsForAnotherOwnerAsync"/>) and its one-request-per-person turn (<see cref="BeginRequestAsync"/>) only
+/// reach the hosts that use the same journal. The shipped conversation stores and journal are single-host (a SQLite file
+/// or a folder); a deployment that shares a conversation store across hosts must give them a shared journal too, or a
+/// person on another host could take an erased id and lose records to the erased person's retry.
+/// </para>
 /// </remarks>
 public interface IErasureJournal
 {
+    /// <summary>
+    /// Waits until no other erasure request for <paramref name="ownerId"/> is running, and holds that turn until the
+    /// returned value is disposed.
+    /// </summary>
+    /// <param name="ownerId">The person.</param>
+    /// <param name="cancellationToken">Cancels the wait.</param>
+    /// <returns>The turn; dispose it when the request ends.</returns>
+    /// <remarks>
+    /// Two requests for one person running at once could interleave so that one clears an id the other read before it,
+    /// and a third person takes the id in between: the second request would then erase that person's records. One request
+    /// at a time per person closes that.
+    /// </remarks>
+    Task<IDisposable> BeginRequestAsync(string ownerId, CancellationToken cancellationToken);
+
     /// <summary>Everything recorded for <paramref name="ownerId"/> by earlier requests that did not finish.</summary>
     /// <param name="ownerId">The person, as their identity provider issued the id.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

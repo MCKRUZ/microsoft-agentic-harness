@@ -93,7 +93,7 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
     {
         await Create(AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
 
-        _calls.Should().ContainInOrder("spills", "record", "conversations", "plans", "ledger");
+        _calls.Should().ContainInOrder("begin", "spills", "record", "conversations", "plans", "ledger", "end");
         _journal.Recorded!.ConversationIds.Should().Equal("c-now");
     }
 
@@ -104,7 +104,7 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
 
         var receipt = await Create(AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
 
-        _calls.Should().Equal("spills", "record");
+        _calls.Should().Equal("begin", "spills", "record", "end");
         receipt.Stores.Single(s => s.Store == "erasure journal").Status.Should().Be(StoreErasureStatus.Failed);
         receipt.Stores.Where(s => s.Store is "conversations" or "plans" or "ledger")
             .Should().OnlyContain(s => s.Status == StoreErasureStatus.Skipped);
@@ -115,7 +115,7 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
     {
         await Create(AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
 
-        _calls.Last().Should().Be("clear");
+        _calls.TakeLast(2).Should().Equal("clear", "end");
         _journal.ClearedRequest.Should().Be(_journal.RecordedRequest, "a request clears only what it recorded");
     }
 
@@ -126,7 +126,7 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
         await Create([.. AllStages(), new NonErasableStore("audit copies", ErasureStage.BeforeConversations)])
             .EraseOwnerAsync(Owner, CancellationToken.None);
 
-        _calls.Last().Should().Be("clear");
+        _calls.TakeLast(2).Should().Equal("clear", "end");
     }
 
     [Fact]
@@ -224,6 +224,17 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
 
         public Task<bool> HoldsForAnotherOwnerAsync(string conversationId, string ownerId, CancellationToken cancellationToken) =>
             Task.FromResult(false);
+
+        public Task<IDisposable> BeginRequestAsync(string ownerId, CancellationToken cancellationToken)
+        {
+            calls.Add("begin");
+            return Task.FromResult<IDisposable>(new Turn(calls));
+        }
+
+        private sealed class Turn(List<string> calls) : IDisposable
+        {
+            public void Dispose() => calls.Add("end");
+        }
 
         public Task ClearAsync(string ownerId, string requestId, CancellationToken cancellationToken)
         {

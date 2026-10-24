@@ -132,6 +132,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         using var systemScoped = _ambientScope.SuspendScope();
 
+        // One request per person at a time (#907): overlapping ones could clear an id between another's read and record.
+        using var turn = _journal is null ? null : await _journal.BeginRequestAsync(ownerId, cancellationToken);
+
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
         // deleted either.

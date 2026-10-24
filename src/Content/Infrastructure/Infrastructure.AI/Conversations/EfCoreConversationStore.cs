@@ -180,7 +180,6 @@ public sealed partial class EfCoreConversationStore : IConversationStore
 
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         ConversationOwnership.RequireCreatableId(id);
-        await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
         var now = _timeProvider.GetUtcNow();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
@@ -202,6 +201,10 @@ public sealed partial class EfCoreConversationStore : IConversationStore
         // transaction, which takes the write lock at BEGIN rather than at first write; that is a
         // change to how every write in this store contends, so it is its own piece of work.
         await ThrowIfOwnedByAnotherAsync(context, id, userId, ct);
+
+        // Only a caller-chosen id can be one an erasure holds (#907); a fresh one is new.
+        if (!string.IsNullOrWhiteSpace(conversationId))
+            await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
 
         // The cascade takes the messages with it.
         await context.Conversations

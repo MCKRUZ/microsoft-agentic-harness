@@ -4,6 +4,7 @@ using Infrastructure.AI.Compliance;
 using Infrastructure.AI.Extensions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI;
@@ -22,7 +23,12 @@ public static partial class DependencyInjection
 
         services.AddDbContextFactory<ErasureJournalDbContext>(options => options.UseSqliteWithSecureDelete($"DataSource={dbPath}"));
         services.AddSingleton<SchemaInitializer<ErasureJournalDbContext>>();
-        services.AddSingleton<EfCoreErasureJournal>();
+        // The schema is created on first use: the conversation stores depend on the journal, and a journal database that
+        // cannot open must not make them unresolvable.
+        services.AddSingleton(sp => new EfCoreErasureJournal(
+            sp.GetRequiredService<IDbContextFactory<ErasureJournalDbContext>>(),
+            new Lazy<SchemaInitializer<ErasureJournalDbContext>>(sp.GetRequiredService<SchemaInitializer<ErasureJournalDbContext>>),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IErasureJournal>(sp => sp.GetRequiredService<EfCoreErasureJournal>());
         services.AddHostedService<ErasureJournalRetentionService>();
     }

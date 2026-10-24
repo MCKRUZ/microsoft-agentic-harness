@@ -859,6 +859,17 @@
                         inventory, and clearing it also clears its write-ahead log.
                     </p>
                     <p>
+                        While the journal holds an erased conversation's id, nobody else can create a conversation under
+                        it. They are refused exactly as for another person's conversation, because the retry would
+                        otherwise erase their records filed under the same id. The erased person may reuse their own id.
+                        One erasure request per person runs at a time, so overlapping requests cannot clear an id between
+                        another's read and record. Both reach only the hosts that share the journal. The shipped
+                        conversation stores and journal are single-host, so a deployment that shares a conversation store
+                        across hosts needs a shared <code>IErasureJournal</code> too. A held id reads as not found but
+                        cannot be created, so someone who can guess an erased conversation's id can tell that an erasure
+                        is unfinished.
+                    </p>
+                    <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
                         erasers match that form. A scheduled run writes under its schedule's owner, so a schedule keeps
                         the owner as issued as well as lower-cased, and each fired run carries the issued form (#907). A

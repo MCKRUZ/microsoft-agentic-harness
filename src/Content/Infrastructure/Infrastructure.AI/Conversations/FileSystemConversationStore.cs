@@ -179,7 +179,6 @@ public sealed partial class FileSystemConversationStore : IConversationStore
 
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         ConversationOwnership.RequireCreatableId(id);
-        await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
         var now = _timeProvider.GetUtcNow();
         var record = new ConversationRecord(
             Id: id,
@@ -205,6 +204,10 @@ public sealed partial class FileSystemConversationStore : IConversationStore
                 if (existing is not null)
                     RequireOwner(id, userId, existing.UserId);
             }
+
+            // Only a caller-chosen id can be one an erasure holds (#907); a fresh one is new.
+            if (!string.IsNullOrWhiteSpace(conversationId))
+                await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
 
             await WriteAtomicLockedAsync(path, record, ct);
         }

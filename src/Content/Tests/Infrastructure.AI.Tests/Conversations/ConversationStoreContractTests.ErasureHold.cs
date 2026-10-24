@@ -64,5 +64,8 @@ public abstract partial class ConversationStoreContractTests
             Task.CompletedTask;
 
         public Task ClearAsync(string ownerId, string requestId, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<IDisposable> BeginRequestAsync(string ownerId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The conversation stores never take an erasure turn.");
     }
 }
