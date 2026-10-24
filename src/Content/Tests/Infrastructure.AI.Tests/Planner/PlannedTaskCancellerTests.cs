@@ -89,6 +89,37 @@ public sealed class PlannedTaskCancellerTests : IDisposable
     }
 
     [Fact]
+    public async Task ThePersonsRunOfASharedPlan_IsNeverSignalled()
+    {
+        // Signalling is by plan: stopping the person's run of a shared plan would stop everyone's runs of it. That run
+        // falls back to the plan store's "run erasure again".
+        SetCaller(null);
+        var shared = await SaveAsync();
+        SetCaller("alice");
+        (await _store.RecordRunAsync(shared.Id, shared.Id.Value.ToString(), "job-alice", CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        var someoneElsesRun = _registry.Register(shared.Id);
+
+        (await Create(TimeSpan.FromSeconds(1)).StopRunningTasksAsync("alice", CancellationToken.None)).Should().Be(0);
+
+        someoneElsesRun.Token.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARunThisProcessCannotSignal_IsNotWaitedFor()
+    {
+        // A run on another host (no registration here) will not end because of anything done here.
+        SetCaller("alice");
+        var plan = await SaveAsync();
+        (await _store.RecordRunAsync(plan.Id, plan.Id.Value.ToString(), "job-1", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        (await Create(TimeSpan.FromSeconds(30)).StopRunningTasksAsync("alice", CancellationToken.None)).Should().Be(1);
+
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task NoRunningTask_ReturnsAtOnce()
     {
         (await Create(TimeSpan.FromSeconds(30)).StopRunningTasksAsync("alice", CancellationToken.None)).Should().Be(0);
@@ -115,10 +146,10 @@ public sealed class PlannedTaskCancellerTests : IDisposable
         return (plan, run);
     }
 
-    private void SetCaller(string owner)
+    private void SetCaller(string? owner)
     {
         _scope.UserId = owner;
-        _scope.TenantId = "acme";
+        _scope.TenantId = owner is null ? null : "acme";
     }
 
     private async Task<PlanGraph> SaveAsync()

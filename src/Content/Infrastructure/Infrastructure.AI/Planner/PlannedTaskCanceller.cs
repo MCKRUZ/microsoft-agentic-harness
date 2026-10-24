@@ -71,23 +71,27 @@ public sealed class PlannedTaskCanceller : IPlannedTaskCanceller
         if (running.Count == 0)
             return 0;
 
-        var signalled = running.Count(plan => _registry.TryCancel(new PlanId(plan)));
+        var signalled = running.Where(plan => _registry.TryCancel(new PlanId(plan))).ToHashSet();
         _logger.LogInformation(
-            "Erasure signalled {Signalled} of {Running} planned task(s) in progress to stop.", signalled, running.Count);
+            "Erasure signalled {Signalled} of {Running} planned task(s) in progress to stop.", signalled.Count, running.Count);
 
+        // Waiting only makes sense for runs this process signalled: one on another host, or a mark left by a crash, will
+        // not end because of anything done here, and a run started during the wait must not stretch it out.
         var deadline = _timeProvider.GetUtcNow() + _wait;
-        while (_timeProvider.GetUtcNow() < deadline)
+        while (signalled.Count > 0 && _timeProvider.GetUtcNow() < deadline)
         {
             await Task.Delay(PollEvery, _timeProvider, cancellationToken);
             running = await RunningPlansAsync(owner, cancellationToken);
-            if (running.Count == 0)
-                return 0;
+            signalled.IntersectWith(running);
         }
 
         return running.Count;
     }
 
-    /// <summary>The plans <paramref name="owner"/> owns that have a run in progress.</summary>
+    /// <summary>
+    /// The plans <paramref name="owner"/> owns that have a run in progress. Filtered on the plan's owner, never the run's:
+    /// signalling is by plan, so a shared plan the person happens to be running would stop everyone's runs of it.
+    /// </summary>
     private async Task<IReadOnlyList<Guid>> RunningPlansAsync(string owner, CancellationToken cancellationToken)
     {
         var since = _timeProvider.GetUtcNow() - EfCorePlanStateStore.RunInProgressFor;

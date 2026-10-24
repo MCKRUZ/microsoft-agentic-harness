@@ -875,7 +875,9 @@
                         erasure reads and clears. It cancels only runs of plans the person owns, so it never stops someone
                         else's task, because only a plan's owner can run it. It then waits up to 30 seconds for them to
                         end. It reaches only runs on the same host. A run that does not stop in time, or runs elsewhere,
-                        keeps its plan as before, and the receipt says to run erasure again.
+                        keeps its plan as before, and the receipt says to run erasure again. The person's own run of a
+                        shared plan is deliberately left running, because stopping it would stop everyone's runs of that
+                        plan. It falls back to the same "run erasure again" line.
                     </p>
                     <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
