@@ -28,5 +28,19 @@ public sealed class ErasureConfigValidator : AbstractValidator<ErasureConfig>
         RuleForEach(x => x.OperatorTenantIds)
             .Must(id => !string.IsNullOrWhiteSpace(id) && id == id.Trim())
             .WithMessage("OperatorTenantIds entries must be tenant ids with no surrounding whitespace.");
+
+        RuleFor(x => x.JournalDatabasePath)
+            .NotEmpty().WithMessage("JournalDatabasePath must name the erasure journal's database file.");
+
+        // A shorter retention would drop an unfinished request's ids while the stores they lead to still hold its records.
+        RuleFor(x => x.JournalRetention)
+            .GreaterThanOrEqualTo(MinimumJournalRetention)
+            .WithMessage($"JournalRetention must be at least {MinimumJournalRetention.TotalDays} days.");
     }
+
+    /// <summary>
+    /// The shortest journal retention allowed: the observability store's default retention, the longest default among the
+    /// stores the journal leads to.
+    /// </summary>
+    public static readonly TimeSpan MinimumJournalRetention = TimeSpan.FromDays(90);
 }

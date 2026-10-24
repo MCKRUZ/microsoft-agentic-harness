@@ -46,7 +46,7 @@ namespace Application.AI.Common.Services.Compliance;
 /// strings) and the request carries on, so one broken store does not shield the rest of the subject's data.
 /// </para>
 /// </remarks>
-public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
+public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasure
 {
     private const string GraphStoreName = "knowledge graph";
     private const string FailedReason = "the store could not be erased; the failure has been logged";
@@ -68,6 +68,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     private readonly IErasureOrchestrator _graph;
     private readonly IConversationStore? _conversations;
     private readonly IPlanRunTraceSource? _planRuns;
+    private readonly IErasureJournal? _journal;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -89,6 +90,11 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
     /// The plan store's record of the subject's planned-task runs, read before anything is deleted (#906).
     /// <see langword="null"/> in a host without plans.
     /// </param>
+    /// <param name="journal">
+    /// Keeps the ids each request read until every store that reads them has succeeded, so a request that fails after
+    /// deleting the conversations or plans can be retried (#907). <see langword="null"/> in a host without one, in which
+    /// case such a failure strands the failed store's rows, as before.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -97,7 +103,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         TimeProvider timeProvider,
         ILogger<PersonalDataErasureCoordinator> logger,
         IConversationStore? conversations = null,
-        IPlanRunTraceSource? planRuns = null)
+        IPlanRunTraceSource? planRuns = null,
+        IErasureJournal? journal = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -115,6 +122,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         _logger = logger;
         _conversations = conversations;
         _planRuns = planRuns;
+        _journal = journal;
     }
 
     /// <inheritdoc />
@@ -128,16 +136,23 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
         // deleted either.
         var conversations = await ListConversationIdsAsync(ownerId, cancellationToken);
-        var conversationIds = conversations.Ids;
         var planRuns = _planRuns is null
             ? PlanRunTraces.Empty
             : await _planRuns.ListRunTracesAsync(ownerId, cancellationToken);
-        var subject = new ErasureSubject(ownerId, conversationIds, planRuns);
+
+        // What an earlier request read and could not finish with (#907): its conversations and plans may already be gone,
+        // and these ids are then the only way to what they led to.
+        var outcomes = new List<StoreErasureOutcome>();
+        var journaled = await ReadJournalAsync(ownerId, outcomes, cancellationToken);
+        var subject = new ErasureSubject(
+            ownerId,
+            [.. conversations.Ids.Union(journaled.ConversationIds).Union(journaled.WithheldConversationIds)],
+            journaled.PlanRuns.IsEmpty ? planRuns : planRuns.Union(journaled.PlanRuns));
+        var requestId = Guid.NewGuid().ToString("N");
 
         var requestedAt = _timeProvider.GetUtcNow();
         var (graphReceipt, graphOutcome) = await EraseGraphAsync(ownerId, requestedAt, cancellationToken);
 
-        var outcomes = new List<StoreErasureOutcome>();
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == ErasureStage.BeforeConversations))
             outcomes.Add(await EraseAsync(eraser, subject, cancellationToken));
 
@@ -146,8 +161,13 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             outcomes.Insert(0, graphOutcome);
 
         // A store that cannot erase at all will not succeed on a retry either, so it does not hold the conversations back.
-        var beforeSucceeded = outcomes.All(o => o.Store == GraphStoreName
+        // A journal that could not be read does not either: what it held stays recorded for the next request.
+        var beforeSucceeded = outcomes.All(o => o.Store is GraphStoreName or JournalReadStore
             || o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported);
+
+        // Recorded before any lead is deleted; if it cannot be, no lead is deleted.
+        var journalRecorded = beforeSucceeded && await RecordJournalAsync(ownerId, requestId, subject, outcomes);
+        beforeSucceeded &= journalRecorded;
 
         // From here on, deletion is not interrupted by the caller going away: a request cancelled between the
         // conversations and the stage after them would leave that stage's records with nothing that leads to them.
@@ -189,6 +209,13 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             outcomes.Add(new StoreErasureOutcome(
                 "conversations that could not be read", StoreErasureStatus.Failed, 0, UnreadableReason));
         }
+
+        // Cleared only when every store that reads these ids succeeded, so nothing they lead to is left that only they
+        // reach. Something kept partly needs no extra rule: a store narrowed by it reports that on its own line, a planned
+        // task still running keeps its plan (the next request lists it again), and an unreadable conversation's id was never
+        // recorded. A request whose own record failed held its leads back, so its stores did not all succeed either.
+        if (EveryEraserSucceeded(outcomes))
+            await ClearJournalAsync(ownerId, requestId);
 
         await ScrubAsync(outcomes);
 
