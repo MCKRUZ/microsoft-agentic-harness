@@ -129,6 +129,19 @@ public sealed class AuditedErasureTests
     }
 
     [Fact]
+    public async Task EraseAsync_StoreThrows_TheLoggedExceptionKeepsItsTypeButNotItsMessage()
+    {
+        // #907: a store's message can name the person being erased, and pattern-based log redaction lets an id through.
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException($"ownerId eq '{Subject}'"));
+
+        await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        var logged = _logger.Exceptions.Should().ContainSingle().Subject;
+        logged.ToString().Should().Contain(typeof(InvalidOperationException).FullName).And.NotContain(Subject);
+    }
+
+    [Fact]
     public async Task EraseAsync_AuditSinkThrows_ErasureStillRuns()
     {
         _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))

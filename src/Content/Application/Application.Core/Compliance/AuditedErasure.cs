@@ -1,4 +1,5 @@
 using System.Globalization;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
@@ -117,7 +118,7 @@ public sealed class AuditedErasure
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Right-to-erasure {CorrelationId} failed (subject reference {SubjectReference}).",
+            _logger.LogError(MessageWithheldException.From(ex), "Right-to-erasure {CorrelationId} failed (subject reference {SubjectReference}).",
                 correlationId, subjectReference);
             await RecordFailureAsync(record, actor, subjectReference, ex.GetType().Name);
             return Result<ErasureReceipt>.Fail(FailedMessage);
@@ -179,7 +180,7 @@ public sealed class AuditedErasure
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Right-to-erasure {CorrelationId}: the subject reference could not be computed.",
+            _logger.LogError(MessageWithheldException.From(ex), "Right-to-erasure {CorrelationId}: the subject reference could not be computed.",
                 correlationId);
             return ReferenceUnavailable;
         }
@@ -235,7 +236,7 @@ public sealed class AuditedErasure
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to record the {Phase} of right-to-erasure {CorrelationId}.",
+            _logger.LogError(MessageWithheldException.From(ex), "Failed to record the {Phase} of right-to-erasure {CorrelationId}.",
                 entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
         }
     }

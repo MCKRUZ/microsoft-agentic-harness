@@ -42,6 +42,55 @@ public sealed class FileSystemConversationStoreErasureTests : IDisposable
             Directory.Delete(_tempDir, recursive: true);
     }
 
+    [Theory]
+    [InlineData("{ not json")]
+    [InlineData("{\"id\":\"c-x\"}")]
+    [InlineData("null")]
+    public async Task ListConversationIdsAsync_AFileThatCannotBeRead_IsCountedNotSkipped(string content)
+    {
+        // #907: ListAsync logs such a file and moves on. For erasure, a file that may be the person's must never vanish
+        // from the count, or it and everything it leads to survive a receipt that reads Full.
+        var mine = await SeedAsync("user-a", "mine");
+        await SeedAsync("user-b", "theirs");
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "broken.json"), content);
+
+        var listing = await _store.ListConversationIdsAsync("user-a", CancellationToken.None);
+
+        listing.Ids.Should().Equal(mine);
+        listing.Unreadable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ListConversationIdsAsync_AFileWhoseIdNamesAnotherConversation_IsCountedNotListed()
+    {
+        // Security review: the stores keyed by conversation id check no owner, so a file claiming another conversation's
+        // id would lead them to that conversation's records.
+        var theirs = await SeedAsync("user-b", "theirs");
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "mine.json"),
+            $$"""{"id":"{{theirs}}","agentName":"agent","userId":"user-a","createdAt":"2026-10-20T12:00:00+00:00","updatedAt":"2026-10-20T12:00:00+00:00","messages":[]}""");
+
+        var listing = await _store.ListConversationIdsAsync("user-a", CancellationToken.None);
+
+        listing.Ids.Should().BeEmpty();
+        listing.Unreadable.Should().Be(1);
+    }
+
+    [SkippableFact]
+    public async Task ListConversationIdsAsync_ALockedFile_IsCountedNotSkipped()
+    {
+        // Windows enforces an exclusive share; Linux's advisory locks do not stop a read in the same process.
+        Skip.IfNot(OperatingSystem.IsWindows(), "only Windows enforces FileShare.None against a reader");
+        await SeedAsync("user-a", "mine");
+        var locked = Path.Combine(_tempDir, "locked.json");
+        await File.WriteAllTextAsync(locked, "{}");
+
+        await using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            (await _store.ListConversationIdsAsync("user-a", CancellationToken.None)).Unreadable.Should().Be(1);
+        }
+    }
+
     [Fact]
     public async Task EraseSubjectAsync_TwoOwners_RemovesOnlyTheSubjectsConversations()
     {

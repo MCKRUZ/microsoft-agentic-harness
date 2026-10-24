@@ -1,12 +1,31 @@
 using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Services;
 using Domain.Common.Compliance;
 using Infrastructure.AI.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.AI.Conversations;
 
-public sealed partial class EfCoreConversationStore : IPersonalDataEraser, IPersonalDataScrubber
+public sealed partial class EfCoreConversationStore : IPersonalDataEraser, IPersonalDataScrubber, IConversationIdSource
 {
+    /// <inheritdoc/>
+    /// <remarks>
+    /// One query for the ids alone, matched on the owner as issued, the form <c>CreateAsync</c> stores. No messages are
+    /// loaded, and a row is either read or the query fails, so nothing is ever unreadable here.
+    /// </remarks>
+    public async Task<ConversationIdListing> ListConversationIdsAsync(string ownerId, CancellationToken cancellationToken)
+    {
+        ConversationOwnership.RequireCallerId(ownerId);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+        var ids = await context.Conversations
+            .AsNoTracking()
+            .Where(c => c.UserId == ownerId)
+            .Select(c => c.Id)
+            .ToListAsync(cancellationToken);
+        return new ConversationIdListing(ids, 0);
+    }
+
     /// <inheritdoc/>
     public string ErasureStoreName => "conversations";
 

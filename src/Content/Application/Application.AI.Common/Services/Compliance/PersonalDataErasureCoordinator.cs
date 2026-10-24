@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
@@ -59,6 +60,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         "the records were deleted, but their bytes could not yet be cleared from the store's files; the failure has been logged, so run erasure again";
     private const string WithheldReason =
         "the person had a conversation whose id is shaped like a planned task's; the conversation was erased, but what other stores hold under its id was kept, because those stores record no owner and the records may be another person's planned task";
+    private const string UnreadableReason =
+        "some stored conversations could not be read, so whether they are this person's is unknown; they and what they lead to were kept, so fix the store and run erasure again";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
@@ -124,9 +127,8 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
         // deleted either.
-        var conversationIds = _conversations is null
-            ? []
-            : (await _conversations.ListAsync(ownerId, cancellationToken)).Select(c => c.Id).ToList();
+        var conversations = await ListConversationIdsAsync(ownerId, cancellationToken);
+        var conversationIds = conversations.Ids;
         var planRuns = _planRuns is null
             ? PlanRunTraces.Empty
             : await _planRuns.ListRunTracesAsync(ownerId, cancellationToken);
@@ -163,7 +165,10 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         var plannedTasksGone = subject.PlanRuns.IsEmpty
             || (plansErased && stillRecorded is not null && _erasers.Any(e => e.ErasureStage == ErasureStage.PlannedTasks));
         var plannedPart = plannedTasksGone ? subject.PlanRuns.Except(stillRecorded ?? PlanRunTraces.Empty) : PlanRunTraces.Empty;
-        var partly = !conversationsGone || !plannedTasksGone || stillRecorded is not { IsEmpty: true };
+        // A conversation the store could not read may be the person's and is still there (#907), so a store that erases
+        // the whole person is held back too: it would take that conversation's records with nothing left that leads to them.
+        var partly = !conversationsGone || !plannedTasksGone || stillRecorded is not { IsEmpty: true }
+            || conversations.Unreadable > 0;
         await RunStageAfterAsync(
             new ErasureSubject(ownerId, conversationsGone ? subject.ConversationIds : [], plannedPart),
             beforeSucceeded, partly, outcomes);
@@ -178,6 +183,13 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
                 "conversations with a reserved id", StoreErasureStatus.Skipped, 0, WithheldReason));
         }
 
+        // #907: a record the store could not read may be the person's; it and what it leads to were left untouched.
+        if (conversations.Unreadable > 0)
+        {
+            outcomes.Add(new StoreErasureOutcome(
+                "conversations that could not be read", StoreErasureStatus.Failed, 0, UnreadableReason));
+        }
+
         await ScrubAsync(outcomes);
 
         outcomes.AddRange(_retained
@@ -187,6 +199,20 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
 
         return Fold(graphReceipt, outcomes);
     }
+
+    /// <summary>
+    /// The subject's conversation ids, through the store's id-only erasure listing when it has one (#907), which loads no
+    /// transcripts and counts the records it cannot read instead of skipping them. A store without one is listed the
+    /// ordinary way.
+    /// </summary>
+    private async Task<ConversationIdListing> ListConversationIdsAsync(string ownerId, CancellationToken cancellationToken) =>
+        _conversations switch
+        {
+            null => ConversationIdListing.Empty,
+            IConversationIdSource source => await source.ListConversationIdsAsync(ownerId, cancellationToken),
+            var store => new ConversationIdListing(
+                [.. (await store.ListAsync(ownerId, cancellationToken)).Select(c => c.Id)], 0),
+        };
 
     /// <summary>
     /// The conversations erased are the ones listed before anything was deleted, so the stores reached through them are
@@ -201,12 +227,12 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         int remaining;
         try
         {
-            remaining = (await _conversations.ListAsync(ownerId, CancellationToken.None)).Count;
+            remaining = (await ListConversationIdsAsync(ownerId, CancellationToken.None)).Ids.Count;
         }
         catch (Exception ex)
         {
             // The deletes are done; losing the receipt over this check would hide them.
-            _logger.LogError(ex, "Erasure could not check for conversations started meanwhile.");
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for conversations started meanwhile.");
             outcomes.Add(new StoreErasureOutcome(
                 "conversations started during erasure", StoreErasureStatus.Failed, 0, FailedReason));
             return;
@@ -237,7 +263,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erasure could not check for planned tasks run meanwhile.");
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for planned tasks run meanwhile.");
             outcomes.Add(new StoreErasureOutcome("planned tasks run during erasure", StoreErasureStatus.Failed, 0, FailedReason));
             return null;
         }
@@ -271,7 +297,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
             catch (Exception ex)
             {
                 var store = $"{eraser.ErasureStoreName} (deleted bytes)";
-                _logger.LogError(ex, "Erasure failed in store {Store}.", store);
+                _logger.LogError(MessageWithheldException.From(ex), "Erasure failed in store {Store}.", store);
                 outcomes.Add(new StoreErasureOutcome(store, StoreErasureStatus.Failed, 0, ScrubFailedReason));
             }
         }
@@ -337,7 +363,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Erasure failed in store {Store}.", GraphStoreName);
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure failed in store {Store}.", GraphStoreName);
             var empty = new ErasureReceipt
             {
                 RequestId = Guid.NewGuid().ToString(),
@@ -366,7 +392,7 @@ public sealed class PersonalDataErasureCoordinator : IPersonalDataErasure
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Erasure failed in store {Store}.", eraser.ErasureStoreName);
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure failed in store {Store}.", eraser.ErasureStoreName);
             return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Failed, 0, FailedReason);
         }
     }
