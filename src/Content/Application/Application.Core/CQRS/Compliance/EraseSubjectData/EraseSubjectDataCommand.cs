@@ -1,3 +1,5 @@
+using Application.Common.Interfaces.MediatR;
+using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using MediatR;
@@ -23,8 +25,11 @@ namespace Application.Core.CQRS.Compliance.EraseSubjectData;
 /// identity provider issues it (the <c>oid</c> claim for Microsoft Entra ID).
 /// </para>
 /// </remarks>
-public sealed record EraseSubjectDataCommand : IRequest<Result<ErasureReceipt>>
+public sealed record EraseSubjectDataCommand : IRequest<Result<ErasureReceipt>>, IHasTimeout
 {
+    /// <inheritdoc />
+    public TimeSpan? Timeout => AuditedErasure.RequestTimeout;
+
     /// <summary>Gets the id of the person to erase, exactly as their identity provider issues it.</summary>
     public required string SubjectId { get; init; }
 

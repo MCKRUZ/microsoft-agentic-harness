@@ -112,6 +112,10 @@ public static partial class DependencyInjection
         // silent no-op this registry exists to prevent.
         services.TryAddSingleton<IPlanRunCancellationRegistry, PlanRunCancellationRegistry>();
 
+        // Erasure stops the person's runs in progress before reading what they recorded (#907); singleton with the
+        // registry it signals through.
+        services.AddSingleton<IPlannedTaskCanceller, PlannedTaskCanceller>();
+
         services.AddScoped<IPlanExecutor, PlanExecutor>();
 
         // Singleton like IBundleRunExecutor: the executor owns no per-run state itself — it creates a

@@ -74,6 +74,41 @@ public sealed class PersonalDataErasureCoordinatorJournalTests
     ];
 
     [Fact]
+    public async Task ThePersonsRunningTasks_AreStoppedBeforeAnythingIsRead()
+    {
+        // #907 item 7: a task still running would keep writing under the ids read next, after their stores are cleared.
+        var stopper = new Mock<IPlannedTaskCanceller>();
+        stopper.Setup(s => s.StopRunningTasksAsync(Owner, It.IsAny<CancellationToken>()))
+            .Callback(() => _calls.Add("stop"))
+            .ReturnsAsync(0);
+        _store.As<IConversationIdSource>()
+            .Setup(s => s.ListConversationIdsAsync(Owner, It.IsAny<CancellationToken>()))
+            .Callback(() => _calls.Add("list"))
+            .ReturnsAsync(new ConversationIdListing(["c-now"], 0));
+
+        await CreateWith(stopper.Object, AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().ContainInOrder("begin", "stop", "list", "spills");
+    }
+
+    [Fact]
+    public async Task StoppingTheRunningTasksFails_ErasureStillRuns()
+    {
+        // The plan store still keeps a plan with a run in progress, and the receipt then says to run erasure again.
+        var stopper = new Mock<IPlannedTaskCanceller>();
+        stopper.Setup(s => s.StopRunningTasksAsync(Owner, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("planner database locked"));
+
+        await CreateWith(stopper.Object, AllStages()).EraseOwnerAsync(Owner, CancellationToken.None);
+
+        _calls.Should().Contain(["spills", "conversations", "plans", "ledger"]);
+    }
+
+    private PersonalDataErasureCoordinator CreateWith(IPlannedTaskCanceller stopper, params IPersonalDataEraser[] erasers) =>
+        new(_graph.Object, erasers, [], new AmbientRequestScope(), TimeProvider.System,
+            NullLogger<PersonalDataErasureCoordinator>.Instance, _store.Object, journal: _journal, runningTasks: stopper);
+
+    [Fact]
     public async Task WhatAnEarlierRequestRecorded_IsMergedIntoThisOne_ForEveryStore()
     {
         _journal.Stored = new ErasureJournalEntries(
