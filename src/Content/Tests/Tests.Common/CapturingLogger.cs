@@ -12,6 +12,10 @@ namespace Tests.Common;
 public sealed class CapturingLogger<T> : ILogger<T>
 {
     private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+    private readonly ConcurrentQueue<Exception> _exceptions = new();
+
+    /// <summary>Every exception handed to the logger so far, oldest first, as a sink would receive it.</summary>
+    public IReadOnlyList<Exception> Exceptions => [.. _exceptions];
 
     /// <summary>True when an entry at <paramref name="level"/> contains <paramref name="fragment"/>.</summary>
     public bool Logged(LogLevel level, string fragment) =>
@@ -29,5 +33,9 @@ public sealed class CapturingLogger<T> : ILogger<T>
     /// <inheritdoc />
     public void Log<TState>(
         LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        => _entries.Enqueue((logLevel, formatter(state, exception)));
+    {
+        _entries.Enqueue((logLevel, formatter(state, exception)));
+        if (exception is not null)
+            _exceptions.Enqueue(exception);
+    }
 }
