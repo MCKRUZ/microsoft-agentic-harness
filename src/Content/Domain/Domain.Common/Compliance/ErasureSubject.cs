@@ -8,7 +8,10 @@ namespace Domain.Common.Compliance;
 /// <strong>Two forms of the owner, because the writers disagree.</strong> Conversations and ingested document chunks
 /// record the user id exactly as the identity provider issued it; plans, schedules and the knowledge graph record it
 /// trimmed and lower-cased. An eraser must match the form its own writer stored, or it deletes nothing and still
-/// reports success. Each eraser documents which one it reads.
+/// reports success. Each eraser documents which one it reads. A scheduled run writes under its schedule's owner, which
+/// the schedule keeps as issued for that reason (#907); a schedule created before it did, and not touched by its owner
+/// since, still runs under the lower-cased form, and documents those runs ingested are out of reach of the document
+/// erasers for a person whose id is not already lower-case.
 /// </para>
 /// <para>
 /// <strong>Conversation ids are collected before anything is deleted.</strong> Several stores (observability sessions,

@@ -59,6 +59,7 @@ public sealed partial class EfScheduleStore : IScheduleStore
         string scheduleId, string ownerId, string? tenantId, CancellationToken cancellationToken)
     {
         await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await BackfillIssuedOwnerAsync(ctx, ownerId, tenantId, cancellationToken);
 
         var entity = await VisibleTo(ctx, ownerId, tenantId)
             .AsNoTracking()
@@ -72,6 +73,7 @@ public sealed partial class EfScheduleStore : IScheduleStore
         string ownerId, string? tenantId, CancellationToken cancellationToken)
     {
         await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await BackfillIssuedOwnerAsync(ctx, ownerId, tenantId, cancellationToken);
 
         var entities = await VisibleTo(ctx, ownerId, tenantId)
             .AsNoTracking()
@@ -103,6 +105,7 @@ public sealed partial class EfScheduleStore : IScheduleStore
         string scheduleId, string ownerId, string? tenantId, int expectedVersion, bool enabled, CancellationToken cancellationToken)
     {
         await using var ctx = await _factory.CreateDbContextAsync(cancellationToken);
+        await BackfillIssuedOwnerAsync(ctx, ownerId, tenantId, cancellationToken);
 
         // Single round trip: the WHERE clause on Version IS the concurrency check, so a stale caller's
         // update matches zero rows instead of throwing. ExecuteUpdateAsync bypasses change tracking —
@@ -183,6 +186,35 @@ public sealed partial class EfScheduleStore : IScheduleStore
         return updated > 0;
     }
 
+    /// <summary>
+    /// Gives the caller's schedules that predate <see cref="ScheduleEntity.IssuedOwnerId"/> the owner as the caller's
+    /// identity provider issues it, so their next runs stop stamping what they write with the lower-cased form (#907).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The owner-scoped callers (the schedules API and the agent's <c>manage_schedules</c> tool) pass the authenticated
+    /// caller's id as issued, so the first time the owner lists, reads, pauses or resumes their schedules is when the
+    /// form becomes known. Two people whose ids differ only by case already see and control the same schedules here
+    /// (every lookup is case-insensitive), so whichever of them arrives first adds no new conflation. The version is
+    /// deliberately left alone: this changes nothing a claim or a pause races over.
+    /// </para>
+    /// <para>
+    /// An id already in canonical form is never written. For such an id the fallback to <see cref="ScheduleEntity.OwnerId"/>
+    /// is the same value, so writing it gains nothing, and a caller that lower-cased before calling would otherwise settle
+    /// the column for good with the very form the column exists to replace.
+    /// </para>
+    /// </remarks>
+    private static Task BackfillIssuedOwnerAsync(
+        ScheduleDbContext ctx, string ownerId, string? tenantId, CancellationToken cancellationToken)
+    {
+        if (string.Equals(ownerId, ScopeIdentity.Canonicalize(ownerId), StringComparison.Ordinal))
+            return Task.CompletedTask;
+
+        return VisibleTo(ctx, ownerId, tenantId)
+            .Where(e => e.IssuedOwnerId == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, ownerId), cancellationToken);
+    }
+
     private static IQueryable<ScheduleEntity> VisibleTo(ScheduleDbContext ctx, string ownerId, string? tenantId)
     {
         var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
@@ -200,6 +232,9 @@ public sealed partial class EfScheduleStore : IScheduleStore
         // caller that supplies a differently-cased (but equal) identity on one path can never fail to
         // find what another path stored.
         OwnerId = ScopeIdentity.Canonicalize(record.OwnerId) ?? record.OwnerId,
+        // Kept as issued as well (#907): each fired run carries it, and what the run writes must be stamped in the form
+        // the person's erasure matches.
+        IssuedOwnerId = record.OwnerId,
         TenantId = ScopeIdentity.Canonicalize(record.TenantId),
         EnvelopeJson = JsonSerializer.Serialize(record.Envelope, JsonOptions),
         CronExpression = record.CronExpression,
@@ -220,7 +255,7 @@ public sealed partial class EfScheduleStore : IScheduleStore
         ScheduleId = entity.ScheduleId,
         Kind = Enum.Parse<RunKind>(entity.Kind),
         TargetId = entity.TargetId,
-        OwnerId = entity.OwnerId,
+        OwnerId = entity.IssuedOwnerId ?? entity.OwnerId,
         TenantId = entity.TenantId,
         Envelope = JsonSerializer.Deserialize<CapabilityEnvelope>(entity.EnvelopeJson, JsonOptions)
             ?? new CapabilityEnvelope(),

@@ -20,6 +20,7 @@ public sealed class ScheduleEntityConfiguration : IEntityTypeConfiguration<Sched
         builder.Property(e => e.Kind).IsRequired().HasMaxLength(64);
         builder.Property(e => e.TargetId).IsRequired().HasMaxLength(256);
         builder.Property(e => e.OwnerId).IsRequired().HasMaxLength(PlannerScopeFilter.MaxIdentityLength);
+        builder.Property(e => e.IssuedOwnerId).HasMaxLength(PlannerScopeFilter.MaxIdentityLength);
         builder.Property(e => e.TenantId).HasMaxLength(PlannerScopeFilter.MaxIdentityLength);
         builder.Property(e => e.EnvelopeJson).IsRequired();
         builder.Property(e => e.CronExpression).IsRequired().HasMaxLength(128);
