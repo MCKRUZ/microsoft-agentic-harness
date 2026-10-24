@@ -1,9 +1,13 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Services.Compliance;
+using Application.Common.Interfaces.MediatR;
 using Application.Core.Compliance;
+using Application.Core.CQRS.Compliance.EraseMyData;
+using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Compliance;
+using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
 using FluentAssertions;
@@ -55,6 +59,28 @@ public sealed class AuditedErasureTests
     };
 
     private string ExpectedReference() => Reference().For(Subject)!;
+
+    public static TheoryData<IHasTimeout> ErasureCommands() => new()
+    {
+        new EraseMyDataCommand(),
+        new EraseSubjectDataCommand { SubjectId = Subject, OperatorId = "operator-1" },
+    };
+
+    /// <summary>
+    /// Erasure first waits up to 30 seconds for the person's running planned tasks to stop (#907); under the pipeline's
+    /// default limit the request would time out before reading a single store, handing the person an error in place of a
+    /// receipt while the deletes carried on.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ErasureCommands))]
+    public void ErasureCommand_RunsLongerThanTheDefaultLimitPlusTheRunningTaskWait(IHasTimeout command)
+    {
+        var defaultLimit = TimeSpan.FromSeconds(new AgentConfig().DefaultRequestTimeoutSec);
+        var runningTaskWait = TimeSpan.FromSeconds(30);
+
+        command.Timeout.Should().Be(AuditedErasure.RequestTimeout);
+        AuditedErasure.RequestTimeout.Should().BeGreaterThan(defaultLimit + runningTaskWait);
+    }
 
     [Fact]
     public async Task EraseAsync_Succeeds_RecordsAttemptAndOutcomeWithCountsAndReference()

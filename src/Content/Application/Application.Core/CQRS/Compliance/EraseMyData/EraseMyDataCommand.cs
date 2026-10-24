@@ -1,3 +1,5 @@
+using Application.Common.Interfaces.MediatR;
+using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using MediatR;
@@ -24,4 +26,8 @@ namespace Application.Core.CQRS.Compliance.EraseMyData;
 /// record carries a pseudonymous reference and per-store counts, and records denials too.
 /// </para>
 /// </remarks>
-public sealed record EraseMyDataCommand : IRequest<Result<ErasureReceipt>>;
+public sealed record EraseMyDataCommand : IRequest<Result<ErasureReceipt>>, IHasTimeout
+{
+    /// <inheritdoc />
+    public TimeSpan? Timeout => AuditedErasure.RequestTimeout;
+}

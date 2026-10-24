@@ -41,6 +41,14 @@ public sealed class AuditedErasure
     /// <summary>The message returned when a store fault stopped the request.</summary>
     public const string FailedMessage = "Erasure could not be completed. The failure has been logged for investigation.";
 
+    /// <summary>
+    /// How long an erasure request may run before the request pipeline gives up on it (#907). Far above the pipeline's
+    /// default (30 seconds): erasure first waits up to 30 seconds for the person's running planned tasks to stop, then
+    /// reads and deletes across every store, and a request cut off part-way hands the person an error in place of the
+    /// receipt they are owed while the deletes carry on.
+    /// </summary>
+    public static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(10);
+
     /// <summary>Recorded as the subject reference when a reference key is configured but unusable.</summary>
     public const string ReferenceUnavailable = "unavailable";
 
