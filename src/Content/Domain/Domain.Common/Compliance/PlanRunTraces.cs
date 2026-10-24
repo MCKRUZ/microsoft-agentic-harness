@@ -57,6 +57,21 @@ public sealed record PlanRunTraces
     /// <summary>Whether no id was read at all.</summary>
     public bool IsEmpty => StepConversationIds.Count == 0 && ToolResultScopeIds.Count == 0 && RunBudgetKeys.Count == 0;
 
+    /// <summary>
+    /// These ids together with <paramref name="other"/>'s, keeping this listing's <see cref="ListedRuns"/>: only the plan
+    /// store's own current reading names the run records it may erase (#907).
+    /// </summary>
+    /// <param name="other">The ids to add, such as those a failed earlier request recorded in the erasure journal.</param>
+    /// <returns>Every id in either, each once.</returns>
+    public PlanRunTraces Union(PlanRunTraces other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return new PlanRunTraces(
+            [.. StepConversationIds.Union(other.StepConversationIds, StringComparer.Ordinal)],
+            [.. ToolResultScopeIds.Union(other.ToolResultScopeIds, StringComparer.Ordinal)],
+            [.. RunBudgetKeys.Union(other.RunBudgetKeys, StringComparer.Ordinal)]) { ListedRuns = ListedRuns };
+    }
+
     /// <summary>These ids without any that are also in <paramref name="other"/>.</summary>
     /// <param name="other">The ids to leave out.</param>
     /// <returns>The ids only these traces hold.</returns>

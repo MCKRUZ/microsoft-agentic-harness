@@ -289,6 +289,8 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
         ["AppConfig:AI:Schedules:DatabasePath"] = Path.Combine(_workingDir, "schedules.db"),
         ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
+        // In the working folder so the byte scan covers it: a cleared journal must not leave the person's ids on disk.
+        ["AppConfig:AI:Erasure:JournalDatabasePath"] = Path.Combine(_workingDir, "erasure-journal.db"),
         // Prompt-usage persistence is off by default; on here so its store is among those proven.
         ["AppConfig:AI:PromptUsage:PersistenceEnabled"] = "true",
         ["AppConfig:AI:PromptUsage:ConnectionString"] = $"Data Source={Path.Combine(_workingDir, "prompt-usage.db")}",

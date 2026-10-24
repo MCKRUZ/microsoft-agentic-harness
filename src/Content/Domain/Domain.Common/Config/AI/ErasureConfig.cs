@@ -36,4 +36,20 @@ public sealed class ErasureConfig
     /// operators allowed to run it must come from tenants the deployment trusts, usually only its own.
     /// </remarks>
     public List<string> OperatorTenantIds { get; set; } = [];
+
+    /// <summary>
+    /// Where the erasure journal's SQLite database lives, relative to the host's base directory unless absolute (#907).
+    /// The journal keeps the ids an erasure request read until every store that reads them has succeeded, so a request
+    /// that fails part-way can be retried.
+    /// </summary>
+    public string JournalDatabasePath { get; set; } = "data/erasure-journal.db";
+
+    /// <summary>
+    /// How long an unfinished journal entry is kept before it is removed (#907). It must be at least as long as the
+    /// longest retention among the stores the entries lead to (observability, tool-result spills, prompt usage, budgets,
+    /// the call-once ledger): once the entry is gone nothing reaches what those stores still hold, but by then they have
+    /// aged it out themselves. Withheld conversation ids, which are never erased through, are kept this long too, so later
+    /// receipts keep saying so. The default is a year.
+    /// </summary>
+    public TimeSpan JournalRetention { get; set; } = TimeSpan.FromDays(365);
 }

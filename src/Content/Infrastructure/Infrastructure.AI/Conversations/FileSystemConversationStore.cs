@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Domain.Common.Config.AI.Conversations;
@@ -53,6 +54,9 @@ public sealed partial class FileSystemConversationStore : IConversationStore
     internal Task<IDisposable> HoldConversationAsync(string conversationId) =>
         _locks.AcquireAsync(ResolveAndValidatePath(conversationId));
 
+    /// <summary>Holds an erased person's conversation ids until their erasure finishes (#907); null in a host without it.</summary>
+    private readonly IErasureJournal? _erasureJournal;
+
     /// <summary>
     /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
     /// absolute path and creating the directory if it does not yet exist.
@@ -66,14 +70,20 @@ public sealed partial class FileSystemConversationStore : IConversationStore
     /// a divergence nothing in the contract suite could see.
     /// </param>
     /// <param name="logger">Diagnostic logger.</param>
+    /// <param name="erasureJournal">
+    /// Holds an erased person's conversation ids until their erasure finishes, so no one else creates a conversation
+    /// under one (#907). <see langword="null"/> in a host without it.
+    /// </param>
     public FileSystemConversationStore(
         IOptions<ConversationsConfig> config,
         TimeProvider timeProvider,
-        ILogger<FileSystemConversationStore> logger)
+        ILogger<FileSystemConversationStore> logger,
+        IErasureJournal? erasureJournal = null)
     {
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);
         _timeProvider = timeProvider;
         _logger = logger;
+        _erasureJournal = erasureJournal;
         OwnerOnlyDirectoryHelper.Create(_basePath, _logger); // #640: full conversation transcripts
     }
 
@@ -195,6 +205,10 @@ public sealed partial class FileSystemConversationStore : IConversationStore
                     RequireOwner(id, userId, existing.UserId);
             }
 
+            // Only a caller-chosen id can be one an erasure holds (#907); a fresh one is new.
+            if (!string.IsNullOrWhiteSpace(conversationId))
+                await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, id, userId, ct);
+
             await WriteAtomicLockedAsync(path, record, ct);
         }
 
@@ -243,6 +257,7 @@ public sealed partial class FileSystemConversationStore : IConversationStore
             }
 
             ConversationOwnership.RequireCreatableId(conversationId);
+            await ConversationOwnership.RequireNotHeldByAnotherErasureAsync(_erasureJournal, conversationId, userId, ct);
             var now = _timeProvider.GetUtcNow();
             var record = new ConversationRecord(
                 Id: conversationId,

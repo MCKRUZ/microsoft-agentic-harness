@@ -847,6 +847,29 @@
                         path or an echoed owner filter, and the pattern-based log redaction does not catch ids.
                     </p>
                     <p>
+                        A request that fails after the conversations or plans are deleted can still be retried (#907).
+                        Before deleting any of them, the coordinator records the ids it read in the erasure journal
+                        (<code>IErasureJournal</code>, a small SQLite database). Every later request for the same person
+                        merges those ids in, and a request clears only its own entries, once every store has erased or
+                        cannot erase at all. If the journal cannot be written, no conversation or plan is deleted and the
+                        receipt says so. Withheld conversation ids stay in the journal until its retention runs out
+                        (<code>AppConfig:AI:Erasure:JournalRetention</code>, a year by default, never under 90 days), so
+                        later receipts keep saying their records were kept. The same retention removes anything left by a
+                        request that was never retried. The journal holds people's ids, so it is in the personal data
+                        inventory, and clearing it also clears its write-ahead log.
+                    </p>
+                    <p>
+                        While the journal holds an erased conversation's id, nobody else can create a conversation under
+                        it. They are refused exactly as for another person's conversation, because the retry would
+                        otherwise erase their records filed under the same id. The erased person may reuse their own id.
+                        One erasure request per person runs at a time, so overlapping requests cannot clear an id between
+                        another's read and record. Both reach only the hosts that share the journal. The shipped
+                        conversation stores and journal are single-host, so a deployment that shares a conversation store
+                        across hosts needs a shared <code>IErasureJournal</code> too. A held id reads as not found but
+                        cannot be created, so someone who can guess an erased conversation's id can tell that an erasure
+                        is unfinished.
+                    </p>
+                    <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
                         erasers match that form. A scheduled run writes under its schedule's owner, so a schedule keeps
                         the owner as issued as well as lower-cased, and each fired run carries the issued form (#907). A

@@ -567,6 +567,10 @@ public static partial class DependencyInjection
         // --- Loaded documents: when each was last loaded, and the optional age limit (#901) ---
 
         RegisterDocumentRetention(services, appConfig);
+
+        // --- Erasure journal: what an unfinished erasure request read, so it can be retried (#907) ---
+
+        RegisterErasureJournal(services, appConfig);
         RegisterSandboxServices(services);
 
         services.AddOptions<Planner.PlannerOptions>()

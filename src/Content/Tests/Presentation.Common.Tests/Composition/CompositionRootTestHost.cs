@@ -98,13 +98,19 @@ internal static class CompositionRootTestHost
         IEnumerable<KeyValuePair<string, string?>> settings)
     {
         var list = settings.ToList();
-        if (list.Any(s => string.Equals(s.Key, DocumentLoadDatabaseKey, StringComparison.OrdinalIgnoreCase)))
-            return list;
-
         ArgumentException.ThrowIfNullOrWhiteSpace(IsolatedStateRoot.Root, nameof(IsolatedStateRoot.Root));
-        var path = Path.Combine(IsolatedStateRoot.Root, $"documents-{Guid.NewGuid():N}.db");
-        return [.. list, new(DocumentLoadDatabaseKey, path)];
+
+        // The erasure journal (#907) is opened by every composition too, for the same reason and with the same race.
+        foreach (var (key, file) in new[] { (DocumentLoadDatabaseKey, "documents"), (ErasureJournalDatabaseKey, "erasure-journal") })
+        {
+            if (!list.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
+                list.Add(new(key, Path.Combine(IsolatedStateRoot.Root, $"{file}-{Guid.NewGuid():N}.db")));
+        }
+
+        return list;
     }
+
+    private const string ErasureJournalDatabaseKey = "AppConfig:AI:Erasure:JournalDatabasePath";
 
     /// <summary>
     /// Runs the production <see cref="Infrastructure.AI.Plugins.PluginStartupLoader"/> hosted

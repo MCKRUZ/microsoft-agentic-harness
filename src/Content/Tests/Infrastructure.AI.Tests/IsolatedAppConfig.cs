@@ -82,6 +82,7 @@ internal static class IsolatedAppConfig
         config.AI.Rag.GraphDatabase.DataDirectory = Path.Combine(slot, "graph");
         config.AI.Schedules.DatabasePath = Path.Combine(slot, "schedules.db");
         config.AI.Rag.Documents.LoadLedgerDatabasePath = Path.Combine(slot, "documents.db");
+        config.AI.Erasure.JournalDatabasePath = Path.Combine(slot, "erasure-journal.db");
 
         return config;
     }
