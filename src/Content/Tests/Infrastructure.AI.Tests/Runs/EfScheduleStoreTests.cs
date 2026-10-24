@@ -181,7 +181,51 @@ public sealed class EfScheduleStoreTests : IDisposable
                 .ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, (string?)null));
         }
 
-        (await _store.GetAsync("s-legacy", "alice-mixed", null, CancellationToken.None))!.OwnerId.Should().Be("alice-mixed");
+        // Due-schedule reads carry no caller, so the tick service still sees the only form the row kept.
+        (await _store.GetDueSchedulesAsync(DateTimeOffset.MaxValue, CancellationToken.None))
+            .Single(r => r.ScheduleId == "s-legacy").OwnerId.Should().Be("alice-mixed");
+    }
+
+    public static TheoryData<string> OwnerTouches => ["list", "get", "pause", "resume"];
+
+    [Theory]
+    [MemberData(nameof(OwnerTouches))]
+    public async Task AnOlderSchedule_TouchedByItsOwner_LearnsTheOwnerAsIssued_ForItsNextRuns(string touch)
+    {
+        await _store.CreateAsync(NewRecord("s-legacy", ownerId: "Alice-Mixed"), CancellationToken.None);
+        await using (var ctx = new ScheduleDbContext(_options))
+        {
+            await ctx.Schedules.Where(e => e.ScheduleId == "s-legacy")
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, (string?)null));
+        }
+
+        _ = touch switch
+        {
+            "list" => (object)await _store.ListForOwnerAsync("Alice-Mixed", null, CancellationToken.None),
+            "get" => (object?)await _store.GetAsync("s-legacy", "Alice-Mixed", null, CancellationToken.None) ?? "none",
+            "pause" => await _store.PauseAsync("s-legacy", "Alice-Mixed", null, 0, CancellationToken.None),
+            _ => await _store.ResumeAsync("s-legacy", "Alice-Mixed", null, 0, CancellationToken.None),
+        };
+
+        // Read straight from the row: a paused schedule is not due, and the tick service reads the row when it is.
+        await using var check = new ScheduleDbContext(_options);
+        (await check.Schedules.SingleAsync(e => e.ScheduleId == "s-legacy")).IssuedOwnerId.Should().Be("Alice-Mixed",
+            "the tick service builds each run from this; the issued form is what erasure matches");
+    }
+
+    [Fact]
+    public async Task AnotherOwnerTouchingTheirSchedules_DoesNotFillInSomeoneElsesOwner()
+    {
+        await _store.CreateAsync(NewRecord("s-alice", ownerId: "Alice-Mixed"), CancellationToken.None);
+        await using (var ctx = new ScheduleDbContext(_options))
+        {
+            await ctx.Schedules.ExecuteUpdateAsync(s => s.SetProperty(e => e.IssuedOwnerId, (string?)null));
+        }
+
+        await _store.ListForOwnerAsync("Bob", null, CancellationToken.None);
+
+        (await _store.GetDueSchedulesAsync(DateTimeOffset.MaxValue, CancellationToken.None))
+            .Single().OwnerId.Should().Be("alice-mixed");
     }
 
     private static ScheduleRecord NewRecord(
