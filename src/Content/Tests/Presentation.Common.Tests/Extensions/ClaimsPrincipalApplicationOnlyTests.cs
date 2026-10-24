@@ -39,8 +39,11 @@ public sealed class ClaimsPrincipalApplicationOnlyTests
         { EntraV2, [("oid", "sp-1"), ("sub", "pairwise-1"), ("scp", "x"), ("idtyp", "app")] },
         { null, [("idtyp", "APP")] },
         // Another provider's client-credentials token: its subject is the client itself (RFC 9068).
-        { Auth0, [("sub", "client-1@clients"), ("client_id", "client-1@clients")] },
-        { Auth0, [("sub", "client-1"), ("azp", "client-1")] },
+        { "https://idp.example/", [("sub", "client-1"), ("client_id", "client-1")] },
+        // Okta names the client in cid.
+        { "https://contoso.okta.com/oauth2/default", [("sub", "0oa1client"), ("cid", "0oa1client")] },
+        // Auth0's subject is the client id plus "@clients", so it marks machine tokens with gty instead.
+        { Auth0, [("sub", "client-1@clients"), ("azp", "client-1"), ("gty", "client-credentials")] },
         // Ambiguous on Entra: a second sub equal to the oid fails closed.
         { EntraV2, [("oid", "sp-1"), ("sub", "pairwise-1"), (ClaimTypes.NameIdentifier, "sp-1"), ("scp", "x")] },
     };
@@ -57,6 +60,8 @@ public sealed class ClaimsPrincipalApplicationOnlyTests
         { B2C, [("oid", "user-1"), ("sub", "user-1")] },
         // Other providers often issue a person no scp.
         { Auth0, [("sub", "auth0|user-1"), ("azp", "client-1")] },
+        { Auth0, [("sub", "auth0|user-1"), ("azp", "client-1"), ("gty", "password")] },
+        { "https://contoso.okta.com/oauth2/default", [("sub", "person@contoso.com"), ("cid", "0oa1client")] },
         { null, [("oid", "user-1")] },
         { null, [("sub", "user-1")] },
         { null, [("sub", "user-1"), ("roles", "Reader")] },

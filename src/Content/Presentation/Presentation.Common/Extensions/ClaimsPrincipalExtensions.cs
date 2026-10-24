@@ -128,9 +128,11 @@ public static class ClaimsPrincipalExtensions
     /// <para>
     /// <b>Any issuer.</b> The optional <c>idtyp</c> claim is <c>app</c> only in an app-only token, which Entra calls
     /// "the most accurate way for an API to determine if a token is an app token or an app+user token"; a tenant must
-    /// turn it on. And a subject equal to the calling client's id (<c>azp</c>, <c>appid</c> or <c>client_id</c>) is
-    /// the client acting as itself, the shape RFC 9068 gives a client-credentials token from any provider. A person's
-    /// subject is never a client id.
+    /// turn it on. A subject equal to the calling client's id (<c>azp</c>, <c>appid</c>, <c>client_id</c> or Okta's
+    /// <c>cid</c>) is the client acting as itself, the shape RFC 9068 gives a client-credentials token; a person's subject
+    /// is never a client id. Auth0 marks its machine tokens with <c>gty=client-credentials</c> instead, because their
+    /// subject is the client id with <c>@clients</c> appended. Other providers' service accounts (Keycloak's, for one)
+    /// carry neither shape and are not recognised; a host using one should turn on an explicit marker.
     /// </para>
     /// <para>
     /// <b>Entra workforce and External ID issuers only</b> (<see cref="IsEntraIssued"/>). Entra emits <c>scp</c> "only
@@ -146,7 +148,11 @@ public static class ClaimsPrincipalExtensions
     /// other counts: a token carrying two of either is already ambiguous, so this fails closed.
     /// </para>
     /// <para>
-    /// It cannot see a shared account signed in as a person (a "robot" user), which looks like anyone else's token.
+    /// It cannot see a shared account signed in as a person (a "robot" user), which looks like anyone else's token. An
+    /// Entra tenant whose tokens are issued from a custom domain is not recognised as Entra, so only <c>idtyp</c> and the
+    /// client-id checks apply there; turning on <c>idtyp</c> closes that. In the other direction, an Entra token that
+    /// carries app roles but no scopes is refused even if a person holds it; that fails safe, since an operator can still
+    /// erase them.
     /// </para>
     /// </remarks>
     public static bool IsApplicationOnly(this ClaimsPrincipal principal)
@@ -157,6 +163,9 @@ public static class ClaimsPrincipalExtensions
             return false;
 
         if (principal.FindAll("idtyp").Any(c => string.Equals(c.Value, "app", StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        if (principal.FindAll("gty").Any(c => string.Equals(c.Value, "client-credentials", StringComparison.Ordinal)))
             return true;
 
         var subjects = ValuesOf(principal, "sub");
@@ -170,8 +179,11 @@ public static class ClaimsPrincipalExtensions
             || subjects.Overlaps(ValuesOf(principal, "oid"));
     }
 
-    /// <summary>The claims naming the client that requested the token: v2 <c>azp</c>, v1 <c>appid</c>, RFC 9068 <c>client_id</c>.</summary>
-    private static readonly string[] ClientIdClaimTypes = ["azp", "appid", "client_id"];
+    /// <summary>
+    /// The claims naming the client that requested the token: Entra v2 <c>azp</c>, v1 <c>appid</c>, RFC 9068
+    /// <c>client_id</c>, Okta <c>cid</c>.
+    /// </summary>
+    private static readonly string[] ClientIdClaimTypes = ["azp", "appid", "client_id", "cid"];
 
     /// <summary><c>scp</c> in its raw and JWT inbound-mapped forms.</summary>
     private static readonly string[] ScopeClaimTypes = ["scp", "http://schemas.microsoft.com/identity/claims/scope"];

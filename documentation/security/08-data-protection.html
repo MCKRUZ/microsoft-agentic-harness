@@ -861,9 +861,11 @@
                         (<code>ClaimsPrincipalExtensions.IsApplicationOnly</code>).
                     </p>
                     <ul>
-                            <li><b>Any issuer:</b> a token is an application's when it carries <code>idtyp=app</code>, or
-                                when its subject is the calling client's own id, which is RFC 9068's client-credentials
-                                shape.</li>
+                            <li><b>Any issuer:</b> a token is an application's when it carries <code>idtyp=app</code>, when
+                                its subject is the calling client's own id (RFC 9068's client-credentials shape; Okta names
+                                the client in <code>cid</code>), or when it carries Auth0's
+                                <code>gty=client-credentials</code>. Other providers' service accounts, such as Keycloak's,
+                                are not recognised; a host using one should turn on an explicit marker.</li>
                             <li><b>Entra workforce and External ID tokens only:</b> a token is also an application's when it
                                 has no <code>scp</code>, which Entra emits only for people, or when its <code>oid</code>
                                 equals its <code>sub</code>, which is Microsoft's documented check.</li>
