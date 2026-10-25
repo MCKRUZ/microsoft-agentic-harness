@@ -58,7 +58,7 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersona
         // deciding what was listed and deleting it.
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
         var owner = subject.CanonicalOwnerId;
-        var runs = (await context.PlanRuns.Where(r => r.OwnerId == owner)
+        var runs = (await RunsOwnedBy(context, owner)
                 .Select(r => new RunRow(r.Id, r.PlanGraphId, r.RunScope, r.ToolResultScopeId, r.LastRunAt, r.IsRunning))
                 .ToListAsync(cancellationToken))
             .Select(r => (Row: r, Settled: IsSettled(r, subject.PlanRuns.ListedRuns)))
@@ -66,8 +66,7 @@ public sealed partial class EfCorePlanStateStore : IPersonalDataEraser, IPersona
         var keptPlanIds = runs.Where(r => !r.Settled).Select(r => r.Row.PlanGraphId).ToHashSet();
         var removableRunIds = runs.Where(r => r.Settled).Select(r => r.Row.Id).ToList();
 
-        var planIds = (await context.PlanGraphs
-                .Where(p => p.OwnerId == owner)
+        var planIds = (await PlansOwnedBy(context, owner)
                 .Select(p => p.Id)
                 .ToListAsync(cancellationToken))
             .Where(id => !keptPlanIds.Contains(id))

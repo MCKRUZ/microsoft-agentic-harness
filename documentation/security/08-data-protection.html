@@ -1053,14 +1053,38 @@
                         tenants, which relies on the identity provider's user id being unique across them, as erasure does.
                     </p>
                     <p>
+                        <strong>Planned tasks too.</strong> Their plans, with each step's configuration (a model step's
+                        prompt included), output, error and attestation, the plan's execution log and every run they made;
+                        a run they made on someone else's shared sub-plan is included as the run record alone, without that
+                        plan. The tool output spilled to disk for their conversations and for their planned tasks' steps,
+                        as stored, which is after secret redaction. When the observability database is switched on, the
+                        person's part of what it recorded for their conversations and their planned tasks' model steps:
+                        their messages, the tools run for them and what those returned, each session's timing, model and
+                        token counts, safety-check outcomes, and which operations were audited and when. A planned task's
+                        steps ran under ids of their own that only the plan store's record of the run leads to, so the copy
+                        reads the person's runs the way erasure does, together with what an unfinished erasure request
+                        recorded.
+                    </p>
+                    <p>
+                        <strong>The operator's material stays out.</strong> The observability database also records what
+                        today only the observer role may read: the registration bodies loaded for each turn (system prompt,
+                        skill instructions, tool and MCP descriptions), the per-turn context inventory, system-context and
+                        hook-injected messages, raw error text, cost figures, safety filter names and audit metadata, which
+                        can name other people such as an approver. None of it is in the copy, which names its columns one
+                        by one, so a column a later migration adds reaches people only when it is added on purpose. Erasure
+                        still deletes all of it with the person's conversations.
+                    </p>
+                    <p>
                         <strong>What the manifest says.</strong> Every store erasure reaches or lists has a line: what it
                         returned, or why it returned nothing. A store that can hold the person's data but cannot yet return
                         a copy, one that failed, and a log nothing ages out all mark the copy incomplete
                         (<code>isComplete: false</code>), so it never reads as everything while one of them holds the
                         person's data. Stores whose records expire on their own, the tamper-evident audit trails and the
                         organisation's documents are listed without doing so. In this release the copy does not yet include
-                        plans, spilled tool results, cross-session memories, the document indexes or the observability
-                        database; each one the host runs is named in the manifest.
+                        cross-session memories, learnings, the Kùzu graph database or the document indexes; each one the
+                        host runs is named in the manifest.
+                        If the record of the person's planned-task runs or of an unfinished erasure cannot be read, that is
+                        a failed line too, because what only it leads to is then missing from the copy.
                     </p>
                     <p>
                         <strong>Delivered at once, never stored.</strong> The copy is assembled for the request and returned

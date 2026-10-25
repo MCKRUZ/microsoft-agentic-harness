@@ -37,12 +37,12 @@ namespace Infrastructure.AI.Planner;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "The planner SQLite database: plan graphs, step configurations (including LLM-call prompts), step outputs, error messages, attestations, an execution log, and a record of who ran each plan under which run ids, each plan stamped with the caller's owner and tenant. A plan nothing has happened to for Planner:Retention:RetainFor (default 90 days) is deleted with its run records, whoever owns it; owner erasure removes every plan the person owns and every run they made, after the stores those runs lead to. Plans run without a caller carry no owner and are reached only by retention.",
+    "The planner SQLite database: plan graphs, step configurations (including LLM-call prompts), step outputs, error messages, attestations, an execution log, and a record of who ran each plan under which run ids, each plan stamped with the caller's owner and tenant. A plan nothing has happened to for Planner:Retention:RetainFor (default 90 days) is deleted with its run records, whoever owns it; owner erasure removes every plan the person owns and every run they made, after the stores those runs lead to, and their copy of their data includes the same plans and runs. Plans run without a caller carry no owner and are reached only by retention.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Owner,
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
+    ExportSupport.ByOwner)]
 public sealed partial class EfCorePlanStateStore : IPlanStateStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()

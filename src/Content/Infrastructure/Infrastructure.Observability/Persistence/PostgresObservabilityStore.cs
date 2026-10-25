@@ -19,12 +19,12 @@ namespace Infrastructure.Observability.Persistence;
 /// schema change could never reach a database that already held data.
 /// </remarks>
 [PersonalDataStore(
-    "The PostgreSQL observability database (opt-in): sessions by conversation id, message previews and full content, tool arguments and output, safety events, audit metadata and context snapshots. No user column. A session with no activity for Observability:Retention (90 days by default) is deleted with everything under it, and snapshots and session-less audit rows by their own age; owner erasure removes everything recorded for the person's conversations and for their planned tasks' model steps, which the plan store records against them (#906).",
+    "The PostgreSQL observability database (opt-in): sessions by conversation id, message previews and full content, tool arguments and output, safety events, audit metadata and context snapshots. No user column. A session with no activity for Observability:Retention (90 days by default) is deleted with everything under it, and snapshots and session-less audit rows by their own age; owner erasure removes everything recorded for the person's conversations and for their planned tasks' model steps, which the plan store records against them (#906). Their copy of their data holds their part of those rows (their messages, tool runs, session outcomes, safety results and audited operations), not the operator's registration bodies, context inventory, injected context, raw errors, costs or audit metadata, which only observers may read.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
+    ExportSupport.ByOwner)]
 public sealed partial class PostgresObservabilityStore : IObservabilityStore, IDisposable
 {
     private readonly NpgsqlDataSource _dataSource;

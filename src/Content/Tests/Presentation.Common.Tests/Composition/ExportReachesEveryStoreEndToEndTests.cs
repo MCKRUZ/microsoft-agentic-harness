@@ -1,12 +1,15 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.Services.Compliance;
 using Domain.AI.Bundles;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.Planner;
 using Domain.AI.Runs;
 using Domain.Common.Compliance;
 using FluentAssertions;
@@ -57,6 +60,8 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["FileSystemConversationStore"] = SeedConversationAsync,
         ["EfScheduleStore"] = (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
         ["KnowledgeGraphExporter"] = SeedGraphAsync,
+        ["FileSystemToolResultStore"] = SeedConversationSpillAsync,
+        ["EfCorePlanStateStore"] = SeedPlannedTaskRunAsync,
     };
 
     [Fact]
@@ -66,10 +71,13 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         var exporters = await ExportersTheCoordinatorReceivesAsync(provider);
         exporters.Where(name => !Seeds.ContainsKey(name)).Should().BeEmpty(
             "every store the export reads needs a seed here; add an entry for the new store");
-        exporters.Should().Contain(["EfCoreConversationStore", "EfScheduleStore", "KnowledgeGraphExporter"],
+        exporters.Should().Contain(["EfCoreConversationStore", "EfScheduleStore", "KnowledgeGraphExporter",
+            "FileSystemToolResultStore", "EfCorePlanStateStore"],
             "a floor, so a composition that reads fewer stores than this one configures cannot pass");
 
-        var run = Guid.NewGuid().ToString("N")[..8];
+        // Letters only: stores redact on write, and a run of digits in a label reads as a phone number. A redacted label
+        // would also hide a leaked record of the bystander's from the check below.
+        var run = new string(Guid.NewGuid().ToString("N")[..8].Select(c => (char)('a' + Convert.ToInt32(c.ToString(), 16))).ToArray());
         var subject = new Seeded(Subject, $"subject{run}");
         var bystander = new Seeded(Bystander, $"bystander{run}");
         var shared = $"shared{run}";
@@ -94,6 +102,15 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         string.Join("\n", copy.Sections.Single(s => s.Store == "conversations").Records.Select(r => r.GetRawText()))
             .Should().Contain($"{subject.Label} message", "the transcript, not only the conversation's header");
 
+        // #906: a planned task's model step ran as a conversation of its own and its tool steps under the run's id. Only the
+        // plan store's record of the run leads to them, so these prove the copy reads the same ids erasure does.
+        var spillText = string.Join("\n", copy.Sections.Single(s => s.Store == "spilled tool results").Records.Select(r => r.GetRawText()));
+        spillText.Should().Contain($"{subject.Label} conversation spill");
+        spillText.Should().Contain($"{subject.Label} model step spill", "reached only through the run's step conversation");
+        spillText.Should().Contain($"{subject.Label} tool step spill", "reached only through the run's tool-result scope");
+        var planText = string.Join("\n", copy.Sections.Single(s => s.Store == "plans").Records.Select(r => r.GetRawText()));
+        planText.Should().Contain($"plan {subject.Label}").And.Contain($"job{subject.Label}", "the plan with its run record");
+
         copy.Sections.Select(s => s.Store).Should().BeEquivalentTo(
             copy.Manifest.Where(m => m.Status == ExportStatus.Included).Select(m => m.Store));
         copy.Manifest.Where(m => m.Status == ExportStatus.Failed).Should().BeEmpty();
@@ -106,9 +123,9 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
 
         var copy = await ExportAsync(provider, Subject);
 
-        // Plans and spilled tool results hold the person's data but cannot yet be copied: they must be named, and the copy
-        // must not read as complete while they are.
-        copy.Manifest.Should().Contain(m => m.Store == "plans" && m.Status == ExportStatus.NotExportable);
+        // The document index holds the person's data but cannot yet be copied: it must be named, and the copy must not read
+        // as complete while it is.
+        copy.Manifest.Should().Contain(m => m.Store == "document index (in-memory vectors)" && m.Status == ExportStatus.NotExportable);
         copy.Manifest.Should().Contain(m => m.Status == ExportStatus.RetainedByObligation || m.Status == ExportStatus.RetainedUnsearchable
             || m.Status == ExportStatus.RetainedUntilExpiry, "the logs and audit trails the host runs are listed too");
         copy.IsComplete.Should().BeFalse();
@@ -120,6 +137,65 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         var conversation = await conversations.CreateAsync("agent", p.OwnerId);
         await conversations.AppendMessageAsync(conversation.Id, p.OwnerId,
             new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"{p.Label} message", DateTimeOffset.UtcNow));
+    }
+
+    /// <summary>Tool output spilled under one of the person's own conversations.</summary>
+    private static async Task SeedConversationSpillAsync(IServiceProvider sp, Seeded p)
+    {
+        var conversation = await sp.GetRequiredService<IConversationStore>().CreateAsync("agent", p.OwnerId);
+        await SpillAsync(sp, conversation.Id, $"{p.Label} conversation spill");
+    }
+
+    /// <summary>
+    /// A planned-task run written the way the run writes it: the plan store records the run, a model step spills under its
+    /// own conversation id and a tool step under the run's tool-result scope, then the run ends.
+    /// </summary>
+    private static async Task SeedPlannedTaskRunAsync(IServiceProvider sp, Seeded p)
+    {
+        var plan = Plan(p.Label);
+        var runScope = plan.Id.Value.ToString();
+        var toolResultScopeId = $"job{p.Label}";
+        var plans = sp.GetRequiredService<IPlanStateStore>();
+        using (sp.GetRequiredService<IKnowledgeScopeWriter>().SetScope(userId: p.OwnerId))
+        {
+            (await plans.SavePlanAsync(plan, CancellationToken.None)).IsSuccess.Should().BeTrue();
+            (await plans.RecordRunAsync(plan.Id, runScope, toolResultScopeId, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        await SpillAsync(sp, PlanRunKeys.StepConversationId(runScope, plan.Steps[1].Id), $"{p.Label} model step spill");
+        await SpillAsync(sp, toolResultScopeId, $"{p.Label} tool step spill");
+
+        using (sp.GetRequiredService<IKnowledgeScopeWriter>().SetScope(userId: p.OwnerId))
+            (await plans.RecordRunEndedAsync(plan.Id, runScope, toolResultScopeId, CancellationToken.None)).IsSuccess.Should().BeTrue();
+    }
+
+    private static async Task SpillAsync(IServiceProvider sp, string scopeId, string text)
+    {
+        // Ordinary words to pass the spill threshold: a long run of one character is sanitized as an injection attempt.
+        var content = text + string.Concat(Enumerable.Repeat(" and the search returned this row", 8));
+        (await sp.GetRequiredService<IToolResultStore>().StoreIfLargeAsync(scopeId, "search", null, content, scopeIsRetrievable: true))
+            .IsPersistedToDisk.Should().BeTrue("the seed must actually spill");
+    }
+
+    private static PlanGraph Plan(string label)
+    {
+        var steps = Enumerable.Range(0, 2).Select(i => new PlanStep
+        {
+            Id = PlanStepId.New(),
+            Name = $"Step {i}",
+            Type = StepType.LlmCall,
+            Configuration = new LlmCallConfig { SystemPrompt = $"Prompt {i}", ModelDeploymentKey = "gpt-4o" },
+            RetryPolicy = new RetryPolicy { MaxRetries = 2 },
+            Timeout = TimeSpan.FromSeconds(30),
+        }).ToList();
+        return new PlanGraph
+        {
+            Id = PlanId.New(),
+            Name = $"plan {label}",
+            Steps = steps,
+            Edges = [new PlanEdge(steps[0].Id, steps[1].Id, EdgeType.ControlFlow)],
+            Configuration = new PlanConfiguration { MaxParallelSteps = 4, PlanTimeout = TimeSpan.FromMinutes(10) },
+        };
     }
 
     /// <summary>
@@ -211,6 +287,7 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
         ["AppConfig:AI:Erasure:JournalDatabasePath"] = Path.Combine(_workingDir, "erasure-journal.db"),
         ["AppConfig:AI:ContextManagement:ToolResultStorage:StoragePath"] = Path.Combine(_workingDir, "spills"),
+        ["AppConfig:AI:ContextManagement:ToolResultStorage:PerResultCharLimit"] = "100",
         ["AppConfig:AI:Rag:VectorStore:Provider"] = "faiss",
     });
 }

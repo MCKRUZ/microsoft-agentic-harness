@@ -21,12 +21,12 @@ namespace Infrastructure.AI.Context;
 /// are returned inline without any disk I/O.
 /// </summary>
 [PersonalDataStore(
-    "Oversized tool output spilled to {ToolResultStorage:StoragePath}/{conversationOrRunId}/tool-results/ (default .agent-sessions), secret-redacted first. Deleted 7 days after last write; owner erasure removes the spills of the person's conversations, though deleting one conversation does not.",
+    "Oversized tool output spilled to {ToolResultStorage:StoragePath}/{conversationOrRunId}/tool-results/ (default .agent-sessions), secret-redacted first. Deleted 7 days after last write; owner erasure removes the spills of the person's conversations and planned tasks, though deleting one conversation does not, and their copy of their data includes the same spills.",
     PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
+    ExportSupport.ByOwner)]
 public sealed partial class FileSystemToolResultStore : IToolResultStore
 {
     // /code-review + /simplify findings: the charset and shape checks below now live in

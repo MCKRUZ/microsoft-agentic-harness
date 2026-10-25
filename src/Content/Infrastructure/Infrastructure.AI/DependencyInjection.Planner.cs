@@ -201,6 +201,7 @@ public static partial class DependencyInjection
         // Their own stage (#906): the plans' run records lead to the step sessions erasure reaches through them, so a
         // replacement store that cannot erase must hold back what the stage after would erase through them.
         services.AddPersonalDataEraser<IPlanStateStore>(ErasureStage.PlannedTasks);
+        services.AddPersonalDataExporter<IPlanStateStore>();
         services.AddScoped<IPlanRunTraceSource>(sp => sp.GetRequiredService<IPlanStateStore>());
 
         // Plans nothing has happened to for Planner:Retention are deleted (#901); the switch is read live on every tick.
