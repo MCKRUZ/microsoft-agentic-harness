@@ -1075,14 +1075,24 @@
                         still deletes all of it with the person's conversations.
                     </p>
                     <p>
+                        <strong>Documents they loaded.</strong> Every chunk the document indexes hold under the person's
+                        stamp, in every collection: its text, the document and section it came from, and, for the in-memory
+                        index, its source. Not the embeddings, which are derived vectors of the same text, and not the
+                        owner and tenant stamps. A chunk loaded without an identity carries no stamp and is not in anyone's
+                        copy, as it is not in anyone's erasure. Azure AI Search backs both its vector and its keyword store
+                        with one index, so that index is read once. Its reader pages through the results and checks them
+                        against the total the service reports; a read that cannot be confirmed complete is a failed line,
+                        never a copy with chunks silently missing.
+                    </p>
+                    <p>
                         <strong>What the manifest says.</strong> Every store erasure reaches or lists has a line: what it
                         returned, or why it returned nothing. A store that can hold the person's data but cannot yet return
                         a copy, one that failed, and a log nothing ages out all mark the copy incomplete
                         (<code>isComplete: false</code>), so it never reads as everything while one of them holds the
                         person's data. Stores whose records expire on their own, the tamper-evident audit trails and the
                         organisation's documents are listed without doing so. In this release the copy does not yet include
-                        cross-session memories, learnings, the Kùzu graph database or the document indexes; each one the
-                        host runs is named in the manifest.
+                        cross-session memories, learnings or the Kùzu graph database; each one the host runs is named in the
+                        manifest.
                         If the record of the person's planned-task runs or of an unfinished erasure cannot be read, that is
                         a failed line too, because what only it leads to is then missing from the copy.
                     </p>

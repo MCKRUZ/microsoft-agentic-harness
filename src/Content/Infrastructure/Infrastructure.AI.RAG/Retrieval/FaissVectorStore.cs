@@ -29,13 +29,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "An in-memory vector index (despite the name, nothing is written to disk) holding ingested document chunks, their embeddings and owner and tenant stamps. Lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection.",
+    "An in-memory vector index (despite the name, nothing is written to disk) holding ingested document chunks, their embeddings and owner and tenant stamps. Lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection, and their copy of their data holds the same chunks (not the embeddings).",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Volatile,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
-public sealed class FaissVectorStore : IVectorStore, IPersonalDataEraser
+    ExportSupport.ByOwner)]
+public sealed class FaissVectorStore : IVectorStore, IPersonalDataEraser, IPersonalDataExporter
 {
     /// <inheritdoc />
     public string ErasureStoreName => "document index (in-memory vectors)";
@@ -57,16 +57,47 @@ public sealed class FaissVectorStore : IVectorStore, IPersonalDataEraser
         {
             foreach (var (id, entry) in collection)
             {
-                if (string.Equals(entry.Chunk.Metadata.OwnerId, subject.OwnerId, StringComparison.Ordinal)
-                    && collection.TryRemove(id, out _))
-                {
+                if (IsOwnedBy(entry.Chunk, subject.OwnerId) && collection.TryRemove(id, out _))
                     removed++;
-                }
             }
         }
 
         return Task.FromResult(removed);
     }
+
+    /// <inheritdoc />
+    public string ExportStoreName => ErasureStoreName;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Every chunk erasure would remove, in every collection: its text, document, section and source, and the collection
+    /// it was loaded into. Never its embedding, a derived vector of the same text, nor the owner and tenant stamps.
+    /// </remarks>
+    public Task<IReadOnlyList<System.Text.Json.JsonElement>> ExportSubjectAsync(
+        ExportSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+
+        var records = _collections
+            .SelectMany(c => c.Value.Values
+                .Where(entry => IsOwnedBy(entry.Chunk, subject.OwnerId))
+                .Select(entry => new ExportedChunk(
+                    c.Key, entry.Chunk.Id, entry.Chunk.DocumentId, entry.Chunk.Content, entry.Chunk.SectionPath,
+                    entry.Chunk.Metadata.SourceUri?.ToString())))
+            .OrderBy(c => c.Collection, StringComparer.Ordinal)
+            .ThenBy(c => c.Id, StringComparer.Ordinal)
+            .Select(c => System.Text.Json.JsonSerializer.SerializeToElement(c, System.Text.Json.JsonSerializerOptions.Web))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<System.Text.Json.JsonElement>>(records);
+    }
+
+    /// <summary>Whether <paramref name="chunk"/> was ingested by the owner, matched as issued. Shared by erasure and export.</summary>
+    private static bool IsOwnedBy(DocumentChunk chunk, string ownerId) =>
+        string.Equals(chunk.Metadata.OwnerId, ownerId, StringComparison.Ordinal);
+
+    /// <summary>One chunk as it appears in a person's copy.</summary>
+    private sealed record ExportedChunk(
+        string Collection, string Id, string DocumentId, string Content, string SectionPath, string? SourceUri);
 
     private const string DefaultCollection = "default";
 

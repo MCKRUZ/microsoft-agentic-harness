@@ -218,6 +218,23 @@ public sealed class PersonalDataExportCoordinatorTests
     }
 
     [Fact]
+    public async Task TwoRegistrationsOfOneStore_AreReadOnce_AndNeitherIsNamedAsLeftOut()
+    {
+        // Azure AI Search backs the vector and BM25 stores with one index: both erase and export, under one export name.
+        var vector = new SharedIndexStore("document index (Azure AI Search vectors)");
+        var keyword = new SharedIndexStore("document index (Azure AI Search full text)");
+
+        var copy = await Create([vector, keyword], erasers: [vector, keyword]).ExportOwnerAsync(Owner, CancellationToken.None);
+
+        copy.Sections.Should().ContainSingle(s => s.Store == SharedIndexStore.Name).Which.Records.Should().HaveCount(1,
+            "the person's records must not appear twice");
+        (vector.Reads + keyword.Reads).Should().Be(1);
+        copy.Manifest.Should().ContainSingle(m => m.Store == SharedIndexStore.Name && m.Status == ExportStatus.Included);
+        copy.Manifest.Should().NotContain(m => m.Status == ExportStatus.NotExportable);
+        copy.IsComplete.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task PlannedTaskRuns_AndWhatAnUnfinishedErasureRecorded_ReachEveryExporter()
     {
         // #906/#907: a planned task's model steps ran as conversations of their own and its tool steps under the run's id,
@@ -307,6 +324,30 @@ public sealed class PersonalDataExportCoordinatorTests
 
     private static ConversationRecord Conversation(string id) =>
         new(id, "agent", Owner, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, []);
+
+    /// <summary>One of two registrations that front the same physical store, erasing under its own name.</summary>
+    private sealed class SharedIndexStore(string erasureName) : IPersonalDataEraser, IPersonalDataExporter
+    {
+        public const string Name = "document index (Azure AI Search)";
+
+        public int Reads { get; private set; }
+
+        public string ErasureStoreName => erasureName;
+
+        public ErasureStage ErasureStage => ErasureStage.BeforeConversations;
+
+        public ErasureReach ErasureReach => ErasureReach.Owner;
+
+        public string ExportStoreName => Name;
+
+        public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken) => Task.FromResult(0);
+
+        public Task<IReadOnlyList<JsonElement>> ExportSubjectAsync(ExportSubject subject, CancellationToken cancellationToken)
+        {
+            Reads++;
+            return Task.FromResult<IReadOnlyList<JsonElement>>([JsonSerializer.SerializeToElement(new { id = "chunk-1" })]);
+        }
+    }
 
     /// <summary>A deployer's replacement store that can export, shadowed on the erasure side by a stand-in.</summary>
     private sealed class ReplacementStore : IPersonalDataExporter

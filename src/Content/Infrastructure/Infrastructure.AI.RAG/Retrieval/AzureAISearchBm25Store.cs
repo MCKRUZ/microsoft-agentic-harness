@@ -36,13 +36,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Kept by design: loaded documents are the deploying organisation's own business content, kept until it removes them (POST /api/compliance/document-removals) or, when switched on, until the document age limit (Rag:Documents:Retention) removes those not loaded for its period. Owner erasure deletes every chunk carrying the person's stamp; chunks ingested without an identity carry none and are not reached, and the erasure receipt tells the person that documents others loaded may still mention them.",
+    "An Azure AI Search index holding ingested document chunk text, document id and section path, with owner and tenant stamps when the ingesting caller has an identity. Kept by design: loaded documents are the deploying organisation's own business content, kept until it removes them (POST /api/compliance/document-removals) or, when switched on, until the document age limit (Rag:Documents:Retention) removes those not loaded for its period. Owner erasure deletes every chunk carrying the person's stamp; chunks ingested without an identity carry none and are not reached, and the erasure receipt tells the person that documents others loaded may still mention them. Their copy of their data holds the same chunks (text, document and section, not the embedding), read once for both Azure stores, which share the index.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
-public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser
+    ExportSupport.ByOwner)]
+public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser, IPersonalDataExporter
 {
     private readonly SearchClient _searchClient;
     private readonly ILogger<AzureAISearchBm25Store> _logger;
@@ -65,6 +65,22 @@ public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser
     {
         ArgumentNullException.ThrowIfNull(subject);
         return AzureSearchOwnerErasure.DeleteByOwnerAsync(_searchClient, subject.OwnerId, _logger, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The vector store reads the same index under the same name, so the coordinator reads it once, whichever of the two a
+    /// host registers.
+    /// </remarks>
+    public string ExportStoreName => AzureSearchOwnerExport.StoreName;
+
+    /// <inheritdoc />
+    /// <remarks>Matches <see cref="ExportSubject.OwnerId"/>, the as-issued form ingest stamps, as erasure does.</remarks>
+    public Task<IReadOnlyList<System.Text.Json.JsonElement>> ExportSubjectAsync(
+        ExportSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return AzureSearchOwnerExport.ReadByOwnerAsync(_searchClient, subject.OwnerId, cancellationToken);
     }
 
     /// <summary>

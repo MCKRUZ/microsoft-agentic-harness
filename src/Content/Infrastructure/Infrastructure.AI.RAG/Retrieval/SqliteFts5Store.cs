@@ -49,13 +49,13 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "A full-text SQLite table in a shared in-memory database (DI never passes a file path) holding chunk text, document id, collection and owner and tenant stamps; lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection.",
+    "A full-text SQLite table in a shared in-memory database (DI never passes a file path) holding chunk text, document id, collection and owner and tenant stamps; lost at restart. Owner erasure removes every chunk carrying the person's stamp, in every collection, and their copy of their data holds the same chunks.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.Volatile,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
-public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonalDataScrubber
+    ExportSupport.ByOwner)]
+public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonalDataScrubber, IPersonalDataExporter
 {
     /// <inheritdoc />
     public string ErasureStoreName => "document index (SQLite full text)";
@@ -79,10 +79,54 @@ public sealed class SqliteFts5Store : IBm25Store, IPersonalDataEraser, IPersonal
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM chunks_fts WHERE owner_id = @ownerId";
+        cmd.CommandText = $"DELETE FROM chunks_fts WHERE {OwnedBySubject}";
         cmd.Parameters.AddWithValue("@ownerId", subject.OwnerId);
         return await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    /// <summary>The person's chunks, matched on the as-issued owner stamp (<c>@ownerId</c>). Shared by erasure and export.</summary>
+    private const string OwnedBySubject = "owner_id = @ownerId";
+
+    /// <inheritdoc />
+    public string ExportStoreName => ErasureStoreName;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Every chunk erasure would delete, in every collection: its text, document, section and collection. Initializes the
+    /// schema first, as erasure does and search does not: search answers nothing before the first ingest, and on a fresh
+    /// host over a persistent database that would be an empty section reading as success.
+    /// </remarks>
+    public async Task<IReadOnlyList<System.Text.Json.JsonElement>> ExportSubjectAsync(
+        ExportSubject subject, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT collection, id, document_id, content, section_path
+            FROM chunks_fts
+            WHERE {OwnedBySubject}
+            ORDER BY collection, id
+            """;
+        cmd.Parameters.AddWithValue("@ownerId", subject.OwnerId);
+
+        var records = new List<System.Text.Json.JsonElement>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var chunk = new ExportedChunk(
+                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+            records.Add(System.Text.Json.JsonSerializer.SerializeToElement(chunk, System.Text.Json.JsonSerializerOptions.Web));
+        }
+
+        return records;
+    }
+
+    /// <summary>One chunk as it appears in a person's copy.</summary>
+    private sealed record ExportedChunk(string Collection, string Id, string DocumentId, string Content, string SectionPath);
 
     /// <inheritdoc />
     public async Task ScrubAsync(CancellationToken cancellationToken)

@@ -52,7 +52,7 @@ internal static class AzureSearchOwnerErasure
     {
         var options = new SearchOptions
         {
-            Filter = $"{field} eq '{value.Replace("'", "''", StringComparison.Ordinal)}'",
+            Filter = EqualsFilter(field, value),
             Select = { "id" },
             Size = PageSize,
         };
@@ -103,4 +103,14 @@ internal static class AzureSearchOwnerErasure
             deleted.UnionWith(keys);
         }
     }
+
+    /// <summary>
+    /// An OData filter matching chunks whose <paramref name="field"/> equals <paramref name="value"/>, quoted with single
+    /// quotes doubled so a crafted id cannot widen it. Shared with the export, which must read exactly what this deletes.
+    /// </summary>
+    /// <param name="field">The index field written at ingest.</param>
+    /// <param name="value">The value to match, as stored.</param>
+    /// <returns>The filter expression.</returns>
+    internal static string EqualsFilter(string field, string value) =>
+        $"{field} eq '{value.Replace("'", "''", StringComparison.Ordinal)}'";
 }

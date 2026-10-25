@@ -118,7 +118,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         var subject = await ResolveSubjectAsync(ownerId, manifest, cancellationToken);
 
         var sections = new List<ExportSection>();
-        foreach (var exporter in _exporters)
+        foreach (var exporter in DistinctByStore(_exporters))
         {
             var records = await ExportAsync(exporter, subject, manifest, cancellationToken);
             if (records is not null)
@@ -128,6 +128,14 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         NameStoresThatDidNotExport(manifest);
         return new PersonalDataExport(Guid.NewGuid().ToString("N"), _timeProvider.GetUtcNow(), manifest, sections);
     }
+
+    /// <summary>
+    /// One exporter per store name. Two registrations can front one physical store (Azure AI Search backs the vector and
+    /// BM25 stores with one index); both export under the same name, and reading it once keeps the person's records from
+    /// appearing twice. Both still count as exported, so neither is named as a store the copy leaves out.
+    /// </summary>
+    private static IEnumerable<IPersonalDataExporter> DistinctByStore(IReadOnlyList<IPersonalDataExporter> exporters) =>
+        exporters.DistinctBy(e => e.ExportStoreName, StringComparer.Ordinal);
 
     /// <summary>
     /// Every id that leads to the subject's data, gathered as erasure gathers them: their conversations, their planned-task
