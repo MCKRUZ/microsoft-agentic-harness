@@ -187,6 +187,7 @@ public static partial class DependencyInjection
         // ValidateOnBuild in whichever host omitted it.
         services.TryAddSingleton<IScheduleStore, EfScheduleStore>();
         services.AddPersonalDataEraser<IScheduleStore>();
+        services.AddPersonalDataExporter<IScheduleStore>();
 
         // The tick service is passive until Enabled is set — see ScheduleDispatchBackgroundService's
         // own loop — so registering it unconditionally costs nothing on hosts that never turn schedules

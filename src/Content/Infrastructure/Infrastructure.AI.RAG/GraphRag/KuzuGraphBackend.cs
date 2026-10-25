@@ -40,7 +40,7 @@ namespace Infrastructure.AI.RAG.GraphRag;
     PersonalDataKey.Owner,
     RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.ByOwner)]
+    ExportSupport.NotSupported)]
 public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposable
 {
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);

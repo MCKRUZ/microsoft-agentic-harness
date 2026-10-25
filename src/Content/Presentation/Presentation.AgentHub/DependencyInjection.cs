@@ -43,6 +43,12 @@ namespace Presentation.AgentHub;
 public static class DependencyInjection
 {
     /// <summary>
+    /// How many personal-data exports (#902) the host assembles at once. Each holds one person's whole data in memory and
+    /// reads the whole knowledge graph's edges, so a few are allowed and the rest are refused with 429.
+    /// </summary>
+    public const int ConcurrentExportLimit = 2;
+
+    /// <summary>
     /// Registers all AgentHub-specific services: Azure AD authentication with
     /// SignalR token extraction, SignalR hub, CORS, rate limiting, and config binding.
     /// Call this after <see cref="Presentation.Common.Extensions.IServiceCollectionExtensions.GetServices"/>.
@@ -204,7 +210,7 @@ public static class DependencyInjection
             // Global limiter runs before routing resolves — enforces MCP tool invoke
             // rate limit on the path pattern even before the route handler exists.
             // Applied at 10 POST requests/min per IP on /api/mcp/tools/*.
-            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            var perCaller = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             {
                 if (HttpMethods.IsPost(context.Request.Method) &&
                     context.Request.Path.StartsWithSegments("/api/mcp/tools"))
@@ -230,6 +236,24 @@ public static class DependencyInjection
                         ?? context.Connection.RemoteIpAddress?.ToString()
                         ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter($"erase:{partitionKey}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 5,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // A copy of one's own data (#902) reads every store the person's data lives in and returns all of it
+                // in one response: the same per-user cap as self-service erasure, in its own partition, so a stolen
+                // token cannot be used to pull a person's data over and over or to load every store on demand.
+                if (HttpMethods.IsPost(context.Request.Method) &&
+                    context.Request.Path.StartsWithSegments("/api/compliance/export-my-data"))
+                {
+                    var partitionKey = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"export:{partitionKey}", _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 5,
                         Window = TimeSpan.FromHours(1),
@@ -384,6 +408,21 @@ public static class DependencyInjection
                 }
                 return RateLimitPartition.GetNoLimiter("none");
             });
+
+            // A copy of one's own data (#902) holds that person's whole data in memory while it is assembled, and reads
+            // every edge of the knowledge graph to find theirs. The per-person cap above does not stop several people
+            // exporting at once, so the host as a whole runs only a few at a time; the rest are refused with 429 at once
+            // rather than queued, since each can run for minutes.
+            var hostWide = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/api/compliance/export-my-data")
+                    ? RateLimitPartition.GetConcurrencyLimiter("export:host", _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = ConcurrentExportLimit,
+                        QueueLimit = 0,
+                    })
+                    : RateLimitPartition.GetNoLimiter("none"));
+
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(perCaller, hostWide);
 
             // NOTE: SignalR agent-turn methods (SendMessage / RetryFromMessage / EditAndResubmit /
             // InvokeToolViaAgent) are NOT throttled here. UseRateLimiter is HTTP-request-scoped and
