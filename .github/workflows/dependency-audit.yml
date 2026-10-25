@@ -46,7 +46,11 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '10.0.x'
+          # Exact version, not '10.x' (2026-10-25): the 'latest' aka.ms link now redirects to a Microsoft storage
+          # account with public access disabled (409 PublicAccessNotPermitted), so setup fails before any build.
+          # An exact version is fetched from builds.dotnet.microsoft.com, which serves it. Bump with each SDK
+          # release, or return to '10.x' once the aka.ms link is fixed.
+          dotnet-version: '10.0.402'
 
       - name: Setup Node
         uses: actions/setup-node@v6
