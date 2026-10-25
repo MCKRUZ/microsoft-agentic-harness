@@ -32,6 +32,18 @@ public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIn
     }
 
     [Fact]
+    public async Task ExportMyData_SelfHostedBypass_IsForbiddenBeforeAnythingIsRead()
+    {
+        // #902: under bypass "my data" is every user's data, so a copy of it would disclose them all.
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsync("/api/compliance/export-my-data", content: null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sign-in is bypassed");
+    }
+
+    [Fact]
     public async Task EraseSubjectData_SelfHostedBypass_IsForbidden()
     {
         // Under bypass the operator cannot be told apart from anyone else, so no one may erase anyone.

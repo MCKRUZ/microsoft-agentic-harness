@@ -1031,6 +1031,54 @@
                         </li>
                     </ul>
 
+                    <h2 id="export">Right of access and portability (GDPR Articles 15 and 20)</h2>
+                    <p>
+                        <code>POST /api/compliance/export-my-data</code> returns a machine-readable copy of everything the
+                        harness can find for the signed-in person, as a JSON file (#902). Like erase-my-data it takes no
+                        owner parameter: the subject is always the caller. It is refused, and the refusal recorded, while
+                        sign-in is bypassed (every caller is then one synthetic person, so the copy would hold everyone's
+                        data) and for an application's own token. It is limited to five requests an hour per person, and
+                        the host assembles at most two copies at once; a further request is refused with 429 rather than
+                        queued.
+                    </p>
+                    <p>
+                        <strong>What the copy holds.</strong> One section per store that can return a person's data:
+                        their conversations with every message, their schedules, and their knowledge-graph nodes and edges,
+                        including remembered facts the write-gate quarantined, which the product never shows them but which
+                        are still theirs. A record with no owner is shared or global and is never included on its own, and
+                        neither is an edge another person owns, even where it touches this person's node. An unowned edge
+                        is included only between two of the person's own nodes: one from their node into shared knowledge
+                        is usually document ingestion's, carrying the organisation's document text, so it is left out even
+                        though erasure removes it with the person's node. Every store matches the person across all
+                        tenants, which relies on the identity provider's user id being unique across them, as erasure does.
+                    </p>
+                    <p>
+                        <strong>What the manifest says.</strong> Every store erasure reaches or lists has a line: what it
+                        returned, or why it returned nothing. A store that can hold the person's data but cannot yet return
+                        a copy, one that failed, and a log nothing ages out all mark the copy incomplete
+                        (<code>isComplete: false</code>), so it never reads as everything while one of them holds the
+                        person's data. Stores whose records expire on their own, the tamper-evident audit trails and the
+                        organisation's documents are listed without doing so. In this release the copy does not yet include
+                        plans, spilled tool results, cross-session memories, the document indexes or the observability
+                        database; each one the host runs is named in the manifest.
+                    </p>
+                    <p>
+                        <strong>Delivered at once, never stored.</strong> The copy is assembled for the request and returned
+                        as its response, marked <code>Cache-Control: no-store</code>. An export job that wrote an archive
+                        for later download would be one more store of the person's whole data, needing its own retention,
+                        erasure and access control and a download link nobody could guess. The trade-off is that a very
+                        large copy is held in memory while the request runs, under the same ten-minute limit as erasure.
+                        A copy is not made while an erasure for the same person is running: both take the same per-person
+                        turn. That turn is held in one process, like the erasure journal's hold, so behind several
+                        instances an export can overlap an erasure running on another and miss what it was deleting.
+                    </p>
+                    <p>
+                        <strong>Audit.</strong> Each request writes an <code>Attempted</code> and an outcome record with the
+                        action <code>subject_access_export</code>, in the same shape as erasure's: who asked, the
+                        pseudonymous subject reference, the copy's request id, whether it is complete, and each store's
+                        status and record count. Never the person's id, and never anything the copy contains.
+                    </p>
+
                     <h2 id="data-classification-dlp">Data-classification DLP</h2>
                     <p>
                         Isolation and retention govern <em>where</em> data lives; data-loss prevention governs

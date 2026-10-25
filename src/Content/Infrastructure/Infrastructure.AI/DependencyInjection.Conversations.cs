@@ -65,6 +65,7 @@ public static partial class DependencyInjection
         // so erasure reaches whichever pair the branch below registers.
         services.AddPersonalDataEraser<IConversationStore>(ErasureStage.Conversations);
         services.AddPersonalDataEraser<IConversationBudgetTracker>(ErasureStage.AfterConversations);
+        services.AddPersonalDataExporter<IConversationStore>();
 
         // Conversations nobody has used for the configured period are deleted with what belongs to them (#901). The
         // idle-conversation source is forwarded from whichever store the branch below registers; a replacement store that

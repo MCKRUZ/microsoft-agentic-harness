@@ -54,6 +54,9 @@ public static class DependencyInjection
 		// the operator command. Scoped because the erasure coordinator it drives is scoped.
 		services.AddScoped<Compliance.AuditedErasure>();
 
+		// Personal-data export (#902): the access and portability counterpart, with the same audit shape.
+		services.AddScoped<Compliance.AuditedExport>();
+
 		// Document removal (#901): an operator removes one source document and the knowledge drawn from it; same
 		// audit shape as erasure. Scoped because the erasure orchestrator it drives is scoped.
 		services.AddScoped<Compliance.AuditedDocumentRemoval>();

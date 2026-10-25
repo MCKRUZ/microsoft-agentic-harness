@@ -164,6 +164,57 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
     }
 
     /// <summary>
+    /// <c>ExportSupport.ByOwner</c>'s value, and the descriptor's export support is its sixth constructor argument.
+    /// </summary>
+    private const int ExportByOwner = 0;
+    private const int ExportArgument = 5;
+    private const string ExporterInterface = "Application.AI.Common.Interfaces.Compliance.IPersonalDataExporter";
+
+    /// <summary>
+    /// Stores that say they export by owner without implementing <c>IPersonalDataExporter</c> themselves, because
+    /// <c>KnowledgeGraphExporter</c> reads them through <c>IKnowledgeGraphStore</c> (#902).
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ExportedThroughKnowledgeGraph = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
+    };
+
+    private static bool SaysExportByOwner(PersistenceScan.TypeFacts store) =>
+        store.Attributes[StoreAttribute] is { Count: > ExportArgument } args && args[ExportArgument] is ExportByOwner;
+
+    [Fact]
+    public void ADescriptorSaysExportByOwner_ExactlyWhenTheStoreCanExport()
+    {
+        var stores = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToList();
+
+        var exportersNotSayingSo = stores
+            .Where(s => s.Supertypes.Contains(ExporterInterface) && !SaysExportByOwner(s))
+            .Select(s => s.Name);
+        var sayingSoWithoutExporter = stores
+            .Where(s => SaysExportByOwner(s) && !s.Supertypes.Contains(ExporterInterface) && !ExportedThroughKnowledgeGraph.ContainsKey(s.Name))
+            .Select(s => s.Name);
+
+        exportersNotSayingSo.Concat(sayingSoWithoutExporter).Should().BeEmpty(
+            "a descriptor that says ExportSupport.ByOwner tells a privacy team the person's copy includes this store; it " +
+            "must be true. A store implementing IPersonalDataExporter must say so, and one saying so must implement it or " +
+            "be read through the knowledge-graph export (listed in ExportedThroughKnowledgeGraph)");
+    }
+
+    [Fact]
+    public void EveryStoreExportedThroughTheGraph_IsStillOne()
+    {
+        var byName = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToDictionary(f => f.Name);
+
+        ExportedThroughKnowledgeGraph.Keys
+            .Where(name => !byName.TryGetValue(name, out var store)
+                || store.Supertypes.Contains(ExporterInterface)
+                || !SaysExportByOwner(store))
+            .Should().BeEmpty("an entry must name a declared store that says ExportSupport.ByOwner and does not export itself");
+    }
+
+    /// <summary>
     /// <c>RetentionBasis.Unbounded</c>'s value, and the descriptor's retention basis is its fourth constructor argument.
     /// </summary>
     private const int Unbounded = 3;
@@ -274,8 +325,9 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
 
             if (type.Attributes.ContainsKey(StoreAttribute))
             {
-                // The erasure contract is shared by every erasable store whatever it holds; it is not a storage seam.
-                foreach (var supertype in type.Supertypes.Where(s => productionNames.Contains(s) && s != EraserInterface))
+                // The erasure and export contracts are shared by every store that supports them whatever it holds; they
+                // are not storage seams, and an exporter that reads another store (KnowledgeGraphExporter) holds nothing.
+                foreach (var supertype in type.Supertypes.Where(s => productionNames.Contains(s) && s is not (EraserInterface or ExporterInterface)))
                     foreach (var sibling in bySupertype[supertype].Where(s => s != key && !facts[s].IsInterface))
                         Require(sibling, $"shares {supertype} with store {type.Name}");
             }

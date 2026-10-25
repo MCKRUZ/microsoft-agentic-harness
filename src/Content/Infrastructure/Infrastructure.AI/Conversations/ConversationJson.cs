@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Models.Conversations;
 
 namespace Infrastructure.AI.Conversations;
 
@@ -20,4 +21,11 @@ internal static class ConversationJson
         Converters = { new JsonStringEnumConverter() },
         WriteIndented = false,
     };
+
+    /// <summary>
+    /// The person's conversations as export records (#902), in the shape they are stored in, so a copy is the transcript
+    /// the harness holds rather than a re-interpretation of it.
+    /// </summary>
+    internal static IReadOnlyList<JsonElement> ToExportRecords(IEnumerable<ConversationRecord> conversations) =>
+        [.. conversations.Select(c => JsonSerializer.SerializeToElement(c, Options))];
 }

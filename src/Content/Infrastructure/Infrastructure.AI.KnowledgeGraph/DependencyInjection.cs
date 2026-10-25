@@ -248,6 +248,10 @@ public static partial class DependencyInjection
         // Right-to-erasure across every store (#900): the graph above, then each registered IPersonalDataEraser.
         services.AddScoped<IPersonalDataErasure, PersonalDataErasureCoordinator>();
 
+        // Personal-data export (#902): the graph's own section, then each registered IPersonalDataExporter.
+        services.AddScoped<IPersonalDataExporter>(sp => new KnowledgeGraphExporter(sp.GetRequiredService<IKnowledgeGraphStore>()));
+        services.AddScoped<IPersonalDataExport, PersonalDataExportCoordinator>();
+
         // Retention enforcement (#901). Registered whenever the compliance layer is on, which is what stamps the creation
         // and expiry times it judges by; the interval is read live, so zero switches it off without a restart.
         // Checked at startup as well as in the sweep: a period under a day is a typo (minutes meant as days), and the
