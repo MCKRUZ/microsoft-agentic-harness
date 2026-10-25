@@ -235,6 +235,19 @@ public sealed class PersonalDataExportCoordinatorTests
     }
 
     [Fact]
+    public async Task TwoStoresThatOnlyShareAName_AreBothRead_NeverOneSilentlyDropped()
+    {
+        // Without a shared-store key, a matching name is a coincidence (a consumer's store named like one of ours): reading
+        // only one would leave the other's records out of the copy while its line says it was included.
+        var ours = Exporter("conversations", "a");
+        var theirs = Exporter("conversations", "b");
+
+        var copy = await Create([ours.Object, theirs.Object]).ExportOwnerAsync(Owner, CancellationToken.None);
+
+        copy.Sections.SelectMany(s => s.Records).Should().HaveCount(2);
+    }
+
+    [Fact]
     public async Task PlannedTaskRuns_AndWhatAnUnfinishedErasureRecorded_ReachEveryExporter()
     {
         // #906/#907: a planned task's model steps ran as conversations of their own and its tool steps under the run's id,
@@ -339,6 +352,8 @@ public sealed class PersonalDataExportCoordinatorTests
         public ErasureReach ErasureReach => ErasureReach.Owner;
 
         public string ExportStoreName => Name;
+
+        public string? SharedStoreKey => Name;
 
         public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken) => Task.FromResult(0);
 

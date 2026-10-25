@@ -78,6 +78,9 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
     public string ExportStoreName => AzureSearchOwnerExport.StoreName;
 
     /// <inheritdoc />
+    public string? SharedStoreKey => AzureSearchOwnerExport.StoreName;
+
+    /// <inheritdoc />
     /// <remarks>Matches <see cref="ExportSubject.OwnerId"/>, the as-issued form ingest stamps, as erasure does.</remarks>
     public Task<IReadOnlyList<System.Text.Json.JsonElement>> ExportSubjectAsync(
         ExportSubject subject, CancellationToken cancellationToken)

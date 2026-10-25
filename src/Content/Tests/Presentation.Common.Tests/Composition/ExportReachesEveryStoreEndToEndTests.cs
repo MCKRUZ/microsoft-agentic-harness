@@ -68,6 +68,17 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["EfCorePlanStateStore"] = SeedPlannedTaskRunAsync,
         ["FaissVectorStore"] = (sp, p) => sp.GetRequiredService<IVectorStore>().IndexAsync([Chunk(p, "vector")]),
         ["SqliteFts5Store"] = (sp, p) => sp.GetRequiredService<IBm25Store>().IndexAsync([Chunk(p, "keyword")]),
+        ["CrossSessionMemoryStore"] = (sp, p) => sp.GetRequiredService<ICrossSessionMemoryStore>().RememberAsync(new MemoryRecord
+        {
+            Id = $"{p.Label}-memory",
+            Content = $"{p.Label} remembered preference",
+            Source = "session",
+            Weight = 0.9,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastAccessedAt = DateTimeOffset.UtcNow,
+            AccessCount = 0,
+            OwnerId = p.OwnerId,
+        }),
     };
 
     private static readonly float[] Embedding = [0.1f, 0.2f, 0.3f];
@@ -143,18 +154,17 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
     }
 
     [Fact]
-    public async Task TheManifest_NamesEveryStoreErasureReachesThatTheCopyLeavesOut()
+    public async Task TheManifest_NamesNoStoreAsUncopyable_AndListsTheRetainedOnes()
     {
         await using var provider = BuildProvider();
 
         var copy = await ExportAsync(provider, Subject);
 
-        // Cross-session memory holds the person's data but cannot yet be copied: it must be named, and the copy must not
-        // read as complete while it is.
-        copy.Manifest.Should().Contain(m => m.Status == ExportStatus.NotExportable);
+        // Every store this composition erases a person from now returns a copy, so none is named as one that cannot.
+        copy.Manifest.Should().NotContain(m => m.Status == ExportStatus.NotExportable,
+            "every store that can erase one person's data can also copy it");
         copy.Manifest.Should().Contain(m => m.Status == ExportStatus.RetainedByObligation || m.Status == ExportStatus.RetainedUnsearchable
             || m.Status == ExportStatus.RetainedUntilExpiry, "the logs and audit trails the host runs are listed too");
-        copy.IsComplete.Should().BeFalse();
     }
 
     private static async Task SeedConversationAsync(IServiceProvider sp, Seeded p)

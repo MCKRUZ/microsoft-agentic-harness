@@ -27,12 +27,12 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// on purpose — they are shared routing structures, not the subject's data.
 /// </remarks>
 [PersonalDataStore(
-    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days, and a pruned or forgotten learning is removed for good after Learnings:DeletedRetentionDays (default 30). Permanent learnings are kept by design, as someone deliberately marked them, until deleted or their owner is erased.",
+    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days, and a pruned or forgotten learning is removed for good after Learnings:DeletedRetentionDays (default 30). Permanent learnings are kept by design, as someone deliberately marked them, until deleted or their owner is erased. A person's copy of their data holds the learnings they wrote, with their other knowledge-graph nodes.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Owner,
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
+    ExportSupport.ByOwner)]
 public sealed class GraphLearningsStore : ILearningsStore
 {
     private readonly IKnowledgeGraphStore _graphStore;

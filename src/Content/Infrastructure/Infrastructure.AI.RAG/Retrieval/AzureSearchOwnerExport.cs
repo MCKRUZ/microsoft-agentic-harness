@@ -17,9 +17,6 @@ internal static class AzureSearchOwnerExport
 
     private const int PageSize = 1000;
 
-    /// <summary>The service refuses a <c>$skip</c> above this; a person with more chunks cannot be read this way.</summary>
-    private const int MaxSkip = 100_000;
-
     private static readonly string[] ExportedFields = ["id", "documentId", "content", "sectionPath"];
 
     /// <summary>
@@ -29,12 +26,15 @@ internal static class AzureSearchOwnerExport
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <strong>Reads in pages and checks the total.</strong> A search returns at most a page, and unlike erasure a read
-    /// cannot advance by removing what it matched, so it pages with <c>$skip</c> and asks for the total count. Chunks are
-    /// collected by id, so one repeated across pages counts once. If the ids read do not add up to the total (the index
-    /// changed during the read, or the service ordered ties differently between pages), or the total is beyond what
-    /// <c>$skip</c> can reach, it throws: the coordinator then reports this store as failed rather than hand over a copy
-    /// with chunks silently missing.
+    /// <strong>Pages by id, then checks the total.</strong> A search returns at most a page, and unlike erasure a read
+    /// cannot advance by removing what it matched. Paging with <c>$skip</c> does not work either: every chunk of a
+    /// <c>*</c> search scores the same, so the service may order ties differently from one page to the next, and
+    /// <c>$skip</c> stops at 100,000. So each page is ordered by <c>id</c> and starts after the last id read, which reads
+    /// every chunk exactly once however many there are. This needs the index's <c>id</c> field to be sortable and
+    /// filterable (the REST API's default for a string field; the .NET SDK's <c>SimpleField</c> leaves sortable off); on an
+    /// index where it is not, the service refuses the query and this store is reported as failed. The first page also
+    /// asks for the total count, and if the chunks read do not add up to it (the index changed during the read), it
+    /// throws rather than hand over a copy with chunks silently missing.
     /// </para>
     /// </remarks>
     /// <param name="searchClient">The client for the index both stores use.</param>
@@ -47,33 +47,31 @@ internal static class AzureSearchOwnerExport
     {
         var chunks = new SortedDictionary<string, ExportedChunk>(StringComparer.Ordinal);
         long? total = null;
-        for (var skip = 0; ; skip += PageSize)
+        string? after = null;
+        while (true)
         {
-            var options = new SearchOptions
-            {
-                Filter = AzureSearchOwnerErasure.EqualsFilter("ownerId", ownerId),
-                Size = PageSize,
-                Skip = skip,
-                IncludeTotalCount = true,
-            };
-            foreach (var field in ExportedFields)
-                options.Select.Add(field);
-
-            var response = await searchClient.SearchAsync<SearchDocument>("*", options, cancellationToken);
+            var response = await searchClient.SearchAsync<SearchDocument>(
+                "*", PageOptions(ownerId, after, includeTotal: total is null), cancellationToken);
             total ??= response.Value.TotalCount;
-            if (total > MaxSkip + PageSize)
-                throw new InvalidOperationException($"More chunks match than Azure AI Search can page through ({total}).");
 
             var matched = 0;
+            var added = 0;
             await foreach (var result in response.Value.GetResultsAsync().WithCancellation(cancellationToken))
             {
                 matched++;
                 var chunk = ToChunk(result.Document);
-                chunks.TryAdd(chunk.Id, chunk);
+                if (chunks.TryAdd(chunk.Id, chunk))
+                    added++;
+                after = chunk.Id;
             }
 
             if (matched < PageSize)
                 break;
+
+            // A full page that read nothing new means the service did not honour the id bound; another request would
+            // return the same page forever.
+            if (added == 0)
+                throw new InvalidOperationException("Azure AI Search returned a page with no new chunks; the read could not advance.");
         }
 
         if (total is null || chunks.Count != total)
@@ -83,6 +81,22 @@ internal static class AzureSearchOwnerExport
         }
 
         return [.. chunks.Values.Select(c => JsonSerializer.SerializeToElement(c, JsonSerializerOptions.Web))];
+    }
+
+    /// <summary>One page of the owner's chunks in id order, starting after <paramref name="after"/>.</summary>
+    private static SearchOptions PageOptions(string ownerId, string? after, bool includeTotal)
+    {
+        var owner = AzureSearchOwnerErasure.EqualsFilter("ownerId", ownerId);
+        var options = new SearchOptions
+        {
+            Filter = after is null ? owner : $"{owner} and id gt '{after.Replace("'", "''", StringComparison.Ordinal)}'",
+            Size = PageSize,
+            IncludeTotalCount = includeTotal,
+        };
+        options.OrderBy.Add("id asc");
+        foreach (var field in ExportedFields)
+            options.Select.Add(field);
+        return options;
     }
 
     private static ExportedChunk ToChunk(SearchDocument document) => new(

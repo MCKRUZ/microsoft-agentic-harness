@@ -34,13 +34,13 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Cross-session memory records cached in process and synced to the graph database backend, stamped with their owner. A memory not recalled or written for Rag:CrossSessionMemory:Retention:RetainFor (default two years) is deleted from both; owner erasure purges them.",
+    "Cross-session memory records cached in process and synced to the graph database backend, stamped with their owner. A memory not recalled or written for Rag:CrossSessionMemory:Retention:RetainFor (default two years) is deleted from both; owner erasure purges them, and their copy of their data holds them, read from both.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Owner,
     RetentionBasis.Configured,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
-public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposable
+    ExportSupport.ByOwner)]
+public sealed partial class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposable
 {
     private static readonly ActivitySource _activitySource =
         new("Infrastructure.AI.RAG.GraphRag");
@@ -162,25 +162,16 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
             return 0;
 
         // 1. Purge the in-memory cache (authoritative for records not yet synced or already
-        //    loaded this session). Compare canonically — cached owners are canonicalized on write.
-        var cacheVictims = _cache.Values
-            .Where(r => ScopeIdentity.AreSame(r.OwnerId, canonical))
-            .Select(r => r.Id)
-            .ToList();
+        //    loaded this session).
+        var cacheVictims = CachedMemoriesOwnedBy(canonical).Select(r => r.Id).ToList();
         foreach (var id in cacheVictims)
         {
             _cache.TryRemove(id, out _);
             _dirty.TryRemove(id, out _);
         }
 
-        // 2. Purge the durable backend. The backend is shared with other subsystems (corpus,
-        //    episodic segments), so restrict deletion to memory nodes owned by this owner —
-        //    never another subsystem's owned nodes.
-        var ownedNodes = await _graphBackend
-            .GetNodesByOwnerAsync(canonical, cancellationToken)
-            .ConfigureAwait(false);
-        var backendMemoryIds = ownedNodes
-            .Where(n => string.Equals(n.Type, MemoryNodeType, StringComparison.Ordinal))
+        // 2. Purge the durable backend, memory nodes only: it also holds other subsystems' nodes.
+        var backendMemoryIds = (await BackendMemoriesOwnedByAsync(canonical, cancellationToken).ConfigureAwait(false))
             .Select(n => n.Id)
             .ToList();
         if (backendMemoryIds.Count > 0)

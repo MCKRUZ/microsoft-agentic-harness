@@ -30,32 +30,35 @@ public sealed class AzureSearchOwnerExportTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task ExportSubjectAsync_MatchesSpanSeveralPages_ReadsEveryPageOnce(bool vectorStore)
+    public async Task ExportSubjectAsync_MatchesSpanSeveralPages_ReadsEveryChunkOnceByPagingOnId(bool vectorStore)
     {
         var index = Enumerable.Range(0, 2500).Select(i => $"chunk-{i:D4}").ToArray();
-        GivenIndex(index, total: index.Length);
+        GivenIndex(index);
 
         var records = vectorStore
             ? await VectorStore().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None)
             : await Bm25Store().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
 
-        records.Select(r => r.GetProperty("id").GetString()).Should().Equal(index, "every page, each chunk once, by id");
-        _searches.Select(s => s.Skip).Should().Equal(0, 1000, 2000);
+        records.Select(r => r.GetProperty("id").GetString()).Should().Equal(index, "every chunk, each once, in id order");
+        _searches.Select(s => s.Filter).Should().Equal(
+            "ownerId eq 'user-a'",
+            "ownerId eq 'user-a' and id gt 'chunk-0999'",
+            "ownerId eq 'user-a' and id gt 'chunk-1999'");
         _searches.Should().AllSatisfy(s =>
         {
-            s.Filter.Should().Be("ownerId eq 'user-a'", "the filter erasure deletes by, owner as issued");
+            s.OrderBy.Should().Equal(["id asc"], "ties on score would otherwise reorder between pages");
+            s.Skip.Should().BeNull("$skip pages are unstable and stop at 100,000");
             s.Select.Should().BeEquivalentTo(["id", "documentId", "content", "sectionPath"],
                 "never the embedding, nor the owner and tenant stamps");
-            s.IncludeTotalCount.Should().BeTrue();
         });
+        _searches[0].IncludeTotalCount.Should().BeTrue();
     }
 
     [Fact]
-    public async Task ExportSubjectAsync_PagesRepeatAChunkAndMissAnother_ThrowsInsteadOfReturningAShortCopy()
+    public async Task ExportSubjectAsync_ReadsFewerChunksThanTheTotal_ThrowsInsteadOfReturningAShortCopy()
     {
-        // The service orders ties differently between two pages: one chunk appears twice, another never.
-        var pageOne = Enumerable.Range(0, 1000).Select(i => $"chunk-{i:D4}").ToArray();
-        GivenPages(total: 1001, pageOne, ["chunk-0999"]);
+        // The index changed during the read: the total counted a chunk the pages never returned.
+        GivenIndex(Enumerable.Range(0, 1000).Select(i => $"chunk-{i:D4}").ToArray(), total: 1001);
 
         var act = () => VectorStore().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
 
@@ -63,13 +66,26 @@ public sealed class AzureSearchOwnerExportTests
     }
 
     [Fact]
-    public async Task ExportSubjectAsync_MoreMatchesThanSkipCanReach_Throws()
+    public async Task ExportSubjectAsync_ServiceIgnoresTheIdBound_ThrowsInsteadOfLoopingForever()
     {
-        GivenPages(total: 200_000, ["chunk-0"]);
+        var page = Enumerable.Range(0, 1000).Select(i => $"chunk-{i:D4}").ToArray();
+        Serve(_ => page, total: 2000);
 
-        var act = () => Bm25Store().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
+        var act = () => VectorStore().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*could not advance*");
+        _searches.Should().HaveCount(2, "the second identical page is the evidence; there is no third request");
+    }
+
+    [Fact]
+    public async Task ExportSubjectAsync_ChunkIdContainingQuotes_IsEscapedInTheNextPagesFilter()
+    {
+        var index = Enumerable.Range(0, 999).Select(i => $"a-{i:D4}").Append("b'x").ToArray();
+        GivenIndex(index);
+
+        await Bm25Store().ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
+
+        _searches[1].Filter.Should().Be("ownerId eq 'user-a' and id gt 'b''x'");
     }
 
     [Fact]
@@ -96,13 +112,25 @@ public sealed class AzureSearchOwnerExportTests
     private AzureAISearchBm25Store Bm25Store() =>
         new(_client.Object, NullLogger<AzureAISearchBm25Store>.Instance);
 
-    /// <summary>An index holding <paramref name="ids"/> for the owner, served a page at a time by <c>$skip</c>.</summary>
-    private void GivenIndex(string[] ids, long total) =>
-        Serve(options => ids.Skip(options.Skip ?? 0).Take(options.Size ?? 50).ToArray(), total);
+    /// <summary>
+    /// An index holding <paramref name="ids"/> for the owner. Each search returns, in id order, up to a page of those after
+    /// the <c>id gt</c> bound in its filter, the way the service answers a filtered, ordered query.
+    /// </summary>
+    private void GivenIndex(string[] ids, long? total = null) =>
+        Serve(options =>
+        {
+            var bound = AfterBound(options.Filter);
+            return [.. ids.Order(StringComparer.Ordinal)
+                .Where(id => bound is null || string.CompareOrdinal(id, bound) > 0)
+                .Take(options.Size ?? 50)];
+        }, total ?? ids.Length);
 
-    /// <summary>Each search returns the next of <paramref name="pages"/>, then nothing.</summary>
-    private void GivenPages(long total, params string[][] pages) =>
-        Serve(_ => _searches.Count <= pages.Length ? pages[_searches.Count - 1] : [], total);
+    private static string? AfterBound(string filter)
+    {
+        const string marker = " and id gt '";
+        var at = filter.IndexOf(marker, StringComparison.Ordinal);
+        return at < 0 ? null : filter[(at + marker.Length)..^1].Replace("''", "'", StringComparison.Ordinal);
+    }
 
     private void Serve(Func<SearchOptions, string[]> page, long total)
     {

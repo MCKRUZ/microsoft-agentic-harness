@@ -29,6 +29,14 @@ public interface IPersonalDataExporter
     /// </summary>
     string ExportStoreName { get; }
 
+    /// <summary>
+    /// Set when this registration fronts the same physical store as another one, so the export reads it once: the Azure AI
+    /// Search vector and BM25 stores share one index. Exporters with the same key must return the same records. Leave it
+    /// <see langword="null"/> (the default) for a store of its own; two exporters that happen to share a name are then both
+    /// read, never one silently dropped.
+    /// </summary>
+    string? SharedStoreKey => null;
+
     /// <summary>Returns every record the store holds for <paramref name="subject"/>.</summary>
     /// <param name="subject">The person the copy is for.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
