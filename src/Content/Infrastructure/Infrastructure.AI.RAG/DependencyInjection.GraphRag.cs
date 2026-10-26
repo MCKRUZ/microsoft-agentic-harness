@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
@@ -72,6 +73,10 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<IGraphDatabaseBackend>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<CrossSessionMemoryStore>>()));
+
+        // Erased through the knowledge-graph orchestrator rather than as its own eraser, but exported as its own section;
+        // the remote stand-in above cannot export, and the copy names it as left out.
+        services.AddPersonalDataExporter<ICrossSessionMemoryStore>();
 
         services.AddSingleton<IMemoryDecayService>(sp =>
             new MemoryDecayService(

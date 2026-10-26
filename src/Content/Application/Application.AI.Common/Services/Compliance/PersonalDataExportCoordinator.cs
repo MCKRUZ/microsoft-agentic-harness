@@ -118,7 +118,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         var subject = await ResolveSubjectAsync(ownerId, manifest, cancellationToken);
 
         var sections = new List<ExportSection>();
-        foreach (var exporter in _exporters)
+        foreach (var exporter in DistinctByStore(_exporters))
         {
             var records = await ExportAsync(exporter, subject, manifest, cancellationToken);
             if (records is not null)
@@ -127,6 +127,18 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
 
         NameStoresThatDidNotExport(manifest);
         return new PersonalDataExport(Guid.NewGuid().ToString("N"), _timeProvider.GetUtcNow(), manifest, sections);
+    }
+
+    /// <summary>
+    /// One exporter per physical store. Two registrations can front one store (Azure AI Search backs the vector and BM25
+    /// stores with one index); they say so with the same <see cref="IPersonalDataExporter.SharedStoreKey"/>, and reading it
+    /// once keeps the person's records from appearing twice. Both still count as exported, so neither is named as a store
+    /// the copy leaves out. Exporters without a key are all read, even under one name, so none is dropped by a coincidence.
+    /// </summary>
+    private static IEnumerable<IPersonalDataExporter> DistinctByStore(IReadOnlyList<IPersonalDataExporter> exporters)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return exporters.Where(e => e.SharedStoreKey is not { } key || seen.Add(key));
     }
 
     /// <summary>
@@ -226,7 +238,9 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         foreach (var eraser in _erasers.Where(e => !IsExported(e)))
             manifest.Add(NotExported(eraser.ErasureStoreName, eraser is NonErasableStore ? null : eraser.GetType()));
 
-        if (_memory is not null and not IPersonalDataExporter)
+        // Named unless it was actually read: a memory store that can export but was never registered as an exporter would
+        // otherwise be left out of the copy without a line saying so.
+        if (_memory is not null && !_exporters.Any(e => ReferenceEquals(e, _memory)))
             manifest.Add(NotExported(MemoryStore, _memory.GetType()));
 
         foreach (var outcome in _retained.Select(r => r.ToOutcome()).OfType<StoreErasureOutcome>())

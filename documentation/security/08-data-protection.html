@@ -1075,14 +1075,40 @@
                         still deletes all of it with the person's conversations.
                     </p>
                     <p>
+                        <strong>Documents they loaded.</strong> Every chunk the document indexes hold under the person's
+                        stamp, in every collection: its text, the document and section it came from, and, for the in-memory
+                        index, its source. Not the embeddings, which are derived vectors of the same text, and not the
+                        owner and tenant stamps. A chunk loaded without an identity carries no stamp and is not in anyone's
+                        copy, as it is not in anyone's erasure. Azure AI Search backs both its vector and its keyword store
+                        with one index, so that index is read once. Its reader pages in chunk-id order, starting each page
+                        after the last id read, so every chunk is read once however many there are, and checks the result
+                        against the total the service reports; a read that cannot be confirmed complete is a failed line,
+                        never a copy with chunks silently missing. This needs the index's <code>id</code> field sortable and
+                        filterable and its <code>ownerId</code> field filterable. Those are the REST API's defaults for
+                        string fields, but an index defined with the .NET SDK's <code>SimpleField</code> must set
+                        <code>IsSortable</code> on <code>id</code>, or every export reports that store as failed.
+                    </p>
+                    <p>
+                        <strong>What they remember and taught the agent.</strong> Their cross-session memories, from both
+                        places erasure purges them: the in-process cache and the durable graph backend that keeps them
+                        across restarts (the SQLite <code>graph.db</code>, despite the class's Kùzu name), returned once
+                        each, as the cache holds a memory it has newer than the last sync. A memory id belongs to one owner:
+                        a write under an id another person already holds is refused, because the backend keeps the owner it
+                        first stored, and an overwrite would otherwise put one person's words in the other's copy and erasure.
+                        Learnings they wrote are
+                        knowledge-graph nodes stamped with them, so they are in the knowledge-graph section with their
+                        other nodes; learnings captured by background work carry no owner and are in no one's copy.
+                    </p>
+                    <p>
                         <strong>What the manifest says.</strong> Every store erasure reaches or lists has a line: what it
                         returned, or why it returned nothing. A store that can hold the person's data but cannot yet return
                         a copy, one that failed, and a log nothing ages out all mark the copy incomplete
                         (<code>isComplete: false</code>), so it never reads as everything while one of them holds the
                         person's data. Stores whose records expire on their own, the tamper-evident audit trails and the
-                        organisation's documents are listed without doing so. In this release the copy does not yet include
-                        cross-session memories, learnings, the Kùzu graph database or the document indexes; each one the
-                        host runs is named in the manifest.
+                        organisation's documents are listed without doing so. Every store that can find and erase one
+                        person's data also returns it, unless it holds nothing a person would receive (the token-budget
+                        counters, listed as not applicable); a test holds every store's declaration to that. A host running
+                        a replacement that cannot, such as the remote cross-session memory stand-in, has it named here.
                         If the record of the person's planned-task runs or of an unfinished erasure cannot be read, that is
                         a failed line too, because what only it leads to is then missing from the copy.
                     </p>

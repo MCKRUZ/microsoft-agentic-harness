@@ -44,6 +44,7 @@ public static partial class DependencyInjection
         });
 
         services.AddPersonalDataEraser<IVectorStore>();
+        services.AddPersonalDataExporter<IVectorStore>();
 
         // BM25 stores — keyed by provider name
         services.AddKeyedSingleton<IBm25Store>("azure_ai_search", (sp, _) =>
@@ -65,6 +66,8 @@ public static partial class DependencyInjection
             return sp.GetRequiredKeyedService<IBm25Store>(key);
         });
         services.AddPersonalDataEraser<IBm25Store>();
+        // Azure AI Search backs both stores with one index; both export under one name, which the coordinator reads once.
+        services.AddPersonalDataExporter<IBm25Store>();
 
         // Hybrid retriever — keyed so an optional server-side backend (Azure AI Search
         // agentic retrieval) can replace the local dense+sparse+RRF path without changing

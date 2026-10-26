@@ -35,12 +35,12 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Memory nodes unused for Rag:CrossSessionMemory:Retention:RetainFor (default two years) are deleted, and owner erasure removes them. The document-derived GraphRAG content is kept by design with its documents, as the organisation's business content: removing a document deletes what only it produced and every community summary built over it.",
+    "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Memory nodes unused for Rag:CrossSessionMemory:Retention:RetainFor (default two years) are deleted, and owner erasure removes them. The document-derived GraphRAG content is kept by design with its documents, as the organisation's business content: removing a document deletes what only it produced and every community summary built over it. A person's copy of their data holds their memory nodes, read by cross-session memory.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DerivedKnowledge | PersonalDataCategories.PeopleNames | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Owner,
     RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
-    ExportSupport.NotSupported)]
+    ExportSupport.ByOwner)]
 public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposable
 {
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);

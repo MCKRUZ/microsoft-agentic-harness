@@ -4,12 +4,14 @@ using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.Services.Compliance;
 using Domain.AI.Bundles;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.Planner;
+using Domain.AI.RAG.Models;
 using Domain.AI.Runs;
 using Domain.Common.Compliance;
 using FluentAssertions;
@@ -37,8 +39,10 @@ namespace Presentation.Common.Tests.Composition;
 /// </remarks>
 public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
 {
-    private const string Subject = "Subject-Oid-7F3A";
-    private const string Bystander = "bystander-oid-1";
+    // Not the erasure end-to-end test's ids: the keyword index is one in-memory database for the whole process, and an
+    // erasure there deletes by owner, so a shared id would let that test delete this one's seed while both run.
+    private const string Subject = "Export-Subject-Oid-9C2E";
+    private const string Bystander = "export-bystander-oid-1";
 
     private readonly string _workingDir =
         Path.Combine(Path.GetTempPath(), "export-every-store-" + Guid.NewGuid().ToString("N"));
@@ -62,6 +66,39 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["KnowledgeGraphExporter"] = SeedGraphAsync,
         ["FileSystemToolResultStore"] = SeedConversationSpillAsync,
         ["EfCorePlanStateStore"] = SeedPlannedTaskRunAsync,
+        ["FaissVectorStore"] = (sp, p) => sp.GetRequiredService<IVectorStore>().IndexAsync([Chunk(p, "vector")]),
+        ["SqliteFts5Store"] = (sp, p) => sp.GetRequiredService<IBm25Store>().IndexAsync([Chunk(p, "keyword")]),
+        ["CrossSessionMemoryStore"] = (sp, p) => sp.GetRequiredService<ICrossSessionMemoryStore>().RememberAsync(new MemoryRecord
+        {
+            Id = $"{p.Label}-memory",
+            Content = $"{p.Label} remembered preference",
+            Source = "session",
+            Weight = 0.9,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastAccessedAt = DateTimeOffset.UtcNow,
+            AccessCount = 0,
+            OwnerId = p.OwnerId,
+        }),
+    };
+
+    private static readonly float[] Embedding = [0.1f, 0.2f, 0.3f];
+
+    /// <summary>A document chunk the person ingested, stamped with them as owner the way ingest stamps it.</summary>
+    private static DocumentChunk Chunk(Seeded p, string index) => new()
+    {
+        Id = $"{p.Label}-{index}-chunk",
+        DocumentId = $"{p.Label}-document",
+        SectionPath = "Notes",
+        Content = $"{p.Label} {index} chunk text",
+        Tokens = 8,
+        Embedding = Embedding,
+        Metadata = new ChunkMetadata
+        {
+            SourceUri = new Uri($"file:///docs/{p.Label}.md"),
+            CreatedAt = DateTimeOffset.UtcNow,
+            SiblingChunkIds = [],
+            OwnerId = p.OwnerId,
+        },
     };
 
     [Fact]
@@ -72,7 +109,7 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         exporters.Where(name => !Seeds.ContainsKey(name)).Should().BeEmpty(
             "every store the export reads needs a seed here; add an entry for the new store");
         exporters.Should().Contain(["EfCoreConversationStore", "EfScheduleStore", "KnowledgeGraphExporter",
-            "FileSystemToolResultStore", "EfCorePlanStateStore"],
+            "FileSystemToolResultStore", "EfCorePlanStateStore", "FaissVectorStore", "SqliteFts5Store"],
             "a floor, so a composition that reads fewer stores than this one configures cannot pass");
 
         // Letters only: stores redact on write, and a run of digits in a label reads as a phone number. A redacted label
@@ -117,18 +154,17 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
     }
 
     [Fact]
-    public async Task TheManifest_NamesEveryStoreErasureReachesThatTheCopyLeavesOut()
+    public async Task TheManifest_NamesNoStoreAsUncopyable_AndListsTheRetainedOnes()
     {
         await using var provider = BuildProvider();
 
         var copy = await ExportAsync(provider, Subject);
 
-        // The document index holds the person's data but cannot yet be copied: it must be named, and the copy must not read
-        // as complete while it is.
-        copy.Manifest.Should().Contain(m => m.Store == "document index (in-memory vectors)" && m.Status == ExportStatus.NotExportable);
+        // Every store this composition erases a person from now returns a copy, so none is named as one that cannot.
+        copy.Manifest.Should().NotContain(m => m.Status == ExportStatus.NotExportable,
+            "every store that can erase one person's data can also copy it");
         copy.Manifest.Should().Contain(m => m.Status == ExportStatus.RetainedByObligation || m.Status == ExportStatus.RetainedUnsearchable
             || m.Status == ExportStatus.RetainedUntilExpiry, "the logs and audit trails the host runs are listed too");
-        copy.IsComplete.Should().BeFalse();
     }
 
     private static async Task SeedConversationAsync(IServiceProvider sp, Seeded p)

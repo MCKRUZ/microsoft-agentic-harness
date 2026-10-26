@@ -171,15 +171,59 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
     private const string ExporterInterface = "Application.AI.Common.Interfaces.Compliance.IPersonalDataExporter";
 
     /// <summary>
-    /// Stores that say they export by owner without implementing <c>IPersonalDataExporter</c> themselves, because
-    /// <c>KnowledgeGraphExporter</c> reads them through <c>IKnowledgeGraphStore</c> (#902).
+    /// Stores that say they export by owner without implementing <c>IPersonalDataExporter</c> themselves, because another
+    /// store's exporter reads exactly what they hold of a person (#902), with which one and how.
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> ExportedThroughKnowledgeGraph = new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, string> ExportedThroughAnotherStore = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
+        ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, which KnowledgeGraphExporter reads with the owner's other nodes",
+        ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "its only owner-stamped rows are cross-session memory nodes, which CrossSessionMemoryStore exports from this backend",
     };
+
+    /// <summary>
+    /// Stores that can find and erase one person's data but deliberately do not return it in a copy, with why. Empty:
+    /// every store that purges by owner exports. An entry needs a reason a privacy team would accept.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> PurgedButNotExported = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    [Fact]
+    public void EveryStoreThatPurgesByOwner_AlsoExportsByOwner()
+    {
+        // A store that can find one person's data to erase it can find it to copy it; saying it cannot leaves a gap in the
+        // person's copy that the manifest has to admit to on every request (#902).
+        var stores = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToList();
+
+        stores
+            .Where(s => s.Attributes[StoreAttribute] is { Count: > ExportArgument } args && args[ErasureArgument] is PurgeByOwner)
+            .Where(s => !SaysExportByOwner(s) && !SaysExportNotApplicable(s) && !PurgedButNotExported.ContainsKey(s.Name))
+            .Select(s => s.Name)
+            .Should().BeEmpty(
+                "a store whose descriptor says PurgeByOwner must also say ExportSupport.ByOwner, or NotApplicable when it " +
+                "holds nothing a person would receive (its description gives the reason), or be listed in " +
+                "PurgedButNotExported with the reason it is left out of the person's copy");
+    }
+
+    /// <summary><c>ExportSupport.NotApplicable</c>'s value: a declared decision the store holds nothing a person would receive.</summary>
+    private const int ExportNotApplicable = 2;
+
+    private static bool SaysExportNotApplicable(PersistenceScan.TypeFacts store) =>
+        store.Attributes[StoreAttribute] is { Count: > ExportArgument } args && args[ExportArgument] is ExportNotApplicable;
+
+    [Fact]
+    public void EveryStorePurgedButNotExported_IsStillOne()
+    {
+        var byName = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToDictionary(f => f.Name);
+
+        PurgedButNotExported.Keys
+            .Where(name => !byName.TryGetValue(name, out var store)
+                || store.Attributes[StoreAttribute] is not { Count: > ExportArgument } args
+                || args[ErasureArgument] is not PurgeByOwner
+                || SaysExportByOwner(store))
+            .Should().BeEmpty("an entry must name a declared store that purges by owner and does not export");
+    }
 
     private static bool SaysExportByOwner(PersistenceScan.TypeFacts store) =>
         store.Attributes[StoreAttribute] is { Count: > ExportArgument } args && args[ExportArgument] is ExportByOwner;
@@ -193,13 +237,13 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             .Where(s => s.Supertypes.Contains(ExporterInterface) && !SaysExportByOwner(s))
             .Select(s => s.Name);
         var sayingSoWithoutExporter = stores
-            .Where(s => SaysExportByOwner(s) && !s.Supertypes.Contains(ExporterInterface) && !ExportedThroughKnowledgeGraph.ContainsKey(s.Name))
+            .Where(s => SaysExportByOwner(s) && !s.Supertypes.Contains(ExporterInterface) && !ExportedThroughAnotherStore.ContainsKey(s.Name))
             .Select(s => s.Name);
 
         exportersNotSayingSo.Concat(sayingSoWithoutExporter).Should().BeEmpty(
             "a descriptor that says ExportSupport.ByOwner tells a privacy team the person's copy includes this store; it " +
             "must be true. A store implementing IPersonalDataExporter must say so, and one saying so must implement it or " +
-            "be read through the knowledge-graph export (listed in ExportedThroughKnowledgeGraph)");
+            "be read through another store's export (listed in ExportedThroughAnotherStore)");
     }
 
     [Fact]
@@ -207,7 +251,7 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
     {
         var byName = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToDictionary(f => f.Name);
 
-        ExportedThroughKnowledgeGraph.Keys
+        ExportedThroughAnotherStore.Keys
             .Where(name => !byName.TryGetValue(name, out var store)
                 || store.Supertypes.Contains(ExporterInterface)
                 || !SaysExportByOwner(store))
