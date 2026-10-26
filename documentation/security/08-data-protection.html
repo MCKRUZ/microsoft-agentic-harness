@@ -1042,6 +1042,19 @@
                         queued.
                     </p>
                     <p>
+                        <strong>For someone who cannot sign in.</strong> <code>POST /api/compliance/exports</code> with the
+                        person's id in the body (never the URL, so it stays out of access logs) returns the same copy and
+                        manifest, for an operator to pass on. The same gate as operator erasure decides who may ask: the
+                        <code>Harness.Compliance.ExportSubject</code> role, a separate grant from erasure because reading a
+                        person's whole data and deleting it are different responsibilities, which no development identity
+                        carries; sign-in from a tenant listed in <code>AppConfig:AI:Erasure:OperatorTenantIds</code> (empty
+                        means off); and never while sign-in is bypassed. Every request that reaches it, refused or not, is
+                        audited with the operator's id and the person's pseudonymous reference only. Each operator may ask
+                        thirty times an hour, and their copies count against the same host-wide limit as everyone else's.
+                        Give the id exactly as the identity provider issues it: a re-cased id finds no conversations or
+                        documents, and the copy would be empty while looking complete.
+                    </p>
+                    <p>
                         <strong>What the copy holds.</strong> One section per store that can return a person's data:
                         their conversations with every message, their schedules, and their knowledge-graph nodes and edges,
                         including remembered facts the write-gate quarantined, which the product never shows them but which
