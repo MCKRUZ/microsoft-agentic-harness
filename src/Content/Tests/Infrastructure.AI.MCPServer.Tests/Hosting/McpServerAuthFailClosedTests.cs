@@ -35,10 +35,24 @@ public sealed class McpServerAuthFailClosedTests
         // of surviving to a runtime request. AllowAnonymous keeps the config minimal-valid.
         using var factory = CreateFactory(new Dictionary<string, string?>
         {
-            ["AppConfig:AI:MCP:Auth:AllowAnonymous"] = "true"
+            ["AppConfig:AI:MCP:Auth:AllowAnonymous"] = "true",
+            ["AppConfig:AI:MCP:Auth:AllowAnonymousOutsideDevelopment"] = "true",
         }, environment: "Production");
 
         factory.Server.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Start_AllowAnonymousInProductionWithoutTheOverride_RefusesToStart()
+    {
+        // Anonymous serving outside Development has to be a deliberate, logged choice (#904): every caller is one
+        // unauthenticated identity, so it must never survive as a leftover development setting.
+        var act = () => CreateFactory(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:MCP:Auth:AllowAnonymous"] = "true",
+        }, environment: "Production");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*AllowAnonymousOutsideDevelopment=true*");
     }
 
     // -- Startup fail-closed --

@@ -123,7 +123,7 @@ else
   - Audience: `api://{ClientId}`
   - Token validation: issuer, audience, lifetime, signing key, zero clock skew
 - `Auth.Type == None` and `Auth.AllowAnonymous == false` (the default): the host **throws at startup** in every environment.
-- `Auth.Type == None` and `Auth.AllowAnonymous == true`: the explicit local-development opt-in. The server serves anonymously and logs a prominent warning at startup. Combining `AllowAnonymous=true` with a configured type is rejected as contradictory.
+- `Auth.Type == None` and `Auth.AllowAnonymous == true`: the explicit local-development opt-in. The server serves anonymously and logs a prominent warning at startup. Outside the Development environment it **refuses to start** unless `Auth.AllowAnonymousOutsideDevelopment == true` is also set, and then logs the choice at Critical on every start (`UnauthenticatedModeStartupGuard`, #904). Combining `AllowAnonymous=true` with a configured type is rejected as contradictory.
 - A configured type missing its credential material (e.g. `ApiKey` with no key, `Entra` with no `TenantId`) also fails at startup.
 - When authentication is configured, a fallback authorization policy (`RequireAuthenticatedUser`) covers any endpoint mapped without explicit authorization metadata, and a per-tool-call gate (`McpToolAuthorizationFilter`) re-checks the principal at the dispatch layer as defense-in-depth.
 
@@ -180,7 +180,6 @@ Infrastructure.AI.MCPServer/
 │   ├── McpSharedKeyAuthenticationDefaults.cs   Scheme name constants (ApiKey / shared Bearer)
 │   ├── McpSharedKeyAuthenticationOptions.cs    Header, prefix, expected credential + validation
 │   ├── McpSharedKeyAuthenticationHandler.cs    Constant-time shared-secret authentication
-│   └── McpAnonymousModeStartupWarning.cs       Prominent warning while AllowAnonymous=true
 ├── Authorization/
 │   └── McpToolAuthorizationFilter.cs   Per-tool-call gate (defense-in-depth)
 ├── Extensions/
@@ -237,6 +236,7 @@ Infrastructure.AI.MCPServer/
 |---------|---------|---------------|
 | `Auth.Type` | Selects the enforcement scheme (`ApiKey`, `Bearer`, `Entra`) | `Entra` in production; `None` refuses to start unless `AllowAnonymous=true` |
 | `Auth.AllowAnonymous` | Explicit opt-in to serve without authentication | Never in production; logs a prominent startup warning while on |
+| `Auth.AllowAnonymousOutsideDevelopment` | Allows `AllowAnonymous` outside the Development environment | Leave off; without it a non-Development host refuses to start in anonymous mode |
 | `Auth.ApiKey` / `Auth.BearerToken` | Shared credential inbound requests must present | User Secrets or Key Vault only |
 | `Auth.ApiKeyHeader` | Header carrying the API key | Default `X-API-Key` |
 | `Auth.TenantId` | Entra tenant for token validation | Your organization's tenant |

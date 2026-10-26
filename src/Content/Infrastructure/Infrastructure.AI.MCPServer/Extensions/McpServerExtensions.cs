@@ -12,6 +12,9 @@ using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Application.Common.Hosting;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.MCPServer.Extensions;
 
@@ -162,7 +165,16 @@ public static class McpServerExtensions
             // Explicit anonymous opt-in — boot open, loudly.
             services.AddAuthentication();
             services.AddAuthorization();
-            services.AddHostedService<McpAnonymousModeStartupWarning>();
+            // Refuses to start outside Development unless AllowAnonymousOutsideDevelopment is also set, and logs the
+            // mode at startup either way (#904).
+            var allowOutsideDevelopment = appConfig.AI.MCP.Auth.AllowAnonymousOutsideDevelopment;
+            services.AddHostedService(sp => new UnauthenticatedModeStartupGuard(
+                "MCP server ANONYMOUS mode (AppConfig:AI:MCP:Auth:AllowAnonymous=true): every tool, prompt and " +
+                "resource is served without credentials",
+                "AppConfig:AI:MCP:Auth:AllowAnonymousOutsideDevelopment",
+                allowOutsideDevelopment,
+                sp.GetRequiredService<IHostEnvironment>(),
+                sp.GetRequiredService<ILogger<UnauthenticatedModeStartupGuard>>()));
             return services;
         }
 

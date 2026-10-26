@@ -109,8 +109,12 @@ public sealed class McpServerExtensionsTests
 
         services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
         services.Any(d => d.ServiceType.Name.Contains("Authorization")).Should().BeTrue();
-        services.Any(d => d.ImplementationType == typeof(McpAnonymousModeStartupWarning))
-            .Should().BeTrue("anonymous mode must log a prominent startup warning");
+        services.AddLogging();
+        services.AddSingleton(Moq.Mock.Of<Microsoft.Extensions.Hosting.IHostEnvironment>(e => e.EnvironmentName == "Development"));
+        using var provider = services.BuildServiceProvider();
+        provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
+            .Should().ContainSingle(s => s is Application.Common.Hosting.UnauthenticatedModeStartupGuard,
+                "anonymous mode must be guarded at startup: logged in Development, refused elsewhere without the override");
     }
 
     [Fact]
