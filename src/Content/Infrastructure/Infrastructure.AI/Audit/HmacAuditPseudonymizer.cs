@@ -35,10 +35,13 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
     private readonly ConcurrentDictionary<string, byte[]> _purposeKeys = new(StringComparer.Ordinal);
 
     // The tokens this instance made, so free text redaction can tell a producer's reference from text shaped like one.
-    // Bounded: a producer writes its record moments after making the reference, so only recent tokens need remembering.
+    // Bounded, least recently issued first out: a producer writes its record moments after making the reference, so
+    // only recent tokens need remembering. Each issue stamps the token with a new sequence number, so issuing it again
+    // moves it to the back, and an eviction removes a token only if it still carries the stamp being evicted.
     private const int IssuedCapacity = 16384;
-    private readonly ConcurrentDictionary<string, byte> _issued = new(StringComparer.Ordinal);
-    private readonly ConcurrentQueue<string> _issuedOrder = new();
+    private readonly ConcurrentDictionary<string, long> _issued = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<(string Token, long Sequence)> _issuedOrder = new();
+    private long _issueSequence;
 
     /// <summary>Initializes a new instance of the <see cref="HmacAuditPseudonymizer"/> class.</summary>
     /// <param name="config">Application configuration holding the audit pseudonym key settings.</param>
@@ -85,12 +88,15 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
 
     private string Remember(string token)
     {
-        if (_issued.TryAdd(token, 0))
-        {
-            _issuedOrder.Enqueue(token);
-            while (_issuedOrder.Count > IssuedCapacity && _issuedOrder.TryDequeue(out var oldest))
-                _issued.TryRemove(oldest, out _);
-        }
+        var sequence = Interlocked.Increment(ref _issueSequence);
+        _issued[token] = sequence;
+        _issuedOrder.Enqueue((token, sequence));
+
+        // The queue also holds the stale stamps of tokens issued again; drop those freely, and evict a live token only
+        // while more than the capacity are remembered.
+        while ((_issued.Count > IssuedCapacity || _issuedOrder.Count > 4 * IssuedCapacity)
+               && _issuedOrder.TryDequeue(out var oldest))
+            _issued.TryRemove(KeyValuePair.Create(oldest.Token, oldest.Sequence));
 
         return token;
     }

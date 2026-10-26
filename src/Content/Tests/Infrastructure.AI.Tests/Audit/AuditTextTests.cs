@@ -55,6 +55,24 @@ public sealed class AuditTextTests
         AuditPseudonyms.Create().Issued(reference).Should().BeFalse("another instance did not make it");
     }
 
+    [Fact]
+    public void Issued_AReferenceIssuedAgain_IsRememberedAsRecentlyIssued()
+    {
+        // Under load a producer can reuse a reference made long ago (the same approver) moments before writing. Issuing
+        // it again must count as recent, or it is evicted and redacted as ordinary text in the record it was made for.
+        var pseudonyms = AuditPseudonyms.Create();
+        var reference = pseudonyms.Person("bob");
+        for (var i = 0; i < 16000; i++)
+            _ = pseudonyms.Fingerprint("tool-argument", $"value-{i}");
+
+        _ = pseudonyms.Person("bob");
+        for (var i = 0; i < 1000; i++)
+            _ = pseudonyms.Fingerprint("tool-argument", $"later-{i}");
+
+        pseudonyms.Issued(reference).Should().BeTrue();
+        pseudonyms.Issued(pseudonyms.Fingerprint("tool-argument", "value-0")).Should().BeTrue("issuing it now makes it recent too");
+    }
+
     private sealed class SingleCategory(DefaultContentRedactionFilter inner, RedactionCategory category)
         : Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter
     {
