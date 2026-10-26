@@ -2,12 +2,14 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Resilience;
 using Azure;
 using Azure.AI.ContentSafety;
 using Azure.Core;
 using Azure.Core.Pipeline;
 using Azure.Identity;
 using Domain.AI.Constants;
+using Domain.AI.Resilience;
 using Domain.Common.Config.AI.ContentSafety;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
@@ -40,10 +42,11 @@ public sealed class AzureContentSafetyServiceTests
             : new ContentSafetyClient(endpoint, credential, options);
     }
 
-    private AzureContentSafetyService Service(ContentSafetyConfig? config = null, TokenCredential? credential = null) => new(
+    private AzureContentSafetyService Service(
+        ContentSafetyConfig? config = null, TokenCredential? credential = null, IProviderErrorClassifier? errors = null) => new(
         Client(credential),
         config ?? new ContentSafetyConfig(),
-        new DefaultProviderErrorClassifier(Mock.Of<IOptionsMonitor<ResilienceConfig>>(m => m.CurrentValue == new ResilienceConfig())),
+        errors ?? new DefaultProviderErrorClassifier(Mock.Of<IOptionsMonitor<ResilienceConfig>>(m => m.CurrentValue == new ResilienceConfig())),
         NullLogger<AzureContentSafetyService>.Instance);
 
     private static string Analysis(params (string Category, int Severity)[] categories) => JsonSerializer.Serialize(new
@@ -264,6 +267,22 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
+    public async Task ScreenAsync_ATimeoutThatRacedTheCallerCancelling_PropagatesTheCancellation()
+    {
+        // The classifier ranks a transport timeout above a caller cancellation, and rightly so for retries; but a request
+        // nobody is waiting for any more is not an outage to count, and must not go on unscreened under a fail-open policy.
+        using var cancelled = new CancellationTokenSource();
+        _handler.OnSend = () => cancelled.Cancel();
+        _handler.Throw = new TaskCanceledException("timed out", new TimeoutException());
+        var transientForEverything = Mock.Of<IProviderErrorClassifier>(c =>
+            c.Classify(It.IsAny<Exception>(), It.IsAny<CancellationToken>()) == ProviderFailureClassification.Transient);
+
+        var act = async () => await Service(errors: transientForEverything).ScreenAsync("anything", cancelled.Token);
+
+        (await act.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeOfType<ContentSafetyUnavailableException>();
+    }
+
+    [Fact]
     public void ClientOptions_FailWithinSecondsRatherThanTheSdkDefaults()
     {
         // Screening sits in front of every turn; the SDK's three retries and 100-second timeout per call would stall a
@@ -295,12 +314,16 @@ public sealed class AzureContentSafetyServiceTests
         /// <summary>When set, every request fails with this exception instead of returning a response.</summary>
         public Exception? Throw { get; set; }
 
+        /// <summary>Runs as each request arrives, before it is answered.</summary>
+        public Action? OnSend { get; set; }
+
         public void Respond(string body, HttpStatusCode status = HttpStatusCode.OK) => _responses.Enqueue((body, status));
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Bodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+            OnSend?.Invoke();
             if (Throw is not null)
                 throw Throw;
             var (body, status) = _responses.Count > 0 ? _responses.Dequeue() : Fallback;

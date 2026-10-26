@@ -52,7 +52,7 @@ public sealed class ContentSafetyConfig
 
     /// <summary>Gets the categories actually screened: <see cref="Categories"/>, or all four when it is empty.</summary>
     public IReadOnlyList<string> ScreenedCategories =>
-        Categories.Count == 0 ? AllCategories : [.. Categories.Distinct(StringComparer.Ordinal)];
+        Categories.Count == 0 ? AllCategories : Categories;
 
     /// <summary>
     /// Gets or sets the severity at which a category blocks the request, on the service's four-level scale: 0 (safe), 2

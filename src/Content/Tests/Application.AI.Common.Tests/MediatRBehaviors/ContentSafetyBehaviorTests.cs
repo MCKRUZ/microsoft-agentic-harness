@@ -176,7 +176,7 @@ public class ContentSafetyBehaviorTests
         return new ContentSafetyBehavior<TRequest, TResponse>(
             _safetyService.Object,
             _observabilityStore.Object,
-            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == _appConfig));
+            Options.Create(_appConfig));
     }
 
     // Test request types

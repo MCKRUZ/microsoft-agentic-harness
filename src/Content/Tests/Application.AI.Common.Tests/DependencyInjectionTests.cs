@@ -14,6 +14,7 @@ using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.AI;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
+using Application.AI.Common.MediatRBehaviors;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -217,6 +218,22 @@ public class DependencyInjectionTests
         // SkillEffectivenessTrackingBehavior (#695 procedural memory).
         behaviors.Should().HaveCount(16);
         behaviors.Should().OnlyContain(d => d.Lifetime == ServiceLifetime.Transient);
+    }
+
+    [Fact]
+    public void AddApplicationAIDependencies_RunsThePromptInjectionScanBeforeContentSafety()
+    {
+        // MediatR runs behaviors in registration order. The scan is local and free; content safety may be a metered
+        // external call (#904), so text the scan refuses must never be sent out first.
+        var behaviors = CreateServicesWithAIDependencies()
+            .Where(d => d.ServiceType.IsGenericType &&
+                        d.ServiceType.GetGenericTypeDefinition() == typeof(MediatR.IPipelineBehavior<,>))
+            .Select(d => d.ImplementationType)
+            .ToList();
+
+        behaviors.IndexOf(typeof(PromptInjectionBehavior<,>))
+            .Should().BeLessThan(behaviors.IndexOf(typeof(ContentSafetyBehavior<,>)))
+            .And.BeGreaterThanOrEqualTo(0);
     }
 
     [Fact]

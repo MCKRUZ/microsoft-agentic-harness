@@ -44,18 +44,21 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
 
     private readonly ITextContentSafetyService _safetyService;
     private readonly IObservabilityStore _observabilityStore;
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly IOptions<AppConfig> _config;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ContentSafetyBehavior{TRequest, TResponse}"/> class.
     /// </summary>
     /// <param name="safetyService">The configured screening service.</param>
     /// <param name="observabilityStore">Store for per-session safety events.</param>
-    /// <param name="config">Application configuration holding the policy for content that cannot be screened.</param>
+    /// <param name="config">
+    /// Application configuration holding the policy for content that cannot be screened. Read as it was at startup,
+    /// like the screening service itself, so every content-safety setting takes effect on a restart and none half-applies.
+    /// </param>
     public ContentSafetyBehavior(
         ITextContentSafetyService safetyService,
         IObservabilityStore observabilityStore,
-        IOptionsMonitor<AppConfig> config)
+        IOptions<AppConfig> config)
     {
         _safetyService = safetyService;
         _observabilityStore = observabilityStore;
@@ -79,7 +82,7 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
         catch (ContentSafetyUnavailableException)
         {
             await RecordAsync(request, SafetyConventions.OutcomeValues.Unscreened, category: null, cancellationToken);
-            if (_config.CurrentValue.AI.ContentSafety.BlockWhenUnavailable)
+            if (_config.Value.AI.ContentSafety.BlockWhenUnavailable)
                 throw;
             return await next();
         }

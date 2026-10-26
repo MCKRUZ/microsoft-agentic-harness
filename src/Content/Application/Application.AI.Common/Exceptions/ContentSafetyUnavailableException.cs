@@ -25,7 +25,7 @@ public sealed class ContentSafetyUnavailableException : ApplicationExceptionBase
     public int StatusCode => 503;
 
     /// <inheritdoc />
-    public string SafeMessage => "Content could not be screened right now. Try again shortly.";
+    public string SafeMessage => "Content could not be screened.";
 
     /// <summary>Initializes a new instance of the <see cref="ContentSafetyUnavailableException"/> class.</summary>
     public ContentSafetyUnavailableException()

@@ -1,6 +1,7 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Resilience;
+using Azure;
 using Azure.AI.ContentSafety;
 using Azure.Identity;
 using Domain.AI.Constants;
@@ -30,9 +31,11 @@ namespace Infrastructure.AI.ContentSafety;
 /// <c>ContentSafetyBehavior</c>'s decision. A failure counts as an outage when the harness's provider error classifier
 /// (<see cref="IProviderErrorClassifier"/>) recognises it as a transport fault, a timeout or a service-reported error;
 /// it unwraps the SDK's retry aggregate, so a host that cannot be reached is an outage after the retry as well as
-/// before it. A credential that cannot be obtained, and a response that does not score every requested category, are
-/// outages too. A failure the classifier does not recognise is a bug, not an outage, and propagates as it is; so does
-/// the caller cancelling. The failure is logged without the text.
+/// before it. Any request the SDK itself reports as failed is an outage too, as are a credential that cannot be
+/// obtained and a response that does not score every requested category. Anything else is a bug, not an outage, and
+/// propagates as it is; so does the caller cancelling, even when a timeout raced the cancellation. The failure is
+/// logged with the classifier's reason (a rejected key or a wrong endpoint reads as a misconfiguration there, not as
+/// a passing outage) and without the text.
 /// </para>
 /// <para>
 /// A block's category is reported as the harness's own name for it (<see cref="SafetyCategories"/>), so dashboards and
@@ -137,14 +140,18 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
         }
     }
 
-    // What the classifier calls the failure when it recognises it as the service's; null for a bug or for the caller
-    // cancelling, which leaves the exception to propagate.
+    // What to call the failure when it is the service's: one the classifier recognises, or any request the SDK reports
+    // as failed (a RequestFailedException, whatever its status). Null for the caller cancelling, even when a timeout
+    // raced it, and for anything else, which is a bug and propagates as it is.
     private string? Outage(Exception exception, CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return null;
+
         var classification = _errors.Classify(exception, cancellationToken);
-        return classification.Kind is ProviderFailureKind.Unknown or ProviderFailureKind.CallerCancelled
-            ? null
-            : classification.ReasonCode ?? classification.Kind.ToString();
+        if (classification.Kind is not (ProviderFailureKind.Unknown or ProviderFailureKind.CallerCancelled))
+            return classification.ReasonCode ?? classification.Kind.ToString();
+        return exception is RequestFailedException failed ? $"request failed, status {failed.Status}" : null;
     }
 
     private ContentSafetyUnavailableException Unavailable(string failure, Exception? exception)
