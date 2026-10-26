@@ -164,6 +164,10 @@ public static class DependencyInjection
 
         services.AddAuthorization();
 
+        // One gate for every operator action on someone else's data (erasure, document removal, export), so the role,
+        // tenant and bypass rules cannot drift between them.
+        services.AddSingleton<OperatorGate>();
+
         services.AddSingleton<KnowledgeScopeHubFilter>();
         services.AddSingleton<HubRateLimitFilter>();
 
@@ -274,6 +278,24 @@ public static class DependencyInjection
                         ?? context.Connection.RemoteIpAddress?.ToString()
                         ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter($"erase-subject:{operatorKey}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // Operator export (#902) hands one person's whole data to someone else, and writes an audit record per
+                // request, refused or not: the same per-operator cap as operator erasure, in its own partition, so an
+                // operator's own copy of their data does not spend this allowance.
+                if (HttpMethods.IsPost(context.Request.Method) &&
+                    context.Request.Path.StartsWithSegments("/api/compliance/exports"))
+                {
+                    var operatorKey = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"export-subject:{operatorKey}", _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 30,
                         Window = TimeSpan.FromHours(1),
@@ -413,8 +435,11 @@ public static class DependencyInjection
             // every edge of the knowledge graph to find theirs. The per-person cap above does not stop several people
             // exporting at once, so the host as a whole runs only a few at a time; the rest are refused with 429 at once
             // rather than queued, since each can run for minutes.
+            // An operator's copy of someone else's data holds the same whole data, so it shares the same host-wide budget.
             var hostWide = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-                HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/api/compliance/export-my-data")
+                HttpMethods.IsPost(context.Request.Method)
+                && (context.Request.Path.StartsWithSegments("/api/compliance/export-my-data")
+                    || context.Request.Path.StartsWithSegments("/api/compliance/exports"))
                     ? RateLimitPartition.GetConcurrencyLimiter("export:host", _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = ConcurrentExportLimit,
