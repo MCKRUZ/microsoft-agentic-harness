@@ -95,6 +95,39 @@ public sealed class ComplianceExportControllerOperatorTests : IClassFixture<Test
         record.Metadata!.Values.Should().NotContain(v => v.Contains("victim-oid"), "the person is named only pseudonymously");
     }
 
+    [Theory]
+    [InlineData("app-only")]
+    [InlineData("app-idtyp")]
+    public async Task ExportSubjectData_ApplicationTokenWithTheRole_Returns403SendsNothingAndRecordsTheRefusal(string claimShape)
+    {
+        // A service principal granted the role names no accountable person: a stolen client secret must not be enough to
+        // pull people's data.
+        var sent = CaptureSent();
+        using var client = Client(ComplianceExportController.ExportSubjectRole, HomeTenant, HomeTenant);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.ClaimShapeHeader, claimShape);
+
+        var response = await client.PostAsJsonAsync(Url, new { subjectId = "victim-oid" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("needs a person's sign-in");
+        sent().Should().BeNull();
+        _records.Should().ContainSingle().Which.FailureReason.Should().Be("application token");
+    }
+
+    [Fact]
+    public async Task ExportSubjectData_APersonsTokenWithTheRole_IsAllowed()
+    {
+        // The control for the refusal above: the same role and tenant on a person's delegated token goes through.
+        var sent = CaptureSent();
+        using var client = Client(ComplianceExportController.ExportSubjectRole, HomeTenant, HomeTenant);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.ClaimShapeHeader, "person");
+
+        var response = await client.PostAsJsonAsync(Url, new { subjectId = "victim-oid" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        sent().Should().NotBeNull();
+    }
+
     [Fact]
     public async Task ExportSubjectData_AllowedOperator_SendsTheSubjectAsGivenAndGetsTheCopyAsAFileNothingCaches()
     {

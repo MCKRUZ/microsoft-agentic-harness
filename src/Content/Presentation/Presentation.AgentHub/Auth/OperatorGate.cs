@@ -29,8 +29,9 @@ public sealed record OperatorRefusal(string Reason, IActionResult Response);
 /// The operator must hold the action's role, which no development identity carries, and sign in from a tenant listed in
 /// <c>AppConfig:AI:Erasure:OperatorTenantIds</c>; with that list empty, operator actions are off. The role alone is not
 /// enough because each organisation's administrator assigns roles in their own tenant, and these actions reach every
-/// tenant. Refused while sign-in is bypassed, when no usable operator identity is present, and when the configuration
-/// loaded since startup is invalid.
+/// tenant. Refused while sign-in is bypassed, for an application's own token (an operator action must name an accountable
+/// person; see <see cref="Presentation.Common.Extensions.ClaimsPrincipalExtensions.IsApplicationOnly"/>), when no usable
+/// operator identity is present, and when the configuration loaded since startup is invalid.
 /// </para>
 /// <para>
 /// The gate returns a refusal rather than answering itself, so the caller records every refusal in its audit trail before
@@ -62,6 +63,15 @@ public sealed class OperatorGate
         var user = controller.User;
         if (AuthBypassPolicy.IsSharedSyntheticIdentity(user))
             return new("sign-in is bypassed", controller.Problem(detail: action.BypassDetail, statusCode: StatusCodes.Status403Forbidden));
+
+        // An operator action is recorded against the person who asked. An application's own token names no one: a
+        // service principal granted the role could otherwise erase or export people with no human accountable.
+        if (user.IsApplicationOnly())
+        {
+            return new("application token", controller.Problem(
+                detail: $"Operator {action.Name} needs a person's sign-in: an application token names no accountable operator.",
+                statusCode: StatusCodes.Status403Forbidden));
+        }
 
         if (operatorId is null)
             return new("no usable operator identity", controller.NoUsableIdentity());

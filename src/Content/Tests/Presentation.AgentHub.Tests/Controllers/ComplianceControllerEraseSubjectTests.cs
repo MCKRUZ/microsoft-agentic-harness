@@ -120,6 +120,22 @@ public sealed class ComplianceControllerEraseSubjectTests : IClassFixture<TestWe
     }
 
     [Fact]
+    public async Task EraseSubjectData_ApplicationTokenWithTheRole_Returns403SendsNothingAndRecordsTheRefusal()
+    {
+        // The shared operator gate refuses an application's own token for every operator action (#902): erasing someone
+        // must be recorded against an accountable person, not a service principal.
+        var sent = CaptureSent();
+        using var client = Client(ComplianceController.EraseSubjectRole, HomeTenant, HomeTenant);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.ClaimShapeHeader, "app-only");
+
+        var response = await client.PostAsJsonAsync(Url, new { subjectId = "victim-oid" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        sent().Should().BeNull();
+        _records.Should().ContainSingle().Which.FailureReason.Should().Be("application token");
+    }
+
+    [Fact]
     public async Task EraseSubjectData_ValidationFailure_Returns400AndRecordsTheRefusal()
     {
         CaptureSent(Result<ErasureReceipt>.ValidationFailure(["SubjectId must be given exactly as issued."]));
