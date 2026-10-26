@@ -6,9 +6,7 @@ using Application.Core.Compliance;
 using Domain.AI.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
-using Domain.Common.Config.AI;
 using MediatR;
-using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -57,37 +55,44 @@ public sealed class ComplianceController : ControllerBase
     /// </summary>
     public const string RemoveDocumentRole = "Harness.Compliance.RemoveDocument";
 
+    private const string ErasureUnderBypass =
+        "Erasure is not available while sign-in is bypassed: every caller shares one identity, so it would erase every " +
+        "user's data.";
+
     private static readonly OperatorAction Erasure = new(
-        EraseSubjectRole, Name: "erasure", RoleName: "erasure", Verb: "erase", Detail: "erase other people's data");
+        EraseSubjectRole, Name: "erasure", RoleName: "erasure", Verb: "erase", Detail: "erase other people's data",
+        BypassDetail: ErasureUnderBypass);
 
     private static readonly OperatorAction DocumentRemoval = new(
         RemoveDocumentRole, Name: "document removal", RoleName: "document-removal", Verb: "remove documents",
-        Detail: "remove documents from the corpus");
+        Detail: "remove documents from the corpus",
+        BypassDetail: "Document removal is not available while sign-in is bypassed: every caller shares one identity, so " +
+                      "the audit trail could not say which operator asked.");
 
     private readonly IMediator _mediator;
     private readonly AuditedErasure _erasure;
     private readonly AuditedDocumentRemoval _documentRemoval;
-    private readonly IOptionsMonitor<ErasureConfig> _erasureConfig;
+    private readonly OperatorGate _operatorGate;
 
     /// <summary>Initializes the controller.</summary>
     /// <param name="mediator">The MediatR mediator used to dispatch the erasure commands.</param>
     /// <param name="erasure">Records operator erasure requests refused before they reach a command.</param>
     /// <param name="documentRemoval">Records document-removal requests refused before they reach a command.</param>
-    /// <param name="erasureConfig">Erasure configuration: which tenants' operators may erase or remove documents.</param>
+    /// <param name="operatorGate">Decides whether an operator may erase or remove documents.</param>
     public ComplianceController(
         IMediator mediator,
         AuditedErasure erasure,
         AuditedDocumentRemoval documentRemoval,
-        IOptionsMonitor<ErasureConfig> erasureConfig)
+        OperatorGate operatorGate)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(erasure);
         ArgumentNullException.ThrowIfNull(documentRemoval);
-        ArgumentNullException.ThrowIfNull(erasureConfig);
+        ArgumentNullException.ThrowIfNull(operatorGate);
         _mediator = mediator;
         _erasure = erasure;
         _documentRemoval = documentRemoval;
-        _erasureConfig = erasureConfig;
+        _operatorGate = operatorGate;
     }
 
     /// <summary>
@@ -181,7 +186,7 @@ public sealed class ComplianceController : ControllerBase
 
         var operatorId = User.GetUserIdOrNull();
         var actor = operatorId is null ? ErasureActor.UnidentifiedOperator : ErasureActor.Operator(operatorId);
-        if (OperatorRefusal(operatorId, Erasure) is { } refusal)
+        if (_operatorGate.Refusal(this, operatorId, Erasure) is { } refusal)
         {
             await _erasure.RecordDeniedAsync(actor, nameof(EraseSubjectDataCommand), refusal.Reason, request.SubjectId)
                 .ConfigureAwait(false);
@@ -244,7 +249,7 @@ public sealed class ComplianceController : ControllerBase
 
         var operatorId = User.GetUserIdOrNull();
         var actor = operatorId is null ? ErasureActor.UnidentifiedOperator : ErasureActor.Operator(operatorId);
-        if (OperatorRefusal(operatorId, DocumentRemoval) is { } refusal)
+        if (_operatorGate.Refusal(this, operatorId, DocumentRemoval) is { } refusal)
         {
             await _documentRemoval.RecordDeniedAsync(actor, refusal.Reason, request.DocumentId).ConfigureAwait(false);
             return refusal.Response;
@@ -260,54 +265,6 @@ public sealed class ComplianceController : ControllerBase
 
         return result.IsSuccess ? Ok(result.Value) : this.FailureResponse(result, "Document removal failed");
     }
-
-    /// <summary>
-    /// Why an operator may not take <paramref name="action"/>, as a fixed phrase for the audit record and the response to
-    /// send, or <see langword="null"/> when they may.
-    /// </summary>
-    private (string Reason, IActionResult Response)? OperatorRefusal(string? operatorId, OperatorAction action)
-    {
-        if (AuthBypassPolicy.IsSharedSyntheticIdentity(User))
-            return ("sign-in is bypassed", RefusedUnderBypass(action));
-
-        if (operatorId is null)
-            return ("no usable operator identity", this.NoUsableIdentity());
-
-        if (!User.IsInRole(action.Role))
-            return ($"missing the {action.RoleName} role", Forbid());
-
-        List<string> allowedTenants;
-        try
-        {
-            allowedTenants = _erasureConfig.CurrentValue.OperatorTenantIds;
-        }
-        catch (OptionsValidationException)
-        {
-            // An invalid section loaded after startup: refuse, closed, and say why in the audit trail.
-            return ($"{action.Name} configuration invalid", Problem(
-                detail: $"Operator {action.Name} is unavailable: its configuration is invalid.",
-                statusCode: StatusCodes.Status503ServiceUnavailable));
-        }
-
-        if (allowedTenants.Count == 0)
-        {
-            return ($"operator {action.Name} is not configured", Problem(
-                detail: $"Operator {action.Name} is off: no tenant is allowed to run it (AppConfig:AI:Erasure:OperatorTenantIds).",
-                statusCode: StatusCodes.Status403Forbidden));
-        }
-
-        if (User.GetTenantId() is not { } tenantId || !allowedTenants.Contains(tenantId, StringComparer.OrdinalIgnoreCase))
-        {
-            return ($"operator's tenant may not {action.Verb}", Problem(
-                detail: $"Operators from this tenant may not {action.Detail}.",
-                statusCode: StatusCodes.Status403Forbidden));
-        }
-
-        return null;
-    }
-
-    /// <summary>An operator-only action: the role it needs, and the words its refusals use.</summary>
-    private sealed record OperatorAction(string Role, string Name, string RoleName, string Verb, string Detail);
 
     /// <summary>
     /// Generates a compliance report over a time window — the append-only, hash-chained governance/
@@ -382,14 +339,8 @@ public sealed class ComplianceController : ControllerBase
     /// While sign-in is bypassed every caller is the same synthetic person, so self-service erasure would erase everyone
     /// and an operator action could not say which operator asked.
     /// </summary>
-    private ObjectResult RefusedUnderBypass(OperatorAction? action = null) =>
-        Problem(
-            detail: action == DocumentRemoval
-                ? "Document removal is not available while sign-in is bypassed: every caller shares one identity, so " +
-                  "the audit trail could not say which operator asked."
-                : "Erasure is not available while sign-in is bypassed: every caller shares one identity, so it " +
-                  "would erase every user's data.",
-            statusCode: StatusCodes.Status403Forbidden);
+    private ObjectResult RefusedUnderBypass() =>
+        Problem(detail: ErasureUnderBypass, statusCode: StatusCodes.Status403Forbidden);
 }
 
 /// <summary>Request body for <see cref="ComplianceController.EraseSubjectData"/>.</summary>
