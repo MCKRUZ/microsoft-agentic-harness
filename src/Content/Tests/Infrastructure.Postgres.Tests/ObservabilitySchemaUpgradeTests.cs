@@ -352,15 +352,15 @@ public sealed class ObservabilitySchemaUpgradeTests
             """));
     }
 
-    /// <summary>One safety event with the given outcome, on a session of its own (the FK needs one).</summary>
-    private static string InsertSafetyEventWithOutcome(string outcome) =>
+    /// <summary>One safety event with the given outcome and phase, on a session of its own (the FK needs one).</summary>
+    private static string InsertSafetyEventWithOutcome(string outcome, string phase = "prompt") =>
         $"""
         WITH s AS (
             INSERT INTO sessions (conversation_id, agent_name)
-            VALUES ('outcome-probe-{outcome}', 'ProbeAgent')
+            VALUES ('outcome-probe-{phase}-{outcome}', 'ProbeAgent')
             RETURNING id)
         INSERT INTO safety_events (session_id, phase, outcome)
-        SELECT id, 'prompt', '{outcome}' FROM s
+        SELECT id, '{phase}', '{outcome}' FROM s
         """;
 
     /// <summary>
@@ -401,15 +401,7 @@ public sealed class ObservabilitySchemaUpgradeTests
             Assert.Null(await schema.TryExecuteAsync(InsertSafetyEventWithOutcome(outcome)));
 
         // The phase constraint does not mention outcome and must survive the drop loop.
-        var badPhase = await schema.TryExecuteAsync(
-            """
-            WITH s AS (
-                INSERT INTO sessions (conversation_id, agent_name)
-                VALUES ('phase-probe', 'ProbeAgent')
-                RETURNING id)
-            INSERT INTO safety_events (session_id, phase, outcome)
-            SELECT id, 'sideways', 'pass' FROM s
-            """);
+        var badPhase = await schema.TryExecuteAsync(InsertSafetyEventWithOutcome("pass", phase: "sideways"));
         Assert.NotNull(badPhase);
         Assert.Contains("phase", badPhase!.ToString(), StringComparison.OrdinalIgnoreCase);
     }

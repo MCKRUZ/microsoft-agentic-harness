@@ -6,6 +6,7 @@ using Domain.Common.Config.AI.ContentSafety;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.ContentSafety;
+using Infrastructure.AI.Tests.Resilience;
 using Infrastructure.AI.Resilience;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -28,8 +29,7 @@ public sealed class ContentSafetyRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Options.Create(new AppConfig { AI = new AIConfig { ContentSafety = contentSafety } }));
-        services.AddSingleton<IProviderErrorClassifier>(new DefaultProviderErrorClassifier(
-            Mock.Of<IOptionsMonitor<ResilienceConfig>>(m => m.CurrentValue == new ResilienceConfig())));
+        services.AddSingleton(ResilienceTestSupport.CreateClassifier());
         Infrastructure.AI.DependencyInjection.RegisterContentSafety(services);
         return services.BuildServiceProvider();
     }
@@ -76,24 +76,25 @@ public sealed class ContentSafetyRegistrationTests
     }
 
     [Theory]
-    [InlineData(ContentSafetyProvider.AllowAll, "Production", 1)]
-    [InlineData(ContentSafetyProvider.AllowAll, "Development", 0)]
-    [InlineData(ContentSafetyProvider.AzureAIContentSafety, "Production", 0)]
-    [InlineData(ContentSafetyProvider.AllowAll, null, 1)]
-    public async Task StartupCheck_WarnsOnlyForAllowAllOutsideDevelopment(
-        ContentSafetyProvider provider, string? environment, int warnings)
+    [InlineData(true, "Production", 1)]
+    [InlineData(true, "Development", 0)]
+    [InlineData(false, "Production", 0)]
+    [InlineData(true, null, 1)]
+    public async Task StartupCheck_WarnsOnlyForAllowAllOutsideDevelopment(bool allowAll, string? environment, int warnings)
     {
         // No host environment at all (a composition without a host) is not Development, so it warns.
-        var logger = new Mock<ILogger<ContentSafetyStartupCheck>>();
-        var appConfig = new AppConfig { AI = new AIConfig { ContentSafety = new ContentSafetyConfig { Provider = provider } } };
+        var logger = new RecordingLogger<ContentSafetyStartupCheck>();
+        ITextContentSafetyService service = allowAll
+            ? new AllowAllContentSafetyService(Microsoft.Extensions.Logging.Abstractions.NullLogger<AllowAllContentSafetyService>.Instance)
+            : Mock.Of<ITextContentSafetyService>();
         var check = new ContentSafetyStartupCheck(
-            Options.Create(appConfig),
-            Mock.Of<ITextContentSafetyService>(),
-            logger.Object,
+            service,
+            logger,
             environment is null ? null : Mock.Of<IHostEnvironment>(e => e.EnvironmentName == environment));
 
         await check.StartAsync(CancellationToken.None);
 
-        logger.Invocations.Count(i => (LogLevel)i.Arguments[0] == LogLevel.Warning).Should().Be(warnings);
+        logger.Entries.Where(e => e.Level == LogLevel.Warning).Should().HaveCount(warnings)
+            .And.OnlyContain(e => e.Message.Contains("not screening anything"));
     }
 }

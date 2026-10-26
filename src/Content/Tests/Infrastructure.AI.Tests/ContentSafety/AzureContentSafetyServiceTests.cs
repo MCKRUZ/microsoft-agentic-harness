@@ -14,6 +14,7 @@ using Domain.Common.Config.AI.ContentSafety;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.ContentSafety;
+using Infrastructure.AI.Tests.Resilience;
 using Infrastructure.AI.Resilience;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -46,7 +47,7 @@ public sealed class AzureContentSafetyServiceTests
         ContentSafetyConfig? config = null, TokenCredential? credential = null, IProviderErrorClassifier? errors = null) => new(
         Client(credential),
         config ?? new ContentSafetyConfig(),
-        errors ?? new DefaultProviderErrorClassifier(Mock.Of<IOptionsMonitor<ResilienceConfig>>(m => m.CurrentValue == new ResilienceConfig())),
+        errors ?? ResilienceTestSupport.CreateClassifier(),
         NullLogger<AzureContentSafetyService>.Instance);
 
     private static string Analysis(params (string Category, int Severity)[] categories) => JsonSerializer.Serialize(new

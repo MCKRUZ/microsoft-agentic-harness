@@ -118,6 +118,6 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
 
         if (request is IHasObservabilitySession obs && obs.ObservabilitySessionId != Guid.Empty)
             await _observabilityStore.RecordSafetyEventAsync(
-                obs.ObservabilitySessionId, "prompt", outcome, category, null, Filter, cancellationToken);
+                obs.ObservabilitySessionId, SafetyConventions.PhaseValues.Prompt, outcome, category, null, Filter, cancellationToken);
     }
 }

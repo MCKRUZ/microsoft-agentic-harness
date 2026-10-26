@@ -1,7 +1,5 @@
 using System.Reflection;
-using System.Text.RegularExpressions;
 using Domain.AI.Telemetry.Conventions;
-using Infrastructure.Observability.Persistence;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Schema;
@@ -18,10 +16,6 @@ namespace Infrastructure.Observability.Tests.Schema;
 /// </remarks>
 public sealed class SafetyOutcomeSchemaAgreementTests
 {
-    private static readonly Regex OutcomeCheckDeclaration = new(
-        @"CONSTRAINT\s+safety_events_outcome_check\s+CHECK\s*\(\s*outcome\s+IN\s*\((?<values>[^)]*)\)\s*\)",
-        RegexOptions.Singleline | RegexOptions.IgnoreCase);
-
     [Fact]
     public void SafetyEventsOutcomeConstraint_AcceptsExactlyTheOutcomesTheCodeCanRecord()
     {
@@ -31,23 +25,8 @@ public sealed class SafetyOutcomeSchemaAgreementTests
             .Select(field => (string)field.GetRawConstantValue()!)
             .OrderBy(value => value, StringComparer.Ordinal);
 
-        Assert.Equal(recordable, ReadAcceptedOutcomes().OrderBy(value => value, StringComparer.Ordinal));
-    }
+        var accepted = MigrationCheckConstraint.AcceptedValues("safety_events_outcome_check", "outcome");
 
-    private static HashSet<string> ReadAcceptedOutcomes()
-    {
-        // The last declaration counts: Load() returns migrations in ordinal order.
-        var declaration = ObservabilityMigrations.Load()
-            .Select(script => OutcomeCheckDeclaration.Match(script.Sql))
-            .LastOrDefault(match => match.Success);
-
-        Assert.True(
-            declaration is not null,
-            "No migration declares a CHECK constraint named 'safety_events_outcome_check' on 'outcome'.");
-
-        return declaration!.Groups["values"].Value
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(value => value.Trim('\''))
-            .ToHashSet(StringComparer.Ordinal);
+        Assert.Equal(recordable, accepted.OrderBy(value => value, StringComparer.Ordinal));
     }
 }

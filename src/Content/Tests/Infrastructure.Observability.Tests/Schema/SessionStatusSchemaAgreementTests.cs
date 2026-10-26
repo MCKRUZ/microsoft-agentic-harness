@@ -34,21 +34,14 @@ namespace Infrastructure.Observability.Tests.Schema;
 public sealed class SessionStatusSchemaAgreementTests
 {
     /// <summary>
-    /// Matches a declaration of the <c>sessions_status_check</c> constraint and captures its value
-    /// list, wherever in a migration it appears — inline in a <c>CREATE TABLE</c> or in a later
-    /// <c>ADD CONSTRAINT</c>.
+    /// Matches a declaration of the <c>sessions_status_check</c> constraint, found by its own name (see
+    /// <see cref="MigrationCheckConstraint"/>). That is why migration 001 names the constraint explicitly
+    /// instead of letting Postgres generate a name: the file declares several <c>CHECK (… IN (…))</c>
+    /// constraints with unrelated status vocabularies (<c>success/failure/timeout</c>,
+    /// <c>clear/warning/critical</c>), and a pattern that merely found "the status CHECK" would assert
+    /// against the wrong one.
     /// </summary>
-    /// <remarks>
-    /// Anchoring on the constraint's own name rather than on the surrounding table block is what
-    /// makes this work across both forms, and is why migration 001 names the constraint explicitly
-    /// instead of letting Postgres generate a name. The file declares several
-    /// <c>CHECK (… IN (…))</c> constraints and most belong to other tables with an unrelated status
-    /// vocabulary (<c>success/failure/timeout</c>, <c>clear/warning/critical</c>); a pattern that
-    /// merely found "the status CHECK" would silently assert against the wrong one.
-    /// </remarks>
-    private static readonly Regex StatusCheckDeclaration = new(
-        @"CONSTRAINT\s+sessions_status_check\s+CHECK\s*\(\s*status\s+IN\s*\((?<values>[^)]*)\)\s*\)",
-        RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex StatusCheckDeclaration = MigrationCheckConstraint.Declaration("sessions_status_check", "status");
 
     [Fact]
     public void SessionsStatusCheckConstraint_AcceptsExactlyTheStatusesTheCodeCanWrite()
@@ -103,31 +96,13 @@ public sealed class SessionStatusSchemaAgreementTests
         // ProperSubset alone: it already means subset AND not equal, so the NotEqual that used to sit
         // beside it only made a reader stop and work out whether the two lines were saying different
         // things.
-        var earliest = ParseValues(StatusCheckDeclaration.Match(declaring[0].Sql));
+        var earliest = MigrationCheckConstraint.Values(StatusCheckDeclaration.Match(declaring[0].Sql));
         var effective = ReadAcceptedStatusesFromMigrations();
 
         Assert.ProperSubset(effective, earliest);
     }
 
-    private static HashSet<string> ReadAcceptedStatusesFromMigrations()
-    {
-        // "Last wins" is load-bearing here and rests entirely on Load() returning ordinal order, which
-        // it documents and EmbeddedSqlMigrationSource enforces. Stated rather than re-sorted, so there
-        // is one answer in this file to "whose job is the ordering".
-        var declaration = ObservabilityMigrations.Load()
-            .Select(s => StatusCheckDeclaration.Match(s.Sql))
-            .LastOrDefault(m => m.Success);
-
-        Assert.True(
-            declaration is not null,
-            "No migration declares a CHECK constraint named 'sessions_status_check' on 'status'.");
-
-        return ParseValues(declaration!);
-    }
-
-    private static HashSet<string> ParseValues(Match declaration) =>
-        declaration.Groups["values"].Value
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(v => v.Trim('\''))
-            .ToHashSet(StringComparer.Ordinal);
+    // "Last wins" is load-bearing here; MigrationCheckConstraint documents what it rests on.
+    private static HashSet<string> ReadAcceptedStatusesFromMigrations() =>
+        MigrationCheckConstraint.AcceptedValues("sessions_status_check", "status");
 }

@@ -53,7 +53,7 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
     private static readonly ContentSafetyResult Pass = new(IsBlocked: false, BlockReason: null, Category: null);
 
     private readonly ContentSafetyClient _client;
-    private readonly ContentSafetyConfig _config;
+    private readonly int _blockAtSeverity;
     private readonly IProviderErrorClassifier _errors;
     private readonly IReadOnlyList<TextCategory> _categories;
     private readonly ILogger<AzureContentSafetyService> _logger;
@@ -75,7 +75,7 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
         ArgumentNullException.ThrowIfNull(logger);
 
         _client = client;
-        _config = config;
+        _blockAtSeverity = config.BlockAtSeverity;
         _errors = errors;
         _categories = [.. config.ScreenedCategories.Select(name => new TextCategory(name))];
         _logger = logger;
@@ -105,7 +105,7 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
             throw Unavailable("incomplete analysis", exception: null);
 
         var worst = scores
-            .Where(score => score.Severity >= _config.BlockAtSeverity)
+            .Where(score => score.Severity >= _blockAtSeverity)
             .MaxBy(score => score.Severity);
         if (worst is null)
             return Pass;
@@ -113,7 +113,7 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
         var blocked = HarnessCategory(worst.Category);
         _logger.LogInformation(
             "Content safety blocked a request: {Category} at severity {Severity} (threshold {Threshold})",
-            blocked, worst.Severity, _config.BlockAtSeverity);
+            blocked, worst.Severity, _blockAtSeverity);
         return new ContentSafetyResult(
             IsBlocked: true,
             BlockReason: $"Content blocked by safety policy ({blocked}).",
@@ -128,7 +128,7 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
             foreach (var category in _categories)
                 options.Categories.Add(category);
             var analysis = (await _client.AnalyzeTextAsync(options, cancellationToken).ConfigureAwait(false)).Value;
-            return [.. analysis?.CategoriesAnalysis ?? []];
+            return analysis?.CategoriesAnalysis ?? [];
         }
         catch (AuthenticationFailedException ex)
         {
@@ -180,12 +180,6 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
     // ending or starting between the halves of a surrogate pair.
     internal static IEnumerable<string> Chunks(string content)
     {
-        if (content.Length <= MaxChunkLength)
-        {
-            yield return content;
-            yield break;
-        }
-
         for (var start = 0; ;)
         {
             var length = Math.Min(MaxChunkLength, content.Length - start);

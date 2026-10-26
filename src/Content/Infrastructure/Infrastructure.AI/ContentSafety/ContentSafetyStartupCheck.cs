@@ -1,9 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
-using Domain.Common.Config;
-using Domain.Common.Config.AI.ContentSafety;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.ContentSafety;
 
@@ -28,26 +25,27 @@ namespace Infrastructure.AI.ContentSafety;
 /// </remarks>
 public sealed class ContentSafetyStartupCheck : IHostedService
 {
-    private readonly IOptions<AppConfig> _config;
+    private readonly ITextContentSafetyService _service;
     private readonly IHostEnvironment? _environment;
     private readonly ILogger<ContentSafetyStartupCheck> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ContentSafetyStartupCheck"/> class.</summary>
-    /// <param name="config">Application configuration holding the content-safety provider.</param>
-    /// <param name="service">The configured screening service, built here so a refused configuration fails startup.</param>
+    /// <param name="service">
+    /// The configured screening service, built here so a refused configuration fails startup; the warning is about the
+    /// service that actually runs, not about the setting that chose it.
+    /// </param>
     /// <param name="logger">Logger for the warning.</param>
     /// <param name="environment">
     /// The environment the host runs in. A composition with no host environment is treated as not Development, so it
     /// warns: the safe direction, matching <see cref="Egress.EgressStartupValidator"/>.
     /// </param>
     public ContentSafetyStartupCheck(
-        IOptions<AppConfig> config,
         ITextContentSafetyService service,
         ILogger<ContentSafetyStartupCheck> logger,
         IHostEnvironment? environment = null)
     {
         ArgumentNullException.ThrowIfNull(service);
-        _config = config;
+        _service = service;
         _environment = environment;
         _logger = logger;
     }
@@ -55,7 +53,7 @@ public sealed class ContentSafetyStartupCheck : IHostedService
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_config.Value.AI.ContentSafety.Provider == ContentSafetyProvider.AllowAll && !(_environment?.IsDevelopment() ?? false))
+        if (_service is AllowAllContentSafetyService && !(_environment?.IsDevelopment() ?? false))
             _logger.LogWarning(
                 "Content safety is not screening anything: AppConfig:AI:ContentSafety:Provider is AllowAll, so every " +
                 "request passes. Set it to AzureAIContentSafety with an Endpoint to screen request text.");
