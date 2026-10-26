@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.Core.CQRS.DriftDetection;
+using Application.Core.Tests.Audit;
 using Domain.AI.DriftDetection;
 using Domain.Common;
 using FluentAssertions;
@@ -37,7 +38,8 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
             _baselineStore.Object,
             _auditStore.Object,
             _timeProvider,
-            NullLogger<RecalculateDriftBaselineCommandHandler>.Instance);
+            NullLogger<RecalculateDriftBaselineCommandHandler>.Instance,
+            new FakeAuditPseudonymizer());
     }
 
     private static RecalculateDriftBaselineCommand CreateCommand(Guid baselineId) => new()
@@ -82,7 +84,7 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
         _audited.Should().AllSatisfy(r =>
         {
             r.RecordType.Should().Be(DriftAuditRecordType.BaselineRecalculationRequested);
-            r.Payload.Should().Contain("ops@contoso.com");
+            r.Payload.Should().Contain(FakeAuditPseudonymizer.PersonOf("ops@contoso.com")).And.NotContain("ops@contoso.com");
         });
         OutcomeRecord().Payload.Should().Contain("drift.not_found",
             "probing baseline ids is operator activity worth attributing");
@@ -136,7 +138,7 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
         var outcome = OutcomeRecord();
         outcome.EventId.Should().Be(recalculated.BaselineId,
             "the audit record must correlate to the new baseline snapshot");
-        outcome.Payload.Should().Contain("ops@contoso.com");
+        outcome.Payload.Should().Contain(FakeAuditPseudonymizer.PersonOf("ops@contoso.com")).And.NotContain("ops@contoso.com");
         outcome.Payload.Should().Contain(DriftOperatorActionAudit.BaselineRecalculateAction);
     }
 

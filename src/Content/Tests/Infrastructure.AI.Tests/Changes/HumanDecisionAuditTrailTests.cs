@@ -10,6 +10,7 @@ using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.Changes;
 
@@ -65,7 +66,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         var sut = new ApproveChangeProposalCommandHandler(
             store,
             new NoOpDispatchQueue(),
@@ -88,9 +89,11 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var lines = await AuditTrailFiles.ReadAllLinesAsync(AuditFilePath);
         lines.Should().ContainSingle("one decision produces exactly one audit line");
         var line = lines[0];
-        line.Should().Contain("\"reviewer_id\":\"alice@contoso.com\"",
+        line.Should().Contain($"\"reviewer_id\":\"{AuditPseudonyms.Create().Person("alice@contoso.com")}\"",
             "the durable record must name the human the token identified — this is the whole " +
-            "point of stamping ReviewerId from claims instead of the request body");
+            "point of stamping ReviewerId from claims instead of the request body — as the reference the " +
+            "key holder can recompute, since the trail is kept for good (#903)");
+        line.Should().NotContain("alice@contoso.com");
         line.Should().Contain($"\"proposal_id\":\"{pending.Id}\"");
         line.Should().Contain("\"gate_key\":\"approval\"");
         line.Should().Contain("\"decision\":\"Pass\"");
@@ -107,7 +110,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         var sut = new RejectChangeProposalCommandHandler(
             store,
             audit,
@@ -128,7 +131,8 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
 
         var lines = await AuditTrailFiles.ReadAllLinesAsync(AuditFilePath);
         lines.Should().ContainSingle();
-        lines[0].Should().Contain("\"reviewer_id\":\"carol@contoso.com\"");
+        lines[0].Should().Contain($"\"reviewer_id\":\"{AuditPseudonyms.Create().Person("carol@contoso.com")}\"")
+            .And.NotContain("carol@contoso.com");
         lines[0].Should().Contain("\"decision\":\"Fail\"");
     }
 
@@ -142,7 +146,7 @@ public sealed class HumanDecisionAuditTrailTests : IDisposable
         var pending = AwaitingApproval();
         await store.SaveAsync(pending, CancellationToken.None);
 
-        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        using var audit = new JsonlChangeAuditWriter(config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         var sut = new ApproveChangeProposalCommandHandler(
             store,
             new NoOpDispatchQueue(),

@@ -7,6 +7,7 @@ using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using GateAction = Domain.AI.Changes.GateAction;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.Changes;
 
@@ -20,7 +21,7 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _sut = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _sut = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         _expectedFile = Path.Combine(dir, "audit", "changes.jsonl");
     }
 
@@ -64,6 +65,25 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
         line.Should().Contain("\"tenant\":\"tenant-A\"");
         line.Should().Contain("\"blast_radius\":\"Low\"");
         line.Should().Contain("\"target_kind\":\"GitRepo\"");
+    }
+
+    [Fact]
+    public async Task Append_RecordsTheReviewerAsAReferenceAndTheReasonRedacted()
+    {
+        // The trail is kept for good (#903): the human reviewer as the reference the key holder can recompute, the
+        // orchestrator's own auto-approval readable as it is, and the reason with identifiers taken out.
+        var proposal = TestProposals.NewProposal();
+        var human = NewDecision("approval", GateAction.Pass, "ok, dana@contoso.com signed off") with { ReviewerId = "alice@contoso.com" };
+        var automatic = NewDecision("approval", GateAction.Pass) with { ReviewerId = "auto-approver" };
+
+        await _sut.AppendAsync(proposal, human, proposal.SubmittedBy, OrchestratorMode.Live, "c1", CancellationToken.None);
+        await _sut.AppendAsync(proposal, automatic, proposal.SubmittedBy, OrchestratorMode.Live, "c2", CancellationToken.None);
+
+        var lines = await AuditTrailFiles.ReadAllLinesAsync(_expectedFile);
+        lines[0].Should().NotContain("@contoso.com")
+            .And.Contain($"\"reviewer_id\":\"{AuditPseudonyms.Create().Person("alice@contoso.com")}\"")
+            .And.Contain("\"reason\":\"ok, [REDACTED");
+        lines[1].Should().Contain("\"reviewer_id\":\"auto-approver\"", "a system id names no one");
     }
 
     [Fact]

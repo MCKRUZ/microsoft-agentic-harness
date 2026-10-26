@@ -181,6 +181,8 @@ public static class DependencyInjection
             Infrastructure.AI.Helpers.OwnerOnlyDirectoryCreator>();
         services.TryAddSingleton<Application.AI.Common.Interfaces.Audit.IAuditPseudonymizer,
             Infrastructure.AI.Audit.HmacAuditPseudonymizer>();
+        services.TryAddSingleton<Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter,
+            Infrastructure.AI.Telemetry.Redaction.DefaultContentRedactionFilter>();
         services.AddSingleton<JsonlGovernanceAuditWriter>();
         services.AddSingleton<IGovernanceAuditService>(sp =>
             sp.GetRequiredService<JsonlGovernanceAuditWriter>());

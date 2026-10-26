@@ -9,6 +9,8 @@ using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using Infrastructure.AI.Tests.Audit;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.IncidentResponse;
 
@@ -32,7 +34,7 @@ public sealed class IncidentResponseOrchestratorOverlayTests : IDisposable
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         _monitor = monitor;
     }
 

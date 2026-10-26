@@ -11,6 +11,8 @@ using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Compliance;
+using Application.AI.Common.Interfaces.Telemetry;
+using Domain.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Changes;
 
@@ -23,7 +25,7 @@ namespace Infrastructure.AI.Changes;
 /// decision is detectable.
 /// </summary>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Changes:AuditStoragePath} (default .agent-sessions/changes) of change-gate decisions: proposal id, gate, decision, reason, reviewer id, agent and tenant. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Changes:AuditStoragePath} (default .agent-sessions/changes) of change-gate decisions: proposal id, gate, decision, redacted reason, reviewer and direct-invocation caller as keyed references (#903; records written earlier hold them raw), agent and tenant. Kept by design: deleting records would break the chain.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Tenant,
     RetentionBasis.KeptByDesign,
@@ -54,16 +56,26 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
     private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlChangeAuditWriter> _logger;
+    private readonly IAuditPseudonymizer _pseudonymizer;
+    private readonly IContentRedactionFilter _redaction;
 
     /// <summary>Initializes a new <see cref="JsonlChangeAuditWriter"/>.</summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
     /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
+    /// <param name="pseudonymizer">Records the reviewer and a direct invocation's caller as references (#903).</param>
+    /// <param name="redaction">Redacts identifiers from the reviewer's reason.</param>
     public JsonlChangeAuditWriter(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
-        ILogger<JsonlChangeAuditWriter> logger)
+        ILogger<JsonlChangeAuditWriter> logger,
+        IAuditPseudonymizer pseudonymizer,
+        IContentRedactionFilter redaction)
     {
+        ArgumentNullException.ThrowIfNull(pseudonymizer);
+        ArgumentNullException.ThrowIfNull(redaction);
+        _pseudonymizer = pseudonymizer;
+        _redaction = redaction;
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
@@ -93,9 +105,9 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
             ProposalId = proposal.Id,
             GateKey = decision.GateKey,
             Decision = decision.Action,
-            Reason = decision.Reason,
+            Reason = decision.Reason is null ? null : AuditText.Redact(decision.Reason, _redaction, _pseudonymizer.KeyId),
             EvidenceHash = decision.EvidenceHash,
-            ReviewerId = decision.ReviewerId,
+            ReviewerId = RecordedReviewer(decision.ReviewerId),
             BlastRadius = proposal.BlastRadius,
             TargetKind = proposal.Target.Kind,
             Mode = mode.ToString(),
@@ -103,7 +115,7 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
             AgentIdentity = new ChangeAuditIdentity
             {
                 Tenant = identity.TenantId,
-                Agent = identity.Id,
+                Agent = AuditAgentIds.Recorded(identity.Id, _pseudonymizer),
                 Kind = identity.Kind.ToString()
             },
             DurationMs = decision.DurationMs
@@ -179,4 +191,11 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
 
     /// <inheritdoc />
     public void Dispose() => _chain.Dispose();
+
+    // The orchestrator's own auto-approval is recorded under a fixed system id, not a person; it stays readable.
+    private string? RecordedReviewer(string? reviewerId) =>
+        reviewerId is null || reviewerId == AutoApproverReviewerId ? reviewerId : _pseudonymizer.Person(reviewerId);
+
+    /// <summary>The reviewer id the change orchestrator records for a proposal it approves itself.</summary>
+    internal const string AutoApproverReviewerId = "auto-approver";
 }

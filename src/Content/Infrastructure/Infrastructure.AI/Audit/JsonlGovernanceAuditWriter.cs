@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.OpenTelemetry.Metrics;
-using Application.AI.Common.Services.Tools;
 using Domain.AI.Audit;
 using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
@@ -82,6 +82,7 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlGovernanceAuditWriter> _logger;
     private readonly IAuditPseudonymizer _pseudonymizer;
+    private readonly IContentRedactionFilter _redaction;
 
     /// <summary>Initializes a new instance of <see cref="JsonlGovernanceAuditWriter"/>.</summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
@@ -90,12 +91,19 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     /// <param name="pseudonymizer">
     /// Records the caller behind a direct invocation (<c>direct-invoke:{user id}</c>) as a keyed reference (#903).
     /// </param>
+    /// <param name="redaction">
+    /// Redacts the action and decision text, which producers fill with free text: a delegation's model reasoning, a memory
+    /// key, an approver's reason (#903).
+    /// </param>
     public JsonlGovernanceAuditWriter(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
         ILogger<JsonlGovernanceAuditWriter> logger,
-        IAuditPseudonymizer pseudonymizer)
+        IAuditPseudonymizer pseudonymizer,
+        IContentRedactionFilter redaction)
     {
+        ArgumentNullException.ThrowIfNull(redaction);
+        _redaction = redaction;
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
@@ -117,16 +125,19 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     /// <inheritdoc />
     public void Log(string agentId, string action, string decision)
     {
-        var record = new GovernanceAuditRecord
-        {
-            Timestamp = DateTimeOffset.UtcNow,
-            AgentId = RecordedAgentId(agentId),
-            Action = action,
-            Decision = decision,
-        };
-
+        // Metrics and error logs name the action by its kind only ("memory_write", "delegate"): the full text carries
+        // memory keys, agent ids and paths, which a metric label would publish raw and without bound (#903).
+        var actionKind = ActionKind(action);
         try
         {
+            var record = new GovernanceAuditRecord
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                AgentId = RecordedAgentId(agentId ?? string.Empty),
+                Action = RedactOrPlaceholder(action),
+                Decision = RedactOrPlaceholder(decision),
+            };
+
             var json = JsonSerializer.Serialize(record, SerializeOptions);
             var result = _chain.AppendAsync(json, CancellationToken.None).GetAwaiter().GetResult();
             if (result.IsSuccess)
@@ -135,15 +146,15 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
                 // built on this metric read as a healthy, growing audit trail while governance.jsonl
                 // silently stopped receiving records.
                 GovernanceMetrics.AuditEvents.Add(1,
-                    new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
+                    new KeyValuePair<string, object?>(GovernanceConventions.Action, actionKind));
             }
             else
             {
                 GovernanceMetrics.AuditWriteFailures.Add(1,
-                    new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
+                    new KeyValuePair<string, object?>(GovernanceConventions.Action, actionKind));
                 _logger.LogError(
-                    "Failed to append governance audit record for agent {AgentId}, action {Action}: {Reason}",
-                    agentId, action, string.Join("; ", result.Errors));
+                    "Failed to append governance audit record for action {Action}: {Reason}",
+                    actionKind, string.Join("; ", result.Errors));
             }
         }
         catch (Exception ex)
@@ -155,12 +166,31 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             // See this class's remarks: a governance audit write failure degrades the audit trail's
             // completeness, it must never fail the tool-call decision it is recording.
             GovernanceMetrics.AuditWriteFailures.Add(1,
-                new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
-            _logger.LogError(ex,
-                "Failed to append governance audit record for agent {AgentId}, action {Action}",
-                agentId, action);
+                new KeyValuePair<string, object?>(GovernanceConventions.Action, actionKind));
+            _logger.LogError(ex, "Failed to append governance audit record for action {Action}", actionKind);
         }
     }
+
+    // A redaction filter can time out or, when a deployment replaces it, fail outright. The record is still written,
+    // without the text it could not clean: an audit write must never fail the decision it records, nor write raw text.
+    private string RedactOrPlaceholder(string? text)
+    {
+        try
+        {
+            return AuditText.Redact(text ?? string.Empty, _redaction, _pseudonymizer.KeyId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not redact governance audit text; recording a placeholder instead");
+            return RedactionFailed;
+        }
+    }
+
+    private static string ActionKind(string? action) =>
+        string.IsNullOrEmpty(action) ? "unknown" : action.Split(':', 2)[0];
+
+    /// <summary>Recorded in place of text the redaction filter failed on.</summary>
+    internal const string RedactionFailed = "[REDACTION_FAILED]";
 
     /// <inheritdoc />
     public bool VerifyChainIntegrity()
@@ -257,8 +287,5 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     public void Dispose() => _chain.Dispose();
 
     // A direct invocation runs as "direct-invoke:{user id}"; the trail records the caller as a reference (#903).
-    private string RecordedAgentId(string agentId) =>
-        DirectInvocationAgentIds.TryGetOwner(agentId, out var owner)
-            ? DirectInvocationAgentIds.For(_pseudonymizer.Person(owner))
-            : agentId;
+    private string RecordedAgentId(string agentId) => AuditAgentIds.Recorded(agentId, _pseudonymizer);
 }

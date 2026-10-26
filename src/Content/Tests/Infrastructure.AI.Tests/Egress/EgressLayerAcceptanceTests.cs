@@ -27,7 +27,7 @@ public sealed class EgressLayerAcceptanceTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _audit = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance);
+        _audit = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance, AuditPseudonyms.Create());
         _auditFile = Path.Combine(dir, "audit", "egress.jsonl");
     }
 

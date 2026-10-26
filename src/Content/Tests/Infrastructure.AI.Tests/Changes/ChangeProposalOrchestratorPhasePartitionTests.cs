@@ -7,6 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using GateAction = Domain.AI.Changes.GateAction;
+using Infrastructure.AI.Tests.Audit;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.Changes;
 
@@ -30,7 +32,7 @@ public sealed class ChangeProposalOrchestratorPhasePartitionTests : IDisposable
         _tempDir = dir;
         _monitor = monitor;
         _store = new InMemoryChangeProposalStore();
-        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        _audit = new JsonlChangeAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
     }
 
     public void Dispose()

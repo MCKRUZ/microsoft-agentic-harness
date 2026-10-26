@@ -74,7 +74,9 @@ public sealed record DriftOperatorActionAudit
     /// <summary>
     /// The authenticated caller's identity, resolved by the controller from the validated
     /// token's configured claim (<c>DriftDetectionConfig.CallerIdentityClaimType</c>). Never
-    /// sourced from a request body.
+    /// sourced from a request body. Recorded as the caller's audit reference
+    /// (<c>IAuditPseudonymizer.Person</c>), never the raw id: the trail is hash-chained and kept
+    /// for good, and the key holder can still compute a named caller's reference (#903).
     /// </summary>
     public required string CallerId { get; init; }
 

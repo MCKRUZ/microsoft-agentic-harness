@@ -48,7 +48,7 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
         ArgumentNullException.ThrowIfNull(directories);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var key = AuditPseudonymKey.Resolve(config.Value.AI.Audit, directories, logger);
+        var key = AuditPseudonymKey.Resolve(config.Value, directories, logger);
         _key = HKDF.Extract(HashAlgorithmName.SHA256, key, ExtractSalt);
         CryptographicOperations.ZeroMemory(key);
         _personKey = Derive(PersonInfo);

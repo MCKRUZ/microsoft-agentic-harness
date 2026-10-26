@@ -30,7 +30,7 @@ namespace Infrastructure.AI.Egress;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: full target URI with query string, host, resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: target scheme, host and port with a keyed fingerprint of the full address (#903; records written earlier hold the full URI with query string), resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain.",
     PersonalDataCategories.NetworkTargets | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Tenant,
     RetentionBasis.KeptByDesign,
@@ -61,19 +61,26 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
     private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlEgressAuditWriter> _logger;
+    private readonly IAuditPseudonymizer _pseudonymizer;
 
     /// <summary>Initializes a new <see cref="JsonlEgressAuditWriter"/>.</summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
     /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
+    /// <param name="pseudonymizer">
+    /// Fingerprints the full target address and records a direct invocation's caller as a reference (#903).
+    /// </param>
     public JsonlEgressAuditWriter(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
-        ILogger<JsonlEgressAuditWriter> logger)
+        ILogger<JsonlEgressAuditWriter> logger,
+        IAuditPseudonymizer pseudonymizer)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(pseudonymizer);
+        _pseudonymizer = pseudonymizer;
 
         var chain = AuditChains.Egress(config.CurrentValue, timeProvider);
         _filePath = chain.Segments.LegacyFile!;
@@ -94,7 +101,7 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         {
             Timestamp = decision.DecidedAt,
             Allowed = decision.Allowed,
-            Target = decision.Target.ToString(),
+            Target = RecordedTarget(decision.Target),
             Host = decision.Target.Host,
             Scheme = decision.Target.Scheme,
             Port = decision.Target.Port,
@@ -104,7 +111,7 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
             AgentIdentity = new EgressAuditIdentity
             {
                 Tenant = identity.TenantId,
-                Agent = identity.Id,
+                Agent = AuditAgentIds.Recorded(identity.Id, _pseudonymizer),
                 Kind = identity.Kind.ToString()
             }
         };
@@ -175,4 +182,15 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
 
     /// <inheritdoc />
     public void Dispose() => _chain.Dispose();
+
+    // The trail is kept for good, and a path or query names people often enough ("/users/octocat", "?email=..."), so it
+    // keeps where the request went (scheme, host, port; never user info) and a keyed fingerprint of the address the
+    // request was sent to, which the key holder can match against a known one (#903). The fingerprint covers what goes on
+    // the wire: scheme, host, port, path and query, in their escaped form, never the user info or the fragment, so it
+    // cannot be used to confirm a guessed password. Match against new Uri(candidate) formatted the same way.
+    private string RecordedTarget(Uri target) =>
+        target.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + "/#"
+            + _pseudonymizer.Fingerprint(
+                IAuditPseudonymizer.Purposes.EgressTarget,
+                target.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped));
 }

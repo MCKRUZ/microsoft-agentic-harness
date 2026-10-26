@@ -34,6 +34,12 @@ public sealed class AuditPseudonymKeyValidator : AbstractValidator<AIConfig>
             .WithName("AppConfig:AI:Audit:PseudonymKeyPath")
             .WithMessage("Audit:PseudonymKeyPath must name the key file when Audit:PseudonymKey is empty.");
 
+        RuleFor(x => x.Audit.PseudonymKeyPath)
+            .Must(path => Path.GetDirectoryName(Path.GetFullPath(path)) is not null)
+            .When(x => string.IsNullOrEmpty(x.Audit.PseudonymKey) && !string.IsNullOrWhiteSpace(x.Audit.PseudonymKeyPath))
+            .WithName("AppConfig:AI:Audit:PseudonymKeyPath")
+            .WithMessage("Audit:PseudonymKeyPath must name a file inside a folder, not a filesystem root.");
+
         RuleFor(x => x)
             .Must(config => OverlappingFolder(config) is null)
             .When(config => string.IsNullOrEmpty(config.Audit.PseudonymKey)
@@ -45,8 +51,10 @@ public sealed class AuditPseudonymKeyValidator : AbstractValidator<AIConfig>
 
     private static string? OverlappingFolder(AIConfig config)
     {
-        var keyFolder = AuditArchivePathValidator.Normalize(
-            Path.GetDirectoryName(Path.GetFullPath(config.Audit.PseudonymKeyPath))!);
+        if (Path.GetDirectoryName(Path.GetFullPath(config.Audit.PseudonymKeyPath)) is not { } folder)
+            return null; // Reported by the rule above.
+
+        var keyFolder = AuditArchivePathValidator.Normalize(folder);
         var protectedFolders = AuditArchivePathValidator.LiveFolders(config)
             .Append((Name: "Audit:ArchivePath", Path: config.Audit.ArchivePath));
         return protectedFolders

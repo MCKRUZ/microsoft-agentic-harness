@@ -19,7 +19,7 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
     {
         var (monitor, dir) = TestConfig.NewMonitor();
         _tempDir = dir;
-        _sut = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance);
+        _sut = new JsonlEgressAuditWriter(monitor, TimeProvider.System, NullLogger<JsonlEgressAuditWriter>.Instance, AuditPseudonyms.Create());
         _expectedFile = Path.Combine(dir, "audit", "egress.jsonl");
     }
 
@@ -58,6 +58,28 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
         line.Should().Contain("\"agent\":\"agent-egress\"");
         line.Should().Contain("\"tenant\":\"tenant-egress\"");
         line.Should().Contain("\"matched_allowlist_entry\":\"api.github.com\"");
+    }
+
+    [Fact]
+    public async Task Append_RecordsWhereTheRequestWentButNotThePathQueryOrUserInfo()
+    {
+        // The trail is kept for good, and a path or query names people often enough ("/users/octocat",
+        // "?email=..."). It keeps scheme, host and port, which the host filter and every reader need, and a keyed
+        // fingerprint of the full address the key holder can match against a known one (#903).
+        var target = new Uri("https://svc:s3cret@api.github.com/users/octocat?email=dana%40contoso.com");
+        var decision = AllowDecision() with { Target = target };
+        var caller = TestIdentity.Default with { Id = "direct-invoke:user-oid-42" };
+
+        await _sut.AppendAsync(decision, caller, CancellationToken.None);
+
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
+        line.Should().NotContain("octocat").And.NotContain("dana").And.NotContain("s3cret").And.NotContain("user-oid-42");
+        var pseudonyms = AuditPseudonyms.Create();
+        line.Should().Contain(
+            $"\"target\":\"https://api.github.com/#{pseudonyms.Fingerprint("egress-target", "https://api.github.com/users/octocat?email=dana%40contoso.com")}\"",
+            "the fingerprint covers what went on the wire, never the user info, so it cannot confirm a guessed password");
+        line.Should().Contain("\"host\":\"api.github.com\"");
+        line.Should().Contain($"\"agent\":\"direct-invoke:{pseudonyms.Person("user-oid-42")}\"");
     }
 
     [Fact]

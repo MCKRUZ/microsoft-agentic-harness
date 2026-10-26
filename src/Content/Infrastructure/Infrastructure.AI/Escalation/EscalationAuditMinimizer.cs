@@ -4,6 +4,7 @@ using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Telemetry.Redaction;
+using Infrastructure.AI.Audit;
 
 namespace Infrastructure.AI.Escalation;
 
@@ -58,7 +59,7 @@ internal sealed class EscalationAuditMinimizer
     {
         var arguments = request.Arguments.ToDictionary(
             pair => pair.Key,
-            pair => _pseudonymizer.Fingerprint(IAuditPseudonymizer.Purposes.ToolArgument, pair.Value),
+            pair => _pseudonymizer.Fingerprint(IAuditPseudonymizer.Purposes.ToolArgument, pair.Value ?? string.Empty),
             StringComparer.Ordinal);
         var standIns = StandIns(request, arguments);
 
@@ -110,16 +111,13 @@ internal sealed class EscalationAuditMinimizer
         }
 
         standIns.AddRange(request.Arguments
-            .Where(pair => pair.Value.Length >= MinimumEchoedValueLength)
+            .Where(pair => pair.Value is { Length: >= MinimumEchoedValueLength })
             .Select(pair => (pair.Value, fingerprints[pair.Key])));
         return [.. standIns.DistinctBy(s => s.Raw).OrderByDescending(s => s.Raw.Length)];
     }
 
     // A direct invocation runs as "direct-invoke:{user id}"; a configured agent's name is not personal data.
-    private string AgentId(string agentId) =>
-        DirectInvocationAgentIds.TryGetOwner(agentId, out var owner)
-            ? DirectInvocationAgentIds.For(_pseudonymizer.Person(owner))
-            : agentId;
+    private string AgentId(string agentId) => AuditAgentIds.Recorded(agentId, _pseudonymizer);
 
     private IReadOnlyList<string> People(IReadOnlyList<string> people) => [.. people.Select(_pseudonymizer.Person)];
 
@@ -128,7 +126,9 @@ internal sealed class EscalationAuditMinimizer
         if (text is null)
             return null;
 
-        var marked = text;
+        // A marker character already in the text would be read back as one of ours; it means nothing, so drop it.
+        var marked = text.Replace(MarkerStart.ToString(), string.Empty, StringComparison.Ordinal)
+            .Replace(MarkerEnd.ToString(), string.Empty, StringComparison.Ordinal);
         for (var i = 0; i < standIns.Count; i++)
             marked = marked.Replace(standIns[i].Raw, Marker(i), StringComparison.Ordinal);
 
