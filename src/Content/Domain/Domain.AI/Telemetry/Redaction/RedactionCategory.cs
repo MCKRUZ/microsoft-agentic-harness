@@ -48,6 +48,21 @@ public enum RedactionCategory
     /// body — so it gets its own category rather than folding into <see cref="Generic"/>.
     /// </summary>
     VendorApiKey = 8,
+
+    /// <summary>
+    /// International Bank Account Numbers, with or without the usual four-character spacing, matched only when the IBAN
+    /// check digits (ISO 13616, mod 97) hold, so a product code that merely looks like one is left alone.
+    /// </summary>
+    Iban = 9,
+
+    /// <summary>
+    /// Common EU national identifier formats that are recognisable by shape: Spanish DNI and NIE (with their check letter),
+    /// the Italian <i>codice fiscale</i>, the French social-security number (NIR, with its key) and the Belgian national
+    /// number (with its check digits). Purely numeric national ids of other member states (a German tax id, a Dutch BSN,
+    /// a Polish PESEL) are indistinguishable from other numbers by pattern and are caught, untagged, by the broader digit
+    /// rules (<see cref="Ssn"/>, <see cref="CreditCard"/>, <see cref="Phone"/>).
+    /// </summary>
+    EuNationalId = 10,
 }
 
 /// <summary>

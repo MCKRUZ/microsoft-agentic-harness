@@ -9,14 +9,26 @@ namespace Infrastructure.AI.Telemetry.Redaction;
 /// <summary>
 /// Built-in <see cref="IContentRedactionFilter"/> that ships with a fixed,
 /// conservative rule set covering email addresses, phone numbers, US SSNs,
-/// credit-card PANs, IPv4/IPv6 addresses, AWS access keys, JWT tokens, and a
-/// generic <c>Bearer</c> / <c>AccountKey</c> / <c>api_key</c> bucket.
+/// credit-card PANs, IBANs, EU national identifiers, IPv4/IPv6 addresses, AWS
+/// access keys, vendor API keys, JWT tokens, and a generic <c>Bearer</c> /
+/// <c>AccountKey</c> / <c>api_key</c> bucket.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Rules are compiled once at construction. The filter is thread-safe — the
 /// compiled <see cref="Regex"/> instances are stateless after construction
 /// and the rule list is held as an immutable snapshot.
+/// </para>
+/// <para>
+/// <b>What a pattern cannot find.</b> Names and postal addresses have no reliable shape, so no rule here claims to catch
+/// them (#903). A deployment that must redact them replaces this filter: <see cref="IContentRedactionFilter"/> is
+/// registered with <c>TryAddSingleton</c>, so a consumer's implementation (a named-entity recogniser, Azure AI Language
+/// PII detection) registered first takes its place on every redaction path.
+/// </para>
+/// <para>
+/// <b>Identifiers with check digits are confirmed before they are redacted.</b> IBANs and the EU national identifiers are
+/// matched by shape and then by their own check digits (<see cref="IdentifierCheckDigits"/>), so a product code that
+/// merely looks like one survives. They run before the broad digit rules, so a genuine one is tagged by what it is.
 /// </para>
 /// <para>
 /// The rule set is intentionally over-redactive: false positives (e.g. a
@@ -53,7 +65,9 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             {
                 continue;
             }
-            result = rule.Pattern.Replace(result, rule.Replacement);
+            result = rule.GenuineLength is null
+                ? rule.Pattern.Replace(result, rule.Replacement)
+                : ApplyConfirmed(result, rule);
         }
         return result;
     }
@@ -97,10 +111,51 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"\bxapp-[A-Za-z0-9-]+\b",
             "[REDACTED:VendorApiKey]"));
 
-        // Emails — RFC 5322 simplified.
+        // Emails — RFC 5322 simplified. Before the identifier rules: an address whose mailbox is an id (an Italian PEC
+        // address built from a codice fiscale) must go whole, and an id redacted first would break the address apart.
         b.Add(Compile(RedactionCategory.Email,
             @"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
             "[REDACTED:Email]"));
+
+        // The identifier rules below spell out ASCII letter and digit classes and never use (?i): with IgnoreCase, [A-Z]
+        // also matches the Kelvin sign (U+212A), and \d any Unicode digit, neither of which the check digits can read.
+
+        // IBAN — country, check digits, then 11 to 30 letters and digits, spaced in fours or not. Upper case only, as banks
+        // print them. Confirmed by its mod-97 check digits on the longest prefix that passes and ends where a group ends,
+        // so running into the next capitalised word does not lose the IBAN.
+        b.Add(Compile(RedactionCategory.Iban,
+            @"\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]){11,30}\b",
+            "[REDACTED:Iban]",
+            IdentifierCheckDigits.IbanLength));
+
+        // Spanish NIE (X/Y/Z, 7 digits, letter) and DNI (8 digits, letter), confirmed by the check letter.
+        b.Add(Compile(RedactionCategory.EuNationalId,
+            @"\b[XYZxyz][ -]?[0-9]{7}[ -]?[A-Za-z]\b",
+            "[REDACTED:EuNationalId]",
+            IdentifierCheckDigits.SpanishIdLength));
+        b.Add(Compile(RedactionCategory.EuNationalId,
+            @"\b[0-9]{8}[ -]?[A-Za-z]\b",
+            "[REDACTED:EuNationalId]",
+            IdentifierCheckDigits.SpanishIdLength));
+
+        // Italian codice fiscale — surname and name letters, birth date and place, check character; digits may be
+        // replaced by L-V (omocodia).
+        b.Add(Compile(RedactionCategory.EuNationalId,
+            @"\b[A-Za-z]{6}[0-9LMNPQRSTUVlmnpqrstuv]{2}[ABCDEHLMPRSTabcdehlmprst][0-9LMNPQRSTUVlmnpqrstuv]{2}[A-Za-z][0-9LMNPQRSTUVlmnpqrstuv]{3}[A-Za-z]\b",
+            "[REDACTED:EuNationalId]",
+            IdentifierCheckDigits.CodiceFiscaleLength));
+
+        // French NIR — sex, year, month, department (2A/2B for Corsica), commune, order, key; usually printed spaced.
+        b.Add(Compile(RedactionCategory.EuNationalId,
+            @"\b[12] ?[0-9]{2} ?[0-9]{2} ?(?:[0-9]{2}|2[ABab]) ?[0-9]{3} ?[0-9]{3} ?[0-9]{2}\b",
+            "[REDACTED:EuNationalId]",
+            IdentifierCheckDigits.FrenchNirLength));
+
+        // Belgian national number — YY.MM.DD-SSS.CC.
+        b.Add(Compile(RedactionCategory.EuNationalId,
+            @"\b[0-9]{2}\.?[0-9]{2}\.?[0-9]{2}[-. ]?[0-9]{3}\.?[0-9]{2}\b",
+            "[REDACTED:EuNationalId]",
+            IdentifierCheckDigits.BelgianNationalNumberLength));
 
         // US SSN — 3-2-4 with optional separator.
         b.Add(Compile(RedactionCategory.Ssn,
@@ -181,10 +236,52 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
     // already-proven fix rather than a tighter, untested value.
     private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(2);
 
-    private static CompiledRule Compile(RedactionCategory category, string pattern, string replacement)
+    private static CompiledRule Compile(
+        RedactionCategory category, string pattern, string replacement, Func<string, int>? genuineLength = null)
         => new(category,
             new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant, MatchTimeout),
-            replacement);
+            replacement,
+            genuineLength);
 
-    private sealed record CompiledRule(RedactionCategory Category, Regex Pattern, string Replacement);
+    /// <summary>
+    /// Applies a rule whose matches must pass their check digits, walking the whole text rather than one regex pass. A
+    /// match that does not start with a genuine identifier is skipped by one character and the search resumes there; one
+    /// that does has its genuine part replaced and the search resumes right after it. One pass would miss an identifier
+    /// whose start a look-alike token swallowed ("REF AB12 DE89 …") and the second of two in a row, since a match can end
+    /// partway through the next one. Each search sees the real text around it, so word boundaries stay true.
+    /// </summary>
+    private static string ApplyConfirmed(string text, CompiledRule rule)
+    {
+        var result = new System.Text.StringBuilder(text.Length);
+        var position = 0;
+        while (position < text.Length)
+        {
+            var match = rule.Pattern.Match(text, position);
+            if (!match.Success)
+                break;
+
+            var genuine = rule.GenuineLength!(match.Value);
+            if (genuine == 0)
+            {
+                result.Append(text, position, match.Index + 1 - position);
+                position = match.Index + 1;
+                continue;
+            }
+
+            result.Append(text, position, match.Index - position).Append(rule.Replacement);
+            position = match.Index + genuine;
+        }
+
+        return result.Append(text, position, text.Length - position).ToString();
+    }
+
+    /// <param name="Category">The category the rule redacts.</param>
+    /// <param name="Pattern">What a candidate looks like.</param>
+    /// <param name="Replacement">What a redacted value becomes.</param>
+    /// <param name="GenuineLength">
+    /// For an identifier with check digits: how many leading characters of a match are a genuine identifier, 0 for none.
+    /// <see langword="null"/> when every match is redacted whole.
+    /// </param>
+    private sealed record CompiledRule(
+        RedactionCategory Category, Regex Pattern, string Replacement, Func<string, int>? GenuineLength);
 }

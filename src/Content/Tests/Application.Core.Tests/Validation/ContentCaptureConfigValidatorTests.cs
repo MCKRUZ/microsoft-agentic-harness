@@ -24,7 +24,7 @@ public class ContentCaptureConfigValidatorTests
 
         config.Enabled.Should().BeFalse();
         config.RedactionCategories.Should()
-            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "JwtToken", "Generic");
+            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "Iban", "EuNationalId", "JwtToken", "Generic");
     }
 
     [Fact]
