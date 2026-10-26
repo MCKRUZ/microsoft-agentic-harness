@@ -22,6 +22,20 @@ public sealed class NamedPipeLoggerProviderTests
     }
 
     [Fact]
+    public void Log_AfterTheProviderIsDisposed_IsDroppedWithoutThrowing()
+    {
+        // The host logs "Hosting stopped" at Debug after its logger providers are disposed. A logger that throws then
+        // fails the host's shutdown, which surfaced as a test-class cleanup failure in CI (#945).
+        var provider = new NamedPipeLoggerProvider(CreateConfig($"disposed-{Guid.NewGuid():N}"));
+        var logger = provider.CreateLogger("TestCategory");
+        provider.Dispose();
+
+        var act = () => logger.LogInformation("written after dispose");
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void CreateLogger_ReturnsNonNullLogger()
     {
         using var provider = new NamedPipeLoggerProvider(CreateConfig());

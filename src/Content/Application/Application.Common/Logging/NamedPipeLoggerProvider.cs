@@ -56,11 +56,27 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
 
     /// <summary>
     /// Enqueues a message for streaming to connected pipe clients.
-    /// Non-blocking; drops the message if the queue is full.
+    /// Non-blocking; drops the message if the queue is full, or once the provider is disposed.
     /// </summary>
+    /// <remarks>
+    /// The host writes its last lines ("Hosting stopped") after the logger providers are disposed. Logging must never
+    /// throw, so a message that arrives then is dropped; the check and the catch together cover a dispose that races it.
+    /// </remarks>
     /// <param name="message">The formatted log message to stream.</param>
-    internal void WriteMessage(string message) =>
-        _messageQueue.TryAdd(message);
+    internal void WriteMessage(string message)
+    {
+        if (_disposed)
+            return;
+
+        try
+        {
+            _messageQueue.TryAdd(message);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposed between the check and the add.
+        }
+    }
 
     private static readonly UTF8Encoding PipeEncoding = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -137,7 +153,7 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
         }
     }
 
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <inheritdoc />
     public void Dispose()
