@@ -21,7 +21,9 @@ internal static class IdentifierCheckDigits
     {
         for (var end = candidate.Length; end > 0; end--)
         {
-            if (candidate[end - 1] == ' ')
+            // A prefix counts only where an IBAN can end: the end of the match or a group boundary. Accepting any shorter
+            // prefix that happens to pass mod 97 would redact part of a number and leave its last digits in clear.
+            if (candidate[end - 1] == ' ' || (end < candidate.Length && candidate[end] != ' '))
                 continue;
             var compact = candidate[..end].Replace(" ", string.Empty, StringComparison.Ordinal);
             if (compact.Length < 15)
@@ -57,6 +59,10 @@ internal static class IdentifierCheckDigits
     /// <returns>16 when the check character is right, or 0.</returns>
     public static int CodiceFiscaleLength(string candidate)
     {
+        // Every function here is called from inside a regex replacement, where an exception would fail the whole
+        // redaction: anything outside ASCII letters and digits is simply not an identifier.
+        if (candidate.Length != 16 || !candidate.All(char.IsAsciiLetterOrDigit))
+            return 0;
         var code = candidate.ToUpperInvariant();
         var sum = 0;
         for (var i = 0; i < 15; i++)

@@ -45,6 +45,54 @@ public sealed class EuIdentifierRedactionTests
         result.Should().Be("transfer [REDACTED:Iban] AND confirm");
     }
 
+    [Fact]
+    public void Redact_AnIbanThatFailsItsCheckDigits_IsNotPartlyRedactedThroughAPrefixThatPassesByChance()
+    {
+        // DE83370400444348401964 fails mod 97, but a shorter prefix of it passes by chance: redacting that prefix would
+        // leave the last digits in clear. A prefix counts only where an IBAN can end.
+        _filter.Redact("ref DE83370400444348401964 end", [RedactionCategory.Iban])
+            .Should().Be("ref DE83370400444348401964 end");
+    }
+
+    [Fact]
+    public void Redact_ALookAlikeTokenBeforeAnIban_DoesNotHideTheIban()
+    {
+        var result = _filter.Redact("REF AB12 DE89 3704 0044 0532 0130 00", [RedactionCategory.Iban]);
+
+        result.Should().Be("REF AB12 [REDACTED:Iban]");
+    }
+
+    [Fact]
+    public void Redact_TwoIbansInARow_AreBothRedacted()
+    {
+        var result = _filter.Redact("DE89 3704 0044 0532 0130 00 GB82 WEST 1234 5698 7654 32", [RedactionCategory.Iban]);
+
+        result.Should().Be("[REDACTED:Iban] [REDACTED:Iban]");
+    }
+
+    [Theory]
+    [InlineData("KRSMRA85T10A562S")] // Kelvin sign, which case-insensitive [A-Z] would accept
+    [InlineData("XK234567L")]
+    [InlineData("KE89 3704 0044 0532 0130 00")]
+    public void Redact_TextWithTheKelvinSign_NeverThrows(string text)
+    {
+        // Content reaching the filter can come from an MCP server or a user. A throw here fails the redaction on every
+        // path (spans, logs, spills, audit), so a look-alike character must simply not match.
+        var act = () => _filter.Redact($"value {text} end", Enum.GetValues<RedactionCategory>());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("rssmra85t10a562s@pec.example.it")] // an Italian PEC mailbox built from a codice fiscale
+    [InlineData("maria.12345678Z@corp.example.es")]
+    public void Redact_AnEmailWhoseMailboxIsAnId_IsRedactedWhole(string email)
+    {
+        var result = _filter.Redact($"write to {email} today", Enum.GetValues<RedactionCategory>());
+
+        result.Should().Be("write to [REDACTED:Email] today", "an id redacted first would break the address and leak the rest");
+    }
+
     [Theory]
     [InlineData("12345678Z")] // Spanish DNI
     [InlineData("12345678-Z")]

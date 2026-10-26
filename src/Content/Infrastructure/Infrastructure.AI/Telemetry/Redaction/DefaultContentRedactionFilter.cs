@@ -67,7 +67,7 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             }
             result = rule.GenuineLength is null
                 ? rule.Pattern.Replace(result, rule.Replacement)
-                : rule.Pattern.Replace(result, m => Confirmed(m.Value, rule));
+                : ApplyConfirmed(result, rule);
         }
         return result;
     }
@@ -111,47 +111,51 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"\bxapp-[A-Za-z0-9-]+\b",
             "[REDACTED:VendorApiKey]"));
 
+        // Emails — RFC 5322 simplified. Before the identifier rules: an address whose mailbox is an id (an Italian PEC
+        // address built from a codice fiscale) must go whole, and an id redacted first would break the address apart.
+        b.Add(Compile(RedactionCategory.Email,
+            @"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            "[REDACTED:Email]"));
+
+        // The identifier rules below spell out ASCII letter and digit classes and never use (?i): with IgnoreCase, [A-Z]
+        // also matches the Kelvin sign (U+212A), and \d any Unicode digit, neither of which the check digits can read.
+
         // IBAN — country, check digits, then 11 to 30 letters and digits, spaced in fours or not. Upper case only, as banks
-        // print them. Confirmed by its mod-97 check digits on the longest prefix that passes, so running into the next
-        // capitalised word does not lose the IBAN.
+        // print them. Confirmed by its mod-97 check digits on the longest prefix that passes and ends where a group ends,
+        // so running into the next capitalised word does not lose the IBAN.
         b.Add(Compile(RedactionCategory.Iban,
-            @"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b",
+            @"\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]){11,30}\b",
             "[REDACTED:Iban]",
             IdentifierCheckDigits.IbanLength));
 
         // Spanish NIE (X/Y/Z, 7 digits, letter) and DNI (8 digits, letter), confirmed by the check letter.
         b.Add(Compile(RedactionCategory.EuNationalId,
-            @"(?i)\b[XYZ][ -]?\d{7}[ -]?[A-Z]\b",
+            @"\b[XYZxyz][ -]?[0-9]{7}[ -]?[A-Za-z]\b",
             "[REDACTED:EuNationalId]",
             IdentifierCheckDigits.SpanishIdLength));
         b.Add(Compile(RedactionCategory.EuNationalId,
-            @"(?i)\b\d{8}[ -]?[A-Z]\b",
+            @"\b[0-9]{8}[ -]?[A-Za-z]\b",
             "[REDACTED:EuNationalId]",
             IdentifierCheckDigits.SpanishIdLength));
 
         // Italian codice fiscale — surname and name letters, birth date and place, check character; digits may be
         // replaced by L-V (omocodia).
         b.Add(Compile(RedactionCategory.EuNationalId,
-            @"(?i)\b[A-Z]{6}[0-9LMNPQRSTUV]{2}[ABCDEHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]\b",
+            @"\b[A-Za-z]{6}[0-9LMNPQRSTUVlmnpqrstuv]{2}[ABCDEHLMPRSTabcdehlmprst][0-9LMNPQRSTUVlmnpqrstuv]{2}[A-Za-z][0-9LMNPQRSTUVlmnpqrstuv]{3}[A-Za-z]\b",
             "[REDACTED:EuNationalId]",
             IdentifierCheckDigits.CodiceFiscaleLength));
 
         // French NIR — sex, year, month, department (2A/2B for Corsica), commune, order, key; usually printed spaced.
         b.Add(Compile(RedactionCategory.EuNationalId,
-            @"(?i)\b[12] ?\d{2} ?\d{2} ?(?:\d{2}|2[AB]) ?\d{3} ?\d{3} ?\d{2}\b",
+            @"\b[12] ?[0-9]{2} ?[0-9]{2} ?(?:[0-9]{2}|2[ABab]) ?[0-9]{3} ?[0-9]{3} ?[0-9]{2}\b",
             "[REDACTED:EuNationalId]",
             IdentifierCheckDigits.FrenchNirLength));
 
         // Belgian national number — YY.MM.DD-SSS.CC.
         b.Add(Compile(RedactionCategory.EuNationalId,
-            @"\b\d{2}\.?\d{2}\.?\d{2}[-. ]?\d{3}\.?\d{2}\b",
+            @"\b[0-9]{2}\.?[0-9]{2}\.?[0-9]{2}[-. ]?[0-9]{3}\.?[0-9]{2}\b",
             "[REDACTED:EuNationalId]",
             IdentifierCheckDigits.BelgianNationalNumberLength));
-
-        // Emails — RFC 5322 simplified.
-        b.Add(Compile(RedactionCategory.Email,
-            @"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-            "[REDACTED:Email]"));
 
         // US SSN — 3-2-4 with optional separator.
         b.Add(Compile(RedactionCategory.Ssn,
@@ -239,11 +243,36 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             replacement,
             genuineLength);
 
-    /// <summary>The match with its genuine leading identifier replaced, or unchanged when its check digits do not hold.</summary>
-    private static string Confirmed(string match, CompiledRule rule)
+    /// <summary>
+    /// Applies a rule whose matches must pass their check digits, walking the whole text rather than one regex pass. A
+    /// match that does not start with a genuine identifier is skipped by one character and the search resumes there; one
+    /// that does has its genuine part replaced and the search resumes right after it. One pass would miss an identifier
+    /// whose start a look-alike token swallowed ("REF AB12 DE89 …") and the second of two in a row, since a match can end
+    /// partway through the next one. Each search sees the real text around it, so word boundaries stay true.
+    /// </summary>
+    private static string ApplyConfirmed(string text, CompiledRule rule)
     {
-        var length = rule.GenuineLength!(match);
-        return length == 0 ? match : rule.Replacement + match[length..];
+        var result = new System.Text.StringBuilder(text.Length);
+        var position = 0;
+        while (position < text.Length)
+        {
+            var match = rule.Pattern.Match(text, position);
+            if (!match.Success)
+                break;
+
+            var genuine = rule.GenuineLength!(match.Value);
+            if (genuine == 0)
+            {
+                result.Append(text, position, match.Index + 1 - position);
+                position = match.Index + 1;
+                continue;
+            }
+
+            result.Append(text, position, match.Index - position).Append(rule.Replacement);
+            position = match.Index + genuine;
+        }
+
+        return result.Append(text, position, text.Length - position).ToString();
     }
 
     /// <param name="Category">The category the rule redacts.</param>
