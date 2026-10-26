@@ -4,6 +4,8 @@ using System.Text.Json;
 using Azure;
 using Azure.AI.ContentSafety;
 using Azure.Core.Pipeline;
+using Application.AI.Common.Exceptions;
+using Domain.AI.Constants;
 using Domain.Common.Config.AI.ContentSafety;
 using FluentAssertions;
 using Infrastructure.AI.ContentSafety;
@@ -56,7 +58,7 @@ public sealed class AzureContentSafetyServiceTests
         var result = await Service().ScreenAsync("a harmful request", CancellationToken.None);
 
         result.IsBlocked.Should().BeTrue();
-        result.Category.Should().Be("Hate");
+        result.Category.Should().Be(SafetyCategories.Hate);
     }
 
     [Fact]
@@ -67,8 +69,19 @@ public sealed class AzureContentSafetyServiceTests
         var result = await Service().ScreenAsync("a harmful request", CancellationToken.None);
 
         result.IsBlocked.Should().BeTrue();
-        result.Category.Should().Be("Violence", "the highest severity at or over the threshold is the one reported");
-        result.BlockReason.Should().Contain("Violence");
+        result.Category.Should().Be(SafetyCategories.Violence, "the highest severity at or over the threshold is the one reported");
+        result.BlockReason.Should().Contain(SafetyCategories.Violence);
+    }
+
+    [Theory]
+    [InlineData("Hate", SafetyCategories.Hate)]
+    [InlineData("SelfHarm", SafetyCategories.SelfHarm)]
+    [InlineData("Sexual", SafetyCategories.Sexual)]
+    [InlineData("Violence", SafetyCategories.Violence)]
+    public void HarnessCategory_IsTheHarnessNameNotTheServiceName(string service, string harness)
+    {
+        // The block's category reaches metrics, safety events and exceptions; dashboards key on the harness's names.
+        AzureContentSafetyService.HarnessCategory(new TextCategory(service)).Should().Be(harness);
     }
 
     [Fact]
@@ -84,27 +97,31 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
-    public async Task ScreenAsync_ServiceFails_BlocksByDefault()
+    public async Task ScreenAsync_ServiceFails_RefusesAsUnavailableNotAsABlock()
     {
-        // A screen that lets everything through while it is down is no screen.
+        // A screen that lets everything through while it is down is no screen. But an outage is not a verdict on the
+        // text: reporting it as a block would tell the caller the content was harmful and count it as a violation.
         _handler.Respond("{\"error\":{\"code\":\"InternalServerError\",\"message\":\"down\"}}", HttpStatusCode.InternalServerError);
 
-        var result = await Service().ScreenAsync("anything", CancellationToken.None);
+        var act = async () => await Service().ScreenAsync("anything", CancellationToken.None);
 
-        result.IsBlocked.Should().BeTrue();
-        result.Category.Should().Be(AzureContentSafetyService.UnavailableCategory);
-        result.BlockReason.Should().Be(AzureContentSafetyService.UnavailableReason);
+        (await act.Should().ThrowAsync<ContentSafetyUnavailableException>())
+            .Which.Message.Should().NotContain("anything", "the screened text never goes into the error");
     }
 
     [Fact]
-    public async Task ScreenAsync_ServiceFailsAndTheDeploymentAllowsUnscreened_Passes()
+    public async Task ScreenAsync_ServiceFailsAndTheDeploymentAllowsUnscreened_PassesWithoutCallingAgain()
     {
+        // Once one chunk could not be screened, the outcome for the whole text is decided; calling a dead service for
+        // every remaining chunk would only add a timeout per chunk.
         _handler.Respond("{}", HttpStatusCode.ServiceUnavailable);
+        var text = new string('a', (AzureContentSafetyService.MaxChunkLength * 2) + 10);
 
         var result = await Service(new ContentSafetyConfig { BlockWhenUnavailable = false })
-            .ScreenAsync("anything", CancellationToken.None);
+            .ScreenAsync(text, CancellationToken.None);
 
         result.IsBlocked.Should().BeFalse();
+        _handler.Bodies.Should().ContainSingle();
     }
 
     [Fact]
@@ -176,14 +193,13 @@ public sealed class AzureContentSafetyServiceTests
         // A category that came back unscored was not screened, however well-formed the rest of the response is.
         _handler.Respond(body);
 
-        var result = await Service().ScreenAsync("anything", CancellationToken.None);
+        var act = async () => await Service().ScreenAsync("anything", CancellationToken.None);
 
-        result.IsBlocked.Should().BeTrue();
-        result.Category.Should().Be(AzureContentSafetyService.UnavailableCategory);
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
     }
 
     [Fact]
-    public async Task ScreenAsync_TheCredentialCannotBeObtained_Blocks()
+    public async Task ScreenAsync_TheCredentialCannotBeObtained_RefusesAsUnavailable()
     {
         // A managed identity that is not assigned fails before any request is sent; that is still no screening.
         var options = new ContentSafetyClientOptions { Transport = new HttpClientTransport(new HttpClient(_handler)) };
@@ -193,10 +209,9 @@ public sealed class AzureContentSafetyServiceTests
         var service = new AzureContentSafetyService(
             client, new ContentSafetyConfig(), NullLogger<AzureContentSafetyService>.Instance);
 
-        var result = await service.ScreenAsync("anything", CancellationToken.None);
+        var act = async () => await service.ScreenAsync("anything", CancellationToken.None);
 
-        result.IsBlocked.Should().BeTrue();
-        result.Category.Should().Be(AzureContentSafetyService.UnavailableCategory);
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
         _handler.Bodies.Should().BeEmpty();
     }
 

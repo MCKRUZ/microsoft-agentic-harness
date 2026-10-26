@@ -53,6 +53,38 @@ public sealed class ContentSafetyRegistrationTests
     }
 
     [Theory]
+    [InlineData("http://example.cognitiveservices.azure.com/", 4, "Endpoint")]
+    [InlineData("https://example.cognitiveservices.azure.com/", 0, "BlockAtSeverity")]
+    public void AzureProvider_TheConfigurationItIsBuiltFrom_IsValidatedEvenWithoutTheStartupPipeline(
+        string endpoint, int severity, string expected)
+    {
+        // A host that sets AppConfig in code, or composes its own options pipeline, never runs the startup validator;
+        // an http endpoint would then carry the API key in clear and a threshold of 0 would block every request.
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                ContentSafety = new ContentSafetyConfig
+                {
+                    Provider = ContentSafetyProvider.AzureAIContentSafety,
+                    Endpoint = endpoint,
+                    ApiKey = "test-key",
+                    BlockAtSeverity = severity,
+                },
+            },
+        };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Options.Create(appConfig));
+        Infrastructure.AI.DependencyInjection.RegisterContentSafety(services);
+        using var built = services.BuildServiceProvider();
+
+        var act = () => built.GetRequiredService<ITextContentSafetyService>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{expected}*");
+    }
+
+    [Theory]
     [InlineData(ContentSafetyProvider.AllowAll, "Production", 1)]
     [InlineData(ContentSafetyProvider.AllowAll, "Development", 0)]
     [InlineData(ContentSafetyProvider.AzureAIContentSafety, "Production", 0)]

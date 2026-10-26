@@ -22,9 +22,14 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// </para>
 /// <para>
 /// Only screens <see cref="ContentScreeningTarget.Input"/>: the text a request names through
-/// <see cref="IContentScreenable"/>. Nothing in the harness screens model output, and only what a request names is
-/// screened (document ingestion, for one, names the document's URI, not its content). A deployment that needs output
-/// or ingested content screened adds that itself.
+/// <see cref="IContentScreenable"/>. Nothing in the harness screens model output or ingested documents. A deployment
+/// that needs either screened adds that itself.
+/// </para>
+/// <para>
+/// When the content cannot be screened, the service throws
+/// <see cref="Exceptions.ContentSafetyUnavailableException"/>, which this behavior lets through untouched: an outage is
+/// a service failure for the caller to retry, not a block, so it is neither returned as <c>ContentBlocked</c> nor
+/// counted in the block metrics.
 /// </para>
 /// </remarks>
 public sealed class ContentSafetyBehavior<TRequest, TResponse>

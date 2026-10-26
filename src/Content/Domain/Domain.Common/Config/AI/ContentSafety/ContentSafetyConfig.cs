@@ -56,13 +56,17 @@ public sealed class ContentSafetyConfig
 
     /// <summary>
     /// Gets or sets the severity at which a category blocks the request, on the service's four-level scale: 0 (safe), 2
-    /// (low), 4 (medium), 6 (high). Defaults to 4, so low-severity matches pass and medium or high block.
+    /// (low), 4 (medium), 6 (high). Must be 2, 4 or 6. Defaults to 4, so low-severity matches pass and medium or high
+    /// block.
     /// </summary>
     public int BlockAtSeverity { get; set; } = 4;
 
     /// <summary>
-    /// Gets or sets whether text is blocked when the service cannot be reached or rejects the call. Defaults to
-    /// <see langword="true"/>: a screening control that lets everything through while it is down is no control.
+    /// Gets or sets whether a request is refused when its text cannot be screened (the service is unreachable, throttled
+    /// or timed out, the credential is rejected, or the analysis is incomplete). Defaults to <see langword="true"/>: a
+    /// screening control that lets everything through while it is down is no control. The refusal is a service failure
+    /// the caller can retry, not a content block: the text was never judged. <see langword="false"/> lets unscreened text
+    /// through, with an error logged.
     /// </summary>
     public bool BlockWhenUnavailable { get; set; } = true;
 }

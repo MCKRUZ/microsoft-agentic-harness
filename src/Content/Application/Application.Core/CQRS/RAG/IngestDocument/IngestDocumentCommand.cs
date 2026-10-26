@@ -1,5 +1,3 @@
-using Application.AI.Common.Interfaces.MediatR;
-using Domain.AI.Models;
 using Domain.AI.RAG.Enums;
 using MediatR;
 
@@ -9,14 +7,14 @@ namespace Application.Core.CQRS.RAG.IngestDocument;
 /// Ingests a document into the RAG pipeline: parses, chunks, enriches,
 /// embeds, and indexes the content for retrieval.
 /// </summary>
-public record IngestDocumentCommand : IRequest<IngestDocumentResult>, IContentScreenable
+/// <remarks>
+/// Not content-screened. The command carries only the document's location, and scoring a URI for harmful content means
+/// nothing, while sending it to an external screening service would hand over whatever the URI carries: a SAS token in
+/// its query string, an internal path (#904). The document's content is not screened either; a deployment that needs
+/// ingested content screened does it where the content is read.
+/// </remarks>
+public record IngestDocumentCommand : IRequest<IngestDocumentResult>
 {
-	/// <inheritdoc />
-	public string ContentToScreen => DocumentUri.ToString();
-
-	/// <inheritdoc />
-	public ContentScreeningTarget ScreeningTarget => ContentScreeningTarget.Input;
-
 	/// <summary>URI of the document to ingest (file:// for local, https:// for remote).</summary>
 	public required Uri DocumentUri { get; init; }
 

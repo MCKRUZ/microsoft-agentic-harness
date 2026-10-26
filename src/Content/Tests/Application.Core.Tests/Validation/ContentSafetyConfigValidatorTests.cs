@@ -75,9 +75,13 @@ public sealed class ContentSafetyConfigValidatorTests
 
     [Theory]
     [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(5)]
     [InlineData(7)]
-    public void Validate_AzureWithAThresholdOffTheScale_Fails(int severity)
+    public void Validate_AzureWithAThresholdTheServiceNeverReturns_Fails(int severity)
     {
+        // The service scores at 0, 2, 4 or 6, so 3 would behave exactly as 4: a setting with no effect of its own.
         var config = Azure();
         config.BlockAtSeverity = severity;
 

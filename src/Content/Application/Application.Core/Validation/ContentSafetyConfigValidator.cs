@@ -35,8 +35,8 @@ public sealed class ContentSafetyConfigValidator : AbstractValidator<ContentSafe
                     $"ContentSafety:Categories holds an unknown category. Use any of: {string.Join(", ", ContentSafetyConfig.AllCategories)}.");
 
             RuleFor(x => x.BlockAtSeverity)
-                .InclusiveBetween(1, 6)
-                .WithMessage("ContentSafety:BlockAtSeverity must be 1 to 6 on the service's 0-6 scale (2 low, 4 medium, 6 high).");
+                .Must(severity => severity is 2 or 4 or 6)
+                .WithMessage("ContentSafety:BlockAtSeverity must be 2 (low), 4 (medium) or 6 (high): the service scores text at 0, 2, 4 or 6, so any other value behaves as the next level up.");
         });
     }
 }

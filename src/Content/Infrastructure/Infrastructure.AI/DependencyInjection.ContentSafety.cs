@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.Common.Factories;
+using Application.Core.Validation;
 using Azure;
 using Azure.AI.ContentSafety;
 using Domain.Common.Config;
@@ -41,11 +42,15 @@ public static partial class DependencyInjection
     // An API key when one is configured; otherwise the Entra credential, which is preferred.
     private static ContentSafetyClient CreateContentSafetyClient(ContentSafetyConfig config)
     {
-        // Hosts that compose their own options pipeline skip ContentSafetyConfigValidator; say what is wrong here too.
-        if (!Uri.TryCreate(config.Endpoint, UriKind.Absolute, out var endpoint))
+        // The startup validator checks a separately bound copy of this section, and a host that composes its own options
+        // pipeline (or sets AppConfig in code) may not run it at all. Validate the instance actually used, with the same
+        // rules, so an http endpoint never carries the API key and an off-scale threshold never blocks everything.
+        var validation = new ContentSafetyConfigValidator().Validate(config);
+        if (!validation.IsValid)
             throw new InvalidOperationException(
-                "AppConfig:AI:ContentSafety:Provider is AzureAIContentSafety, but ContentSafety:Endpoint is not an absolute URL.");
+                "AppConfig:AI:ContentSafety is invalid: " + string.Join(" ", validation.Errors.Select(e => e.ErrorMessage)));
 
+        var endpoint = new Uri(config.Endpoint!);
         var options = CreateContentSafetyClientOptions();
         return string.IsNullOrWhiteSpace(config.ApiKey)
             ? new ContentSafetyClient(endpoint, AzureCredentialFactory.CreateTokenCredential(config.Auth), options)
