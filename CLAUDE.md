@@ -80,7 +80,7 @@ This is a production template that enterprise consumers will clone. Corners cut 
 - Registering tools without keyed DI: always use `AddKeyedSingleton<T>(toolName, ...)` pattern
 - Forgetting MediatR pipeline behaviors when adding new commands: register in `DependencyInjection.cs`
 - Hardcoding AI model config: use `AppConfig.AI.AgentFramework` section, never inline
-- Skipping content safety middleware in agent factory: always wire through `AgentFactory`
+- Adding a request that carries user text without screening it: content safety runs in the MediatR pipeline (`ContentSafetyBehavior`), and only on requests that implement `IContentScreenable`, not in `AgentFactory`. A new entry point that dispatches anything other than `ExecuteAgentTurnCommand` must implement it, or its text is never screened
 - Creating step executors without registering them as keyed services by StepType
 - Using SandboxOptions (Domain config) when you need SandboxExecutionOptions (Application container config) — they're different classes
 - Manually incrementing entity Version — SqliteVersionInterceptor handles this on save

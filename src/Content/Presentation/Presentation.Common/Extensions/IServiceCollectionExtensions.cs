@@ -282,6 +282,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<DataClassificationConfig, DataClassificationConfigValidator>()
             .ValidateOnStart();
 
+        // Which service screens request text (#904). The allow-all default needs nothing; Azure AI Content Safety needs
+        // an https endpoint and sane categories and threshold, checked here rather than on the first screened request.
+        services.AddOptions<Domain.Common.Config.AI.ContentSafety.ContentSafetyConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:ContentSafety"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.ContentSafety.ContentSafetyConfig, ContentSafetyConfigValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<ContentCaptureConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Telemetry:ContentCapture"))
             .ValidateFluentValidation<ContentCaptureConfig, ContentCaptureConfigValidator>()

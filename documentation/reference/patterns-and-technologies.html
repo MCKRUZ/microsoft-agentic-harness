@@ -473,9 +473,13 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
 
                     <h3 id="content-safety">Content safety middleware</h3>
                     <p>
-                        Both input prompts and model outputs flow through <code>ContentSafetyBehavior</code> — Azure AI
-                        Content Safety in production, a structured-log fake in dev (<code>StructuredLogContentSafetyService</code>).
-                        Severity thresholds are per-category and configurable.
+                        Request input flows through <code>ContentSafetyBehavior</code>, which screens it with the service
+                        <code>AppConfig:AI:ContentSafety:Provider</code> selects. The default,
+                        <code>AllowAllContentSafetyService</code>, screens nothing and says so at startup outside
+                        Development; <code>AzureContentSafetyService</code> sends the text to Azure AI Content Safety and
+                        blocks it when any configured category reaches <code>BlockAtSeverity</code> (one threshold for
+                        every category), and blocks by default when the service cannot be reached. Model output is not
+                        screened by this service.
                     </p>
 
                     <h3 id="conversation-cache">Conversation cache</h3>

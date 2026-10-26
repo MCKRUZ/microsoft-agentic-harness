@@ -11,6 +11,7 @@
     <PackageReference Include="Anthropic.SDK" />
     <PackageReference Include="Docker.DotNet" />
     <PackageReference Include="Azure.AI.Agents.Persistent" />
+    <PackageReference Include="Azure.AI.ContentSafety" />
     <PackageReference Include="Azure.AI.Inference" />
     <PackageReference Include="Azure.AI.Projects" />
     <PackageReference Include="Azure.Identity" />

@@ -238,7 +238,7 @@ public static partial class DependencyInjection
 
         // --- Content safety and audit ---
 
-        services.AddSingleton<ITextContentSafetyService, StructuredLogContentSafetyService>();
+        RegisterContentSafety(services);
         services.AddSingleton<IAuditSink, StructuredLogAuditSink>();
 
         // --- Skills and agents ---
