@@ -45,6 +45,16 @@ public interface IAuditPseudonymizer
     /// <returns><c>fp:{keyId}:{hex}</c>.</returns>
     string Fingerprint(string purpose, string value);
 
+    /// <summary>
+    /// Whether <paramref name="token"/> is a reference or fingerprint this instance made recently. Free text bound for a
+    /// trail is redacted with the references a producer put into it shielded; only tokens this instance issued are
+    /// shielded, because the key id is visible in the trail and anything else shaped like a reference could be used to
+    /// carry 32 bytes of chosen data past the redaction rules.
+    /// </summary>
+    /// <param name="token">A <c>ref:</c> or <c>fp:</c> token found in text.</param>
+    /// <returns><see langword="true"/> when this instance made it and still remembers doing so.</returns>
+    bool Issued(string token);
+
     /// <summary>The kinds of value fingerprints are made for.</summary>
     public static class Purposes
     {

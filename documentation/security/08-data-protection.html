@@ -741,12 +741,13 @@
                     <h3 id="audit-trail-pseudonyms">What the audit trails record about people</h3>
                     <p>
                         Because nothing in a hash-chained trail can be erased, the trails record as little about people as
-                        still answers their questions (#903). In the escalation and governance trails:
+                        still answers their questions (#903). Across the trails:
                     </p>
                     <ul>
                         <li>
-                            <strong>People</strong> &mdash; approvers, the person who cancelled an escalation, and the caller
-                            behind a direct tool invocation &mdash; are recorded as a keyed reference,
+                            <strong>People</strong> &mdash; approvers, the person who cancelled an escalation, a change
+                            reviewer, the caller behind a drift push or recalculation, and the caller behind a direct tool
+                            invocation &mdash; are recorded as a keyed reference,
                             <code>ref:{key id}:{HMAC}</code>, never by name or user id. Whoever holds the key can compute a
                             named person's reference and find every approval they gave; nobody without it can reverse a
                             reference or confirm a guess. This keeps the trail's purpose, recording who approved or denied
@@ -759,8 +760,17 @@
                         </li>
                         <li>
                             <strong>Free text</strong> &mdash; an escalation's description, an approver's reason and
-                            instructions &mdash; is kept, because the reasoning is the accountability record, with every
-                            redaction category applied.
+                            instructions, a reviewer's reason, the governance trail's action and decision text &mdash; is
+                            kept, because the reasoning is the accountability record, with every redaction category
+                            applied. A value the record pseudonymizes elsewhere is replaced by its reference wherever the
+                            text repeats it. Redaction finds identifiers by their shape (an email address, a phone number, a
+                            card, an IBAN, a national id); a plain name typed into a reason has no shape to find and is kept
+                            as written. Ask approvers to give reasons, not names.
+                        </li>
+                        <li>
+                            <strong>Outbound requests</strong> keep their scheme, host and port, which is what the egress
+                            trail exists to answer, and a keyed fingerprint of the full address: a path or query often names
+                            a person (<code>/users/octocat</code>, <code>?email=&hellip;</code>).
                         </li>
                     </ul>
                     <p>
@@ -769,7 +779,10 @@
                         <code>.agent-sessions/keys/audit-pseudonym.key</code> with access for the application's own account
                         only, and read on every later start, so references stay the same across restarts. Startup refuses a
                         key file inside any audit folder or the archive, so the key never travels with the records it
-                        protects. Back the key up: without it, references can no longer be recomputed. Each reference names
+                        protects, and warns at startup when an existing key file is readable by other accounts. Back the
+                        key up: without it, references can no longer be recomputed. If the key file is lost while the trails
+                        survive, the next start makes a new key and logs an error: restore the earlier key rather than carry
+                        on, or new references will not match the ones already recorded. Each reference names
                         its key, so after a rotation old references read as made under an earlier key rather than as
                         references that match nobody.
                     </p>
@@ -777,7 +790,10 @@
                         The escalation state store still holds the full values while an escalation needs them, under its own
                         retention. Records written before this change hold raw values and cannot be rewritten; they are
                         kept on the same Article 17(3) basis as the rest of the archive, below, and leave it when the
-                        archive's retention period ends.
+                        archive's retention period ends. The endpoints that serve audit records (the compliance report, the
+                        drift audit list) return them as stored, raw or not: each requires an explicit role, they are the
+                        evidence that role exists to read, and rewriting old records on the way out would show auditors a
+                        trail that differs from the one the chain verifies.
                     </p>
 
                     <h3 id="audit-archive-retention">The audit archive: why erasure does not reach it, and how long to keep it</h3>

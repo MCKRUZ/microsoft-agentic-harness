@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.Core.CQRS.DriftDetection;
+using Application.Core.Tests.Audit;
 using Domain.AI.DriftDetection;
 using Domain.Common;
 using Domain.Common.Config;
@@ -39,7 +40,8 @@ public sealed class PushDriftEvaluationCommandHandlerTests
             _auditStore.Object,
             new StaticOptionsMonitor<AppConfig>(_appConfig),
             _timeProvider,
-            NullLogger<PushDriftEvaluationCommandHandler>.Instance);
+            NullLogger<PushDriftEvaluationCommandHandler>.Instance,
+            new FakeAuditPseudonymizer());
     }
 
     private static PushDriftEvaluationCommand CreateCommand(string callerId = "ops@contoso.com") => new()
@@ -93,7 +95,9 @@ public sealed class PushDriftEvaluationCommandHandlerTests
         _audited.Should().AllSatisfy(r =>
         {
             r.RecordType.Should().Be(DriftAuditRecordType.EvaluationPushed);
-            r.Payload.Should().Contain("ops@contoso.com", "the caller identity is the point of the trail");
+            // The caller's identity is the point of the trail; it is kept for good, so as the caller's reference (#903).
+            r.Payload.Should().Contain(FakeAuditPseudonymizer.PersonOf("ops@contoso.com"))
+                .And.NotContain("ops@contoso.com");
             r.Payload.Should().Contain(DriftOperatorActionAudit.EvaluationPushAction);
         });
 

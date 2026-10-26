@@ -385,7 +385,7 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
                 GateKey = WellKnownGateKeys.Approval,
                 Action = GateAction.Pass,
                 Reason = "auto-approved (no approval gate in RequiredGates)",
-                ReviewerId = "auto-approver",
+                ReviewerId = JsonlChangeAuditWriter.AutoApproverReviewerId,
                 DurationMs = 0
             },
             mode,

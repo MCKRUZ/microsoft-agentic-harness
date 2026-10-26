@@ -5,6 +5,7 @@ using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
+using Infrastructure.AI.Telemetry.Redaction;
 using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -36,12 +37,16 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         catch { /* best effort */ }
     }
 
+    // One instance for the writer and the test, so the references a test builds are ones the writer issued.
+    private readonly HmacAuditPseudonymizer _pseudonyms = AuditPseudonyms.Create();
+
     private JsonlGovernanceAuditWriter NewWriter(string? storagePathOverride = null) =>
         new(
             Monitor(storagePathOverride ?? _tempDir),
             TimeProvider.System,
             NullLogger<JsonlGovernanceAuditWriter>.Instance,
-            AuditPseudonyms.Create());
+            _pseudonyms,
+            new DefaultContentRedactionFilter());
 
     private static IOptionsMonitor<AppConfig> Monitor(string storagePath)
     {
@@ -104,6 +109,91 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
             new GovernanceAuditQuery { AgentId = "direct-invoke:user-oid-42" }, CancellationToken.None);
 
         result.Value.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void Log_FreeTextInTheActionAndDecision_IsRedactedWithoutTouchingAuditReferences()
+    {
+        // Producers fill these with free text (a delegation's model reasoning, a memory key). The trail is kept for good,
+        // so it is redacted, but a reference already in it must survive: its hex is what the digit rules would take for
+        // a phone number, and a mangled reference matches nobody.
+        using var sut = NewWriter();
+        var reference = _pseudonyms.Person("bob");
+
+        sut.Log("agent-1", "memory_write:Person:dana@contoso.com", $"RequireApproval:Approved|By:{reference}|Reason:call +1 415 555 0100");
+
+        var line = AuditTrailFiles.ReadAllLines(_expectedFile)[0];
+        line.Should().NotContain("dana@contoso.com").And.NotContain("555 0100");
+        line.Should().Contain($"By:{reference}|Reason:call [REDACTED");
+    }
+
+    [Fact]
+    public void Log_MarkerCharactersInTheInput_CannotBeTurnedIntoAReference()
+    {
+        // The redaction step marks references with private-use characters. Text that already holds them must not be able to
+        // claim a reference's place in the record.
+        using var sut = NewWriter();
+        var reference = _pseudonyms.Person("bob");
+
+        sut.Log("agent-1", "run_tests", $"By:{reference}|Reason:\uE000a\uE001 call dana@contoso.com");
+
+        var line = AuditTrailFiles.ReadAllLines(_expectedFile)[0];
+        line.Should().Contain($"By:{reference}|Reason:a call [REDACTED", "the stray markers are dropped and the letter between them is plain text");
+        line.Split(reference).Should().HaveCount(2, "the reference appears once, where the producer put it");
+    }
+
+    [Fact]
+    public void Log_RedactionFilterFails_WritesThePlaceholderAndNeverThrows()
+    {
+        // A replaced or timed-out filter must not fail the decision being recorded, nor let the raw text through.
+        using var sut = new JsonlGovernanceAuditWriter(
+            Monitor(_tempDir),
+            TimeProvider.System,
+            NullLogger<JsonlGovernanceAuditWriter>.Instance,
+            AuditPseudonyms.Create(),
+            new ThrowingRedaction());
+
+        var act = () => sut.Log("agent-1", "memory_write:Person:dana@contoso.com", "call +1 415 555 0100");
+
+        act.Should().NotThrow();
+        var line = AuditTrailFiles.ReadAllLines(_expectedFile)[0];
+        line.Should().NotContain("dana").And.NotContain("555 0100");
+        line.Should().Contain("\"action\":\"[REDACTION_FAILED]\"").And.Contain("\"decision\":\"[REDACTION_FAILED]\"");
+    }
+
+    [Fact]
+    public void Log_OnlyReferencesThisProcessIssued_AreShieldedFromRedaction()
+    {
+        // Anything else shaped like a reference, even under the current key id, is ordinary text: the shield must not let
+        // a chosen value slip past the filter.
+        var pseudonyms = AuditPseudonyms.Create();
+        var reference = pseudonyms.Person("bob");
+        var foreign = $"ref:{pseudonyms.KeyId}:" + new string('a', 64);
+        using var sut = new JsonlGovernanceAuditWriter(
+            Monitor(_tempDir),
+            TimeProvider.System,
+            NullLogger<JsonlGovernanceAuditWriter>.Instance,
+            pseudonyms,
+            new RedactEverything());
+
+        sut.Log("agent-1", "run_tests", $"{reference} {foreign}");
+
+        var line = AuditTrailFiles.ReadAllLines(_expectedFile)[0];
+        line.Should().Contain($"\"decision\":\"{reference} X\"");
+    }
+
+    private sealed class ThrowingRedaction : Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter
+    {
+        public string Redact(string? content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> categories) =>
+            throw new System.Text.RegularExpressions.RegexMatchTimeoutException("busy");
+    }
+
+    // Replaces every word except the shield's markers with "X", so whatever survives was shielded.
+    private sealed class RedactEverything : Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter
+    {
+        public string Redact(string? content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> categories) =>
+            System.Text.RegularExpressions.Regex.Replace(
+                content ?? string.Empty, "\uE000[a-z]+\uE001|[^ ]+", m => m.Value[0] == '\uE000' ? m.Value : "X");
     }
 
     [Fact]
