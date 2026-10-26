@@ -4,9 +4,12 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
 using Domain.AI.Models;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
+using Domain.Common.Config;
 using FluentAssertions;
 using MediatR;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -122,16 +125,69 @@ public class ContentSafetyBehaviorTests
             Times.Never);
     }
 
+    [Fact]
+    public async Task Handle_ContentCannotBeScreened_RefusesByDefaultAndRecordsUnscreened()
+    {
+        // A screen that lets everything through while it is down is no screen; and an outage is not a verdict on the
+        // text, so it is recorded as unscreened, never as a pass or a block.
+        _safetyService
+            .Setup(s => s.ScreenAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ContentSafetyUnavailableException());
+        var handlerCalled = false;
+
+        var act = async () => await CreateBehavior<SessionScreenableRequest, string>().Handle(
+            new SessionScreenableRequest("content", _sessionId),
+            () => { handlerCalled = true; return Task.FromResult("ok"); },
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
+        handlerCalled.Should().BeFalse();
+        _observabilityStore.Verify(o => o.RecordSafetyEventAsync(
+            _sessionId, "prompt", SafetyConventions.OutcomeValues.Unscreened, null, null, "pipeline_behavior",
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ContentCannotBeScreenedAndTheDeploymentAllowsIt_ContinuesAndRecordsUnscreened()
+    {
+        _appConfig.AI.ContentSafety.BlockWhenUnavailable = false;
+        _safetyService
+            .Setup(s => s.ScreenAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ContentSafetyUnavailableException());
+
+        var result = await CreateBehavior<SessionScreenableRequest, string>().Handle(
+            new SessionScreenableRequest("content", _sessionId),
+            () => Task.FromResult("handled"),
+            CancellationToken.None);
+
+        result.Should().Be("handled");
+        _observabilityStore.Verify(o => o.RecordSafetyEventAsync(
+            _sessionId, "prompt", SafetyConventions.OutcomeValues.Unscreened, null, null, "pipeline_behavior",
+            It.IsAny<CancellationToken>()), Times.Once, "letting unscreened text through must not read as a pass");
+    }
+
+    private readonly Mock<IObservabilityStore> _observabilityStore = new();
+    private readonly AppConfig _appConfig = new();
+    private readonly Guid _sessionId = Guid.NewGuid();
+
     private ContentSafetyBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
         where TRequest : notnull
     {
         return new ContentSafetyBehavior<TRequest, TResponse>(
             _safetyService.Object,
-            new Mock<IObservabilityStore>().Object);
+            _observabilityStore.Object,
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == _appConfig));
     }
 
     // Test request types
     public record NonScreenableRequest : IRequest<string>;
+
+    public record SessionScreenableRequest(string Content, Guid ObservabilitySessionId)
+        : IRequest<string>, IContentScreenable, IHasObservabilitySession
+    {
+        public string ContentToScreen => Content;
+        public ContentScreeningTarget ScreeningTarget => ContentScreeningTarget.Input;
+    }
 
     public record ScreenableRequest(string Content) : IRequest<string>, IContentScreenable
     {

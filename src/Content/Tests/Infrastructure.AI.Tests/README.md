@@ -29,8 +29,8 @@ Files mirror the infrastructure namespace structure: `Agents/`, `Compaction/Stra
 | `DirectoryWalkConfigDiscoveryTests` | Directory-based config file discovery | 4 | Unit |
 | `AzureAIConnectivityTests` | Azure AI endpoint connectivity | 3 | Unit |
 | `AllowAllContentSafetyServiceTests` | The allow-all default lets everything through | 6 | Unit |
-| `AzureContentSafetyServiceTests` | Azure AI Content Safety: thresholds, outages refused (not blocked), overlapping chunks, category names, wire format | 21 | Unit (fake transport) |
-| `ContentSafetyRegistrationTests` | Provider selection, validation of the configuration actually used, and the allow-all startup warning | 9 | Unit |
+| `AzureContentSafetyServiceTests` | Azure AI Content Safety: thresholds, outages reported as unavailable (never as a block) through the production retry, overlapping chunks, category names, wire format | 26 | Unit (fake transport) |
+| `ContentSafetyRegistrationTests` | Provider selection, a configuration the provider cannot run with stopping startup, and the allow-all warning | 9 | Unit |
 | `FileSystemToolResultStoreTests` | Tool result persistence to disk | 4 | Unit |
 | `ChatClientFactoryTests` | Chat client construction routing | 6 | Unit |
 | `ChatClientFactoryAvailabilityTests` | Provider availability checks | 4 | Unit |

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Resilience;
 using Application.Common.Factories;
 using Application.Core.Validation;
 using Azure;
@@ -21,8 +22,9 @@ public static partial class DependencyInjection
     /// </summary>
     /// <remarks>
     /// The provider is read when the service is first resolved, from the bound configuration, so a host that sets it
-    /// through any configuration source gets it. <see cref="AllowAllContentSafetyStartupWarning"/> is registered in
-    /// both cases and speaks only when the allow-all provider is in use outside Development.
+    /// through any configuration source gets it. <see cref="ContentSafetyStartupCheck"/> is registered in both cases: it
+    /// builds the service at startup, so a configuration the factory refuses stops the host, and it warns when the
+    /// allow-all provider is in use outside Development.
     /// </remarks>
     internal static void RegisterContentSafety(IServiceCollection services)
     {
@@ -33,10 +35,11 @@ public static partial class DependencyInjection
                 ? new AzureContentSafetyService(
                     CreateContentSafetyClient(config),
                     config,
+                    sp.GetRequiredService<IProviderErrorClassifier>(),
                     sp.GetRequiredService<ILogger<AzureContentSafetyService>>())
                 : new AllowAllContentSafetyService(sp.GetRequiredService<ILogger<AllowAllContentSafetyService>>());
         });
-        services.AddHostedService<AllowAllContentSafetyStartupWarning>();
+        services.AddHostedService<ContentSafetyStartupCheck>();
     }
 
     // An API key when one is configured; otherwise the Entra credential, which is preferred.

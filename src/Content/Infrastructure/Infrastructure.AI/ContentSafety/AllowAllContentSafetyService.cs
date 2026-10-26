@@ -11,7 +11,7 @@ namespace Infrastructure.AI.ContentSafety;
 /// <remarks>
 /// Named for what it does: an earlier name described the log line it writes, not the fact that it blocks nothing. For
 /// real screening set <c>AppConfig:AI:ContentSafety:Provider</c> to <c>AzureAIContentSafety</c>
-/// (<see cref="AzureContentSafetyService"/>). <see cref="AllowAllContentSafetyStartupWarning"/> says so at startup outside
+/// (<see cref="AzureContentSafetyService"/>). <see cref="ContentSafetyStartupCheck"/> says so at startup outside
 /// the Development environment.
 /// </remarks>
 public sealed class AllowAllContentSafetyService : ITextContentSafetyService

@@ -1,43 +1,58 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Exceptions;
 using Azure;
 using Azure.AI.ContentSafety;
+using Azure.Core;
 using Azure.Core.Pipeline;
-using Application.AI.Common.Exceptions;
+using Azure.Identity;
 using Domain.AI.Constants;
 using Domain.Common.Config.AI.ContentSafety;
+using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.ContentSafety;
+using Infrastructure.AI.Resilience;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.ContentSafety;
 
 /// <summary>
 /// <see cref="AzureContentSafetyService"/> (#904) against a stand-in for the Azure AI Content Safety endpoint: the real
-/// SDK client, with only the HTTP transport replaced, so the request it sends and the response it parses are the wire
-/// format.
+/// SDK client, with the production client options (including its retry) and only the HTTP transport replaced, so the
+/// request it sends, the response it parses and the way a failure reaches it are all as they are in a deployment.
 /// </summary>
 public sealed class AzureContentSafetyServiceTests
 {
     private readonly StubHandler _handler = new();
 
-    private AzureContentSafetyService Service(ContentSafetyConfig? config = null)
+    private ContentSafetyClient Client(TokenCredential? credential = null)
     {
-        var options = new ContentSafetyClientOptions { Transport = new HttpClientTransport(new HttpClient(_handler)) };
-        options.Retry.MaxRetries = 0;
-        var client = new ContentSafetyClient(
-            new Uri("https://example.cognitiveservices.azure.com/"), new AzureKeyCredential("test-key"), options);
-        return new AzureContentSafetyService(
-            client, config ?? new ContentSafetyConfig(), NullLogger<AzureContentSafetyService>.Instance);
+        var options = Infrastructure.AI.DependencyInjection.CreateContentSafetyClientOptions();
+        options.Transport = new HttpClientTransport(new HttpClient(_handler));
+        options.Retry.Delay = TimeSpan.FromMilliseconds(1);
+        var endpoint = new Uri("https://example.cognitiveservices.azure.com/");
+        return credential is null
+            ? new ContentSafetyClient(endpoint, new AzureKeyCredential("test-key"), options)
+            : new ContentSafetyClient(endpoint, credential, options);
     }
+
+    private AzureContentSafetyService Service(ContentSafetyConfig? config = null, TokenCredential? credential = null) => new(
+        Client(credential),
+        config ?? new ContentSafetyConfig(),
+        new DefaultProviderErrorClassifier(Mock.Of<IOptionsMonitor<ResilienceConfig>>(m => m.CurrentValue == new ResilienceConfig())),
+        NullLogger<AzureContentSafetyService>.Instance);
 
     private static string Analysis(params (string Category, int Severity)[] categories) => JsonSerializer.Serialize(new
     {
         blocklistsMatch = Array.Empty<object>(),
         categoriesAnalysis = categories.Select(c => new { category = c.Category, severity = c.Severity }),
     });
+
+    private static readonly string Clean = Analysis(("Hate", 0), ("SelfHarm", 0), ("Sexual", 0), ("Violence", 0));
 
     [Fact]
     public async Task ScreenAsync_EveryCategoryBelowTheThreshold_Passes()
@@ -96,12 +111,16 @@ public sealed class AzureContentSafetyServiceTests
         body.GetProperty("categories").EnumerateArray().Select(c => c.GetString()).Should().Equal("Hate");
     }
 
-    [Fact]
-    public async Task ScreenAsync_ServiceFails_RefusesAsUnavailableNotAsABlock()
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task ScreenAsync_TheServiceFails_ReportsUnavailableNotABlock(HttpStatusCode status)
     {
-        // A screen that lets everything through while it is down is no screen. But an outage is not a verdict on the
-        // text: reporting it as a block would tell the caller the content was harmful and count it as a violation.
-        _handler.Respond("{\"error\":{\"code\":\"InternalServerError\",\"message\":\"down\"}}", HttpStatusCode.InternalServerError);
+        // An outage is not a verdict on the text: reporting it as a block would tell the caller the content was harmful
+        // and count it as a violation. Whether to refuse or let it through is the pipeline's call, not this service's.
+        _handler.Fallback = ("{\"error\":{\"code\":\"Failed\",\"message\":\"down\"}}", status);
 
         var act = async () => await Service().ScreenAsync("anything", CancellationToken.None);
 
@@ -110,18 +129,42 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
-    public async Task ScreenAsync_ServiceFailsAndTheDeploymentAllowsUnscreened_PassesWithoutCallingAgain()
+    public async Task ScreenAsync_TheHostCannotBeReached_ReportsUnavailableAfterTheRetry()
+    {
+        // With the production retry, the SDK reports a failed connection as an aggregate of one failure per try. That
+        // has to read as the outage it is, not as an unrecognised bug.
+        _handler.Throw = new HttpRequestException(HttpRequestError.NameResolutionError, "No such host is known.");
+
+        var act = async () => await Service().ScreenAsync("anything", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
+        _handler.Bodies.Should().HaveCount(2, "the production client retries once");
+    }
+
+    [Fact]
+    public async Task ScreenAsync_AFailureThatIsNotAnOutage_PropagatesAsItIs()
+    {
+        // A bug is not an outage: calling it one would block every request as "unavailable", or, with unscreened content
+        // allowed, let every request through unscreened, with the cause hidden behind the wrong label.
+        _handler.Throw = new InvalidOperationException("A defect in the call, not the service.");
+
+        var act = async () => await Service().ScreenAsync("anything", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task ScreenAsync_TheServiceFailsOnALongText_StopsAtTheFirstChunk()
     {
         // Once one chunk could not be screened, the outcome for the whole text is decided; calling a dead service for
         // every remaining chunk would only add a timeout per chunk.
-        _handler.Respond("{}", HttpStatusCode.ServiceUnavailable);
+        _handler.Fallback = ("{}", HttpStatusCode.ServiceUnavailable);
         var text = new string('a', (AzureContentSafetyService.MaxChunkLength * 2) + 10);
 
-        var result = await Service(new ContentSafetyConfig { BlockWhenUnavailable = false })
-            .ScreenAsync(text, CancellationToken.None);
+        var act = async () => await Service().ScreenAsync(text, CancellationToken.None);
 
-        result.IsBlocked.Should().BeFalse();
-        _handler.Bodies.Should().ContainSingle();
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
+        _handler.Bodies.Should().HaveCount(2, "one chunk, tried twice");
     }
 
     [Fact]
@@ -199,20 +242,25 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
-    public async Task ScreenAsync_TheCredentialCannotBeObtained_RefusesAsUnavailable()
+    public async Task ScreenAsync_TheCredentialCannotBeObtained_ReportsUnavailable()
     {
         // A managed identity that is not assigned fails before any request is sent; that is still no screening.
-        var options = new ContentSafetyClientOptions { Transport = new HttpClientTransport(new HttpClient(_handler)) };
-        options.Retry.MaxRetries = 0;
-        var client = new ContentSafetyClient(
-            new Uri("https://example.cognitiveservices.azure.com/"), new FailingCredential(), options);
-        var service = new AzureContentSafetyService(
-            client, new ContentSafetyConfig(), NullLogger<AzureContentSafetyService>.Instance);
-
-        var act = async () => await service.ScreenAsync("anything", CancellationToken.None);
+        var act = async () => await Service(credential: new FailingCredential()).ScreenAsync("anything", CancellationToken.None);
 
         await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
         _handler.Bodies.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ScreenAsync_Cancelled_PropagatesRatherThanReportingAnOutage()
+    {
+        _handler.Respond(Clean);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        var act = async () => await Service().ScreenAsync("anything", cancelled.Token);
+
+        (await act.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeOfType<ContentSafetyUnavailableException>();
     }
 
     [Fact]
@@ -226,25 +274,13 @@ public sealed class AzureContentSafetyServiceTests
         options.Retry.NetworkTimeout.Should().Be(TimeSpan.FromSeconds(10));
     }
 
-    [Fact]
-    public async Task ScreenAsync_Cancelled_PropagatesRatherThanBlocking()
+    private sealed class FailingCredential : TokenCredential
     {
-        _handler.Respond(Analysis(("Hate", 0)));
-        using var cancelled = new CancellationTokenSource();
-        await cancelled.CancelAsync();
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            throw new CredentialUnavailableException("No managed identity is assigned.");
 
-        var act = async () => await Service().ScreenAsync("anything", cancelled.Token);
-
-        await act.Should().ThrowAsync<OperationCanceledException>();
-    }
-
-    private sealed class FailingCredential : Azure.Core.TokenCredential
-    {
-        public override Azure.Core.AccessToken GetToken(Azure.Core.TokenRequestContext requestContext, CancellationToken cancellationToken) =>
-            throw new Azure.Identity.CredentialUnavailableException("No managed identity is assigned.");
-
-        public override ValueTask<Azure.Core.AccessToken> GetTokenAsync(Azure.Core.TokenRequestContext requestContext, CancellationToken cancellationToken) =>
-            throw new Azure.Identity.CredentialUnavailableException("No managed identity is assigned.");
+        public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            throw new CredentialUnavailableException("No managed identity is assigned.");
     }
 
     private sealed class StubHandler : HttpMessageHandler
@@ -253,13 +289,21 @@ public sealed class AzureContentSafetyServiceTests
 
         public List<string> Bodies { get; } = [];
 
+        /// <summary>The response once the queue is empty.</summary>
+        public (string Body, HttpStatusCode Status) Fallback { get; set; } = ("{}", HttpStatusCode.OK);
+
+        /// <summary>When set, every request fails with this exception instead of returning a response.</summary>
+        public Exception? Throw { get; set; }
+
         public void Respond(string body, HttpStatusCode status = HttpStatusCode.OK) => _responses.Enqueue((body, status));
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Bodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
-            var (body, status) = _responses.Count > 0 ? _responses.Dequeue() : ("{}", HttpStatusCode.OK);
+            if (Throw is not null)
+                throw Throw;
+            var (body, status) = _responses.Count > 0 ? _responses.Dequeue() : Fallback;
             return new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
     }

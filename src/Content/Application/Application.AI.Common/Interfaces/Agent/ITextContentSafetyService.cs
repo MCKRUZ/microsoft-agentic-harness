@@ -21,8 +21,9 @@ public interface ITextContentSafetyService
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="ContentSafetyResult"/> indicating the screening outcome.</returns>
     /// <exception cref="Exceptions.ContentSafetyUnavailableException">
-    /// The content could not be screened and the deployment does not let unscreened content through. A block result is
-    /// a verdict on the content; this is not, so implementations never report an outage as one.
+    /// The content could not be screened. A block result is a verdict on the content and an outage is not, so
+    /// implementations never report one as the other; whether an unscreened request is refused or let through is the
+    /// pipeline's decision (<c>ContentSafetyBehavior</c>), not the implementation's.
     /// </exception>
     ValueTask<ContentSafetyResult> ScreenAsync(string content, CancellationToken cancellationToken);
 }

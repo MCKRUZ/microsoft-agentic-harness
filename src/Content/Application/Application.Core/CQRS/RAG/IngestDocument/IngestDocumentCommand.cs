@@ -8,10 +8,12 @@ namespace Application.Core.CQRS.RAG.IngestDocument;
 /// embeds, and indexes the content for retrieval.
 /// </summary>
 /// <remarks>
-/// Not content-screened. The command carries only the document's location, and scoring a URI for harmful content means
-/// nothing, while sending it to an external screening service would hand over whatever the URI carries: a SAS token in
-/// its query string, an internal path (#904). The document's content is not screened either; a deployment that needs
-/// ingested content screened does it where the content is read.
+/// Not an <see cref="Application.AI.Common.Interfaces.MediatR.IContentScreenable"/>, so neither pipeline screen runs on
+/// it: content safety nor the prompt-injection pattern scan (#904). The command carries only the document's location.
+/// Scoring a URI for harmful content means nothing, and sending it to an external screening service would hand over
+/// whatever the URI carries: a SAS token in its query string, an internal path. The pattern scan of the URI covered a
+/// far smaller surface than the document it names, whose content reaches the model through retrieval and which neither
+/// screen ever read. A deployment that needs ingested content screened does it where the content is read.
 /// </remarks>
 public record IngestDocumentCommand : IRequest<IngestDocumentResult>
 {

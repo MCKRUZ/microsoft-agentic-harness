@@ -36,7 +36,7 @@ Files mirror the production project structure: `Behaviors/`, `MediatRBehaviors/`
 | `InterfaceRecordTests` | Interface record contract shapes | 3 | Unit |
 | `AgentContextPropagationBehaviorTests` | Context flowing through pipeline | 4 | Unit |
 | `AuditTrailBehaviorTests` | Audit log recording | 4 | Unit |
-| `ContentSafetyBehaviorTests` | Content blocking in pipeline | 5 | Unit |
+| `ContentSafetyBehaviorTests` | Content blocking in the pipeline, and the policy for content that cannot be screened (refused or let through, recorded as unscreened) | 7 | Unit |
 | `PromptInjectionBehaviorTests` | Injection detection blocking | 4 | Unit |
 | `UnhandledExceptionBehaviorTests` | Global exception wrapping | 3 | Unit |
 | `HarnessCandidateTests` | MetaHarness candidate model | 3 | Unit |
