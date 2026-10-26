@@ -126,6 +126,7 @@ public static class DependencyInjection
             return new PostgresObservabilityStore(connStr, logger);
         });
         services.AddPersonalDataEraser<IObservabilityStore>();
+        services.AddPersonalDataExporter<IObservabilityStore>();
 
         return services;
     }

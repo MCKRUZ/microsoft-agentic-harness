@@ -42,6 +42,8 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     private const string UnreadableReason =
         "some stored conversations could not be read, so whether they are yours is unknown; they were left out";
     private const string ConversationListStore = "conversation list";
+    private const string PlanRunListStore = "planned-task run list";
+    private const string JournalStore = "unfinished erasure requests";
     private const string UnreadableStore = "conversations that could not be read";
     private const string MemoryStore = "cross-session memories";
 
@@ -54,6 +56,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     private readonly IConversationStore? _conversations;
     private readonly IErasureJournal? _journal;
     private readonly ICrossSessionMemoryStore? _memory;
+    private readonly IPlanRunTraceSource? _planRuns;
 
     /// <summary>Initializes a new instance of the <see cref="PersonalDataExportCoordinator"/> class.</summary>
     /// <param name="exporters">Every registered store that can return one person's data.</param>
@@ -67,6 +70,10 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     /// </param>
     /// <param name="journal">Supplies the per-person turn shared with erasure. <see langword="null"/> in a host without one.</param>
     /// <param name="memory">Cross-session memory, named when it cannot export. <see langword="null"/> when not deployed.</param>
+    /// <param name="planRuns">
+    /// The plan store's record of the person's planned-task runs, the same source erasure reads. <see langword="null"/> in
+    /// a host without a planner.
+    /// </param>
     public PersonalDataExportCoordinator(
         IEnumerable<IPersonalDataExporter> exporters,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -76,7 +83,8 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         ILogger<PersonalDataExportCoordinator> logger,
         IConversationStore? conversations = null,
         IErasureJournal? journal = null,
-        ICrossSessionMemoryStore? memory = null)
+        ICrossSessionMemoryStore? memory = null,
+        IPlanRunTraceSource? planRuns = null)
     {
         ArgumentNullException.ThrowIfNull(exporters);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -95,6 +103,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         _conversations = conversations;
         _journal = journal;
         _memory = memory;
+        _planRuns = planRuns;
     }
 
     /// <inheritdoc />
@@ -106,7 +115,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         using var turn = _journal is null ? null : await _journal.BeginRequestAsync(ownerId, cancellationToken);
 
         var manifest = new List<ExportManifestEntry>();
-        var subject = new ExportSubject(ownerId, await ListConversationIdsAsync(ownerId, manifest, cancellationToken));
+        var subject = await ResolveSubjectAsync(ownerId, manifest, cancellationToken);
 
         var sections = new List<ExportSection>();
         foreach (var exporter in _exporters)
@@ -118,6 +127,51 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
 
         NameStoresThatDidNotExport(manifest);
         return new PersonalDataExport(Guid.NewGuid().ToString("N"), _timeProvider.GetUtcNow(), manifest, sections);
+    }
+
+    /// <summary>
+    /// Every id that leads to the subject's data, gathered as erasure gathers them: their conversations, their planned-task
+    /// runs, and what an unfinished erasure request recorded (#907), whose conversations or plans may already be gone while
+    /// the stores they led to still hold data.
+    /// </summary>
+    private async Task<ExportSubject> ResolveSubjectAsync(
+        string ownerId, List<ExportManifestEntry> manifest, CancellationToken cancellationToken)
+    {
+        var conversations = await ListConversationIdsAsync(ownerId, manifest, cancellationToken);
+        var planRuns = await ReadOrFailAsync(
+            _planRuns is null ? null : ct => _planRuns.ListRunTracesAsync(ownerId, ct),
+            PlanRunTraces.Empty, PlanRunListStore, manifest, cancellationToken);
+        var journaled = await ReadOrFailAsync(
+            _journal is null ? null : ct => _journal.ReadAsync(ownerId, ct),
+            ErasureJournalEntries.Empty, JournalStore, manifest, cancellationToken);
+
+        return new ExportSubject(
+            ownerId,
+            [.. conversations.Union(journaled.ConversationIds, StringComparer.Ordinal)],
+            journaled.PlanRuns.IsEmpty ? planRuns : planRuns.Union(journaled.PlanRuns));
+    }
+
+    /// <summary>
+    /// Reads one source of the subject's ids. A failure leaves out what only it leads to, so it is a manifest line rather
+    /// than a silently smaller copy.
+    /// </summary>
+    private async Task<T> ReadOrFailAsync<T>(
+        Func<CancellationToken, Task<T>>? read, T none, string store, List<ExportManifestEntry> manifest,
+        CancellationToken cancellationToken)
+    {
+        if (read is null)
+            return none;
+
+        try
+        {
+            return await read(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(MessageWithheldException.From(ex), "Export could not read the {Store}.", store);
+            manifest.Add(new ExportManifestEntry(store, ExportStatus.Failed, 0, FailedReason));
+            return none;
+        }
     }
 
     /// <summary>

@@ -29,25 +29,10 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
     {
         ArgumentNullException.ThrowIfNull(subject);
 
-        var root = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.StoragePath;
         var removed = 0;
-        foreach (var conversationId in subject.AllConversationIds.Concat(subject.PlanRuns.ToolResultScopeIds))
+        foreach (var (_, scopeDirectory, directory) in SubjectSpillDirectories(subject.AllConversationIds, subject.PlanRuns))
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            string safeId;
-            try
-            {
-                safeId = SanitizeSessionSegment(conversationId, nameof(subject));
-            }
-            catch (ArgumentException)
-            {
-                continue;
-            }
-
-            var directory = Path.Combine(root, safeId, "tool-results");
-            if (!Directory.Exists(directory))
-                continue;
 
             foreach (var file in Directory.EnumerateFiles(directory))
             {
@@ -57,10 +42,44 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
             }
 
             Directory.Delete(directory);
-            TryDeleteIfEmpty(Path.Combine(root, safeId));
+            TryDeleteIfEmpty(scopeDirectory);
         }
 
         return Task.FromResult(removed);
+    }
+
+    /// <summary>
+    /// The spill directories that exist for one person: one per conversation id and per planned-task run scope. Erasure and
+    /// export both read through this, so a copy holds exactly what an erasure deletes. Each id goes through the same
+    /// segment check a write does; one the check refuses could never have been written to, and is skipped.
+    /// </summary>
+    /// <param name="allConversationIds">The person's conversations and their planned tasks' model steps.</param>
+    /// <param name="planRuns">The person's planned-task runs, whose tool steps spill under the run's own scope.</param>
+    /// <returns>
+    /// Each existing scope directory with its <c>tool-results</c> child, and the scope id it was written under (the
+    /// directory name is the id after the segment check, which rewrites some characters).
+    /// </returns>
+    private IEnumerable<(string ScopeId, string ScopeDirectory, string ToolResultsDirectory)> SubjectSpillDirectories(
+        IReadOnlyList<string> allConversationIds, PlanRunTraces planRuns)
+    {
+        var root = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.StoragePath;
+        foreach (var scopeId in allConversationIds.Concat(planRuns.ToolResultScopeIds).Distinct(StringComparer.Ordinal))
+        {
+            string safeId;
+            try
+            {
+                safeId = SanitizeSessionSegment(scopeId, nameof(scopeId));
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+
+            var scopeDirectory = Path.Combine(root, safeId);
+            var directory = Path.Combine(scopeDirectory, "tool-results");
+            if (Directory.Exists(directory))
+                yield return (scopeId, scopeDirectory, directory);
+        }
     }
 
     private static void TryDeleteIfEmpty(string directory)

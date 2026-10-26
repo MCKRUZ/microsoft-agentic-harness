@@ -13,11 +13,17 @@ public sealed partial class PostgresObservabilityStore : IPersonalDataEraser
     /// </summary>
     private static readonly string[] EraseStatements =
     [
-        "DELETE FROM audit_log WHERE session_id IN (SELECT id FROM sessions WHERE conversation_id = ANY($1))",
-        "DELETE FROM context_snapshot_loaded_bodies WHERE conversation_id = ANY($1)",
-        "DELETE FROM context_snapshots WHERE conversation_id = ANY($1)",
-        "DELETE FROM sessions WHERE conversation_id = ANY($1)",
+        $"DELETE FROM audit_log WHERE {OfSubjectSessions}",
+        $"DELETE FROM context_snapshot_loaded_bodies WHERE {OfSubjectConversations}",
+        $"DELETE FROM context_snapshots WHERE {OfSubjectConversations}",
+        $"DELETE FROM sessions WHERE {OfSubjectConversations}",
     ];
+
+    /// <summary>A row recorded directly under one of the person's conversation ids (<c>$1</c>). Shared with export.</summary>
+    private const string OfSubjectConversations = "conversation_id = ANY($1)";
+
+    /// <summary>A row linked to a session of one of the person's conversations (<c>$1</c>). Shared with export.</summary>
+    private const string OfSubjectSessions = "session_id IN (SELECT id FROM sessions WHERE conversation_id = ANY($1))";
 
     /// <inheritdoc />
     public string ErasureStoreName => "observability database";

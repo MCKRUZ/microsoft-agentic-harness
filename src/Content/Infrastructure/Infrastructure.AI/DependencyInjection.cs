@@ -149,6 +149,7 @@ public static partial class DependencyInjection
         // default; consumers can override with a different IToolResultStore after this call.
         services.AddSingleton<IToolResultStore, Context.FileSystemToolResultStore>();
         services.AddPersonalDataEraser<IToolResultStore>();
+        services.AddPersonalDataExporter<IToolResultStore>();
 
         // Retention sweep for the store above (#559) — unconditional registration, Enabled read live
         // per tick, matching ConversationBudgetRetentionService's own registration convention. A

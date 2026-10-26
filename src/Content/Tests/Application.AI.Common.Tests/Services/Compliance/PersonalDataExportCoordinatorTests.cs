@@ -29,9 +29,19 @@ public sealed class PersonalDataExportCoordinatorTests
         IEnumerable<RetainedPersonalData>? retained = null,
         IConversationStore? conversations = null,
         IErasureJournal? journal = null,
-        ICrossSessionMemoryStore? memory = null) =>
+        ICrossSessionMemoryStore? memory = null,
+        IPlanRunTraceSource? planRuns = null) =>
         new(exporters ?? [], erasers ?? [], retained ?? [], _ambientScope, TimeProvider.System,
-            NullLogger<PersonalDataExportCoordinator>.Instance, conversations, journal, memory);
+            NullLogger<PersonalDataExportCoordinator>.Instance, conversations, journal, memory, planRuns);
+
+    private static Mock<IPersonalDataExporter> RecordingExporter(Action<ExportSubject> seen)
+    {
+        var exporter = Exporter("spills");
+        exporter.Setup(e => e.ExportSubjectAsync(It.IsAny<ExportSubject>(), It.IsAny<CancellationToken>()))
+            .Callback<ExportSubject, CancellationToken>((s, _) => seen(s))
+            .ReturnsAsync([]);
+        return exporter;
+    }
 
     private static Mock<IPersonalDataExporter> Exporter(string name, params string[] records)
     {
@@ -208,6 +218,64 @@ public sealed class PersonalDataExportCoordinatorTests
     }
 
     [Fact]
+    public async Task PlannedTaskRuns_AndWhatAnUnfinishedErasureRecorded_ReachEveryExporter()
+    {
+        // #906/#907: a planned task's model steps ran as conversations of their own and its tool steps under the run's id,
+        // and an erasure that failed part-way may already have deleted the conversation or plan that led to what it left.
+        // Erasure reaches all of it, so the copy must too.
+        var conversations = new Mock<IConversationStore>();
+        conversations.Setup(c => c.ListAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync([Conversation("c-1")]);
+        var planRuns = new Mock<IPlanRunTraceSource>();
+        planRuns.Setup(p => p.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PlanRunTraces(["run-1:step-1"], ["job-1"], ["planrun:run-1"]));
+        var journal = new Mock<IErasureJournal>();
+        journal.Setup(j => j.BeginRequestAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(Mock.Of<IDisposable>());
+        journal.Setup(j => j.ReadAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(new ErasureJournalEntries(
+            ["c-gone"], [], new PlanRunTraces(["run-gone:step-1"], ["job-gone"], ["planrun:run-gone"])));
+        ExportSubject? seen = null;
+
+        await Create([RecordingExporter(s => seen = s).Object], conversations: conversations.Object, journal: journal.Object,
+            planRuns: planRuns.Object).ExportOwnerAsync(Owner, CancellationToken.None);
+
+        seen!.ConversationIds.Should().BeEquivalentTo(["c-1", "c-gone"]);
+        seen.AllConversationIds.Should().BeEquivalentTo(["c-1", "c-gone", "run-1:step-1", "run-gone:step-1"],
+            "a store keyed by conversation id reads the planned tasks' model steps too");
+        seen.PlanRuns.ToolResultScopeIds.Should().BeEquivalentTo(["job-1", "job-gone"]);
+    }
+
+    [Fact]
+    public async Task ReadingThePlannedTaskRunsFails_ItIsAFailedLine_AndTheStoresStillAnswer()
+    {
+        var planRuns = new Mock<IPlanRunTraceSource>();
+        planRuns.Setup(p => p.ListRunTracesAsync(Owner, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("Data Source=/srv/planner.db"));
+
+        var copy = await Create([Exporter("schedules", "s").Object], planRuns: planRuns.Object)
+            .ExportOwnerAsync(Owner, CancellationToken.None);
+
+        var line = copy.Manifest.Single(m => m.Store == "planned-task run list");
+        line.Status.Should().Be(ExportStatus.Failed, "what only the runs lead to is missing from the copy");
+        line.Reason.Should().NotContain("planner.db");
+        copy.Sections.Should().ContainSingle(s => s.Store == "schedules");
+        copy.IsComplete.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ReadingTheErasureJournalFails_ItIsAFailedLine_AndTheStoresStillAnswer()
+    {
+        var journal = new Mock<IErasureJournal>();
+        journal.Setup(j => j.BeginRequestAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(Mock.Of<IDisposable>());
+        journal.Setup(j => j.ReadAsync(Owner, It.IsAny<CancellationToken>())).ThrowsAsync(new IOException("disk"));
+
+        var copy = await Create([Exporter("schedules", "s").Object], journal: journal.Object)
+            .ExportOwnerAsync(Owner, CancellationToken.None);
+
+        copy.Manifest.Should().Contain(m => m.Store == "unfinished erasure requests" && m.Status == ExportStatus.Failed);
+        copy.Sections.Should().ContainSingle(s => s.Store == "schedules");
+        copy.IsComplete.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task CallerHasARequestScope_EveryStoreIsReadSystemScoped_UnderThePersonsErasureTurn()
     {
         var callerScope = new ServiceCollection().BuildServiceProvider();
@@ -219,6 +287,7 @@ public sealed class PersonalDataExportCoordinatorTests
         journal.Setup(j => j.BeginRequestAsync(Owner, It.IsAny<CancellationToken>()))
             .Callback(() => turnHeld = true)
             .ReturnsAsync(turn.Object);
+        journal.Setup(j => j.ReadAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(ErasureJournalEntries.Empty);
         var heldDuringRead = false;
         var exporter = Exporter("schedules");
         exporter.Setup(e => e.ExportSubjectAsync(It.IsAny<ExportSubject>(), It.IsAny<CancellationToken>()))
