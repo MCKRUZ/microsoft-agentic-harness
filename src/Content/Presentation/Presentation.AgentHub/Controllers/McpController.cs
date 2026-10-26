@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
@@ -32,6 +32,7 @@ public sealed class McpController : ControllerBase
     private readonly IMcpPromptProvider _promptProvider;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;
     private readonly IDirectToolInvoker _invoker;
+    private readonly ITelemetryPseudonymizer _pseudonymizer;
     private readonly ILogger<McpController> _logger;
 
     /// <summary>Initialises the controller with its dependencies.</summary>
@@ -41,6 +42,7 @@ public sealed class McpController : ControllerBase
         IMcpPromptProvider promptProvider,
         ICapabilityEnvelopeResolver envelopeResolver,
         IDirectToolInvoker invoker,
+        ITelemetryPseudonymizer pseudonymizer,
         ILogger<McpController> logger)
     {
         _toolProvider = toolProvider;
@@ -48,6 +50,7 @@ public sealed class McpController : ControllerBase
         _promptProvider = promptProvider;
         _envelopeResolver = envelopeResolver;
         _invoker = invoker;
+        _pseudonymizer = pseudonymizer;
         _logger = logger;
     }
 
@@ -160,7 +163,9 @@ public sealed class McpController : ControllerBase
             return this.NoUsableIdentity();
 
         var rawArgs = request.Arguments.GetRawText();
-        var inputHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawArgs))).ToLowerInvariant();
+        // Keyed (#903): this line carries the caller's id next to the hash, so an unkeyed hash of short
+        // arguments would let anyone reading the log confirm what a named person sent by hashing guesses.
+        var inputHash = _pseudonymizer.Fingerprint(ITelemetryPseudonymizer.Purposes.McpAuditArguments, rawArgs);
 
         // W3C trace id ties this audit entry to the rest of the request's spans across
         // systems — the "who authorized that call?" thread an auditor follows.
@@ -169,10 +174,6 @@ public sealed class McpController : ControllerBase
         _logger.LogInformation(
             "MCP tool invoked. UserId={UserId} ToolName={ToolName} InputHash={InputHash} CorrelationId={CorrelationId}",
             userId, name, inputHash, correlationId);
-
-        _logger.LogDebug(
-            "MCP tool raw arguments. ToolName={ToolName} Arguments={Arguments}",
-            name, request.Arguments);
 
         var arguments = new Dictionary<string, object?>();
         if (request.Arguments.ValueKind == JsonValueKind.Object)

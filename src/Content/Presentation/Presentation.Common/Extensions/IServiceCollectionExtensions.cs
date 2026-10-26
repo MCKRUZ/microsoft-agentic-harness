@@ -382,6 +382,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<LogsConfig, LogsConfigValidator>()
             .ValidateOnStart();
 
+        // The key for every telemetry pseudonym (#903). Unset is valid; a set but unusable key fails at startup naming
+        // the setting, rather than when the telemetry pipeline first builds its processors.
+        services.AddOptions<PiiFilteringConfig>()
+            .Bind(configuration.GetSection("AppConfig:Observability:PiiFiltering"))
+            .ValidateFluentValidation<PiiFilteringConfig, PiiFilteringConfigValidator>()
+            .ValidateOnStart();
+
         // RAG graph coherence (GraphRag feature knobs vs the graph database backend they need).
         // Rules are conditional on GraphDatabase.Enabled / GraphRag.IndexOnIngest and the class
         // defaults satisfy them, so hosts that omit the section keep booting; a host that

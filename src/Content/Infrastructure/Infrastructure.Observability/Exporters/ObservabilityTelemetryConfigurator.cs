@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.Common.Interfaces.Telemetry;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Infrastructure.Observability.Processors;
@@ -46,6 +47,7 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
     private readonly IOptionsMonitor<Domain.Common.Config.AppConfig> _appConfig;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IBudgetTrackingService _budgetTracker;
+    private readonly ITelemetryPseudonymizer _pseudonymizer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ObservabilityTelemetryConfigurator"/> class.
@@ -54,16 +56,19 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
     /// <param name="appConfig">The application configuration.</param>
     /// <param name="loggerFactory">The logger factory for creating processor loggers.</param>
     /// <param name="budgetTracker">The budget tracking service for cost aggregation.</param>
+    /// <param name="pseudonymizer">The shared keyed hash the PII filter and the tool-argument fingerprint use.</param>
     public ObservabilityTelemetryConfigurator(
         ILogger<ObservabilityTelemetryConfigurator> logger,
         IOptionsMonitor<Domain.Common.Config.AppConfig> appConfig,
         ILoggerFactory loggerFactory,
-        IBudgetTrackingService budgetTracker)
+        IBudgetTrackingService budgetTracker,
+        ITelemetryPseudonymizer pseudonymizer)
     {
         _logger = logger;
         _appConfig = appConfig;
         _loggerFactory = loggerFactory;
         _budgetTracker = budgetTracker;
+        _pseudonymizer = pseudonymizer;
     }
 
     /// <inheritdoc />
@@ -89,7 +94,8 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
         {
             builder.AddProcessor(new PiiFilteringProcessor(
                 _loggerFactory.CreateLogger<PiiFilteringProcessor>(),
-                optionsSnapshot));
+                optionsSnapshot,
+                _pseudonymizer));
             _logger.LogInformation("PII filtering processor registered");
         }
 
@@ -122,9 +128,10 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
         _logger.LogInformation("Tool usefulness processor registered");
 
         // Processor 6: Causal attribution — bridges agent.tool.name → gen_ai.tool.name,
-        // adds input hash and result category, reads eval context from baggage
+        // adds the keyed input fingerprint and result category, reads eval context from baggage
         builder.AddProcessor(new CausalSpanAttributionProcessor(
-            _loggerFactory.CreateLogger<CausalSpanAttributionProcessor>()));
+            _loggerFactory.CreateLogger<CausalSpanAttributionProcessor>(),
+            _pseudonymizer));
         _logger.LogInformation("Causal span attribution processor registered");
 
         // Trace sampling is intentionally NOT done here. Tail-based sampling belongs at the

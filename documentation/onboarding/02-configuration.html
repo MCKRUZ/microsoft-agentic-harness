@@ -1018,7 +1018,15 @@
                             </tr>
                             <tr>
                                 <td><code>PiiFiltering</code></td>
-                                <td>Patterns redacted before any trace leaves the process.</td>
+                                <td>
+                                    Span attributes deleted (auth headers, cookies) or replaced with a keyed hash
+                                    (<code>user.email</code>, <code>enduser.id</code>) before any trace leaves the
+                                    process. <code>HmacKey</code> is the key for every telemetry pseudonym, including
+                                    the tool-argument fingerprint and the MCP call log line: base64 of at least 32
+                                    bytes, and a set but malformed key refuses startup. Unset, a random key is made at
+                                    startup, so pseudonyms stay private but change on restart and differ between
+                                    instances.
+                                </td>
                             </tr>
                         <tr>
                                 <td><code>PropagateBaggage</code></td>

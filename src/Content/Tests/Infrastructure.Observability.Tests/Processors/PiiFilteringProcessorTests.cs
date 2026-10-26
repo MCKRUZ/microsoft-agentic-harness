@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using Application.AI.Common.Services.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using FluentAssertions;
@@ -47,7 +48,8 @@ public sealed class PiiFilteringProcessorTests : IDisposable
         var options = Options.Create(appConfig);
         return new PiiFilteringProcessor(
             NullLogger<PiiFilteringProcessor>.Instance,
-            options);
+            options,
+            new HmacTelemetryPseudonymizer(options, NullLogger<HmacTelemetryPseudonymizer>.Instance));
     }
 
     [Fact]
