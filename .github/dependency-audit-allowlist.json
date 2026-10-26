@@ -8,51 +8,37 @@
   ],
   "accepted": [
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "braces",
-      "reason": "braces <= 3.0.3 has a stack-exhaustion denial of service on a pathological brace pattern, and no patched release exists (first_patched_version is none). It is reached only through the shadcn component-scaffolding CLI (shadcn -> fast-glob -> micromatch -> braces), a devDependency in both frontends that runs on a developer machine against local paths. It is not in either production bundle: Presentation.WebUI imports only shadcn/tailwind.css (a stylesheet), Presentation.Dashboard imports nothing from it. No untrusted input reaches the pattern matcher. Re-assess when a patched braces ships or shadcn drops the dependency.",
-      "reviewBy": "2027-01-16"
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "zod",
+      "reason": "Covers ONLY the zod 3.25.x copy nested under @ag-ui/client and @ag-ui/core in both frontends (#939). The flaw makes an array schema allocate one issue per failing element, so a huge array of malformed elements can exhaust memory. No zod 3.x release has the fix (first patched: 4.6.6), the latest @ag-ui (1.0.3) still requires zod ^3.25.76, and forcing it onto zod 4 with an npm override breaks @ag-ui at runtime (its single-argument z.record(...) throws under zod 4). Reachability: @ag-ui runs only in the browser and validates the event stream from the harness's own AgentHub (/ag-ui/run, same origin, authenticated). AgentHub is .NET and serialises typed events, so the arrays in that stream are well-formed; model and tool output can only fill string fields, which cannot make an element fail. The worst case is the viewer's own tab running out of memory, and nothing server-side runs this code. Each frontend's own top-level zod is patched (^4.6.7 in WebUI's package.json, 4.6.7 locked in both), and that floor is what stops this entry from hiding a regression of it, because the gate matches by package name. Remove when @ag-ui ships on zod >= 4.6.6.",
+      "reviewBy": "2027-01-26"
     },
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "micromatch",
-      "reason": "Same advisory as the braces entry above; micromatch is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "@ag-ui/client",
+      "reason": "Same advisory as the zod entry above; @ag-ui/client is flagged only because it depends on the affected zod 3.x. Identical reasoning and review date.",
+      "reviewBy": "2027-01-26",
       "coversFindingsWithoutAdvisoryUrl": true
     },
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "fast-glob",
-      "reason": "Same advisory as the braces entry above; fast-glob is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "@ag-ui/core",
+      "reason": "Same advisory as the zod entry above; @ag-ui/core is flagged only because it depends on the affected zod 3.x. Identical reasoning and review date.",
+      "reviewBy": "2027-01-26",
       "coversFindingsWithoutAdvisoryUrl": true
     },
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "shadcn",
-      "reason": "Same advisory as the braces entry above; shadcn is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "@ag-ui/encoder",
+      "reason": "Same advisory as the zod entry above; @ag-ui/encoder is flagged only because it depends on @ag-ui/core and its zod 3.x. Identical reasoning and review date.",
+      "reviewBy": "2027-01-26",
       "coversFindingsWithoutAdvisoryUrl": true
     },
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "@shadcn/registry",
-      "reason": "Same advisory as the braces entry above; @shadcn/registry is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
-      "coversFindingsWithoutAdvisoryUrl": true
-    },
-    {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "ts-morph",
-      "reason": "Same advisory as the braces entry above; ts-morph is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
-      "coversFindingsWithoutAdvisoryUrl": true
-    },
-    {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "@ts-morph/common",
-      "reason": "Same advisory as the braces entry above; @ts-morph/common is flagged only because it depends on the affected package. Identical reasoning and review date.",
-      "reviewBy": "2027-01-16",
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "@ag-ui/proto",
+      "reason": "Same advisory as the zod entry above; @ag-ui/proto is flagged only because it depends on @ag-ui/core and its zod 3.x. Identical reasoning and review date.",
+      "reviewBy": "2027-01-26",
       "coversFindingsWithoutAdvisoryUrl": true
     }
   ]

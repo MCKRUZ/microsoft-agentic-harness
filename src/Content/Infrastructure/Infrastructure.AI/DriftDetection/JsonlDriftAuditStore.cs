@@ -25,7 +25,7 @@ namespace Infrastructure.AI.DriftDetection;
 /// efficient range queries; <see cref="GetRecordsAsync"/> resolves only the files in range.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller's identity. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller as a keyed reference (#903; records written earlier hold the raw id). Kept by design: deleting records would break the chain.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
