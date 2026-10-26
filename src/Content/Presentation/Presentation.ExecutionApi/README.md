@@ -126,7 +126,7 @@ The disjointness check exists because the global registries scan discovery roots
 
 `AddExecutionApiAuthentication` throws at startup on three states: unconfigured without opt-in, half-configured (exactly one of `TenantId`/`ClientId`), and contradictory (`AllowAnonymous` *and* a configured scheme). Configured mode validates issuer, audience (`api://{ClientId}`), lifetime, and signing key with `ClockSkew = TimeSpan.Zero`, plus a fallback authorization policy so an endpoint added without explicit metadata still requires authentication.
 
-Anonymous mode registers `AnonymousAuthenticationHandler` (one synthetic principal, so `[Authorize]` is satisfied) plus `ExecutionApiAnonymousModeStartupWarning`, which logs loudly for the life of the process. That principal carries no subject, so every anonymous run resolves to the fail-closed `Default` envelope -- the door is open, the room is empty.
+Anonymous mode registers `AnonymousAuthenticationHandler` (one synthetic principal, so `[Authorize]` is satisfied) plus the shared `UnauthenticatedModeStartupGuard` (#904): a warning in Development, a refusal to start anywhere else unless `Auth:AllowAnonymousOutsideDevelopment` is set, and a Critical log entry when it is. That principal carries no subject, so every anonymous run resolves to the fail-closed `Default` envelope -- the door is open, the room is empty.
 
 ### Rate limiting: two rate policies and one concurrency policy
 
@@ -200,6 +200,7 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `Envelopes` | fail-closed | `Default` / `BySubject` / `ByRole` |
 | `Auth:TenantId`, `Auth:ClientId` | unset | This host's **own** audience -- never shared with AgentHub or the MCP server |
 | `Auth:AllowAnonymous` | `false` | Explicit local-dev opt-in; `Environment=Development` alone does not disable auth |
+| `Auth:AllowAnonymousOutsideDevelopment` | `false` | Allows anonymous mode outside Development; without it the host refuses to start there |
 
 The shipped `appsettings.json` sets `Enabled: true` with an empty `Auth` block, so it boots only in Development — where the shipped `appsettings.Development.json` opts into anonymous auth. Every other environment fails closed at startup until a real scheme is configured.
 

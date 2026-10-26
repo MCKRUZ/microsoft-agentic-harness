@@ -41,6 +41,13 @@ public sealed class BundleApiAuthConfig
     /// </summary>
     public bool AllowAnonymous { get; set; }
 
+    /// <summary>
+    /// Allows <see cref="AllowAnonymous"/> outside the Development environment. Off by default: anywhere else the host
+    /// refuses to start in anonymous mode unless this is also set, and logs the choice at Critical on every start when
+    /// it is (#904). Every caller is then one synthetic identity, so per-user isolation and attribution do not apply.
+    /// </summary>
+    public bool AllowAnonymousOutsideDevelopment { get; set; }
+
     /// <summary>Whether a token-validation scheme is configured (both tenant and client id supplied).</summary>
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId);

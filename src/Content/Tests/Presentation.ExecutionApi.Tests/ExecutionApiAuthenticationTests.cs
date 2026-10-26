@@ -58,6 +58,27 @@ public sealed class ExecutionApiAuthenticationTests
         act.Should().Throw<InvalidOperationException>().WithMessage("*half-configured*");
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task AnonymousOptIn_OutsideDevelopment_StartsOnlyWithTheOverride(bool overridden, bool refuses)
+    {
+        var services = NewServices();
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(new TestEnvironment("Production"));
+        services.AddExecutionApiAuthentication(
+            new BundleApiAuthConfig { AllowAnonymous = true, AllowAnonymousOutsideDevelopment = overridden });
+        using var provider = services.BuildServiceProvider();
+        var guard = provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
+            .OfType<Application.Common.Hosting.UnauthenticatedModeStartupGuard>().Single();
+
+        var act = () => guard.StartAsync(CancellationToken.None);
+
+        if (refuses)
+            await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*AllowAnonymousOutsideDevelopment=true*");
+        else
+            await act.Should().NotThrowAsync();
+    }
+
     [Fact]
     public void AnonymousOptIn_RegistersSyntheticAuth_AndStartupWarning()
     {
@@ -65,11 +86,13 @@ public sealed class ExecutionApiAuthenticationTests
 
         services.AddExecutionApiAuthentication(new BundleApiAuthConfig { AllowAnonymous = true });
 
-        services.Should().Contain(d => d.ImplementationType == typeof(ExecutionApiAnonymousModeStartupWarning),
-            "the anonymous open-door state must announce itself loudly at startup");
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(new TestEnvironment("Development"));
+        using var provider = services.BuildServiceProvider();
+        provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
+            .Should().ContainSingle(s => s is Application.Common.Hosting.UnauthenticatedModeStartupGuard,
+                "the anonymous open-door state must announce itself at startup, and refuse outside Development (#904)");
 
         // AddAuthentication ran (synthetic handler), so [Authorize] endpoints are reachable in anonymous mode.
-        using var provider = services.BuildServiceProvider();
         provider.GetService<Microsoft.AspNetCore.Authentication.IAuthenticationService>()
             .Should().NotBeNull();
     }
@@ -85,5 +108,14 @@ public sealed class ExecutionApiAuthenticationTests
         act.Should().NotThrow();
         // A configured scheme installs JwtBearer options for the host's own audience.
         services.Should().Contain(d => d.ServiceType == typeof(IConfigureOptions<JwtBearerOptions>));
+    }
+
+    private sealed class TestEnvironment(string name) : Microsoft.Extensions.Hosting.IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = name;
+        public string ApplicationName { get; set; } = "tests";
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } =
+            new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 }

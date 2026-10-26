@@ -663,8 +663,9 @@ The agent runs with exactly one tool: file_system.</code></pre>
                     <h2>Anonymous mode is a development mode</h2>
                     <p>
                         With <code>Auth:AllowAnonymous: true</code> the host authenticates every request as one synthetic
-                        principal and logs a prominent warning at startup for as long as it runs. The consequences are
-                        specific, and both matter:
+                        principal and logs a prominent warning at startup. Outside the Development environment it refuses
+                        to start unless <code>Auth:AllowAnonymousOutsideDevelopment: true</code> is also set, and then logs
+                        the choice at Critical. The consequences are specific, and both matter:
                     </p>
                     <ul>
                         <li><strong>Every caller shares one owner.</strong> Ownership checks still run, but they all pass
@@ -1435,6 +1436,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>Envelopes</code></td><td>fail-closed</td><td>The per-caller grant table (see above).</td></tr>
                             <tr><td><code>Auth:TenantId</code> / <code>Auth:ClientId</code></td><td>unset</td><td>This API's own Entra audience. Supply both or neither.</td></tr>
                             <tr><td><code>Auth:AllowAnonymous</code></td><td><code>false</code></td><td>Explicit local-development opt-in. Cannot be combined with a configured scheme.</td></tr>
+                            <tr><td><code>Auth:AllowAnonymousOutsideDevelopment</code></td><td><code>false</code></td><td>Allows anonymous mode outside the Development environment. Without it the host refuses to start there; with it, the choice is logged at Critical on every start.</td></tr>
                         </tbody>
                     </table>
 
