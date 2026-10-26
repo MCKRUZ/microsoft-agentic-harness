@@ -71,7 +71,7 @@ public sealed class ExecutionApiAuthenticationTests
         var guard = provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
             .OfType<Application.Common.Hosting.UnauthenticatedModeStartupGuard>().Single();
 
-        var act = () => guard.StartAsync(CancellationToken.None);
+        var act = () => guard.StartingAsync(CancellationToken.None);
 
         if (refuses)
             await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*AllowAnonymousOutsideDevelopment=true*");

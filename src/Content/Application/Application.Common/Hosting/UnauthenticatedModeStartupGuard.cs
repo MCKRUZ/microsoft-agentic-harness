@@ -20,11 +20,14 @@ namespace Application.Common.Hosting;
 /// allowed and logged as a warning.
 /// </para>
 /// <para>
-/// A hosted service rather than a check during registration, so the decision uses the environment the host actually
-/// runs in, after every configuration source has loaded, and a refusal stops <c>StartAsync</c> with the reason.
+/// A lifecycle hosted service rather than a check during registration, so the decision uses the environment the host
+/// actually runs in. The refusal is thrown from <see cref="StartingAsync"/>, which the host runs for every lifecycle
+/// service before it starts <em>any</em> hosted service: otherwise the background services registered ahead of this one
+/// (run resumption, schedule dispatch, retention sweeps) would already be doing work by the time it refused. Whether the
+/// override is set is read when the guard is registered; only the environment is read at startup.
 /// </para>
 /// </remarks>
-public sealed class UnauthenticatedModeStartupGuard : IHostedService
+public sealed class UnauthenticatedModeStartupGuard : IHostedLifecycleService
 {
     private readonly string _mode;
     private readonly string _overrideSetting;
@@ -59,7 +62,7 @@ public sealed class UnauthenticatedModeStartupGuard : IHostedService
 
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">The mode is on outside Development without the override.</exception>
-    public Task StartAsync(CancellationToken cancellationToken)
+    public Task StartingAsync(CancellationToken cancellationToken)
     {
         if (_environment.IsDevelopment())
         {
@@ -88,5 +91,17 @@ public sealed class UnauthenticatedModeStartupGuard : IHostedService
     }
 
     /// <inheritdoc />
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

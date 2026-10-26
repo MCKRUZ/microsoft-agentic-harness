@@ -334,6 +334,13 @@ curl http://localhost:8080/health/subsystems</code></pre>
                         deployment as "Development" (which silently turns off unrelated hardening, like forced
                         HTTPS).
                     </p>
+                    <p>
+                        Never run a deployment with <code>ASPNETCORE_ENVIRONMENT=Development</code>. The startup check
+                        treats Development as a developer's machine and lets the sign-in bypass through without the
+                        override, and in Development the bypass uses the developer handler, which gives every caller
+                        operator roles (escalation admin, change approval, drift and registry operations), not the
+                        self-hosted handler's none.
+                    </p>
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
                         <div class="callout-body">

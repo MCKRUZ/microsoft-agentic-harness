@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Presentation.AgentHub.Auth;
 using OpenTelemetry.Metrics;
 using Xunit;
 
@@ -32,15 +34,20 @@ public sealed class AuthBypassStartupRefusalTests
     }
 
     [Fact]
-    public void Start_SignInBypassedOutsideDevelopmentWithTheOverride_Starts()
+    public void Start_SignInBypassedOutsideDevelopmentWithTheOverride_StartsSelfHostedAndLogsCritical()
     {
-        // The control: the same host with the deliberate override starts (the self-hosted deployment of #591).
-        var act = () => Boot("Production", allowOutsideDevelopment: true);
+        // The control: the same host with the deliberate override starts (the self-hosted deployment of #591), under the
+        // low-privilege self-hosted handler, never the developer one, and with the choice on the record.
+        var logs = new CapturingLoggerProvider();
 
-        act.Should().NotThrow();
+        var scheme = Boot("Production", allowOutsideDevelopment: true, logs);
+
+        scheme.Should().Be(SelfHostedAuthHandler.SchemeName);
+        logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Critical && e.Message.Contains("Auth:AllowOutsideDevelopment=true"));
     }
 
-    private static void Boot(string environment, bool allowOutsideDevelopment)
+    private static string? Boot(string environment, bool allowOutsideDevelopment, ILoggerProvider? logs = null)
     {
         var variables = new Dictionary<string, string?>
         {
@@ -51,6 +58,7 @@ public sealed class AuthBypassStartupRefusalTests
             ["AppConfig__Observability__Exporters__Otlp__Enabled"] = "false",
         };
         var original = variables.Keys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+        var originalDirectory = Directory.GetCurrentDirectory();
         try
         {
             foreach (var (key, value) in variables)
@@ -60,6 +68,8 @@ public sealed class AuthBypassStartupRefusalTests
             using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment(environment);
+                if (logs is not null)
+                    builder.ConfigureLogging(logging => logging.AddProvider(logs));
                 // Same OTel/MeterProvider test-host workaround as every other AgentHub factory (see
                 // TestWebApplicationFactory's remarks).
                 builder.ConfigureServices(services =>
@@ -69,11 +79,36 @@ public sealed class AuthBypassStartupRefusalTests
                 });
             });
             _ = factory.Server; // Starts the host, and with it the startup guard.
+            return factory.Services.GetRequiredService<Microsoft.AspNetCore.Authentication.IAuthenticationSchemeProvider>()
+                .GetDefaultAuthenticateSchemeAsync().GetAwaiter().GetResult()?.Name;
         }
         finally
         {
             foreach (var (key, value) in original)
                 Environment.SetEnvironmentVariable(key, value);
+            Directory.SetCurrentDirectory(originalDirectory);
+        }
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new Logger(this);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Logger(CapturingLoggerProvider provider) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+                => provider.Entries.Enqueue((logLevel, formatter(state, exception)));
         }
     }
 }

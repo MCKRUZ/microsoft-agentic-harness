@@ -114,12 +114,12 @@ public static class DependencyInjection
         // Auth:Disabled outside Development without Auth:AllowOutsideDevelopment used to be ignored silently, so a
         // deployer who asked for no sign-in got Entra sign-in with no word why. It now refuses to start, and a bypass
         // that is allowed is logged at startup (#904).
-        if (configuration.GetValue<bool>("Auth:Disabled"))
+        if (Auth.AuthBypassPolicy.IsRequested(configuration))
         {
-            var allowOutsideDevelopment = configuration.GetValue<bool>("Auth:AllowOutsideDevelopment");
+            var allowOutsideDevelopment = Auth.AuthBypassPolicy.IsAllowedOutsideDevelopment(configuration);
             services.AddHostedService(sp => new Application.Common.Hosting.UnauthenticatedModeStartupGuard(
                 "AgentHub sign-in bypass (Auth:Disabled=true)",
-                "Auth:AllowOutsideDevelopment",
+                Auth.AuthBypassPolicy.OutsideDevelopmentSetting,
                 allowOutsideDevelopment,
                 sp.GetRequiredService<IHostEnvironment>(),
                 sp.GetRequiredService<ILogger<Application.Common.Hosting.UnauthenticatedModeStartupGuard>>()));
