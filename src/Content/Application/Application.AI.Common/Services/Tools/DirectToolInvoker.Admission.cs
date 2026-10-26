@@ -18,13 +18,6 @@ namespace Application.AI.Common.Services.Tools;
 public sealed partial class DirectToolInvoker
 {
     /// <summary>
-    /// Prefix for the synthetic agent identity minted per caller. The colon is inside the charset
-    /// <see cref="PlanRunRequest.IsWellFormedAgentId"/> permits, and no configured agent is named this
-    /// way, so a direct invocation cannot pick up permission rules authored for a real agent.
-    /// </summary>
-    private const string SyntheticAgentPrefix = "direct-invoke:";
-
-    /// <summary>
     /// Validates the request, resolves the tool against the caller's grant, and mints the identity the
     /// invocation will run under.
     /// </summary>
@@ -43,7 +36,7 @@ public sealed partial class DirectToolInvoker
         if (TimeoutRefusal(request, config) is { } timeoutRefusal)
             return timeoutRefusal;
 
-        var agentId = SyntheticAgentPrefix + request.OwnerId;
+        var agentId = DirectInvocationAgentIds.For(request.OwnerId);
         if (!PlanRunRequest.IsWellFormedAgentId(agentId))
         {
             // The identity is the permission subject and the audit subject. The rejected value is

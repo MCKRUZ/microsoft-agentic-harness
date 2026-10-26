@@ -72,7 +72,7 @@ public sealed partial class DirectToolInvoker
                 $"Requested timeout must be positive and no greater than {config.InvocationTimeout}.");
         }
 
-        var agentId = SyntheticAgentPrefix + request.OwnerId;
+        var agentId = DirectInvocationAgentIds.For(request.OwnerId);
         if (!PlanRunRequest.IsWellFormedAgentId(agentId))
         {
             _logger.LogWarning(

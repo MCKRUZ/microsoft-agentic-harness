@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Audit;
 using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
@@ -80,19 +81,26 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlGovernanceAuditWriter> _logger;
+    private readonly IAuditPseudonymizer _pseudonymizer;
 
     /// <summary>Initializes a new instance of <see cref="JsonlGovernanceAuditWriter"/>.</summary>
     /// <param name="config">Application configuration providing the audit storage path.</param>
     /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
+    /// <param name="pseudonymizer">
+    /// Records the caller behind a direct invocation (<c>direct-invoke:{user id}</c>) as a keyed reference (#903).
+    /// </param>
     public JsonlGovernanceAuditWriter(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
-        ILogger<JsonlGovernanceAuditWriter> logger)
+        ILogger<JsonlGovernanceAuditWriter> logger,
+        IAuditPseudonymizer pseudonymizer)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(pseudonymizer);
+        _pseudonymizer = pseudonymizer;
 
         var chain = AuditChains.Governance(config.CurrentValue, timeProvider);
         _filePath = chain.Segments.LegacyFile!;
@@ -112,7 +120,7 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
         var record = new GovernanceAuditRecord
         {
             Timestamp = DateTimeOffset.UtcNow,
-            AgentId = agentId,
+            AgentId = RecordedAgentId(agentId),
             Action = action,
             Decision = decision,
         };
@@ -234,7 +242,12 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
         if (query.End.HasValue)
             filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
         if (!string.IsNullOrEmpty(query.AgentId))
-            filtered = filtered.Where(r => r.AgentId == query.AgentId);
+        {
+            // A direct invocation's caller is recorded as a reference since #903, so look for both forms: the records
+            // written before then hold the raw id, the ones since hold the reference.
+            var recorded = RecordedAgentId(query.AgentId);
+            filtered = filtered.Where(r => r.AgentId == query.AgentId || r.AgentId == recorded);
+        }
 
         var result = filtered.OrderBy(r => r.Timestamp).ToList();
         return Result<IReadOnlyList<GovernanceAuditRecord>>.Success(result.AsReadOnly());
@@ -242,4 +255,10 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
 
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();
+
+    // A direct invocation runs as "direct-invoke:{user id}"; the trail records the caller as a reference (#903).
+    private string RecordedAgentId(string agentId) =>
+        DirectInvocationAgentIds.TryGetOwner(agentId, out var owner)
+            ? DirectInvocationAgentIds.For(_pseudonymizer.Person(owner))
+            : agentId;
 }

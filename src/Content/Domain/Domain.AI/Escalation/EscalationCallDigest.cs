@@ -26,7 +26,9 @@ namespace Domain.AI.Escalation;
 /// <para>
 /// <b>Limit.</b> It is a plain SHA-256, not a keyed one: it does not reveal a value that is already shown,
 /// but for a hidden value from a small space (a short secret in a 33rd argument) it would let someone who
-/// can read the audit trail confirm a guess. The shown portion of every argument is already visible there.
+/// can see it confirm a guess. The live surfaces (the notification, the approvals API) show it as computed. The
+/// hash-chained audit trail records it, like every argument value, as a keyed fingerprint of the digest (#903), so
+/// matching an approval to what ran from the trail needs the audit pseudonym key.
 /// </para>
 /// </remarks>
 public static class EscalationCallDigest

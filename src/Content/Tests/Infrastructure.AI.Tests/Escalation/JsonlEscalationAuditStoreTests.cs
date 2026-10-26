@@ -8,6 +8,7 @@ using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.Escalation;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -41,7 +42,12 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
             }
         };
         var options = Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config);
-        _store = new JsonlEscalationAuditStore(options, TimeProvider.System, Mock.Of<ILogger<JsonlEscalationAuditStore>>());
+        _store = new JsonlEscalationAuditStore(
+            options,
+            TimeProvider.System,
+            Mock.Of<ILogger<JsonlEscalationAuditStore>>(),
+            AuditPseudonyms.Create(),
+            new DefaultContentRedactionFilter());
     }
 
     public void Dispose()
@@ -216,10 +222,130 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
         history[0].Payload.Should().Contain("delete_file");
 
         history[1].RecordType.Should().Be(EscalationAuditRecordType.Decision);
-        history[1].Payload.Should().Contain("admin");
+        history[1].Payload.Should().Contain(AuditPseudonyms.Create().Person("admin"));
 
         history[2].RecordType.Should().Be(EscalationAuditRecordType.Outcome);
         history[2].Payload.Should().Contain("Approved");
+    }
+
+    // ===== #903 audit minimisation: the trail keeps references, fingerprints and redacted text, never the raw values =====
+
+    [Fact]
+    public async Task RecordRequestAsync_RecordsPeopleAsReferencesAndArgumentsAsFingerprints()
+    {
+        // The trail is kept for good, so it must not hold the approver's name, the caller's id or what the tool was sent.
+        var pseudonyms = AuditPseudonyms.Create();
+        var request = BuildRequest() with
+        {
+            AgentId = "direct-invoke:user-oid-42",
+            Arguments = new Dictionary<string, string> { ["path"] = "/home/alice/medical.txt" },
+            Description = "Delete a file for alice@contoso.com",
+            Approvers = ["bob@contoso.com"],
+            PriorRevisionInstructions = "Ask carol@contoso.com first",
+        };
+
+        await _store.RecordRequestAsync(request, CancellationToken.None);
+
+        var payload = (await _store.GetHistoryAsync(request.EscalationId, CancellationToken.None)).Single().Payload;
+        payload.Should().NotContain("alice").And.NotContain("bob@").And.NotContain("carol@").And.NotContain("user-oid-42");
+        var recorded = JsonSerializer.Deserialize<EscalationRequest>(payload, ModernReadOptions)!;
+        recorded.ToolName.Should().Be("delete_file", "which tool was asked for is the point of the record");
+        recorded.Arguments.Should().ContainKey("path", "the argument names stay; only their values are fingerprinted")
+            .WhoseValue.Should().Be(pseudonyms.Fingerprint("tool-argument", "/home/alice/medical.txt"));
+        recorded.Approvers.Should().Equal(pseudonyms.Person("bob@contoso.com"));
+        recorded.AgentId.Should().Be("direct-invoke:" + pseudonyms.Person("user-oid-42"));
+        recorded.Description.Should().StartWith("Delete a file for ").And.Contain("[REDACTED");
+    }
+
+    [Fact]
+    public async Task RecordRequestAsync_ValuesRepeatedInTheDescription_AreReplacedByTheirReferences()
+    {
+        // The router writes "Agent 'direct-invoke:{user id}' is attempting..." and a delegation repeats its task text in
+        // the description. A raw value left there beside its reference would let any reader link the two without the
+        // key. A user id is no email, so redaction alone would not catch it.
+        var pseudonyms = AuditPseudonyms.Create();
+        var request = BuildRequest() with
+        {
+            AgentId = "direct-invoke:8f14e45f-ceea-467a-9575-0f2a3b1c6d7e",
+            Arguments = new Dictionary<string, string>
+            {
+                ["taskDescription"] = "Summarise the divorce papers for Dana Whitfield",
+                ["flag"] = "true",
+            },
+            Description = "Agent 'direct-invoke:8f14e45f-ceea-467a-9575-0f2a3b1c6d7e' is attempting to call tool "
+                + "'delegate'. Delegation blocked: Summarise the divorce papers for Dana Whitfield (true)",
+        };
+
+        await _store.RecordRequestAsync(request, CancellationToken.None);
+
+        var payload = (await _store.GetHistoryAsync(request.EscalationId, CancellationToken.None)).Single().Payload;
+        payload.Should().NotContain("8f14e45f").And.NotContain("Dana Whitfield");
+        var recorded = JsonSerializer.Deserialize<EscalationRequest>(payload, ModernReadOptions)!;
+        recorded.Description.Should().Be(
+            $"Agent '{recorded.AgentId}' is attempting to call tool 'delegate'. Delegation blocked: "
+            + $"{pseudonyms.Fingerprint("tool-argument", "Summarise the divorce papers for Dana Whitfield")} (true)",
+            "the references read in place of the values, and a short value such as 'true' is left alone");
+        recorded.AgentId.Should().Be("direct-invoke:" + pseudonyms.Person("8f14e45f-ceea-467a-9575-0f2a3b1c6d7e"));
+    }
+
+    [Fact]
+    public async Task RecordDecisionAndOutcomeAsync_RecordTheApproverAsAReferenceAndKeepTheRedactedReasoning()
+    {
+        // The key holder can still answer "did bob approve this?" by computing his reference; the reasoning stays because
+        // it is the accountability the record exists for, with identifiers taken out.
+        var pseudonyms = AuditPseudonyms.Create();
+        var escalationId = Guid.NewGuid();
+        var decision = BuildDecision("bob@contoso.com") with { Reason = "Fine, alice@contoso.com asked for it" };
+        var outcome = BuildOutcome(escalationId) with
+        {
+            Decisions = [decision],
+            Approvers = ["bob@contoso.com"],
+            CancelledBy = "carol@contoso.com",
+        };
+
+        await _store.RecordDecisionAsync(escalationId, decision, CancellationToken.None);
+        await _store.RecordOutcomeAsync(outcome, CancellationToken.None);
+
+        var history = await _store.GetHistoryAsync(escalationId, CancellationToken.None);
+        history.Select(r => r.Payload).Should().AllSatisfy(p => p.Should().NotContain("@contoso.com"));
+        var recordedDecision = JsonSerializer.Deserialize<ApproverDecision>(history[0].Payload, ModernReadOptions)!;
+        recordedDecision.ApproverName.Should().Be(pseudonyms.Person("bob@contoso.com"));
+        recordedDecision.Verdict.Should().Be(ApproverVerdict.Approve);
+        recordedDecision.Reason.Should().StartWith("Fine, ").And.Contain("[REDACTED");
+        var recordedOutcome = JsonSerializer.Deserialize<EscalationOutcome>(history[1].Payload, ModernReadOptions)!;
+        recordedOutcome.Decisions.Single().ApproverName.Should().Be(pseudonyms.Person("bob@contoso.com"));
+        recordedOutcome.Approvers.Should().Equal(pseudonyms.Person("bob@contoso.com"));
+        recordedOutcome.CancelledBy.Should().Be(pseudonyms.Person("carol@contoso.com"));
+    }
+
+    [Fact]
+    public async Task RawRecordsWrittenBeforeMinimisation_ReadAndVerifyAlongsideMinimisedOnes()
+    {
+        // Records written before #903 hold raw values and can never change. Readers skip a payload they cannot parse, so a
+        // shape that dropped a field would vanish from every read and from the compliance report; this proves both shapes
+        // still read, in one chain that still verifies.
+        var escalationId = Guid.NewGuid();
+        var rawRecordJson = JsonSerializer.Serialize(new
+        {
+            record_type = "Request",
+            escalation_id = escalationId,
+            timestamp = DateTimeOffset.UtcNow,
+            payload = JsonSerializer.Serialize(BuildRequest(escalationId), ModernReadOptions),
+        }, LegacyWriteOptions);
+        var filePath = Path.Combine(_tempDir, "escalations.jsonl");
+        using (var rawWriter = new HashChainedJsonlWriter(filePath, NullLogger.Instance))
+            (await rawWriter.AppendAsync(rawRecordJson, CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        await _store.RecordDecisionAsync(escalationId, BuildDecision("bob"), CancellationToken.None);
+        await _store.RecordOutcomeAsync(BuildOutcome(escalationId), CancellationToken.None);
+
+        var history = await _store.GetHistoryAsync(escalationId, CancellationToken.None);
+        history.Select(r => r.RecordType).Should().Equal(
+            EscalationAuditRecordType.Request, EscalationAuditRecordType.Decision, EscalationAuditRecordType.Outcome);
+        JsonSerializer.Deserialize<EscalationRequest>(history[0].Payload, ModernReadOptions)!.Approvers.Should().Equal("admin");
+        JsonSerializer.Deserialize<ApproverDecision>(history[1].Payload, ModernReadOptions).Should().NotBeNull();
+        JsonSerializer.Deserialize<EscalationOutcome>(history[2].Payload, ModernReadOptions).Should().NotBeNull();
+        (await _store.VerifyChainAsync(checkpoint: null, CancellationToken.None)).IsValid.Should().BeTrue();
     }
 
     // ===== #321 durable-format migration: a record written before ApproverVerdict existed =====

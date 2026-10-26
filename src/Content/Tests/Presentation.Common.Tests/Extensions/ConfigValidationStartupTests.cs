@@ -42,6 +42,10 @@ public class ConfigValidationStartupTests
     public static TheoryData<string, Dictionary<string, string?>> InvalidSectionValues => new()
     {
         {
+            "AuditPseudonymKey",
+            new Dictionary<string, string?> { ["AppConfig:AI:Audit:PseudonymKey"] = "too-short" }
+        },
+        {
             "ResilienceConfig",
             new Dictionary<string, string?> { ["AppConfig:AI:Resilience:Retry:BackoffType"] = "Bogus" }
         },

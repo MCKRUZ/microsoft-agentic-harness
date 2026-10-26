@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Escalation;
 using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -32,6 +33,11 @@ public static partial class DependencyInjection
     /// </remarks>
     private static void RegisterAuditChainVerification(IServiceCollection services, AppConfig appConfig)
     {
+        // The keyed references and fingerprints the trails record in place of people and tool arguments (#903).
+        // Resolved at startup so an unusable key, or a key file that cannot be written, stops the host at boot.
+        services.TryAddSingleton<IAuditPseudonymizer, HmacAuditPseudonymizer>();
+        services.AddHostedService<AuditPseudonymKeyStartup>();
+
         services.AddSingleton<IVerifiableAuditChain>(sp =>
             (IVerifiableAuditChain)sp.GetRequiredService<IChangeAuditWriter>());
         services.AddSingleton<IVerifiableAuditChain>(sp =>

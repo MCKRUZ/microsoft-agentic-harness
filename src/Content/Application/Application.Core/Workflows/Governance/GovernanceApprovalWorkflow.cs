@@ -1,4 +1,6 @@
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -38,7 +40,10 @@ public static class GovernanceApprovalWorkflow
 
         var createRequest = new CreateApprovalRequestExecutor(auditService, logger);
         var approvalPort = RequestPort.Create<ApprovalRequest, ApprovalResponse>("GovernanceApproval");
-        var processOutcome = new ProcessApprovalOutcomeExecutor(auditService);
+        var processOutcome = new ProcessApprovalOutcomeExecutor(
+            auditService,
+            services.GetRequiredService<IAuditPseudonymizer>(),
+            services.GetRequiredService<IContentRedactionFilter>());
 
         var workflow = new WorkflowBuilder(createRequest)
             .WithName("GovernanceApproval")

@@ -227,6 +227,12 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<Domain.Common.Config.AI.AIConfig, AuditArchivePathValidator>()
             .ValidateOnStart();
 
+        // The audit pseudonym key (#903): a configured key must be usable, and the key file must not sit where the
+        // records it protects are copied from. Also no Bind, for the reason above.
+        services.AddOptions<Domain.Common.Config.AI.AIConfig>()
+            .ValidateFluentValidation<Domain.Common.Config.AI.AIConfig, AuditPseudonymKeyValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:DriftDetection"))
             .ValidateFluentValidation<

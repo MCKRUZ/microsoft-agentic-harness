@@ -738,6 +738,48 @@
                         store that keeps data with neither fails the build.
                     </p>
 
+                    <h3 id="audit-trail-pseudonyms">What the audit trails record about people</h3>
+                    <p>
+                        Because nothing in a hash-chained trail can be erased, the trails record as little about people as
+                        still answers their questions (#903). In the escalation and governance trails:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>People</strong> &mdash; approvers, the person who cancelled an escalation, and the caller
+                            behind a direct tool invocation &mdash; are recorded as a keyed reference,
+                            <code>ref:{key id}:{HMAC}</code>, never by name or user id. Whoever holds the key can compute a
+                            named person's reference and find every approval they gave; nobody without it can reverse a
+                            reference or confirm a guess. This keeps the trail's purpose, recording who approved or denied
+                            each governed action, without keeping the identity in clear.
+                        </li>
+                        <li>
+                            <strong>Tool arguments</strong> keep their names; each value is recorded as a keyed fingerprint,
+                            <code>fp:{key id}:{HMAC}</code>, so the key holder can confirm a value was the one sent without
+                            the trail holding it.
+                        </li>
+                        <li>
+                            <strong>Free text</strong> &mdash; an escalation's description, an approver's reason and
+                            instructions &mdash; is kept, because the reasoning is the accountability record, with every
+                            redaction category applied.
+                        </li>
+                    </ul>
+                    <p>
+                        The key is <code>AppConfig:AI:Audit:PseudonymKey</code>. Set it from a secret store wherever more
+                        than one instance writes the trails. Without one, a key file is made once at
+                        <code>.agent-sessions/keys/audit-pseudonym.key</code> with access for the application's own account
+                        only, and read on every later start, so references stay the same across restarts. Startup refuses a
+                        key file inside any audit folder or the archive, so the key never travels with the records it
+                        protects. Back the key up: without it, references can no longer be recomputed. Each reference names
+                        its key, so after a rotation old references read as made under an earlier key rather than as
+                        references that match nobody.
+                    </p>
+                    <p>
+                        The escalation state store still holds the full values while an escalation needs them, under its own
+                        retention. Records written before this change hold raw values and cannot be rewritten; they are
+                        kept on the same Article 17(3) basis as the rest of the archive, below, and leave it when the
+                        archive's retention period ends.
+                    </p>
+
                     <h3 id="audit-archive-retention">The audit archive: why erasure does not reach it, and how long to keep it</h3>
                     <p>
                         The audit trails (governance, escalation, change, egress and drift) are hash-chained, and the audit

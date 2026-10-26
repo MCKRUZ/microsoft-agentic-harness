@@ -55,6 +55,37 @@ public sealed class AuditConfig
     /// </remarks>
     public string ArchivePath { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Gets the base64 key the audit trails' pseudonyms are made with: the reference that stands for a person (an approver,
+    /// a reviewer, a caller) and the fingerprint that stands for tool arguments (#903). At least 32 bytes. Empty (the
+    /// default) uses the key in <see cref="PseudonymKeyPath"/>, made on first use.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The trails are kept for as long as their hash chain must stay verifiable and cannot be edited, so they record a
+    /// keyed reference rather than the name itself. Whoever holds the key can still answer "did this person approve that
+    /// call?" by computing the person's reference, which is the accountability the trail exists for; nobody without it can
+    /// reverse a reference or confirm a guess.
+    /// </para>
+    /// <para>
+    /// Set it from a secret store wherever more than one instance writes the same trails, so every instance makes the same
+    /// reference for the same person. Changing it starts new references; earlier records keep the key id they were made
+    /// under, so they are never mistaken for references under the new key.
+    /// </para>
+    /// </remarks>
+    public string PseudonymKey { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Gets the file that holds the audit pseudonym key when <see cref="PseudonymKey"/> is empty. Made on first use with
+    /// owner-only access, and read on every later start so references stay the same across restarts. Defaults to
+    /// <c>.agent-sessions/keys/audit-pseudonym.key</c>.
+    /// </summary>
+    /// <remarks>
+    /// Must not be inside any audit log folder, <see cref="ReceiptPath"/> or <see cref="ArchivePath"/>: the key must not
+    /// travel with the records it protects when they are copied to the archive or handed out in a compliance report.
+    /// </remarks>
+    public string PseudonymKeyPath { get; init; } = Path.Combine(".agent-sessions", "keys", "audit-pseudonym.key");
+
     /// <summary>Gets the audit archiver's own settings. Read only by the archiver, never by the application.</summary>
     public AuditArchiverConfig Archiver { get; init; } = new();
 }
