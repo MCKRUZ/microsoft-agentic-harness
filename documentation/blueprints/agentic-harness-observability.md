@@ -313,7 +313,7 @@ regardless of a stale per-attribute toggle. The `ContentCaptureConfigValidator`
 
 **Redaction before emit.** Every captured string passes through
 `DefaultContentRedactionFilter` (a fixed, over-redactive regex rule set) before
-it is attached. The eight `RedactionCategory` values:
+it is attached. The eleven `RedactionCategory` values:
 
 | Category | Masks |
 |---|---|
@@ -323,12 +323,26 @@ it is attached. The eight `RedactionCategory` values:
 | `CreditCard` | Credit-card PANs (broad, Luhn-ish) |
 | `IpAddress` | IPv4 / IPv6 addresses |
 | `AwsKey` | AWS access-key ids (`AKIA…`, `ASIA…`, …) |
+| `VendorApiKey` | OpenAI (`sk-…`), GitHub (`ghp_…`, `github_pat_…`) and Slack (`xox…-`, `xapp-…`) tokens |
 | `JwtToken` | JWT tokens (`header.payload.signature`) |
+| `Iban` | IBANs, spaced or not, confirmed by their mod-97 check digits |
+| `EuNationalId` | Spanish DNI/NIE, Italian *codice fiscale*, French NIR, Belgian national number, each confirmed by its check digits |
 | `Generic` | Catch-all: `Bearer …`, `AccountKey=`, `api_key=`, … |
 
 The filter is intentionally noisy: a false positive that masks a benign string
 is acceptable; a false negative that leaks a credit-card number into a span is
-not.
+not. The exception is the identifiers with check digits (`Iban`,
+`EuNationalId`): they are redacted only when their check digits hold, because
+their shapes alone match ordinary product and reference codes. They run before
+the broad digit rules, so a genuine one is tagged by what it is.
+
+**What no pattern catches.** Names and postal addresses have no reliable
+shape, and purely numeric national ids (a German tax id, a Dutch BSN, a Polish
+PESEL) look like any other number; the last are masked, untagged, by the broad
+digit rules. A deployment that must redact names or addresses registers its own
+`IContentRedactionFilter` (a named-entity recogniser, Azure AI Language PII
+detection) before the harness's: the default is registered with
+`TryAddSingleton`, so the replacement is used on every redaction path.
 
 **Schema** — bind from `AppConfig.AI.Telemetry.ContentCapture`:
 
@@ -347,8 +361,8 @@ not.
         "CaptureMagenticProgressContent": false,
         "CaptureMagenticPlanReviewFeedback": false,
         "RedactionCategories": [
-          "Email", "Phone", "Ssn", "CreditCard",
-          "IpAddress", "AwsKey", "JwtToken", "Generic"
+          "Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey",
+          "VendorApiKey", "Iban", "EuNationalId", "JwtToken", "Generic"
         ]
       }
     }

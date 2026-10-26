@@ -26,7 +26,7 @@ public class LogsConfigValidatorTests
         config.MinExportLevel.Should().Be("Information");
         config.RedactionEnabled.Should().BeTrue();
         config.RedactionCategories.Should()
-            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "JwtToken", "Generic");
+            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "Iban", "EuNationalId", "JwtToken", "Generic");
     }
 
     [Fact]

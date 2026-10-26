@@ -105,6 +105,8 @@ public sealed class ContentCaptureConfig
         "IpAddress",
         "AwsKey",
         "VendorApiKey",
+        "Iban",
+        "EuNationalId",
         "JwtToken",
         "Generic",
     ];

@@ -82,6 +82,8 @@ public sealed class LogsConfig
         "IpAddress",
         "AwsKey",
         "VendorApiKey",
+        "Iban",
+        "EuNationalId",
         "JwtToken",
         "Generic",
     ];
