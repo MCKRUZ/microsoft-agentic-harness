@@ -26,12 +26,17 @@ public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentTurnReq
 	public int EstimatedTokenCost => (UserMessage.Length / 4) + 1_000;
 
 	/// <summary>
-	/// Every piece of caller-supplied text that reaches the model on this turn: the message, the per-turn
-	/// <see cref="TurnContext"/> and the conversation's <see cref="SystemPromptOverride"/> (#904). Screening the message
-	/// alone would let harmful or injected text through in either of the other two, which a caller sets as easily.
+	/// The per-turn text a caller supplies: the message and the per-turn <see cref="TurnContext"/> (#904). Screening
+	/// the message alone would let harmful or injected text through in the context, which an AG-UI caller sets as easily.
 	/// </summary>
+	/// <remarks>
+	/// <see cref="SystemPromptOverride"/> is deliberately not here: it is set once per conversation, so screening it on
+	/// every turn would pay the screening service for the same text each time, and it is operator-written instructions
+	/// that the prompt-injection scan, which reads this too, can mistake for an attack. It belongs where conversation
+	/// settings are written (#951).
+	/// </remarks>
 	public string ContentToScreen =>
-		string.Join("\n\n", new[] { UserMessage, TurnContext, SystemPromptOverride }.Where(text => !string.IsNullOrWhiteSpace(text)));
+		string.IsNullOrWhiteSpace(TurnContext) ? UserMessage : $"{UserMessage}\n\n{TurnContext}";
 
 	/// <inheritdoc />
 	public ContentScreeningTarget ScreeningTarget => ContentScreeningTarget.Input;

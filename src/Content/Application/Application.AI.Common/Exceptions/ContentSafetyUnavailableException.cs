@@ -13,7 +13,8 @@ namespace Application.AI.Common.Exceptions;
 /// An outage is not a verdict on the content, so it is not reported as a block: a <see cref="ContentSafetyException"/>
 /// or a <c>ContentBlocked</c> result tells the caller the text itself was harmful, which is permanent and not worth
 /// retrying, and counts toward the block metrics a deployment alerts on. This exception surfaces as a service failure
-/// instead: HTTP 503, which the caller can retry once the service is back.
+/// instead: HTTP 503 where the host maps errors through <c>IHttpStatusException</c>, which the caller can retry once the
+/// service is back. AgentHub's SignalR and AG-UI turn paths do not map it yet (#952).
 /// </para>
 /// <para>
 /// The message never contains the screened text.

@@ -7,7 +7,9 @@
 -- screening on every dashboard for the length of the outage, so the pipeline
 -- records 'unscreened'. Before this migration the baseline constraint refused the
 -- word, and the observability store's best-effort write swallowed the refusal, so
--- the one record of unscreened traffic was silently never written.
+-- the one record of unscreened traffic was silently never written. This migration
+-- makes the record exist; the compliance report and the Grafana safety panels do
+-- not break it out yet (#953).
 --
 -- Same shape as 005_sessions_status_cancelled.sql and for the same reason: the old
 -- constraint is dropped by DISCOVERED name rather than assumed name, so a database
