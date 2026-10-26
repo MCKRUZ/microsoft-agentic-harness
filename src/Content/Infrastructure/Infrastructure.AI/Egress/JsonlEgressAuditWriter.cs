@@ -102,9 +102,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
             Timestamp = decision.DecidedAt,
             Allowed = decision.Allowed,
             Target = RecordedTarget(decision.Target),
-            Host = decision.Target.Host,
-            Scheme = decision.Target.Scheme,
-            Port = decision.Target.Port,
+            Host = decision.Target.IsAbsoluteUri ? decision.Target.Host : string.Empty,
+            Scheme = decision.Target.IsAbsoluteUri ? decision.Target.Scheme : string.Empty,
+            Port = decision.Target.IsAbsoluteUri ? decision.Target.Port : 0,
             Reason = decision.Reason,
             MatchedAllowlistEntry = decision.MatchedAllowlistEntry,
             FinalIpAddress = decision.FinalIpAddress,
@@ -188,9 +188,11 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
     // request was sent to, which the key holder can match against a known one (#903). The fingerprint covers what goes on
     // the wire: scheme, host, port, path and query, in their escaped form, never the user info or the fragment, so it
     // cannot be used to confirm a guessed password. Match against new Uri(candidate) formatted the same way.
-    private string RecordedTarget(Uri target) =>
-        target.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + "/#"
+    // A relative target names no host to keep; it is recorded by its fingerprint alone rather than failing the write.
+    private string RecordedTarget(Uri target) => target.IsAbsoluteUri
+        ? target.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + "/#"
             + _pseudonymizer.Fingerprint(
                 IAuditPseudonymizer.Purposes.EgressTarget,
-                target.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped));
+                target.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped))
+        : "#" + _pseudonymizer.Fingerprint(IAuditPseudonymizer.Purposes.EgressTarget, target.OriginalString);
 }

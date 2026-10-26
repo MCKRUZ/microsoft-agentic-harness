@@ -105,7 +105,7 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
             ProposalId = proposal.Id,
             GateKey = decision.GateKey,
             Decision = decision.Action,
-            Reason = decision.Reason is null ? null : AuditText.Redact(decision.Reason, _redaction, _pseudonymizer.KeyId),
+            Reason = decision.Reason is null ? null : AuditText.Redact(decision.Reason, _redaction, _pseudonymizer),
             EvidenceHash = decision.EvidenceHash,
             ReviewerId = RecordedReviewer(decision.ReviewerId),
             BlastRadius = proposal.BlastRadius,

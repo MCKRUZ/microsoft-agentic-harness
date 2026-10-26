@@ -34,6 +34,12 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
     private readonly byte[] _personKey;
     private readonly ConcurrentDictionary<string, byte[]> _purposeKeys = new(StringComparer.Ordinal);
 
+    // The tokens this instance made, so free text redaction can tell a producer's reference from text shaped like one.
+    // Bounded: a producer writes its record moments after making the reference, so only recent tokens need remembering.
+    private const int IssuedCapacity = 16384;
+    private readonly ConcurrentDictionary<string, byte> _issued = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> _issuedOrder = new();
+
     /// <summary>Initializes a new instance of the <see cref="HmacAuditPseudonymizer"/> class.</summary>
     /// <param name="config">Application configuration holding the audit pseudonym key settings.</param>
     /// <param name="directories">Creates the key file's folder with owner-only access.</param>
@@ -62,7 +68,7 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
     public string Person(string identifier)
     {
         ArgumentNullException.ThrowIfNull(identifier);
-        return $"ref:{KeyId}:{Hash(_personKey, identifier.ToUpperInvariant())}";
+        return Remember($"ref:{KeyId}:{Hash(_personKey, identifier.ToUpperInvariant())}");
     }
 
     /// <inheritdoc />
@@ -71,7 +77,22 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
         ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
         ArgumentNullException.ThrowIfNull(value);
         var key = _purposeKeys.GetOrAdd(purpose, p => Derive(FingerprintInfoPrefix + p));
-        return $"fp:{KeyId}:{Hash(key, value)}";
+        return Remember($"fp:{KeyId}:{Hash(key, value)}");
+    }
+
+    /// <inheritdoc />
+    public bool Issued(string token) => token is not null && _issued.ContainsKey(token);
+
+    private string Remember(string token)
+    {
+        if (_issued.TryAdd(token, 0))
+        {
+            _issuedOrder.Enqueue(token);
+            while (_issuedOrder.Count > IssuedCapacity && _issuedOrder.TryDequeue(out var oldest))
+                _issued.TryRemove(oldest, out _);
+        }
+
+        return token;
     }
 
     private static string Hash(byte[] key, string value) =>

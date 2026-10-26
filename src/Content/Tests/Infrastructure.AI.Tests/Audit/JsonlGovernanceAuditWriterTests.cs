@@ -37,12 +37,15 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         catch { /* best effort */ }
     }
 
+    // One instance for the writer and the test, so the references a test builds are ones the writer issued.
+    private readonly HmacAuditPseudonymizer _pseudonyms = AuditPseudonyms.Create();
+
     private JsonlGovernanceAuditWriter NewWriter(string? storagePathOverride = null) =>
         new(
             Monitor(storagePathOverride ?? _tempDir),
             TimeProvider.System,
             NullLogger<JsonlGovernanceAuditWriter>.Instance,
-            AuditPseudonyms.Create(),
+            _pseudonyms,
             new DefaultContentRedactionFilter());
 
     private static IOptionsMonitor<AppConfig> Monitor(string storagePath)
@@ -115,7 +118,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         // so it is redacted, but a reference already in it must survive: its hex is what the digit rules would take for
         // a phone number, and a mangled reference matches nobody.
         using var sut = NewWriter();
-        var reference = AuditPseudonyms.Create().Person("bob");
+        var reference = _pseudonyms.Person("bob");
 
         sut.Log("agent-1", "memory_write:Person:dana@contoso.com", $"RequireApproval:Approved|By:{reference}|Reason:call +1 415 555 0100");
 
@@ -130,7 +133,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         // The redaction step marks references with private-use characters. Text that already holds them must not be able to
         // claim a reference's place in the record.
         using var sut = NewWriter();
-        var reference = AuditPseudonyms.Create().Person("bob");
+        var reference = _pseudonyms.Person("bob");
 
         sut.Log("agent-1", "run_tests", $"By:{reference}|Reason:\uE000a\uE001 call dana@contoso.com");
 
@@ -159,12 +162,13 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
     }
 
     [Fact]
-    public void Log_OnlyReferencesUnderTheCurrentKey_AreShieldedFromRedaction()
+    public void Log_OnlyReferencesThisProcessIssued_AreShieldedFromRedaction()
     {
-        // Anything else shaped like a reference is ordinary text: the shield must not let a value slip past the filter.
+        // Anything else shaped like a reference, even under the current key id, is ordinary text: the shield must not let
+        // a chosen value slip past the filter.
         var pseudonyms = AuditPseudonyms.Create();
         var reference = pseudonyms.Person("bob");
-        var foreign = "ref:00000000:" + new string('a', 64);
+        var foreign = $"ref:{pseudonyms.KeyId}:" + new string('a', 64);
         using var sut = new JsonlGovernanceAuditWriter(
             Monitor(_tempDir),
             TimeProvider.System,

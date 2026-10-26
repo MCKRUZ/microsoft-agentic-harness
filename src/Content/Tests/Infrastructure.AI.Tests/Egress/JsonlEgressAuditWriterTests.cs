@@ -83,6 +83,18 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task Append_RelativeTarget_IsRecordedByFingerprintWithoutThrowing()
+    {
+        // No producer passes one today, but an audit write must never fail the request it records.
+        var decision = AllowDecision() with { Target = new Uri("/users/octocat", UriKind.Relative) };
+
+        await _sut.AppendAsync(decision, TestIdentity.Default, CancellationToken.None);
+
+        var line = (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile))[0];
+        line.Should().NotContain("octocat").And.Contain("\"target\":\"#fp:");
+    }
+
+    [Fact]
     public async Task Append_DenyDecision_StillRecorded()
     {
         var decision = DenyDecision();

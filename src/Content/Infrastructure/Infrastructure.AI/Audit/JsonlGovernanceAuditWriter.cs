@@ -177,7 +177,7 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     {
         try
         {
-            return AuditText.Redact(text ?? string.Empty, _redaction, _pseudonymizer.KeyId);
+            return AuditText.Redact(text ?? string.Empty, _redaction, _pseudonymizer);
         }
         catch (Exception ex)
         {

@@ -23,5 +23,9 @@ internal sealed class FakeAuditPseudonymizer : IAuditPseudonymizer
     /// <inheritdoc />
     public string Fingerprint(string purpose, string value) => $"fp:testkey0:{Hex(purpose + "|" + value)}";
 
+    /// <inheritdoc />
+    public bool Issued(string token) => token.StartsWith("ref:testkey0:", StringComparison.Ordinal)
+        || token.StartsWith("fp:testkey0:", StringComparison.Ordinal);
+
     private static string Hex(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..16];
 }

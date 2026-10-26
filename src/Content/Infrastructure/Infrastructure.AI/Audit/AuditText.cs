@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Redaction;
 
@@ -20,16 +21,16 @@ public static partial class AuditText
     /// <summary>Returns <paramref name="text"/> with every redaction category applied and its audit references intact.</summary>
     /// <param name="text">Free text for an audit record.</param>
     /// <param name="redaction">The redaction filter.</param>
-    /// <param name="keyId">
-    /// The id of the key in use. Only references made under it are shielded: anything else shaped like one is ordinary
-    /// text, and redacted as such, so the shield cannot be used to slip a value past the filter.
+    /// <param name="pseudonymizer">
+    /// The pseudonymizer that made the references. Only tokens it issued are shielded: anything else shaped like one is
+    /// ordinary text, redacted as such, so the shield cannot carry a chosen value past the filter.
     /// </param>
     /// <returns>The redacted text.</returns>
-    public static string Redact(string text, IContentRedactionFilter redaction, string keyId)
+    public static string Redact(string text, IContentRedactionFilter redaction, IAuditPseudonymizer pseudonymizer)
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(redaction);
-        ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
+        ArgumentNullException.ThrowIfNull(pseudonymizer);
 
         // A marker character already in the text would be read back as one of ours; it means nothing, so drop it.
         var cleaned = text.Replace(MarkerStart.ToString(), string.Empty, StringComparison.Ordinal)
@@ -37,7 +38,7 @@ public static partial class AuditText
         var references = new List<string>();
         var marked = Reference().Replace(cleaned, match =>
         {
-            if (!string.Equals(match.Groups["key"].Value, keyId, StringComparison.Ordinal))
+            if (!pseudonymizer.Issued(match.Value))
                 return match.Value;
             references.Add(match.Value);
             return $"{MarkerStart}{ToLetters(references.Count - 1)}{MarkerEnd}";
@@ -53,6 +54,6 @@ public static partial class AuditText
     private static string ToLetters(int index) =>
         index < 26 ? ((char)('a' + index)).ToString() : ToLetters((index / 26) - 1) + (char)('a' + (index % 26));
 
-    [GeneratedRegex(@"\b(?:ref|fp):(?<key>[0-9a-f]{8}):[0-9a-f]{64}\b", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
+    [GeneratedRegex(@"\b(?:ref|fp):[0-9a-f]{8}:[0-9a-f]{64}\b", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
     private static partial Regex Reference();
 }
