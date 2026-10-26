@@ -170,7 +170,8 @@ internal static class HoldsNoPersonalData
             "Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions::ToListAsync",
             "calls channel Infrastructure.AI.Persistence.PlannerDbContext"),
         ["Infrastructure.AI/Infrastructure.AI.Audit.AuditPseudonymKey"] = new(
-            "Writes the audit pseudonym key file (#903): 32 random bytes, base64, made once. It holds the key the audit references are made with, not data about anyone.",
+            "Writes the audit pseudonym key file (#903): 32 random bytes, base64, made once in a temporary file and moved into place. It holds the key the audit references are made with, not data about anyone.",
+            "System.IO.File::Move",
             "System.IO.FileStream::.ctor"),
         ["Infrastructure.AI/Infrastructure.AI.Audit.AuditChainCheckpointStore"] = new(
             "One small JSON file per audit chain holding only the last verified sequence number and hash.",
