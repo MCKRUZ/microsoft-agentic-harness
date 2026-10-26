@@ -1,9 +1,15 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Telemetry;
+using Domain.Common.Config;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.MetaHarness;
 using FluentAssertions;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Processors;
@@ -30,8 +36,16 @@ public sealed class CausalSpanAttributionProcessorTests : IDisposable
         _source.Dispose();
     }
 
-    private static CausalSpanAttributionProcessor CreateProcessor() =>
-        new(NullLogger<CausalSpanAttributionProcessor>.Instance);
+    private static readonly byte[] Key = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+
+    private static CausalSpanAttributionProcessor CreateProcessor()
+    {
+        var config = new AppConfig();
+        config.Observability.PiiFiltering.HmacKey = Convert.ToBase64String(Key);
+        return new(
+            NullLogger<CausalSpanAttributionProcessor>.Instance,
+            new HmacTelemetryPseudonymizer(Options.Create(config), NullLogger<HmacTelemetryPseudonymizer>.Instance));
+    }
 
     [Fact]
     public void OnEnd_ToolCallSpan_AddsToolNameTag()
@@ -53,13 +67,17 @@ public sealed class CausalSpanAttributionProcessorTests : IDisposable
         using var activity = _source.StartActivity("execute-tool")!;
         activity.SetTag(ToolConventions.GenAiOperationName, ToolConventions.ExecuteToolOperation);
         activity.SetTag(ToolConventions.Name, "file_read");
-        activity.SetTag(ToolConventions.ToolCallArguments, "{\"path\": \"/tmp/test.txt\"}");
+        const string arguments = "{\"path\": \"/tmp/test.txt\"}";
+        activity.SetTag(ToolConventions.ToolCallArguments, arguments);
 
         processor.OnEnd(activity);
 
+        // Keyed (#903): a plain SHA-256 of short arguments lets anyone reading the trace confirm a guess.
         var hash = activity.GetTagItem(ToolConventions.InputHash) as string;
-        hash.Should().NotBeNullOrEmpty();
-        hash.Should().MatchRegex("^[0-9a-f]{64}$", "input hash must be a lowercase 64-char SHA-256 hex string");
+        var purposeKey = HKDF.Expand(
+            HashAlgorithmName.SHA256, Key, 32, Encoding.UTF8.GetBytes(ITelemetryPseudonymizer.Purposes.ToolArguments));
+        hash.Should().Be(Convert.ToHexStringLower(HMACSHA256.HashData(purposeKey, Encoding.UTF8.GetBytes(arguments))));
+        hash.Should().NotBe(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(arguments))));
     }
 
     [Fact]

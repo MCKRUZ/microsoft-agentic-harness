@@ -46,6 +46,10 @@ public class ConfigValidationStartupTests
             new Dictionary<string, string?> { ["AppConfig:AI:Audit:PseudonymKey"] = "too-short" }
         },
         {
+            "PiiFilteringConfig",
+            new Dictionary<string, string?> { ["AppConfig:Observability:PiiFiltering:HmacKey"] = "too-short" }
+        },
+        {
             "ResilienceConfig",
             new Dictionary<string, string?> { ["AppConfig:AI:Resilience:Retry:BackoffType"] = "Bogus" }
         },
