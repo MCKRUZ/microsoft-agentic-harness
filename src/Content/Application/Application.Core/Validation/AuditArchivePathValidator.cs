@@ -37,7 +37,8 @@ public sealed class AuditArchivePathValidator : AbstractValidator<AIConfig>
             .Name;
     }
 
-    private static IEnumerable<(string Name, string Path)> LiveFolders(AIConfig config) =>
+    /// <summary>Every folder the live audit logs and the verification receipts are written to, with its setting name.</summary>
+    internal static IEnumerable<(string Name, string Path)> LiveFolders(AIConfig config) =>
     [
         ("Governance:AuditStoragePath", config.Governance.AuditStoragePath),
         ("Governance:Escalation:AuditStoragePath", config.Governance.Escalation.AuditStoragePath),
@@ -47,13 +48,15 @@ public sealed class AuditArchivePathValidator : AbstractValidator<AIConfig>
         ("Audit:ReceiptPath", config.Audit.ReceiptPath),
     ];
 
-    private static bool Overlaps(string first, string second) =>
+    /// <summary>Whether two normalized paths are the same, or one is inside the other.</summary>
+    internal static bool Overlaps(string first, string second) =>
         IsSameOrInside(first, second) || IsSameOrInside(second, first);
 
     private static bool IsSameOrInside(string path, string folder) =>
         path.Equals(folder, PathComparison) || path.StartsWith(folder + Path.DirectorySeparatorChar, PathComparison);
 
-    private static string Normalize(string path) =>
+    /// <summary>The full path without a trailing separator.</summary>
+    internal static string Normalize(string path) =>
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
     private static StringComparison PathComparison =>

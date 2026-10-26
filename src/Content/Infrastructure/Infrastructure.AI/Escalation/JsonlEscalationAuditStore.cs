@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Audit;
 using Domain.AI.Escalation;
 using Domain.Common;
@@ -27,7 +28,7 @@ namespace Infrastructure.AI.Escalation;
 /// that split continues (see <see cref="DatedAuditSegments"/>). Files are created lazily on first write.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests with tool arguments, approver names, decisions, reasons, outcomes and executions. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests, decisions, outcomes and executions. Since #903 people are keyed references and tool arguments keyed fingerprints (IAuditPseudonymizer), and free text is redacted; records written earlier hold them raw. Kept by design: deleting records would break the chain.",
     PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
@@ -52,6 +53,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlEscalationAuditStore> _logger;
+    private readonly EscalationAuditMinimizer _minimizer;
 
     /// <summary>
     /// Initializes a new instance of <see cref="JsonlEscalationAuditStore"/>.
@@ -59,11 +61,16 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     /// <param name="config">Application configuration providing the audit storage path.</param>
     /// <param name="timeProvider">Decides which day-file a record is appended to (#416).</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
+    /// <param name="pseudonymizer">Makes the keyed references and fingerprints recorded in place of people and arguments.</param>
+    /// <param name="redaction">Redacts identifiers from the free text the records keep.</param>
     public JsonlEscalationAuditStore(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
-        ILogger<JsonlEscalationAuditStore> logger)
+        ILogger<JsonlEscalationAuditStore> logger,
+        IAuditPseudonymizer pseudonymizer,
+        IContentRedactionFilter redaction)
     {
+        _minimizer = new EscalationAuditMinimizer(pseudonymizer, redaction);
         var chain = AuditChains.Escalations(config.CurrentValue, timeProvider);
         _filePath = chain.Segments.LegacyFile!;
         _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
@@ -86,7 +93,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             RecordType = EscalationAuditRecordType.Request,
             EscalationId = request.EscalationId,
             Timestamp = DateTimeOffset.UtcNow,
-            Payload = JsonSerializer.Serialize(request, SerializeOptions)
+            Payload = JsonSerializer.Serialize(_minimizer.Minimize(request), SerializeOptions)
         };
 
         await AppendRecordAsync(record, ct);
@@ -102,7 +109,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             RecordType = EscalationAuditRecordType.Decision,
             EscalationId = escalationId,
             Timestamp = DateTimeOffset.UtcNow,
-            Payload = JsonSerializer.Serialize(decision, SerializeOptions)
+            Payload = JsonSerializer.Serialize(_minimizer.Minimize(decision), SerializeOptions)
         };
 
         await AppendRecordAsync(record, ct);
@@ -118,7 +125,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             RecordType = EscalationAuditRecordType.Outcome,
             EscalationId = outcome.EscalationId,
             Timestamp = DateTimeOffset.UtcNow,
-            Payload = JsonSerializer.Serialize(outcome, SerializeOptions)
+            Payload = JsonSerializer.Serialize(_minimizer.Minimize(outcome), SerializeOptions)
         };
 
         await AppendRecordAsync(record, ct);

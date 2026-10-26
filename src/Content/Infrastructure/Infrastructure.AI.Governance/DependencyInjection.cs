@@ -174,6 +174,13 @@ public static class DependencyInjection
     private static void RegisterAudit(IServiceCollection services)
     {
         services.TryAddSingleton(TimeProvider.System); // picks the audit log's day-file (#416)
+
+        // The writer records a direct invocation's caller as a keyed reference (#903). Infrastructure.AI registers the
+        // same types; TryAdd here too so this module does not depend on that one running first.
+        services.TryAddSingleton<Application.Common.Interfaces.Common.IOwnerOnlyDirectoryCreator,
+            Infrastructure.AI.Helpers.OwnerOnlyDirectoryCreator>();
+        services.TryAddSingleton<Application.AI.Common.Interfaces.Audit.IAuditPseudonymizer,
+            Infrastructure.AI.Audit.HmacAuditPseudonymizer>();
         services.AddSingleton<JsonlGovernanceAuditWriter>();
         services.AddSingleton<IGovernanceAuditService>(sp =>
             sp.GetRequiredService<JsonlGovernanceAuditWriter>());

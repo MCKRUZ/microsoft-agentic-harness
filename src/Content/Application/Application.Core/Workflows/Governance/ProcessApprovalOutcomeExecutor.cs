@@ -1,4 +1,7 @@
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
+using Domain.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI.Workflows;
 
 namespace Application.Core.Workflows.Governance;
@@ -12,9 +15,16 @@ namespace Application.Core.Workflows.Governance;
 /// carries <see cref="ApprovalResponse.AgentId"/> and <see cref="ApprovalResponse.ToolName"/>
 /// echoed from the original <see cref="ApprovalRequest"/>, providing correlation across
 /// the <see cref="RequestPort"/> boundary without mutable instance state.
+/// <para>
+/// The governance trail is hash-chained and cannot be edited, so the approver is recorded as a keyed reference
+/// (<see cref="IAuditPseudonymizer.Person"/>) and the reason with identifiers redacted (#903). The reason is redacted
+/// before the entry is put together, so the redaction never touches the reference.
+/// </para>
 /// </remarks>
 public sealed class ProcessApprovalOutcomeExecutor(
-    IGovernanceAuditService auditService)
+    IGovernanceAuditService auditService,
+    IAuditPseudonymizer pseudonymizer,
+    IContentRedactionFilter redaction)
     : Executor<ApprovalResponse, GovernanceApprovalOutcome>("ProcessApprovalOutcome")
 {
     /// <summary>
@@ -30,7 +40,8 @@ public sealed class ProcessApprovalOutcomeExecutor(
         CancellationToken cancellationToken = default)
     {
         var decision = message.Approved ? "Approved" : "Denied";
-        var auditEntry = $"RequireApproval:{decision}|By:{message.ApproverName}|Reason:{message.Reason ?? "none"}";
+        var reason = message.Reason is null ? "none" : redaction.Redact(message.Reason, RedactionCategories.All);
+        var auditEntry = $"RequireApproval:{decision}|By:{pseudonymizer.Person(message.ApproverName)}|Reason:{reason}";
 
         auditService.Log(message.AgentId, message.ToolName, auditEntry);
 

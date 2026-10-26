@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
@@ -36,7 +37,11 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
     }
 
     private JsonlGovernanceAuditWriter NewWriter(string? storagePathOverride = null) =>
-        new(Monitor(storagePathOverride ?? _tempDir), TimeProvider.System, NullLogger<JsonlGovernanceAuditWriter>.Instance);
+        new(
+            Monitor(storagePathOverride ?? _tempDir),
+            TimeProvider.System,
+            NullLogger<JsonlGovernanceAuditWriter>.Instance,
+            AuditPseudonyms.Create());
 
     private static IOptionsMonitor<AppConfig> Monitor(string storagePath)
     {
@@ -59,6 +64,46 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         sut.Log("agent-1", "iac_plan", "denied");
 
         AuditTrailFiles.ReadAllLines(_expectedFile).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void Log_DirectInvocation_RecordsTheCallerAsTheAuditReference()
+    {
+        // A direct invocation runs as "direct-invoke:{user id}"; the trail is kept for good, so it records the caller as a
+        // reference the key holder can recompute, not the user id.
+        using var sut = NewWriter();
+
+        sut.Log("direct-invoke:user-oid-42", "run_tests", "allowed");
+        sut.Log("agent-1", "run_tests", "allowed");
+
+        var lines = AuditTrailFiles.ReadAllLines(_expectedFile);
+        lines[0].Should().NotContain("user-oid-42")
+            .And.Contain($"\"agent_id\":\"direct-invoke:{AuditPseudonyms.Create().Person("user-oid-42")}\"");
+        lines[1].Should().Contain("\"agent_id\":\"agent-1\"", "a configured agent's name is not personal data");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_ByDirectInvocationAgentId_FindsRecordsWrittenBeforeAndAfterPseudonymisation()
+    {
+        // Records written before #903 hold the raw "direct-invoke:{user id}"; later ones hold the reference. A query by the
+        // raw id must find both, or it silently drops everything written since.
+        using var sut = NewWriter();
+        sut.Log("direct-invoke:user-oid-42", "run_tests", "allowed");
+        var legacyLine = JsonSerializer.Serialize(new
+        {
+            timestamp = DateTimeOffset.UtcNow,
+            agent_id = "direct-invoke:user-oid-42",
+            action = "run_tests",
+            decision = "allowed",
+        });
+        using (var raw = new HashChainedJsonlWriter(_expectedFile, NullLogger.Instance))
+            (await raw.AppendAsync(legacyLine, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        sut.Log("direct-invoke:someone-else", "run_tests", "allowed");
+
+        var result = await sut.GetRecordsAsync(
+            new GovernanceAuditQuery { AgentId = "direct-invoke:user-oid-42" }, CancellationToken.None);
+
+        result.Value.Should().HaveCount(2);
     }
 
     [Fact]
