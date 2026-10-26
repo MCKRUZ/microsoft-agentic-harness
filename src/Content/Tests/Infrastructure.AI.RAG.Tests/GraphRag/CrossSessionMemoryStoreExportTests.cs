@@ -32,6 +32,8 @@ public sealed class CrossSessionMemoryStoreExportTests : IDisposable
         _backend.Setup(b => b.GetAllNodesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(() => _backendNodes);
         _backend.Setup(b => b.GetNodesByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string owner, CancellationToken _) => [.. _backendNodes.Where(n => n.OwnerId == owner)]);
+        _backend.Setup(b => b.GetNodeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string id, CancellationToken _) => _backendNodes.FirstOrDefault(n => n.Id == id));
 
         var appConfig = new AppConfig();
         appConfig.AI.Rag.CrossSessionMemory.Enabled = true;
@@ -87,6 +89,52 @@ public sealed class CrossSessionMemoryStoreExportTests : IDisposable
         var purged = await _sut.PurgeByOwnerAsync("user-1");
 
         exported.Should().HaveCount(purged).And.HaveCount(3);
+    }
+
+    [Fact]
+    public async Task RememberAsync_AnIdAnotherOwnerHoldsInTheCache_IsRefused_AndTheirCopyIsUnchanged()
+    {
+        // The backend's update keeps the owner it first stored, so an overwrite under another owner would put this owner's
+        // words in the other owner's copy and erasure.
+        await _sut.RememberAsync(Memory("preferences", "words of user two", "user-2"));
+
+        var act = () => _sut.RememberAsync(Memory("preferences", "words of user one", "user-1"));
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*belongs to another owner*");
+        Text(await _sut.ExportSubjectAsync(new ExportSubject("user-2", []), CancellationToken.None))
+            .Should().Contain("words of user two").And.NotContain("words of user one");
+    }
+
+    [Fact]
+    public async Task RememberAsync_AnIdAnotherOwnerHoldsInTheBackend_IsRefused()
+    {
+        // After a restart the cache is empty, but the backend still records the id as the other owner's.
+        _backendNodes.Add(MemoryNode("preferences", "words of user two", "user-2"));
+
+        var act = () => _sut.RememberAsync(Memory("preferences", "words of user one", "user-1"));
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*belongs to another owner*");
+        (await _sut.ExportSubjectAsync(new ExportSubject("user-1", []), CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RememberAsync_TheIdOfANodeThatIsNotAMemory_IsRefused()
+    {
+        _backendNodes.Add(new GraphNode { Id = "entity-1", Name = "corpus", Type = "Entity", OwnerId = null });
+
+        var act = () => _sut.RememberAsync(Memory("entity-1", "would overwrite a corpus node", "user-1"));
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not a memory*");
+    }
+
+    [Fact]
+    public async Task RememberAsync_TheSameOwnerAgain_UpdatesTheirMemory()
+    {
+        await _sut.RememberAsync(Memory("preferences", "first", "User-1"));
+        await _sut.RememberAsync(Memory("preferences", "second", "user-1"));
+
+        (await _sut.ExportSubjectAsync(new ExportSubject("user-1", []), CancellationToken.None))
+            .Should().ContainSingle().Which.GetProperty("content").GetString().Should().Be("second");
     }
 
     [Fact]

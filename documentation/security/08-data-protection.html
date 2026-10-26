@@ -1092,7 +1092,10 @@
                         <strong>What they remember and taught the agent.</strong> Their cross-session memories, from both
                         places erasure purges them: the in-process cache and the durable graph backend that keeps them
                         across restarts (the SQLite <code>graph.db</code>, despite the class's Kùzu name), returned once
-                        each, as the cache holds a memory it has newer than the last sync. Learnings they wrote are
+                        each, as the cache holds a memory it has newer than the last sync. A memory id belongs to one owner:
+                        a write under an id another person already holds is refused, because the backend keeps the owner it
+                        first stored, and an overwrite would otherwise put one person's words in the other's copy and erasure.
+                        Learnings they wrote are
                         knowledge-graph nodes stamped with them, so they are in the knowledge-graph section with their
                         other nodes; learnings captured by background work carry no owner and are in no one's copy.
                     </p>

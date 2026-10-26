@@ -75,7 +75,8 @@ public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser, IP
     public string ExportStoreName => AzureSearchOwnerExport.StoreName;
 
     /// <inheritdoc />
-    public string? SharedStoreKey => AzureSearchOwnerExport.StoreName;
+    /// <remarks>The index this store reads: the two Azure stores are read once only when they point at the same one.</remarks>
+    public string? SharedStoreKey => AzureSearchOwnerExport.SharedStoreKey(_searchClient);
 
     /// <inheritdoc />
     /// <remarks>Matches <see cref="ExportSubject.OwnerId"/>, the as-issued form ingest stamps, as erasure does.</remarks>

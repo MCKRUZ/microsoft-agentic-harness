@@ -85,7 +85,18 @@ public sealed partial class CrossSessionMemoryStore : ICrossSessionMemoryStore, 
     }
 
     /// <inheritdoc/>
-    public Task RememberAsync(MemoryRecord memory, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// <para>
+    /// <strong>An id belongs to one owner.</strong> A write under an id another owner already holds, in the cache or the
+    /// durable backend, is refused with <see cref="InvalidOperationException"/>. Overwriting it would put this owner's
+    /// content in a row the backend still records as the other owner's (its update keeps the owner it first stored), so
+    /// that owner's copy of their data would carry it, their erasure would delete it, and this owner's erasure would leave
+    /// it behind. A write under the id of a backend node that is not a memory is refused too: the backend also holds
+    /// document-derived and other subsystems' nodes, and a memory must never overwrite one. Callers that key memories by a
+    /// stable name should namespace the id by owner.
+    /// </para>
+    /// </remarks>
+    public async Task RememberAsync(MemoryRecord memory, CancellationToken cancellationToken = default)
     {
         using var activity = _activitySource.StartActivity("CrossSessionMemory.Remember");
         activity?.SetTag("memory.id", memory.Id);
@@ -93,13 +104,34 @@ public sealed partial class CrossSessionMemoryStore : ICrossSessionMemoryStore, 
         // Canonicalize the owner on write so owner-scoped recall and right-to-erasure purge
         // match regardless of casing (mirrors ComplianceAwareGraphStore's owner stamping).
         var canonical = memory with { OwnerId = ScopeIdentity.Canonicalize(memory.OwnerId) };
-        _cache.AddOrUpdate(canonical.Id, canonical, (_, _) => canonical);
+
+        // A memory already cached passed this check when it was written, and the backend row it syncs to is its own.
+        if (!_cache.ContainsKey(canonical.Id))
+            await RefuseIfTheBackendHoldsTheIdForSomeoneElseAsync(canonical, cancellationToken).ConfigureAwait(false);
+
+        // Checked inside the update, so two writers of one id under different owners cannot both get in.
+        _cache.AddOrUpdate(canonical.Id, canonical, (_, existing) =>
+            ScopeIdentity.AreSame(existing.OwnerId, canonical.OwnerId) ? canonical : throw HeldByAnotherOwner());
         _dirty[canonical.Id] = true;
 
         PruneToCapacity();
-
-        return Task.CompletedTask;
     }
+
+    private async Task RefuseIfTheBackendHoldsTheIdForSomeoneElseAsync(MemoryRecord memory, CancellationToken cancellationToken)
+    {
+        var stored = await _graphBackend.GetNodeAsync(memory.Id, cancellationToken).ConfigureAwait(false);
+        if (stored is null)
+            return;
+
+        if (!string.Equals(stored.Type, MemoryNodeType, StringComparison.Ordinal))
+            throw new InvalidOperationException("A memory cannot take the id of a graph node that is not a memory.");
+
+        if (!ScopeIdentity.AreSame(stored.OwnerId, memory.OwnerId))
+            throw HeldByAnotherOwner();
+    }
+
+    private static InvalidOperationException HeldByAnotherOwner() =>
+        new("A memory with this id belongs to another owner; namespace the id by owner.");
 
     /// <inheritdoc/>
     public Task<IReadOnlyList<MemoryRecord>> RecallAsync(

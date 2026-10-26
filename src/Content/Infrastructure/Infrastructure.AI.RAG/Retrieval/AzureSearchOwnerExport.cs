@@ -15,6 +15,15 @@ internal static class AzureSearchOwnerExport
     /// <summary>The name both Azure stores export under, so the coordinator reads the shared index once.</summary>
     public const string StoreName = "document index (Azure AI Search)";
 
+    /// <summary>
+    /// Identifies the physical index <paramref name="searchClient"/> reads, so the vector and BM25 stores are read once
+    /// when they share one and both read when a host points them at two.
+    /// </summary>
+    /// <param name="searchClient">A store's client.</param>
+    /// <returns>The service endpoint and index name.</returns>
+    public static string SharedStoreKey(SearchClient searchClient) =>
+        $"azure-ai-search|{searchClient.Endpoint}|{searchClient.IndexName}";
+
     private const int PageSize = 1000;
 
     private static readonly string[] ExportedFields = ["id", "documentId", "content", "sectionPath"];
