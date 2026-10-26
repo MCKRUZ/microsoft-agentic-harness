@@ -53,7 +53,9 @@ public class PiiFilteringConfig
     /// Gets or sets the base64-encoded key for every telemetry pseudonym: the hashed span attributes, the
     /// <c>tool.input_hash</c> fingerprint and the MCP tool-call log line. Keyed so a reader of the traces or logs
     /// cannot confirm a low-entropy value (an email, a short argument list) by hashing a guess. At least 32 bytes;
-    /// a set but malformed key refuses startup. Generate with:
+    /// a set but malformed key refuses startup. Earlier versions accepted any base64 value, so a shorter key that used to
+    /// start now refuses; replacing it changes every pseudonym, which is the cost of moving to a key of full strength.
+    /// Generate with:
     /// <c>Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))</c>.
     /// </summary>
     /// <value>

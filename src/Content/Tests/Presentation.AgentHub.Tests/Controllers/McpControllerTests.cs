@@ -448,6 +448,36 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     }
 
     /// <summary>
+    /// No log line at Debug or above carries the call's raw arguments (#903): the audit line's keyed hash exists to keep
+    /// them out, and a Debug line beside it used to log them verbatim.
+    /// </summary>
+    /// <remarks>
+    /// Trace is left out on purpose: at Trace, ASP.NET Core MVC itself logs every action's bound arguments (event 102 of
+    /// <c>ControllerActionInvoker</c>), for every controller. That is framework diagnostics an operator turns on, not
+    /// something this controller writes.
+    /// </remarks>
+    [Fact]
+    public async Task InvokeTool_RawArguments_AreNotLoggedAtDebugOrAbove()
+    {
+        const string marker = "plaintextargumentmarker";
+        var (client, logs) = CreateClientWithFakeToolAndServices("quiet-audit-tool", services =>
+            services.PostConfigure<LoggerFilterOptions>(o =>
+            {
+                // The host's own level rules stop Debug; clear them so Debug and above reach the capture.
+                o.Rules.Clear();
+                o.MinLevel = LogLevel.Debug;
+            }));
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { note = marker } }), Encoding.UTF8, "application/json");
+
+        using var _ = await client.PostAsync("/api/mcp/tools/quiet-audit-tool/invoke", body);
+
+        logs.Entries.Should().Contain(e => e.Level == LogLevel.Debug,
+            "the control: Debug entries must reach the capture, or the assertion below proves nothing");
+        logs.Entries.Should().NotContain(e => e.Message.Contains(marker));
+    }
+
+    /// <summary>
     /// The host's pseudonymizer is the keyed one, resolved once for the process: the audit line and the trace fingerprint
     /// must hash under the same key, which a per-request or unkeyed implementation would break.
     /// </summary>
