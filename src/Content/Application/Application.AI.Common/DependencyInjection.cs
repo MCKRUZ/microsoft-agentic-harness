@@ -166,6 +166,13 @@ public static class DependencyInjection
             Interfaces.Telemetry.IAgentTelemetryAttribution,
             Services.Telemetry.NoOpAgentTelemetryAttribution>();
 
+        // The one keyed hash for telemetry and log pseudonyms (#903): the PII span filter, the tool-argument
+        // fingerprint and the MCP call log line all resolve this singleton, so they share one key for the life
+        // of the process. TryAdd, so a test or host that supplies its own keeps it.
+        services.TryAddSingleton<
+            Interfaces.Telemetry.ITelemetryPseudonymizer,
+            Services.Telemetry.HmacTelemetryPseudonymizer>();
+
         // Live Magentic workflow progress. TryAdd, so a host that shows it (AgentHub bridges it to AG-UI)
         // keeps its own regardless of registration order, and every other host gets a no-op rather than a
         // missing service: the subscriber resolves this for every run.

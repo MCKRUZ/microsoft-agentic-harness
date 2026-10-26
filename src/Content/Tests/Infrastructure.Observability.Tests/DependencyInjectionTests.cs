@@ -1,3 +1,5 @@
+using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Telemetry;
 using Application.Common.Interfaces.Common;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,5 +28,21 @@ public sealed class DependencyInjectionTests
         var creator = provider.GetService<IOwnerOnlyDirectoryCreator>();
 
         creator.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddInfrastructureObservabilityDependencies_RegistersTheTelemetryPseudonymizerAsOneSingleton_OnItsOwn()
+    {
+        // The configurator hands this to the PII filter and the tool-argument fingerprint (#903). It must be one
+        // singleton: with no key configured each instance makes its own random key, so two instances would hash the
+        // same person differently in the same process.
+        var services = new ServiceCollection();
+
+        services.AddInfrastructureObservabilityDependencies();
+        services.AddInfrastructureObservabilityDependencies();
+
+        services.Should().ContainSingle(d => d.ServiceType == typeof(ITelemetryPseudonymizer))
+            .Which.Should().Match<ServiceDescriptor>(d =>
+                d.Lifetime == ServiceLifetime.Singleton && d.ImplementationType == typeof(HmacTelemetryPseudonymizer));
     }
 }

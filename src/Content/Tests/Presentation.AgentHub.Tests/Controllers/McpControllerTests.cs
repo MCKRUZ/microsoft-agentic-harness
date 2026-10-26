@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Telemetry;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using FluentAssertions;
@@ -57,6 +59,13 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         string toolName,
         Func<ValueTask<object?>>? invokeImpl = null,
         bool throwOnInvoke = false)
+        => CreateClientWithFakeToolAndServices(toolName, configure: null, invokeImpl, throwOnInvoke);
+
+    private (HttpClient client, TestLoggerProvider logs) CreateClientWithFakeToolAndServices(
+        string toolName,
+        Action<IServiceCollection>? configure,
+        Func<ValueTask<object?>>? invokeImpl = null,
+        bool throwOnInvoke = false)
     {
         var logs = new TestLoggerProvider();
         var fakeProvider = BuildFakeToolProvider(toolName, invokeImpl, throwOnInvoke);
@@ -81,6 +90,7 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
                         // exercising the invocation path these tests mean to cover.
                         AutonomyCeiling = AutonomyLevel.Autonomous
                     })));
+                configure?.Invoke(services);
             });
         });
 
@@ -411,6 +421,46 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     }
 
     /// <summary>
+    /// The audit line's InputHash is the host's keyed fingerprint of the raw arguments (#903), not a plain SHA-256: the
+    /// line names the caller, so a plain hash of short arguments would let anyone reading the log confirm what that
+    /// person sent by hashing guesses.
+    /// </summary>
+    /// <remarks>
+    /// Asserted through a recording pseudonymizer rather than the hash in the log text, because the local log redactor
+    /// rewrites a 64-character hex run in every log line before any sink sees it.
+    /// </remarks>
+    [Fact]
+    public async Task InvokeTool_AuditLogInputHash_IsTheKeyedFingerprintOfTheRawArguments()
+    {
+        var recorder = new RecordingPseudonymizer();
+        var (client, logs) = CreateClientWithFakeToolAndServices(
+            "keyed-audit-tool", services => services.Replace(ServiceDescriptor.Singleton<ITelemetryPseudonymizer>(recorder)));
+        const string rawArguments = "{\"key\":\"value\"}";
+        var body = new StringContent("{\"Arguments\":" + rawArguments + "}", Encoding.UTF8, "application/json");
+
+        using var _ = await client.PostAsync("/api/mcp/tools/keyed-audit-tool/invoke", body);
+
+        recorder.Fingerprints.Should().Contain((ITelemetryPseudonymizer.Purposes.McpAuditArguments, rawArguments));
+        logs.Entries.Should().Contain(e =>
+            e.Level == LogLevel.Information &&
+            e.Message.Contains("keyed-audit-tool") &&
+            e.Message.Contains($"InputHash={RecordingPseudonymizer.Output}"));
+    }
+
+    /// <summary>
+    /// The host's pseudonymizer is the keyed one, resolved once for the process: the audit line and the trace fingerprint
+    /// must hash under the same key, which a per-request or unkeyed implementation would break.
+    /// </summary>
+    [Fact]
+    public void Host_TelemetryPseudonymizer_IsTheSingleKeyedImplementation()
+    {
+        var first = _factory.Services.GetRequiredService<ITelemetryPseudonymizer>();
+
+        first.Should().BeOfType<HmacTelemetryPseudonymizer>();
+        _factory.Services.GetRequiredService<ITelemetryPseudonymizer>().Should().BeSameAs(first);
+    }
+
+    /// <summary>
     /// An Entra caller whose token carries only <c>oid</c> is attributed by that oid, not logged as
     /// "anonymous".
     /// </summary>
@@ -535,6 +585,21 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
                 Exception? exception,
                 Func<TState, Exception?, string> formatter)
                 => provider.Entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
+
+    private sealed class RecordingPseudonymizer : ITelemetryPseudonymizer
+    {
+        public const string Output = "recorded-fingerprint";
+
+        public ConcurrentQueue<(string Purpose, string Value)> Fingerprints { get; } = new();
+
+        public string HashAttribute(string value) => Output;
+
+        public string Fingerprint(string purpose, string value)
+        {
+            Fingerprints.Enqueue((purpose, value));
+            return Output;
         }
     }
 }

@@ -47,6 +47,12 @@ public static class DependencyInjection
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
 
+        // The configurator's processors hash under the shared telemetry key (#903). Application.AI.Common registers
+        // the same type; TryAdd here as well so this method does not depend on that one running first.
+        services.TryAddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.ITelemetryPseudonymizer,
+            Application.AI.Common.Services.Telemetry.HmacTelemetryPseudonymizer>();
+
         // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag,
         // because it reads that flag itself and returns a shared no-op scope when it is off — so a
         // host that has not opted in pays nothing, and there is no second place for the flag to be

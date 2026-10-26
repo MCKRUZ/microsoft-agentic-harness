@@ -9,8 +9,8 @@ namespace Domain.Common.Config.Observability;
 /// Two actions are supported:
 /// <list type="bullet">
 ///   <item><description><strong>Delete</strong> — attribute is removed entirely (e.g., auth headers)</description></item>
-///   <item><description><strong>Hash</strong> — attribute value is replaced with a SHA-256 hash,
-///   preserving cardinality for analytics without exposing the raw value (e.g., emails)</description></item>
+///   <item><description><strong>Hash</strong> — attribute value is replaced with an HMAC-SHA256 hash under
+///   <see cref="HmacKey"/>, preserving cardinality for analytics without exposing the raw value (e.g., emails)</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -40,7 +40,7 @@ public class PiiFilteringConfig
     /// <summary>
     /// Gets or sets the attribute keys whose values are replaced with a keyed hash.
     /// Preserves cardinality for analytics without exposing PII.
-    /// Uses HMAC-SHA256 when <see cref="HmacKey"/> is configured, plain SHA-256 otherwise.
+    /// Always HMAC-SHA256: under <see cref="HmacKey"/> when configured, otherwise under a random key made at startup.
     /// </summary>
     /// <value>Default: user email, end-user ID.</value>
     public List<string> HashAttributes { get; set; } =
@@ -50,11 +50,15 @@ public class PiiFilteringConfig
     ];
 
     /// <summary>
-    /// Gets or sets the base64-encoded HMAC key for hashing PII attribute values.
-    /// When configured, HMAC-SHA256 replaces plain SHA-256 to prevent rainbow table
-    /// attacks on low-entropy values. Generate with:
+    /// Gets or sets the base64-encoded key for every telemetry pseudonym: the hashed span attributes, the
+    /// <c>tool.input_hash</c> fingerprint and the MCP tool-call log line. Keyed so a reader of the traces or logs
+    /// cannot confirm a low-entropy value (an email, a short argument list) by hashing a guess. At least 32 bytes;
+    /// a set but malformed key refuses startup. Generate with:
     /// <c>Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))</c>.
     /// </summary>
-    /// <value>Default: null (falls back to plain SHA-256 with a startup warning).</value>
+    /// <value>
+    /// Default: null — a random key is made at startup with a warning, so pseudonyms stay private but change on
+    /// restart and differ between instances. Configure it where per-person counts must add up across them.
+    /// </value>
     public string? HmacKey { get; set; }
 }

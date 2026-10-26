@@ -1,12 +1,9 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Config.Observability;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
-
-#pragma warning disable CA5394 // RandomNumberGenerator used, not Random
 
 namespace Infrastructure.Observability.Processors;
 
@@ -24,9 +21,10 @@ namespace Infrastructure.Observability.Processors;
 ///     Use for values with no analytical value (auth headers, cookies).
 ///   </description></item>
 ///   <item><description>
-///     <strong>Hash</strong> — attribute value is replaced with its SHA-256 hex digest.
-///     Preserves cardinality for grouping/counting without exposing the raw PII
-///     (e.g., "user@example.com" becomes "b4c9a289...").
+///     <strong>Hash</strong> — attribute value is replaced with its keyed hash from
+///     <see cref="ITelemetryPseudonymizer.HashAttribute"/> (HMAC-SHA256, lower-case hex).
+///     Preserves cardinality for grouping/counting without exposing the raw PII, and
+///     without the key a guess cannot be confirmed by hashing it.
 ///   </description></item>
 /// </list>
 /// <para>
@@ -40,42 +38,30 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
     private readonly PiiFilteringConfig _config;
     private readonly HashSet<string> _deleteAttributes;
     private readonly HashSet<string> _hashAttributes;
-    private readonly byte[]? _hmacKey;
+    private readonly ITelemetryPseudonymizer _pseudonymizer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PiiFilteringProcessor"/> class.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="appConfig">The application configuration containing PII filtering settings.</param>
+    /// <param name="pseudonymizer">The process-wide keyed hash the hash attributes are replaced with.</param>
     public PiiFilteringProcessor(
         ILogger<PiiFilteringProcessor> logger,
-        IOptions<Domain.Common.Config.AppConfig> appConfig)
+        IOptions<Domain.Common.Config.AppConfig> appConfig,
+        ITelemetryPseudonymizer pseudonymizer)
     {
         _logger = logger;
         _config = appConfig.Value.Observability.PiiFiltering;
+        _pseudonymizer = pseudonymizer;
 
         _deleteAttributes = new HashSet<string>(_config.DeleteAttributes, StringComparer.OrdinalIgnoreCase);
         _hashAttributes = new HashSet<string>(_config.HashAttributes, StringComparer.OrdinalIgnoreCase);
 
-        if (!string.IsNullOrEmpty(_config.HmacKey))
-        {
-            _hmacKey = Convert.FromBase64String(_config.HmacKey);
-        }
-        else if (_hashAttributes.Count > 0)
-        {
-            _hmacKey = RandomNumberGenerator.GetBytes(32);
-            _logger.LogWarning(
-                "PII filtering has {HashCount} hash attributes but no HmacKey — " +
-                "using ephemeral random key (hashes change on restart). " +
-                "Set Observability:PiiFiltering:HmacKey for stable production hashing",
-                _hashAttributes.Count);
-        }
-
         _logger.LogInformation(
-            "PII filtering initialized: {DeleteCount} delete, {HashCount} hash, HMAC={HmacEnabled}",
+            "PII filtering initialized: {DeleteCount} delete, {HashCount} hash",
             _deleteAttributes.Count,
-            _hashAttributes.Count,
-            _hmacKey is not null);
+            _hashAttributes.Count);
     }
 
     /// <inheritdoc />
@@ -107,14 +93,7 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
         for (var i = 0; i < matchCount; i++)
         {
             var (key, isHash, value) = matches![i];
-            data.SetTag(key, isHash ? HashValue(value) : null);
+            data.SetTag(key, isHash ? _pseudonymizer.HashAttribute(value) : null);
         }
-    }
-
-    private string HashValue(string value)
-    {
-        var input = Encoding.UTF8.GetBytes(value);
-        var bytes = HMACSHA256.HashData(_hmacKey!, input);
-        return Convert.ToHexStringLower(bytes);
     }
 }
