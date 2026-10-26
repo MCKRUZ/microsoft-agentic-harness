@@ -5,6 +5,7 @@ using Domain.Common.Config;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Interfaces.Audit;
 
 namespace Application.Core.CQRS.DriftDetection;
 
@@ -29,6 +30,7 @@ public sealed class PushDriftEvaluationCommandHandler
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PushDriftEvaluationCommandHandler> _logger;
+    private readonly IAuditPseudonymizer _pseudonymizer;
 
     /// <summary>Initializes a new instance of the <see cref="PushDriftEvaluationCommandHandler"/> class.</summary>
     /// <param name="driftService">The drift detection service that owns the evaluation pipeline.</param>
@@ -36,13 +38,16 @@ public sealed class PushDriftEvaluationCommandHandler
     /// <param name="config">Application configuration; supplies the drift subsystem's master toggle.</param>
     /// <param name="timeProvider">Time provider for audit timestamps.</param>
     /// <param name="logger">Logger for push diagnostics.</param>
+    /// <param name="pseudonymizer">Records the caller in the hash-chained drift trail as a keyed reference (#903).</param>
     public PushDriftEvaluationCommandHandler(
         IDriftDetectionService driftService,
         IDriftAuditStore auditStore,
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
-        ILogger<PushDriftEvaluationCommandHandler> logger)
+        ILogger<PushDriftEvaluationCommandHandler> logger,
+        IAuditPseudonymizer pseudonymizer)
     {
+        _pseudonymizer = pseudonymizer;
         _driftService = driftService;
         _auditStore = auditStore;
         _config = config;
@@ -141,12 +146,12 @@ public sealed class PushDriftEvaluationCommandHandler
         }, cancellationToken);
     }
 
-    private static DriftOperatorActionAudit BuildAudit(
+    private DriftOperatorActionAudit BuildAudit(
         PushDriftEvaluationCommand request, Guid actionId, DriftOperatorActionPhase phase) => new()
         {
             ActionId = actionId,
             Phase = phase,
-            CallerId = request.CallerId,
+            CallerId = _pseudonymizer.Person(request.CallerId),
             Action = DriftOperatorActionAudit.EvaluationPushAction,
             Scope = request.Scope,
             ScopeIdentifier = request.ScopeIdentifier

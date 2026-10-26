@@ -34,6 +34,15 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
     private readonly byte[] _personKey;
     private readonly ConcurrentDictionary<string, byte[]> _purposeKeys = new(StringComparer.Ordinal);
 
+    // The tokens this instance made, so free text redaction can tell a producer's reference from text shaped like one.
+    // Bounded, least recently issued first out: a producer writes its record moments after making the reference, so
+    // only recent tokens need remembering. Each issue stamps the token with a new sequence number, so issuing it again
+    // moves it to the back, and an eviction removes a token only if it still carries the stamp being evicted.
+    private const int IssuedCapacity = 16384;
+    private readonly ConcurrentDictionary<string, long> _issued = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<(string Token, long Sequence)> _issuedOrder = new();
+    private long _issueSequence;
+
     /// <summary>Initializes a new instance of the <see cref="HmacAuditPseudonymizer"/> class.</summary>
     /// <param name="config">Application configuration holding the audit pseudonym key settings.</param>
     /// <param name="directories">Creates the key file's folder with owner-only access.</param>
@@ -48,7 +57,7 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
         ArgumentNullException.ThrowIfNull(directories);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var key = AuditPseudonymKey.Resolve(config.Value.AI.Audit, directories, logger);
+        var key = AuditPseudonymKey.Resolve(config.Value, directories, logger);
         _key = HKDF.Extract(HashAlgorithmName.SHA256, key, ExtractSalt);
         CryptographicOperations.ZeroMemory(key);
         _personKey = Derive(PersonInfo);
@@ -62,7 +71,7 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
     public string Person(string identifier)
     {
         ArgumentNullException.ThrowIfNull(identifier);
-        return $"ref:{KeyId}:{Hash(_personKey, identifier.ToUpperInvariant())}";
+        return Remember($"ref:{KeyId}:{Hash(_personKey, identifier.ToUpperInvariant())}");
     }
 
     /// <inheritdoc />
@@ -71,7 +80,25 @@ public sealed class HmacAuditPseudonymizer : IAuditPseudonymizer
         ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
         ArgumentNullException.ThrowIfNull(value);
         var key = _purposeKeys.GetOrAdd(purpose, p => Derive(FingerprintInfoPrefix + p));
-        return $"fp:{KeyId}:{Hash(key, value)}";
+        return Remember($"fp:{KeyId}:{Hash(key, value)}");
+    }
+
+    /// <inheritdoc />
+    public bool Issued(string token) => token is not null && _issued.ContainsKey(token);
+
+    private string Remember(string token)
+    {
+        var sequence = Interlocked.Increment(ref _issueSequence);
+        _issued[token] = sequence;
+        _issuedOrder.Enqueue((token, sequence));
+
+        // The queue also holds the stale stamps of tokens issued again; drop those freely, and evict a live token only
+        // while more than the capacity are remembered.
+        while ((_issued.Count > IssuedCapacity || _issuedOrder.Count > 4 * IssuedCapacity)
+               && _issuedOrder.TryDequeue(out var oldest))
+            _issued.TryRemove(KeyValuePair.Create(oldest.Token, oldest.Sequence));
+
+        return token;
     }
 
     private static string Hash(byte[] key, string value) =>

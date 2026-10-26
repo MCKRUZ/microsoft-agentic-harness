@@ -16,6 +16,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
+using Infrastructure.AI.Tests.Audit;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.Tools.Workspace;
 
@@ -85,7 +87,7 @@ public sealed class WorkspaceSkillEndToEndAcceptanceTests : IDisposable
         // PR-2 surface
         services.AddSingleton<IChangeProposalStore>(store);
         services.AddSingleton<IChangeAuditWriter>(sp => new JsonlChangeAuditWriter(
-            _config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance));
+            _config, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter()));
         services.AddSingleton(_config);
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IChangeProposalGateResolver>(new FixedGateResolver(

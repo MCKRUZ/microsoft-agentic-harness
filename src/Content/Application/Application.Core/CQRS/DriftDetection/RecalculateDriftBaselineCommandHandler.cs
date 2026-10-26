@@ -3,6 +3,7 @@ using Domain.AI.DriftDetection;
 using Domain.Common;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Application.AI.Common.Interfaces.Audit;
 
 namespace Application.Core.CQRS.DriftDetection;
 
@@ -29,6 +30,7 @@ public sealed class RecalculateDriftBaselineCommandHandler
     private readonly IDriftAuditStore _auditStore;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<RecalculateDriftBaselineCommandHandler> _logger;
+    private readonly IAuditPseudonymizer _pseudonymizer;
 
     /// <summary>Initializes a new instance of the <see cref="RecalculateDriftBaselineCommandHandler"/> class.</summary>
     /// <param name="driftService">The drift detection service that owns baseline recalculation.</param>
@@ -36,13 +38,16 @@ public sealed class RecalculateDriftBaselineCommandHandler
     /// <param name="auditStore">The append-only drift audit store the caller identity is recorded in.</param>
     /// <param name="timeProvider">Time provider for audit timestamps.</param>
     /// <param name="logger">Logger for recalculation diagnostics.</param>
+    /// <param name="pseudonymizer">Records the caller in the hash-chained drift trail as a keyed reference (#903).</param>
     public RecalculateDriftBaselineCommandHandler(
         IDriftDetectionService driftService,
         IDriftBaselineStore baselineStore,
         IDriftAuditStore auditStore,
         TimeProvider timeProvider,
-        ILogger<RecalculateDriftBaselineCommandHandler> logger)
+        ILogger<RecalculateDriftBaselineCommandHandler> logger,
+        IAuditPseudonymizer pseudonymizer)
     {
+        _pseudonymizer = pseudonymizer;
         _driftService = driftService;
         _baselineStore = baselineStore;
         _auditStore = auditStore;
@@ -154,12 +159,12 @@ public sealed class RecalculateDriftBaselineCommandHandler
             ct);
     }
 
-    private static DriftOperatorActionAudit BuildAudit(
+    private DriftOperatorActionAudit BuildAudit(
         RecalculateDriftBaselineCommand request, Guid actionId, DriftOperatorActionPhase phase) => new()
         {
             ActionId = actionId,
             Phase = phase,
-            CallerId = request.CallerId,
+            CallerId = _pseudonymizer.Person(request.CallerId),
             Action = DriftOperatorActionAudit.BaselineRecalculateAction,
             // The attempt record names the requested target before it is resolved; the outcome
             // record overwrites these with the scope the id actually resolved to.

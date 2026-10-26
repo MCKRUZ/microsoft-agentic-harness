@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 using EditOp = Domain.AI.SkillTraining.EditOp;
+using Infrastructure.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Tests.Changes;
 
@@ -87,7 +88,7 @@ public sealed class ChangeProposalPipelineAcceptanceTests : IDisposable
             GateResult validatorResult)
     {
         var store = new InMemoryChangeProposalStore();
-        var audit = new JsonlChangeAuditWriter(_monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance);
+        var audit = new JsonlChangeAuditWriter(_monitor, TimeProvider.System, NullLogger<JsonlChangeAuditWriter>.Instance, AuditPseudonyms.Create(), new DefaultContentRedactionFilter());
         var applier = new TrackingApplier(targetKind, applyResult);
         var router = new RecordingRouter();
 

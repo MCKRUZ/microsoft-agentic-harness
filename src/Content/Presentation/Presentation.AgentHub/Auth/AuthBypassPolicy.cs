@@ -53,15 +53,29 @@ public static class AuthBypassPolicy
     /// </summary>
     public static string? GetBypassSchemeName(IHostEnvironment environment, IConfiguration configuration)
     {
-        if (!configuration.GetValue<bool>("Auth:Disabled"))
+        if (!IsRequested(configuration))
             return null;
 
         if (environment.IsDevelopment())
             return DevAuthHandler.SchemeName;
 
-        if (configuration.GetValue<bool>("Auth:AllowOutsideDevelopment"))
+        if (IsAllowedOutsideDevelopment(configuration))
             return SelfHostedAuthHandler.SchemeName;
 
         return null;
     }
+
+    /// <summary>
+    /// True when the configuration asks for sign-in to be bypassed (<c>Auth:Disabled</c>), whatever the environment.
+    /// The startup guard is registered on this, so a request the environment does not honour refuses to start rather
+    /// than being ignored (#904).
+    /// </summary>
+    public static bool IsRequested(IConfiguration configuration) => configuration.GetValue<bool>("Auth:Disabled");
+
+    /// <summary>The deployment's explicit decision to bypass sign-in outside Development (<c>Auth:AllowOutsideDevelopment</c>).</summary>
+    public static bool IsAllowedOutsideDevelopment(IConfiguration configuration) =>
+        configuration.GetValue<bool>("Auth:AllowOutsideDevelopment");
+
+    /// <summary>The setting that allows the bypass outside Development, as named in startup messages.</summary>
+    public const string OutsideDevelopmentSetting = "Auth:AllowOutsideDevelopment";
 }

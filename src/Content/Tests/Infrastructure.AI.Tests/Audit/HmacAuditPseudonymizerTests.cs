@@ -29,13 +29,29 @@ public sealed class HmacAuditPseudonymizerTests : IDisposable
             Directory.Delete(_dir, recursive: true);
     }
 
+    // Every trail points into this test's folder, so records other tests left in the working folder cannot make a new
+    // key look like a lost one.
     private HmacAuditPseudonymizer FromFile(string? keyPath = null, ILogger<HmacAuditPseudonymizer>? logger = null) => new(
         Options.Create(new AppConfig
         {
-            AI = new AIConfig { Audit = new AuditConfig { PseudonymKeyPath = keyPath ?? Path.Combine(_dir, "keys", "audit.key") } },
+            AI = new AIConfig
+            {
+                Audit = new AuditConfig { PseudonymKeyPath = keyPath ?? Path.Combine(_dir, "keys", "audit.key") },
+                Governance = new Domain.Common.Config.AI.GovernanceConfig
+                {
+                    AuditStoragePath = Path.Combine(_dir, "governance"),
+                    Escalation = new Domain.Common.Config.AI.Governance.EscalationConfig { AuditStoragePath = Path.Combine(_dir, "escalations") },
+                },
+                Changes = new Domain.Common.Config.AI.ChangesConfig { AuditStoragePath = Path.Combine(_dir, "changes") },
+                Egress = new Domain.Common.Config.AI.EgressConfig { AuditStoragePath = Path.Combine(_dir, "egress") },
+                DriftDetection = new Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig { AuditPath = Path.Combine(_dir, "drift") },
+            },
         }),
         new OwnerOnlyDirectoryCreator(),
         logger ?? Mock.Of<ILogger<HmacAuditPseudonymizer>>());
+
+    private static int Logged(Mock<ILogger<HmacAuditPseudonymizer>> logger, LogLevel level) =>
+        logger.Invocations.Count(i => (LogLevel)i.Arguments[0] == level);
 
     [Fact]
     public void Person_ConfiguredKey_IsAKeyedReferenceTaggedWithTheKeyId()
@@ -105,8 +121,8 @@ public sealed class HmacAuditPseudonymizerTests : IDisposable
         afterRestart.Person("alice").Should().Be(first.Person("alice"));
         afterRestart.KeyId.Should().Be(first.KeyId);
         File.Exists(Path.Combine(_dir, "keys", "audit.key")).Should().BeTrue();
-        logger.Invocations.Count(i => (LogLevel)i.Arguments[0] == LogLevel.Warning)
-            .Should().Be(1, "making a key file is announced, with what to do about it");
+        Logged(logger, LogLevel.Warning).Should().Be(1, "making a key file is announced, with what to do about it");
+        Logged(logger, LogLevel.Error).Should().Be(0, "no trail holds records yet, so nothing was lost");
     }
 
     [Fact]
@@ -150,6 +166,59 @@ public sealed class HmacAuditPseudonymizerTests : IDisposable
 
         FromFile().Person("alice").Should().Be(pseudonymizer.Person("alice"));
         Directory.GetFiles(keys, "*.tmp").Should().ContainSingle("only the stray one; its own temporary file is gone");
+    }
+
+    [Fact]
+    public void KeyFileLostWhileTheTrailsSurvive_MakesANewKeyButLogsAnError()
+    {
+        // The references already in the trails were made under the lost key and will not match new ones; that must not
+        // pass as the routine "made a key" warning.
+        Directory.CreateDirectory(Path.Combine(_dir, "escalations"));
+        File.WriteAllText(Path.Combine(_dir, "escalations", "escalations.jsonl"), "{}\tx\ty\t1\n");
+        var logger = new Mock<ILogger<HmacAuditPseudonymizer>>();
+
+        _ = FromFile(logger: logger.Object);
+
+        Logged(logger, LogLevel.Error).Should().Be(1);
+        Logged(logger, LogLevel.Warning).Should().Be(0);
+    }
+
+    [Fact]
+    public void ExistingKeyFileReadableByOthers_StillStartsButWarns()
+    {
+        // A key file restored from a backup can come back readable by every account on the machine.
+        _ = FromFile();
+        var path = Path.Combine(_dir, "keys", "audit.key");
+        if (OperatingSystem.IsWindows())
+        {
+            var acl = new FileInfo(path).GetAccessControl();
+            acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null),
+                System.Security.AccessControl.FileSystemRights.Read,
+                System.Security.AccessControl.AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(acl);
+        }
+        else
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
+        var logger = new Mock<ILogger<HmacAuditPseudonymizer>>();
+        _ = FromFile(logger: logger.Object);
+
+        Logged(logger, LogLevel.Warning).Should().Be(1);
+    }
+
+    [Fact]
+    public void ExistingOwnerOnlyKeyFile_IsReadWithoutWarning()
+    {
+        // The control for the test above: the file this class makes is owner-only, so reading it warns about nothing.
+        _ = FromFile();
+        var logger = new Mock<ILogger<HmacAuditPseudonymizer>>();
+
+        _ = FromFile(logger: logger.Object);
+
+        logger.Invocations.Should().BeEmpty();
     }
 
     [Fact]

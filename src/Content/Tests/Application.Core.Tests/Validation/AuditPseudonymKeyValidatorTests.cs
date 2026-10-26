@@ -73,6 +73,16 @@ public sealed class AuditPseudonymKeyValidatorTests
     }
 
     [Fact]
+    public void Validate_KeyPathIsAFilesystemRoot_FailsWithAMessage()
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath("."))!;
+
+        var result = _validator.Validate(Config(keyPath: root));
+
+        result.Errors.Should().ContainSingle().Which.ErrorMessage.Should().Contain("not a filesystem root");
+    }
+
+    [Fact]
     public void Validate_KeyFileBesideTheAuditFolders_IsValid()
     {
         // A sibling of the log folders is outside them: the default sits in .agent-sessions/keys next to
