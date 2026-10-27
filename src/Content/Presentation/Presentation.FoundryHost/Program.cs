@@ -52,10 +52,14 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        var useHostConnectionString = FoundryHostBootstrap.UsesHostConnectionString(
-            ReadLocalSetting(FoundryHostBootstrap.EnableFromHostConnectionStringKey));
-        var hostSuppliedAppInsights = FoundryHostBootstrap.ApplyFoundryEnvironment(
-            Environment.GetEnvironmentVariable, Environment.SetEnvironmentVariable, useHostConnectionString);
+        // The telemetry opt-out is read from the full configuration, Key Vault and App Configuration included, so this
+        // loads it once more than the composition root below does: one extra Key Vault read at cold start is the cost
+        // of honouring the opt-out from every source.
+        var settings = AppConfigHelper.LoadAppConfig(typeof(Program).Assembly);
+        (bool HostSupplied, bool UsedHostConnectionString) foundry;
+        using (settings as IDisposable)
+            foundry = FoundryHostBootstrap.PrepareFoundryEnvironment(
+                settings, Environment.GetEnvironmentVariable, Environment.SetEnvironmentVariable);
 
         // Build the harness composition root: skills, governance, tools, RAG, knowledge graph,
         // telemetry, and the Phase 1 Foundry Responses inference provider. The provider is kept
@@ -79,8 +83,8 @@ public static class Program
         var azureMonitor = provider.GetRequiredService<IOptions<AppConfig>>().Value.Observability.Exporters.AzureMonitor;
         var startupLog = provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program));
         foreach (var (level, message) in FoundryHostBootstrap.DescribeTelemetryExport(
-                     hostSuppliedAppInsights, useHostConnectionString, azureMonitor.Enabled,
-                     azureMonitor.EnableFromHostConnectionString))
+                     foundry.HostSupplied, foundry.UsedHostConnectionString,
+                     FoundryHostBootstrap.HarnessExporterIsActive(azureMonitor)))
             startupLog.Log(level, "{TelemetryExport}", message);
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
@@ -237,14 +241,5 @@ public static class Program
                 new SkillAgentOptions { OwningAgentId = definition.Id },
                 cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    // One setting from the deployer's appsettings, User Secrets and environment, read before Foundry's environment is
-    // applied. Without Key Vault or App Configuration, which the composition root loads afterwards.
-    private static string? ReadLocalSetting(string key)
-    {
-        var local = AppConfigHelper.LoadLocalAppConfig(typeof(Program).Assembly);
-        using (local as IDisposable)
-            return local[key];
     }
 }

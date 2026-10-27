@@ -69,7 +69,20 @@ public static class AppConfigHelper
         debug = true;
 #endif
 
-        var builder = CreateLocalSourcesBuilder(appAssembly, reloadOnChange: true);
+        appAssembly ??= Assembly.GetEntryAssembly();
+
+        var builder = new ConfigurationBuilder();
+
+        // Anchor on the executing binary's directory (where the build copies appsettings.json)
+        // rather than CWD. This lets `dotnet run --project X` work from any directory,
+        // and matches how published binaries behave.
+        builder.SetBasePath(AppContext.BaseDirectory);
+
+        builder.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+        builder.AddJsonFile($"appsettings.{GetEnvironmentName()}.json", optional: true, reloadOnChange: true);
+
+        builder.AddUserSecrets(appAssembly!, optional: true);
+        builder.AddEnvironmentVariables();
 
         // Bootstrap from the full set of non-Azure sources so the Key Vault URI is
         // discoverable from ALL documented channels — appsettings.json, environment
@@ -89,42 +102,6 @@ public static class AppConfigHelper
             AddAzureAppConfig(builder, initialConfig);
 
         return builder.Build();
-    }
-
-    /// <summary>
-    /// Loads the local configuration sources only: appsettings, User Secrets and environment variables, without Azure Key
-    /// Vault or App Configuration.
-    /// </summary>
-    /// <param name="appAssembly">
-    /// Optional assembly used for User Secrets discovery. Falls back to <see cref="Assembly.GetEntryAssembly"/> when
-    /// <c>null</c>.
-    /// </param>
-    /// <returns>The local sources, in the same order and precedence <see cref="LoadAppConfig"/> gives them.</returns>
-    /// <remarks>
-    /// For a host that must read a deployer's setting before the composition root loads the full configuration, as
-    /// FoundryHost does before it maps its platform's environment onto the harness keys. Read once, so the files are not
-    /// watched for changes.
-    /// </remarks>
-    public static IConfiguration LoadLocalAppConfig(Assembly? appAssembly = null) =>
-        CreateLocalSourcesBuilder(appAssembly, reloadOnChange: false).Build();
-
-    private static ConfigurationBuilder CreateLocalSourcesBuilder(Assembly? appAssembly, bool reloadOnChange)
-    {
-        appAssembly ??= Assembly.GetEntryAssembly();
-
-        var builder = new ConfigurationBuilder();
-
-        // Anchor on the executing binary's directory (where the build copies appsettings.json)
-        // rather than CWD. This lets `dotnet run --project X` work from any directory,
-        // and matches how published binaries behave.
-        builder.SetBasePath(AppContext.BaseDirectory);
-
-        builder.AddJsonFile("appsettings.json", optional: false, reloadOnChange: reloadOnChange);
-        builder.AddJsonFile($"appsettings.{GetEnvironmentName()}.json", optional: true, reloadOnChange: reloadOnChange);
-
-        builder.AddUserSecrets(appAssembly!, optional: true);
-        builder.AddEnvironmentVariables();
-        return builder;
     }
 
     /// <summary>
