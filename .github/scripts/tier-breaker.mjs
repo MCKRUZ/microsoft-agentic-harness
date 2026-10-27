@@ -32,7 +32,7 @@ export function revertedShaFromCommit(message) {
   return m ? m[1] : null;
 }
 
-/** True when an open breaker issue already names this PR (so we do not open duplicates). */
+/** True when a breaker issue, open or closed, already names this PR (no duplicates, no re-trip). */
 export function alreadyTripped(openIssues, prNumber) {
   return openIssues.some((i) => new RegExp(`#${prNumber}\\b`).test(`${i.title}\n${i.body ?? ''}`));
 }
@@ -73,9 +73,11 @@ function main(argv) {
   console.log(`Reverted PRs since ${since}: ${[...reverted].map((n) => `#${n}`).join(', ') || 'none'}; tier 0 among them: ${tier0.map((n) => `#${n}`).join(', ') || 'none'}.`);
   if (!tier0.length) return;
 
-  const open = JSON.parse(gh(['issue', 'list', '--repo', o.repo, '--label', 'rails:breaker', '--state', 'open', '--json', 'number,title,body']));
+  // All states, not just open: once Matt closes a breaker to re-arm, the same revert must not
+  // trip it again on the next run inside the look-back window.
+  const known = JSON.parse(gh(['issue', 'list', '--repo', o.repo, '--label', 'rails:breaker', '--state', 'all', '--limit', '200', '--json', 'number,title,body']));
   for (const n of tier0) {
-    if (alreadyTripped(open, n)) { console.log(`Breaker already open for #${n}.`); continue; }
+    if (alreadyTripped(known, n)) { console.log(`Breaker already raised for #${n} (open or re-armed).`); continue; }
     const title = `Tier-0 auto-merge disabled: #${n} was reverted`;
     const body = [
       `#${n} merged as **tier 0** (no human read) and was later reverted, so tier-0 auto-merge is now off:`,

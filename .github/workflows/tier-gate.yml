@@ -110,6 +110,8 @@ jobs:
             if [ -n "$OPEN" ]; then TIER=1; REASONS="$REASONS; tier-0 breaker open ($OPEN)"; fi
           fi
           echo "Tier $TIER: $REASONS"
+          # The verdict belongs to exactly this commit; tier-status publishes it there and nowhere else.
+          echo "sha=$(git rev-parse refs/remotes/pr/head)" >> "$GITHUB_OUTPUT"
           echo "tier=$TIER" >> "$GITHUB_OUTPUT"
           { echo "reasons<<__REASONS__"; echo "$REASONS"; echo "__REASONS__"; } >> "$GITHUB_OUTPUT"
 
@@ -135,4 +137,5 @@ jobs:
           TIER: ${{ steps.tier.outputs.tier }}
           REASONS: ${{ steps.tier.outputs.reasons }}
           OWNER: ${{ github.repository_owner }}
-        run: node .github/scripts/tier-status.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" --tier "$TIER" --reasons "$REASONS" --owner "$OWNER"
+          SHA: ${{ steps.tier.outputs.sha }}
+        run: node .github/scripts/tier-status.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" --sha "$SHA" --tier "$TIER" --reasons "$REASONS" --owner "$OWNER"

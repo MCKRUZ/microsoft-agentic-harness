@@ -46,11 +46,17 @@ export function findingKey(reviewer, path, cls) {
   return `${reviewer}|${path}|${cls}`;
 }
 
-/** Validates raw findings; returns { valid, invalid } with a reason for each rejected one. */
+/**
+ * Validates raw findings; returns { valid, invalid, wellFormed }. `wellFormed` is false when the
+ * file is not an array or any entry is invalid — and then NOTHING may be resolved, because a
+ * finding missing from a malformed file is not evidence it was fixed.
+ */
 export function validateFindings(raw) {
   const valid = [];
   const invalid = [];
-  for (const [i, f] of (Array.isArray(raw) ? raw : []).entries()) {
+  if (!Array.isArray(raw)) return { valid, invalid: [{ index: -1, reasons: ['not a JSON array'] }], wellFormed: false };
+  for (const [i, entry] of raw.entries()) {
+    const f = entry && typeof entry.tag === 'string' ? { ...entry, tag: entry.tag.toLowerCase() } : entry;
     const reasons = [];
     if (typeof f?.path !== 'string' || !f.path || /\s/.test(f.path)) reasons.push('path');
     if (!Number.isInteger(f?.line) || f.line < 1) reasons.push('line');
@@ -60,8 +66,10 @@ export function validateFindings(raw) {
     if (reasons.length) invalid.push({ index: i, reasons });
     else valid.push(f);
   }
-  return { valid, invalid };
+  return { valid, invalid, wellFormed: invalid.length === 0 };
 }
+
+const HUMAN_DISPOSITION = /^Disposition:\s*(wrong|intentional|didnt-matter)\b/im;
 
 export function buildCommentBody(reviewer, sha, f) {
   const marker = buildMarker({ reviewer, sha, path: f.path, line: f.line, cls: f.class, tag: f.tag });
@@ -71,27 +79,39 @@ export function buildCommentBody(reviewer, sha, f) {
 
 /**
  * Decides what to post and what to resolve. `threads` are this PR's review threads as
- * { id, isResolved, firstBody }. Pure, so the no-repeat and self-clearing rules are tested.
+ * { id, isResolved, firstBody, bodies }. Pure, so the no-repeat and self-clearing rules are tested.
+ *
+ *   * Open thread, same (path, class) reported again   -> not repeated.
+ *   * Thread resolved with a human disposition (wrong / intentional / didnt-matter) -> that
+ *     decision stands; the finding is not re-posted on every push.
+ *   * Thread resolved as fixed, finding reported again  -> posted anew (a regression).
+ *   * Open thread no longer reported                    -> resolved as fixed, but only when
+ *     `allowResolve` (a complete, well-formed findings file).
  */
-export function planReview(reviewer, threads, findings) {
+export function planReview(reviewer, threads, findings, { allowResolve = true } = {}) {
   const open = new Map();
+  const settled = new Set();
   for (const t of threads) {
     const m = parseMarker(t.firstBody);
-    if (!m || m.reviewer !== reviewer || t.isResolved) continue;
-    open.set(findingKey(reviewer, m.path, m.cls), t);
+    if (!m || m.reviewer !== reviewer) continue;
+    const key = findingKey(reviewer, m.path, m.cls);
+    if (!t.isResolved) open.set(key, t);
+    else if ((t.bodies ?? []).some((b) => HUMAN_DISPOSITION.test(b))) settled.add(key);
   }
   const current = new Set();
   const toPost = [];
   const repeats = [];
+  const dismissed = [];
   for (const f of findings) {
     const key = findingKey(reviewer, f.path, f.class);
     if (current.has(key)) continue; // same class twice on one path: one thread
     current.add(key);
     if (open.has(key)) repeats.push(f);
+    else if (settled.has(key)) dismissed.push(f);
     else toPost.push(f);
   }
-  const toResolve = [...open.entries()].filter(([key]) => !current.has(key)).map(([, t]) => t);
-  return { toPost, repeats, toResolve };
+  const toResolve = allowResolve ? [...open.entries()].filter(([key]) => !current.has(key)).map(([, t]) => t) : [];
+  return { toPost, repeats, dismissed, toResolve };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -105,14 +125,17 @@ function fetchThreads(repo, pr) {
   const query = `query($owner:String!,$name:String!,$pr:Int!,$after:String){
     repository(owner:$owner,name:$name){ pullRequest(number:$pr){
       reviewThreads(first:100, after:$after){ pageInfo{ hasNextPage endCursor }
-        nodes{ id isResolved comments(first:1){ nodes{ body } } } } } } }`;
+        nodes{ id isResolved comments(first:50){ nodes{ body } } } } } } }`;
   const threads = [];
   let after = null;
   do {
     const args = ['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `pr=${pr}`];
     if (after) args.push('-F', `after=${after}`);
     const page = JSON.parse(gh(args)).data.repository.pullRequest.reviewThreads;
-    for (const n of page.nodes) threads.push({ id: n.id, isResolved: n.isResolved, firstBody: n.comments.nodes[0]?.body ?? '' });
+    for (const n of page.nodes) {
+      const bodies = n.comments.nodes.map((c) => c.body ?? '');
+      threads.push({ id: n.id, isResolved: n.isResolved, firstBody: bodies[0] ?? '', bodies });
+    }
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
   } while (after);
   return threads;
@@ -142,10 +165,11 @@ function parseArgs(argv) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const raw = JSON.parse(readFileSync(opts.findings, 'utf8'));
-  const { valid, invalid } = validateFindings(raw);
+  const { valid, invalid, wellFormed } = validateFindings(raw);
   for (const bad of invalid) console.log(`::warning::finding #${bad.index} skipped, invalid ${bad.reasons.join(', ')}`);
+  if (!wellFormed) console.log('::warning::findings file was not fully valid — posting the valid findings, resolving NO earlier threads.');
 
-  const plan = planReview(opts.reviewer, fetchThreads(opts.repo, opts.pr), valid);
+  const plan = planReview(opts.reviewer, fetchThreads(opts.repo, opts.pr), valid, { allowResolve: wellFormed });
   const unanchored = [];
   for (const f of plan.toPost) {
     try {
@@ -159,7 +183,7 @@ function main() {
 
   const lines = [
     `### ${opts.reviewer} findings`,
-    `${valid.length} finding(s): ${plan.toPost.length - unanchored.length} posted, ${plan.repeats.length} already open (not repeated), ${plan.toResolve.length} earlier thread(s) resolved as fixed, ${invalid.length} invalid.`,
+    `${valid.length} finding(s): ${plan.toPost.length - unanchored.length} posted, ${plan.repeats.length} already open (not repeated), ${plan.dismissed.length} previously dismissed with a reason (not re-posted), ${plan.toResolve.length} earlier thread(s) resolved as fixed, ${invalid.length} invalid.`,
     ...(unanchored.length ? ['', '**Unanchored** (line not in the diff):', ...unanchored.map((f) => `- [${TAGS[f.tag]}] \`${f.path}:${f.line}\` ${f.title}`)] : []),
   ];
   console.log(lines.join('\n'));

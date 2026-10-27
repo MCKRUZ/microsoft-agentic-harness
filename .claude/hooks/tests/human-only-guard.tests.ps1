@@ -81,6 +81,17 @@ Assert-Decision 'closing the breaker issue is denied' $true (Bash 'gh issue clos
 Assert-Decision 'removing the breaker label is denied' $true (Bash 'gh issue edit 40 --remove-label rails:breaker')
 Assert-Decision 'closing an ordinary issue is allowed' $false (Bash 'gh issue close 41 --comment "fixed in #42"' @{ STUB_ISSUE_LABELS = 'bug' })
 Assert-Decision 'closing an issue whose labels cannot be read is denied' $true (Bash 'gh issue close 41' @{ STUB_FAIL = '1' })
+Assert-Decision 'flags before the issue number cannot skip the breaker check' $true (Bash 'gh issue close --reason completed 40' @{ STUB_ISSUE_LABELS = 'rails:breaker' })
+Assert-Decision 'an issue URL is checked too' $true (Bash 'gh issue close https://github.com/MCKRUZ/x/issues/40' @{ STUB_ISSUE_LABELS = 'rails:breaker' })
+
+Write-Host 'Forging a rail'
+Assert-Decision 'posting a tier-gate status by hand is denied' $true (Bash 'gh api repos/MCKRUZ/x/statuses/abc1234 -f context=tier-gate -f state=success')
+Assert-Decision 'posting a check run by hand is denied' $true (Bash 'gh api -X POST repos/MCKRUZ/x/check-runs --input run.json')
+Assert-Decision 'reading statuses is allowed' $false (Bash 'gh api repos/MCKRUZ/x/commits/abc1234/statuses')
+Assert-Decision 'a new workflow that writes statuses is denied' $true (Invoke-Guard 'Write' @{ file_path = 'C:\repo\.github\workflows\sneaky.yml'; content = "permissions:`n  statuses: write" })
+Assert-Decision 'an edit adding the tier-gate context to another workflow is denied' $true (Invoke-Guard 'Edit' @{ file_path = '.github/workflows/ci.yml'; old_string = 'a'; new_string = 'gh api x -f context=tier-gate' })
+Assert-Decision 'tier-gate.yml itself may be edited' $false (Invoke-Guard 'Edit' @{ file_path = '.github/workflows/tier-gate.yml'; old_string = 'a'; new_string = 'statuses: write' })
+Assert-Decision 'an ordinary workflow edit is allowed' $false (Invoke-Guard 'Edit' @{ file_path = '.github/workflows/ci.yml'; old_string = 'a'; new_string = 'run: dotnet test' })
 
 Write-Host 'Merging'
 Assert-Decision 'merging a tier:0 PR is allowed' $false (Bash 'gh pr merge 12 --merge --admin' @{ STUB_PR_LABELS = 'tier:0,documentation' })
@@ -91,6 +102,10 @@ Assert-Decision 'merging with two tier labels is denied' $true (Bash 'gh pr merg
 Assert-Decision 'merging when labels cannot be read is denied' $true (Bash 'gh pr merge 12' @{ STUB_FAIL = '1' })
 Assert-Decision 'merging through the REST endpoint is gated too' $true (Bash 'gh api -X PUT repos/MCKRUZ/x/pulls/12/merge' @{ STUB_PR_LABELS = 'tier:1' })
 Assert-Decision 'merging through the MCP tool is gated too' $true (Invoke-Guard 'mcp__github__merge_pull_request' @{ owner = 'MCKRUZ'; repo = 'x'; pullNumber = 12 } @{ STUB_PR_LABELS = 'tier:2' })
+Assert-Decision 'flags before the PR number cannot redirect the label check' $true (Bash 'gh pr merge --squash --admin 950' @{ STUB_PR_LABELS = 'tier:2' })
+Assert-Decision 'a PR URL after flags is checked too' $true (Bash 'gh pr merge --admin https://github.com/MCKRUZ/x/pull/950' @{ STUB_PR_LABELS = 'tier:1' })
+Assert-Decision 'a flag value is not mistaken for the target' $false (Bash 'gh pr merge 12 --subject "release 7" --merge' @{ STUB_PR_LABELS = 'tier:0' })
+Assert-Decision 'two targets in one merge are denied' $true (Bash 'gh pr merge 12 13' @{ STUB_PR_LABELS = 'tier:0' })
 Assert-Decision 'viewing a PR is allowed' $false (Bash 'gh pr view 12 --json labels')
 Assert-Decision 'git commands are untouched' $false (Bash 'git merge origin/main')
 

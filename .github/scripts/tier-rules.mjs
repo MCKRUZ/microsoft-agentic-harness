@@ -6,10 +6,12 @@
 // carry different risk, so they get different review — and "the change sets the tier, not the
 // author". This is that rule for a solo repo, where the "humans" column becomes Matt's attention:
 //
-//   tier 0 — plain documentation, and test files that only ADD lines. Merges on green; Matt does
-//            not read it. Nothing here can weaken a guard: an edited or deleted existing test,
-//            the published OpenAPI contract, CLAUDE.md, skills, agents and anything under
-//            .claude/ are deliberately NOT tier 0, because the review loop lives there.
+//   tier 0 — plain documentation (Markdown, and docs-site HTML or images that add nothing
+//            executable) and brand-new test files. Merges on green; Matt does not read it.
+//            Nothing here can weaken a guard: any edit to an existing test, docs-site scripts,
+//            the published OpenAPI contract, agent instruction files (CLAUDE.md, AGENTS.md,
+//            SKILL.md...), skills, agents and anything under .claude/ are deliberately NOT tier 0,
+//            because the review loop lives there.
 //   tier 1 — every other change. Matt reads the PR's evidence block, then merges.
 //   tier 2 — the factory and the locks: CI workflows and rails, hooks and agent settings, auth,
 //            identity, security, migrations, infrastructure; anything the security gate wants
@@ -32,9 +34,19 @@ export const SIZE_LIMIT = 1000;
 
 const GATED_PREFIXES = ['.github/', '.claude/hooks/', 'scripts/rails/', 'infra/'];
 const GATED_FILES = ['.claude/settings.json'];
-const GATED_SEGMENTS = ['Auth', 'Identity', 'Security', 'SecurityAttributes', 'Migrations'];
+// Compared case-insensitively: the repo has both `Auth/` and `auth/`, plus `Authentication/` and
+// `Authorization/` (git ls-files, 2026-10-27). Keep in step with .github/CODEOWNERS.
+const GATED_SEGMENTS = ['auth', 'authentication', 'authorization', 'identity', 'security', 'securityattributes', 'migrations'];
 const NEVER_TIER0_PREFIXES = ['.claude/', '.github/', 'src/', 'skills/', 'agents/', 'documentation/onboarding/assets/openapi/'];
-const NEVER_TIER0_NAMES = ['CLAUDE.md', 'CLAUDE.local.md', 'AGENT.md', 'SKILL.md', 'REVIEW.md'];
+// Agent instruction files steer every later session; none of them is "plain docs".
+const NEVER_TIER0_NAMES = ['claude.md', 'claude.local.md', 'agent.md', 'agents.md', 'skill.md', 'review.md'];
+// Published to GitHub Pages as-is. Scripts, styles and data files are not plain docs; HTML is,
+// unless the change adds something executable to it (checked against the added lines).
+const DOC_EXTENSIONS = ['.md', '.html', '.png', '.jpg', '.jpeg', '.gif', '.webp'];
+const EXECUTABLE_HTML = /<script|javascript:|\son[a-z]+\s*=/i;
+// A brand-new test file is additive; these constructs run without being a test, or change how
+// every other test behaves, so a file that adds one is not.
+const TEST_SIDE_EFFECTS = /\[\s*(?:assembly\s*:|ModuleInitializer)/;
 
 function segments(path) {
   return path.split('/');
@@ -43,28 +55,35 @@ function segments(path) {
 export function isGated(path) {
   if (GATED_FILES.includes(path)) return true;
   if (GATED_PREFIXES.some((p) => path.startsWith(p))) return true;
-  return segments(path).slice(0, -1).some((s) => GATED_SEGMENTS.includes(s));
+  return segments(path).slice(0, -1).some((s) => GATED_SEGMENTS.includes(s.toLowerCase()));
 }
 
-function isPlainDoc(path) {
-  const name = segments(path).at(-1);
+function isPlainDoc(f, addedText) {
+  const name = segments(f.path).at(-1).toLowerCase();
   if (NEVER_TIER0_NAMES.includes(name)) return false;
-  if (path.startsWith('documentation/')) return !path.startsWith('documentation/onboarding/assets/openapi/');
-  return path.endsWith('.md') && !NEVER_TIER0_PREFIXES.some((p) => path.startsWith(p));
+  if (NEVER_TIER0_PREFIXES.some((p) => f.path.startsWith(p))) return false;
+  const docsSite = f.path.startsWith('documentation/');
+  if (!docsSite) return f.path.endsWith('.md');
+  if (!DOC_EXTENSIONS.some((e) => name.endsWith(e))) return false;
+  return !(name.endsWith('.html') && EXECUTABLE_HTML.test(addedText(f.path)));
 }
 
-function isAdditiveTest(f) {
+function isNewTest(f, addedText) {
   return f.path.startsWith('src/Content/Tests/')
     && f.path.endsWith('.cs')
-    && (f.status === 'A' || f.status === 'M')
-    && f.deleted === 0;
+    && f.status === 'A'
+    && !TEST_SIDE_EFFECTS.test(addedText(f.path));
 }
 
 /**
  * files: [{ path, status ('A'|'M'|'D'|'R'|...), added, deleted }] — renames carry the new path.
+ * addedText(path) returns the lines the change adds to that file (for the content rules).
  * Returns { tier, reasons }.
+ *
+ * Tier 0 tests are NEW files only. Editing an existing test can disable it without deleting a
+ * line (insert `return;`), so any modified test is tier 1 — that is how a guard gets weakened.
  */
-export function classify(files, { securityRequired = false } = {}) {
+export function classify(files, { securityRequired = false, addedText = () => '' } = {}) {
   const reasons = [];
   const gated = files.filter((f) => isGated(f.path)).map((f) => f.path);
   if (gated.length) reasons.push(`gated path: ${gated.slice(0, 3).join(', ')}${gated.length > 3 ? ` (+${gated.length - 3})` : ''}`);
@@ -73,11 +92,11 @@ export function classify(files, { securityRequired = false } = {}) {
   if (srcLines > SIZE_LIMIT) reasons.push(`${srcLines} changed lines under src/ (> ${SIZE_LIMIT})`);
   if (reasons.length) return { tier: 2, reasons };
 
-  const notTier0 = files.filter((f) => !(isPlainDoc(f.path) || isAdditiveTest(f)));
+  const notTier0 = files.filter((f) => !(isPlainDoc(f, addedText) || isNewTest(f, addedText)));
   if (notTier0.length) {
-    return { tier: 1, reasons: [`not docs or additive tests: ${notTier0.slice(0, 3).map((f) => f.path).join(', ')}${notTier0.length > 3 ? ` (+${notTier0.length - 3})` : ''}`] };
+    return { tier: 1, reasons: [`not plain docs or new tests: ${notTier0.slice(0, 3).map((f) => f.path).join(', ')}${notTier0.length > 3 ? ` (+${notTier0.length - 3})` : ''}`] };
   }
-  return { tier: 0, reasons: [files.length ? 'plain docs and additive tests only' : 'no changed files'] };
+  return { tier: 0, reasons: [files.length ? 'plain docs and new tests only' : 'no changed files'] };
 }
 
 /** Parses `git diff --name-status` and `git diff --numstat` (both with -M) into file records. */
@@ -110,7 +129,9 @@ function main(argv) {
     git(['diff', '--no-renames', '--name-status', range]),
     git(['diff', '--no-renames', '--numstat', range]),
   );
-  const { tier, reasons } = classify(files, { securityRequired: opts['security-required'] === 'true' });
+  const addedText = (path) => git(['diff', '--no-renames', range, '--', path])
+    .split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).join('\n');
+  const { tier, reasons } = classify(files, { securityRequired: opts['security-required'] === 'true', addedText });
   const out = `tier=${tier}\nreasons=${reasons.join('; ')}\n`;
   process.stdout.write(out);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, out);

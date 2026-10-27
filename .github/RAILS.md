@@ -216,6 +216,16 @@ checks (with one ruleset it did — a `pull_request`-mode bypass actor bypasses 
 - **`main-branch-protection`** (`rulesets/main-branch-protection.json`) — the 1-approval +
   code-owner rule, with the admin bypass (see "Solo-repo accommodation").
 
+Every required context in `main-checks` is pinned to the GitHub Actions app (`integration_id:
+15368`, read from a live check run). Without the pin, anyone holding a token with `statuses:
+write` — including the agent, whose `gh` is Matt's — could post `tier-gate: success` and skip the
+tier-2 sign-off; the newest status for a context wins. The pin rejects statuses posted with a
+personal token. It does **not** stop a workflow inside a same-repo PR from posting one with its
+own `GITHUB_TOKEN`; `human-only-guard.ps1` denies the agent writing such a workflow (any workflow
+but `tier-gate.yml` that holds `statuses: write` or names the `tier-gate` context), and such a PR
+is tier 2 by its paths. The shakedown below must confirm the pin accepts `tier-gate.yml`'s own
+statuses before the split is trusted; if it does not, use the recovery switch and drop the pin.
+
 `tier-gate` can only be required once `tier-gate.yml` is on `main` (it runs the default branch's
 copy); apply the split after that PR merges, never before, or every PR waits on a status nobody
 sets.

@@ -29,3 +29,6 @@ jobs:
       # A glob, not the directory: `node --test <dir>` treats the directory as one test file.
       - name: Run node:test suites
         run: node --test ".github/scripts/tests/*.test.mjs"
+      # Shell suites alongside them; explain-runner-crash.tests.sh had no runner until 2026-10-27.
+      - name: Run shell test suites
+        run: for t in .github/scripts/tests/*.tests.sh; do echo "== $t"; bash "$t" || exit 1; done

@@ -16,7 +16,8 @@
 //           status is pending, which blocks the merge.
 //
 // Called by .github/workflows/tier-gate.yml with the tier computed by tier-rules.mjs.
-//   node .github/scripts/tier-status.mjs --repo <o/r> --pr <n> --tier <0|1|2> --reasons "<...>" --owner <login>
+//   node .github/scripts/tier-status.mjs --repo <o/r> --pr <n> --sha <classified-sha> --tier <0|1|2> \
+//        --reasons "<...>" --owner <login>
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -45,6 +46,17 @@ export function findSignoff(comments, headSha, owner) {
   return null;
 }
 
+/**
+ * Whether the deep review actually reviewed this commit, as opposed to its job merely passing.
+ * The job also passes when it decides there is nothing to review (a draft, or its own copy of
+ * the tier rules disagreeing), so the gate requires the summary comment it posts only after a
+ * real review, by the Actions bot, for exactly this commit.
+ */
+export function hasDeepReviewSummary(comments, headSha) {
+  const marker = `<!-- rail:deep-review-summary sha=${headSha.toLowerCase()} -->`;
+  return comments.some((c) => c.login === 'github-actions[bot]' && (c.body ?? '').toLowerCase().includes(marker));
+}
+
 /** Pure decision: { state: success|failure|pending, description }. Descriptions stay ≤140 chars. */
 export function decideStatus({ tier, body, comments, headSha, owner, deepReview }) {
   const short = headSha.slice(0, 7);
@@ -55,6 +67,9 @@ export function decideStatus({ tier, body, comments, headSha, owner, deepReview 
   if (deepReview !== 'success') {
     const why = deepReview ? `deep review is ${deepReview}` : 'deep review has not finished';
     return { state: 'pending', description: `Tier 2: ${why} on ${short}.` };
+  }
+  if (!hasDeepReviewSummary(comments, headSha)) {
+    return { state: 'pending', description: `Tier 2: no deep-review summary for ${short} (draft, or the review did not run). Re-run Deep Review.` };
   }
   if (!findSignoff(comments, headSha, owner)) {
     return { state: 'pending', description: `Tier 2: awaiting "Reviewed-by: @${owner} ${short} — ..." from ${owner}.` };
@@ -78,12 +93,19 @@ function deepReviewConclusion(repo, sha) {
 function main(argv) {
   const o = {};
   for (let i = 0; i < argv.length; i += 2) o[argv[i].replace(/^--/, '')] = argv[i + 1];
-  for (const k of ['repo', 'pr', 'tier', 'owner']) if (o[k] === undefined) throw new Error(`missing --${k}`);
+  for (const k of ['repo', 'pr', 'tier', 'owner', 'sha']) if (o[k] === undefined) throw new Error(`missing --${k}`);
   const tier = Number(o.tier);
   if (![0, 1, 2].includes(tier)) throw new Error(`bad --tier ${o.tier}`);
+  if (!/^[0-9a-f]{40}$/i.test(o.sha)) throw new Error(`bad --sha ${o.sha}`);
 
+  // The status goes on the commit that was CLASSIFIED (--sha), never on whatever the head is by
+  // now: a push between classifying and publishing would otherwise get this run's verdict. The
+  // run triggered by that push classifies and publishes for the new head itself.
   const pr = JSON.parse(gh(['api', `repos/${o.repo}/pulls/${o.pr}`]));
-  const headSha = pr.head.sha;
+  const headSha = o.sha.toLowerCase();
+  if (pr.head.sha.toLowerCase() !== headSha) {
+    console.log(`PR head moved from ${headSha.slice(0, 7)} to ${pr.head.sha.slice(0, 7)}; publishing for the classified commit only.`);
+  }
   const comments = tier === 2
     ? JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${o.repo}/issues/${o.pr}/comments?per_page=100`])).flat()
       .map((c) => ({ login: c.user?.login, body: c.body }))

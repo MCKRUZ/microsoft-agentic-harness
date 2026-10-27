@@ -22,13 +22,13 @@
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "build-and-test" },
-          { "context": "OWASP Agentic Top-10 Gate" },
-          { "context": "security-review" },
-          { "context": "correctness-review" },
-          { "context": "frontend (Presentation.Dashboard)" },
-          { "context": "frontend (Presentation.WebUI)" },
-          { "context": "tier-gate" }
+          { "context": "build-and-test", "integration_id": 15368 },
+          { "context": "OWASP Agentic Top-10 Gate", "integration_id": 15368 },
+          { "context": "security-review", "integration_id": 15368 },
+          { "context": "correctness-review", "integration_id": 15368 },
+          { "context": "frontend (Presentation.Dashboard)", "integration_id": 15368 },
+          { "context": "frontend (Presentation.WebUI)", "integration_id": 15368 },
+          { "context": "tier-gate", "integration_id": 15368 }
         ]
       }
     },

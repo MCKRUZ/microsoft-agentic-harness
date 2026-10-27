@@ -98,7 +98,7 @@
         ]
       },
       {
-        "matcher": "Bash|mcp__github__.*",
+        "matcher": "Bash|Write|Edit|MultiEdit|mcp__github__.*",
         "hooks": [
           {
             "type": "command",

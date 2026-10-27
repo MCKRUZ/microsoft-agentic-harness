@@ -29,6 +29,9 @@
 
 # Authentication, identity, and authorization surfaces.
 **/Auth/                                @MCKRUZ
+**/auth/                                @MCKRUZ
+**/Authentication/                      @MCKRUZ
+**/Authorization/                       @MCKRUZ
 **/Identity/                            @MCKRUZ
 **/Security/                            @MCKRUZ
 **/SecurityAttributes/                  @MCKRUZ

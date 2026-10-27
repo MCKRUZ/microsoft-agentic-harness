@@ -36,16 +36,25 @@ test('tier 1 fails until the evidence is filled in, then passes', () => {
   assert.equal(decideStatus({ tier: 1, body: filled, comments: [], headSha: head, owner }).state, 'success');
 });
 
+const summary = (sha = head, login = 'github-actions[bot]') => ({ login, body: `<!-- rail:deep-review-summary sha=${sha} -->\n2 findings: 1 Important, 1 Nit` });
+
 test('tier 2 waits for the deep review, then for the sign-off', () => {
   const base = { tier: 2, body: filled, headSha: head, owner };
-  assert.equal(decideStatus({ ...base, comments: [signoff()], deepReview: null }).state, 'pending');
-  assert.equal(decideStatus({ ...base, comments: [signoff()], deepReview: 'in_progress' }).state, 'pending');
-  assert.equal(decideStatus({ ...base, comments: [], deepReview: 'success' }).state, 'pending');
-  assert.equal(decideStatus({ ...base, comments: [signoff()], deepReview: 'success' }).state, 'success');
+  assert.equal(decideStatus({ ...base, comments: [summary(), signoff()], deepReview: null }).state, 'pending');
+  assert.equal(decideStatus({ ...base, comments: [summary(), signoff()], deepReview: 'in_progress' }).state, 'pending');
+  assert.equal(decideStatus({ ...base, comments: [summary()], deepReview: 'success' }).state, 'pending');
+  assert.equal(decideStatus({ ...base, comments: [summary(), signoff()], deepReview: 'success' }).state, 'success');
+});
+
+test('a passing deep-review job that reviewed nothing does not count (draft, or its own tier rules disagreed)', () => {
+  const base = { tier: 2, body: filled, headSha: head, owner, deepReview: 'success' };
+  assert.equal(decideStatus({ ...base, comments: [signoff()] }).state, 'pending');
+  assert.equal(decideStatus({ ...base, comments: [summary('fedcba9876543210fedcba9876543210fedcba98'), signoff()] }).state, 'pending');
+  assert.equal(decideStatus({ ...base, comments: [summary(head, 'MCKRUZ'), signoff()] }).state, 'pending');
 });
 
 test('tier 2 with empty evidence fails even when signed off', () => {
-  assert.equal(decideStatus({ tier: 2, body: template, comments: [signoff()], headSha: head, owner, deepReview: 'success' }).state, 'failure');
+  assert.equal(decideStatus({ tier: 2, body: template, comments: [summary(), signoff()], headSha: head, owner, deepReview: 'success' }).state, 'failure');
 });
 
 test('an approval covers one commit: a sign-off naming an older commit does not count', () => {

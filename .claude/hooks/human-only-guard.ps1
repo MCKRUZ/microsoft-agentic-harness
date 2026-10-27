@@ -73,18 +73,42 @@ function Get-ReferencedFileText([string]$command) {
   return $text
 }
 
-function Get-Labels([string]$kind, [string]$number) {
+function Get-Labels([string]$kind, [string]$number, [string]$repo = '') {
   # Returns the label names on an issue or PR, or $null when the lookup fails.
   $ghArgs = @($kind, 'view')
   if ($number) { $ghArgs += $number }
+  if ($repo) { $ghArgs += @('--repo', $repo) }
   $ghArgs += @('--json', 'labels', '--jq', '.labels[].name')
   $out = & gh @ghArgs 2>$null
   if ($LASTEXITCODE -ne 0) { return $null }
   return @($out | Where-Object { $_ })
 }
 
-function Test-Merge([string]$number) {
-  $labels = Get-Labels 'pr' $number
+function Get-GhTarget([string]$segment, [string]$verbPattern, [string[]]$valuedFlags) {
+  # Parses one shell segment like `gh pr merge --squash --admin 950 --repo o/r` into its
+  # positional target(s), skipping flags and the values of flags that take one. The target can
+  # come before or after the flags; reading only the token straight after the verb (the first
+  # version of this guard did) let `gh pr merge --admin 950` be checked against the wrong PR.
+  $m = [regex]::Match($segment, "(?i)\bgh\s+$verbPattern\b(.*)$")
+  if (-not $m.Success) { return $null }
+  $tokens = @([regex]::Matches($m.Groups[$m.Groups.Count - 1].Value, '"[^"]*"|''[^'']*''|\S+') | ForEach-Object { $_.Value.Trim('"', "'") })
+  $positionals = @()
+  $repo = ''
+  for ($i = 0; $i -lt $tokens.Count; $i++) {
+    $t = $tokens[$i]
+    if ($t -in '-R', '--repo') { $repo = if ($i + 1 -lt $tokens.Count) { $tokens[$i + 1] } else { '' }; $i++; continue }
+    if ($t -like '--repo=*') { $repo = $t.Substring(7); continue }
+    if ($t.StartsWith('-')) {
+      if ($t -notmatch '=' -and $valuedFlags -contains $t) { $i++ }
+      continue
+    }
+    $positionals += $t
+  }
+  return [pscustomobject]@{ Target = ($positionals | Select-Object -First 1); Ambiguous = ($positionals.Count -gt 1); Repo = $repo }
+}
+
+function Test-Merge([string]$number, [string]$repo = '') {
+  $labels = Get-Labels 'pr' $number $repo
   $which = if ($number) { "PR #$number" } else { 'the current branch''s PR' }
   if ($null -eq $labels) {
     Deny "could not read the labels of $which, so it cannot be shown to be tier 0. Only tier-0 PRs are merged by the agent; ask Matt to merge it."
@@ -95,8 +119,8 @@ function Test-Merge([string]$number) {
   Deny "$which is not tier 0 ($found). Tier-1 and tier-2 PRs are merged by Matt after he reads the evidence block. Tell him it is ready and stop."
 }
 
-function Test-BreakerIssue([string]$number) {
-  $labels = Get-Labels 'issue' $number
+function Test-BreakerIssue([string]$number, [string]$repo = '') {
+  $labels = Get-Labels 'issue' $number $repo
   if ($null -eq $labels) {
     Deny "could not read the labels of issue #$number to rule out the rails:breaker issue. Close it from your own terminal or the GitHub UI if it is not the breaker."
   }
@@ -131,20 +155,44 @@ if ($tool -eq 'Bash') {
   if ($command -match '(?i)rails:breaker' -and $command -match '(?i)(--remove-label|\bclose\b|state\s*=\s*closed)') {
     Deny 'that would re-arm the tier-0 circuit breaker (rails:breaker). Only Matt re-arms it.'
   }
-  $m = [regex]::Match($command, '(?i)\bgh\s+issue\s+(close|edit)\s+(\d+)')
-  if ($m.Success -and ($m.Groups[1].Value -ieq 'close' -or $command -match '(?i)--remove-label')) {
-    Test-BreakerIssue $m.Groups[2].Value
+  # The tier-gate status is what branch protection reads. Only tier-gate.yml may set it; a
+  # status or check run posted with the agent's (= Matt's) token would forge the sign-off.
+  if ($command -match '(?i)/(statuses|check-runs)\b' -and $command -match '(?i)(-X\s*POST|--method\s+POST|\s-f\s|\s-F\s|--field|--raw-field|--input)') {
+    Deny 'posting a commit status or check run by hand would stand in for a rail (tier-gate, a reviewer). Only the workflows publish those.'
   }
-  $m = [regex]::Match($command, '(?i)repos/[^/\s]+/[^/\s]+/issues/(\d+)\b[^|;&]*state\W+closed')
-  if ($m.Success) { Test-BreakerIssue $m.Groups[1].Value }
 
-  $m = [regex]::Match($command, '(?i)\bgh\s+pr\s+merge\b(?:\s+(?!-)(\S+))?')
-  if ($m.Success) {
-    $target = $m.Groups[1].Value -replace '^.*/pull/', '' -replace '^#', ''
-    Test-Merge $target
+  foreach ($seg in ($command -split '\|\||&&|[;|&]')) {
+    $issue = Get-GhTarget $seg 'issue\s+(close|edit|reopen)' @('-c', '--comment', '-r', '--reason', '-t', '--title', '-b', '--body', '-F', '--body-file', '-m', '--milestone', '--add-assignee', '--remove-assignee', '--add-label', '--remove-label', '--add-project', '--remove-project')
+    if ($issue) {
+      $closing = $seg -match '(?i)\bissue\s+close\b' -or $seg -match '(?i)--remove-label'
+      if ($closing) {
+        if ($issue.Ambiguous -or -not $issue.Target) { Deny 'could not tell which issue this closes or relabels, so it cannot be ruled out as the rails:breaker issue. Name exactly one issue.' }
+        Test-BreakerIssue ($issue.Target -replace '^.*/issues/', '' -replace '^#', '') $issue.Repo
+      }
+    }
+    $merge = Get-GhTarget $seg 'pr\s+merge' @('-b', '--body', '-F', '--body-file', '-t', '--subject', '--match-head-commit', '-A', '--author-email')
+    if ($merge) {
+      if ($merge.Ambiguous) { Deny 'this merge names more than one PR. Merge one tier-0 PR at a time.' }
+      Test-Merge ($merge.Target -replace '^.*/pull/', '' -replace '^#', '') $merge.Repo
+    }
   }
-  $m = [regex]::Match($command, '(?i)repos/[^/\s]+/[^/\s]+/pulls/(\d+)/merge\b')
-  if ($m.Success) { Test-Merge $m.Groups[1].Value }
+  $m = [regex]::Match($command, '(?i)repos/([^/\s]+/[^/\s]+)/issues/(\d+)\b[^|;&]*state\W+closed')
+  if ($m.Success) { Test-BreakerIssue $m.Groups[2].Value $m.Groups[1].Value }
+  $m = [regex]::Match($command, '(?i)repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge\b')
+  if ($m.Success) { Test-Merge $m.Groups[2].Value $m.Groups[1].Value }
+  Allow
+}
+
+if ($tool -in 'Write', 'Edit', 'MultiEdit') {
+  # A workflow that publishes `tier-gate`, or that may write commit statuses, could forge the
+  # gate from inside a PR. Only tier-gate.yml does that, and it runs from the default branch.
+  $path = ([string]$toolInput.file_path) -replace '\\', '/'
+  if ($path -match '(^|/)\.github/workflows/[^/]+$' -and $path -notmatch '/tier-gate\.ya?ml$') {
+    $text = @($toolInput.content, $toolInput.new_string) + @($toolInput.edits | ForEach-Object { $_.new_string }) -join "`n"
+    if ($text -match '(?i)statuses\s*:\s*write|/statuses/|context[=:\s]+[''"]?tier-gate') {
+      Deny 'only tier-gate.yml may publish the tier-gate status or hold statuses: write; any other workflow could forge the tier-2 sign-off from inside a PR. If a rail genuinely needs it, Matt makes that change.'
+    }
+  }
   Allow
 }
 

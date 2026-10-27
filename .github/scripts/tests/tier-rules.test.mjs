@@ -7,27 +7,48 @@ import { classify, parseDiff, isGated, SIZE_LIMIT } from '../tier-rules.mjs';
 
 const file = (path, over = {}) => ({ path, status: 'M', added: 3, deleted: 1, ...over });
 const tierOf = (files, opts) => classify(files, opts).tier;
+const added = (map) => ({ addedText: (p) => map[p] ?? '' });
 
 test('plain documentation is tier 0', () => {
-  assert.equal(tierOf([file('documentation/onboarding/chapter-03.md'), file('README.md')]), 0);
+  assert.equal(tierOf([file('documentation/onboarding/chapter-03.md'), file('README.md'), file('documentation/architecture/index.html')]), 0);
 });
 
-test('a test file that only adds lines is tier 0', () => {
+test('a brand-new test file is tier 0', () => {
   assert.equal(tierOf([file('src/Content/Tests/App.Tests/WidgetTests.cs', { status: 'A', deleted: 0, added: 40 })]), 0);
 });
 
-test('editing or deleting an existing test is NOT tier 0 — that is how a guard gets weakened', () => {
-  assert.equal(tierOf([file('src/Content/Tests/App.Tests/WidgetTests.cs', { deleted: 2 })]), 1);
+test('ANY edit to an existing test is tier 1 — inserting `return;` disables a test without deleting a line', () => {
+  assert.equal(tierOf([file('src/Content/Tests/App.Tests/WidgetTests.cs', { deleted: 0, added: 1 })]), 1);
   assert.equal(tierOf([file('src/Content/Tests/App.Tests/WidgetTests.cs', { status: 'D', added: 0, deleted: 30 })]), 1);
 });
 
-test('a test project file is not a test: package changes are tier 1', () => {
-  assert.equal(tierOf([file('src/Content/Tests/App.Tests/App.Tests.csproj', { deleted: 0 })]), 1);
+test('a new test file that adds a module initializer or assembly attribute is not tier 0', () => {
+  const p = 'src/Content/Tests/App.Tests/Init.cs';
+  assert.equal(tierOf([file(p, { status: 'A', deleted: 0 })], added({ [p]: '+[ModuleInitializer]\n+internal static void Init() {}' })), 1);
+  assert.equal(tierOf([file(p, { status: 'A', deleted: 0 })], added({ [p]: '+[assembly: CollectionBehavior(DisableTestParallelization = true)]' })), 1);
 });
 
-test('the review loop and its instructions are never tier 0', () => {
-  for (const p of ['CLAUDE.md', 'src/Content/CLAUDE.md', '.claude/rules/review-cadence.md', '.claude/skills/pre-push-review/SKILL.md', 'skills/research/SKILL.md', 'agents/planner/AGENT.md']) {
+test('a test project file is not a test: package changes are tier 1', () => {
+  assert.equal(tierOf([file('src/Content/Tests/App.Tests/App.Tests.csproj', { status: 'A', deleted: 0 })]), 1);
+});
+
+test('agent instruction files and the review loop are never tier 0', () => {
+  for (const p of ['CLAUDE.md', 'AGENTS.md', 'src/Content/CLAUDE.md', 'documentation/agents.md', '.claude/rules/review-cadence.md', '.claude/skills/pre-push-review/SKILL.md', 'skills/research/SKILL.md', 'agents/planner/AGENT.md']) {
     assert.ok(tierOf([file(p)]) >= 1, p);
+  }
+});
+
+test('docs-site scripts, styles and data are not plain docs', () => {
+  for (const p of ['documentation/onboarding/assets/js/main.js', 'documentation/onboarding/assets/css/site.css', 'documentation/build.sh', 'documentation/reference/data.json', 'documentation/x/diagram.svg']) {
+    assert.equal(tierOf([file(p)]), 1, p);
+  }
+});
+
+test('docs-site HTML that adds something executable is not plain docs', () => {
+  const p = 'documentation/onboarding/chapter-01.html';
+  assert.equal(tierOf([file(p)], added({ [p]: '+<p>text</p>' })), 0);
+  for (const bad of ['+<script src="x.js"></script>', '+<a href="javascript:alert(1)">x</a>', '+<img src=x onerror="steal()">']) {
+    assert.equal(tierOf([file(p)], added({ [p]: bad })), 1, bad);
   }
 });
 
@@ -41,6 +62,12 @@ test('ordinary source is tier 1', () => {
 
 test('the factory and the locks are tier 2', () => {
   for (const p of ['.github/workflows/ci.yml', '.github/correctness-review-rubric.md', '.claude/hooks/review-gate.ps1', '.claude/settings.json', 'scripts/rails/run-gates.sh', 'infra/main.bicep', 'src/Content/Infrastructure/Auth/JwtOptions.cs', 'src/Content/Domain/Identity/User.cs', 'src/X/Migrations/0001_init.cs']) {
+    assert.equal(tierOf([file(p)]), 2, p);
+  }
+});
+
+test("the repo's other auth folder spellings are gated too", () => {
+  for (const p of ['src/Content/Infrastructure/Infrastructure.AI.MCPServer/Authentication/JwtSetup.cs', 'src/Content/Infrastructure/Infrastructure.AI.MCPServer/Authorization/Policy.cs', 'src/Content/Presentation/Presentation.Dashboard/src/auth/token.ts']) {
     assert.equal(tierOf([file(p)]), 2, p);
   }
 });

@@ -37,8 +37,33 @@ test('invalid findings are rejected with reasons, valid ones kept', () => {
   assert.deepEqual(invalid[0].reasons, ['line', 'class (kebab-case)', 'tag (important|nit|pre-existing)', 'title']);
 });
 
-test('a non-array findings file yields nothing rather than throwing', () => {
-  assert.deepEqual(validateFindings({ oops: true }), { valid: [], invalid: [] });
+test('a non-array findings file is not well-formed', () => {
+  const r = validateFindings({ findings: [f()] });
+  assert.equal(r.valid.length, 0);
+  assert.equal(r.wellFormed, false);
+});
+
+test('a tag in the wrong case is normalised, not rejected', () => {
+  const { valid, wellFormed } = validateFindings([f({ tag: 'Important' })]);
+  assert.equal(valid[0].tag, 'important');
+  assert.equal(wellFormed, true);
+});
+
+test('a malformed findings file resolves nothing — a missing finding is not evidence of a fix', () => {
+  const plan = planReview('correctness', [thread('T1', f()), thread('T2', f({ class: 'off-by-one' }))], [], { allowResolve: false });
+  assert.equal(plan.toResolve.length, 0);
+});
+
+test('a finding Matt resolved as wrong is not re-posted on the next push', () => {
+  const t = { ...thread('T1', f(), { isResolved: true }), bodies: [buildCommentBody('correctness', sha, f()), 'Disposition: wrong — the value is checked upstream'] };
+  const plan = planReview('correctness', [t], [f()]);
+  assert.equal(plan.toPost.length, 0);
+  assert.equal(plan.dismissed.length, 1);
+});
+
+test('a finding auto-resolved as fixed that comes back is posted again (a regression)', () => {
+  const t = { ...thread('T1', f(), { isResolved: true }), bodies: [buildCommentBody('correctness', sha, f()), 'Disposition: fixed — not reported by the correctness review at abc1234.'] };
+  assert.equal(planReview('correctness', [t], [f()]).toPost.length, 1);
 });
 
 test('no repeats: an open thread for the same path and class is not posted again, even on a new line', () => {
