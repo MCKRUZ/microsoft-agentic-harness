@@ -1,5 +1,5 @@
 ---
-paths: src/Content/**/MCPServer/**/*.cs, src/Content/**/Tools/**/*.cs
+paths: src/Content/**/Infrastructure.AI.MCPServer/**/*.cs, src/Content/**/Tools/**/*.cs
 ---
 # Tools & MCP Server Rules
 
