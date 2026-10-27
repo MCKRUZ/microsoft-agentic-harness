@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
 using Domain.Common;
@@ -69,6 +70,6 @@ public sealed class PromptInjectionBehavior<TRequest, TResponse>
         if (ResultHelper.TryCreateFailure<TResponse>(nameof(Result.GovernanceBlocked), reason, out var blocked))
             return blocked;
 
-        throw new InvalidOperationException(reason);
+        throw new PromptInjectionBlockedException(reason);
     }
 }

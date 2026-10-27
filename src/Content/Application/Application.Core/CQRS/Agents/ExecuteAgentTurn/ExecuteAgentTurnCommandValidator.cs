@@ -16,9 +16,10 @@ public class ExecuteAgentTurnCommandValidator : AbstractValidator<ExecuteAgentTu
 			.NotEmpty().WithMessage("User message is required.")
 			.MaximumLength(100_000).WithMessage("User message exceeds maximum length.");
 
-		// Screened with the message (#904), so its size sets how many content-safety calls a turn makes; bounded like
-		// the message so a caller cannot turn one turn into thousands of them.
-		RuleFor(x => x.TurnContext)
-			.MaximumLength(100_000).WithMessage("Turn context exceeds maximum length.");
+		// Screened with the message (#904), so together they set how many content-safety calls a turn makes; bounded as
+		// one so a single turn stays within the same budget a maximum-length message alone would use (#959).
+		RuleFor(x => x.ContentToScreen)
+			.MaximumLength(100_000).WithMessage("Message and turn context together exceed the maximum length.")
+			.When(x => !string.IsNullOrEmpty(x.TurnContext));
 	}
 }

@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
@@ -112,6 +113,25 @@ public sealed class PromptInjectionBehaviorTests
         Assert.False(_nextCalled);
         Assert.False(result.IsSuccess);
         Assert.Equal(ResultFailureType.GovernanceBlocked, result.FailureType);
+    }
+
+    [Fact]
+    public async Task Handle_InjectionAboveThreshold_ResponseWithoutResult_ThrowsAScreeningRefusal()
+    {
+        // An agent turn's response is not a Result, so the block is thrown. The transports recognise it as a refusal by
+        // its type and remove the stored message (#959); a bare InvalidOperationException would reach them as a fault.
+        _scanner.Setup(x => x.Scan(It.IsAny<string>())).Returns(new InjectionScanResult(
+            true, InjectionType.DirectOverride, ThreatLevel.Critical, 0.99));
+        var behavior = new PromptInjectionBehavior<TestScreenableRequest, string>(
+            _scanner.Object,
+            _auditService.Object,
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _config),
+            Mock.Of<ILogger<PromptInjectionBehavior<TestScreenableRequest, string>>>());
+
+        var ex = await Assert.ThrowsAsync<PromptInjectionBlockedException>(() =>
+            behavior.Handle(new TestScreenableRequest("bad input"), () => Task.FromResult("ok"), CancellationToken.None));
+
+        Assert.IsAssignableFrom<IScreeningRefusal>(ex);
     }
 
     [Fact]

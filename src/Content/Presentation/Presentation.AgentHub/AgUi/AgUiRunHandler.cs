@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Claims;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
@@ -365,6 +366,17 @@ public sealed class AgUiRunHandler
         {
             throw;
         }
+        catch (Exception ex) when (ex is IScreeningRefusal refusal)
+        {
+            // Refused before the model saw it. The message was stored above and the next run reads its history back
+            // from the store unscreened, so it is removed again (#959), as the SignalR transport does.
+            _logger.LogWarning("AG-UI run {RunId}: refused by request screening ({Refusal}).", input.RunId, ex.GetType().Name);
+            await RemoveRefusedMessageAsync(input.ThreadId, callerId, userMsg.Id, ct);
+            if (sink.Started)
+                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
+            await writer.WriteAsync(new RunErrorEvent(refusal.ClientMessage), ct);
+            return;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
@@ -488,6 +500,20 @@ public sealed class AgUiRunHandler
     /// <c>CallerIdentityResolutionBoundaryTests</c> now prevents — delegate, never copy.
     /// </remarks>
     private static string GetCallerId(ClaimsPrincipal principal) => principal.GetUserId();
+
+    // Best-effort: a failure leaves the message to be replayed as history, which is logged as the error it is.
+    private async Task RemoveRefusedMessageAsync(string threadId, string callerId, Guid messageId, CancellationToken ct)
+    {
+        try
+        {
+            await _conversationStore.TruncateFromMessageAsync(threadId, callerId, messageId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _logger.LogError(ex,
+                "Failed to remove the refused message from thread {ThreadId}; it will be replayed as history.", threadId);
+        }
+    }
 
     /// <summary>
     /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly

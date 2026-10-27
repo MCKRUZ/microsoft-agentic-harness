@@ -40,18 +40,34 @@ public sealed class ExecuteAgentTurnCommandScreeningTests
         command.ContentToScreen.Should().Be("just this");
     }
 
-    [Fact]
-    public void Validate_ATurnContextLongerThanTheMessageLimit_Fails()
+    [Theory]
+    [InlineData(2, 100_000)]
+    [InlineData(60_000, 60_000)]
+    public void Validate_AMessageAndTurnContextOverTheLimitTogether_Fails(int message, int context)
     {
-        // The context is screened with the message, so its size sets how many screening calls a turn makes.
+        // Both are screened, so together they set how many screening calls a turn makes; each under the limit on its
+        // own is not enough (#959).
         var command = new ExecuteAgentTurnCommand
         {
             AgentName = "agent",
-            UserMessage = "hi",
-            TurnContext = new string('a', 100_001),
+            UserMessage = new string('m', message),
+            TurnContext = new string('c', context),
         };
 
         new ExecuteAgentTurnCommandValidator().Validate(command).Errors
-            .Should().ContainSingle().Which.ErrorMessage.Should().Contain("Turn context");
+            .Should().ContainSingle().Which.ErrorMessage.Should().Contain("together");
+    }
+
+    [Fact]
+    public void Validate_AMessageAndTurnContextWithinTheLimitTogether_Passes()
+    {
+        var command = new ExecuteAgentTurnCommand
+        {
+            AgentName = "agent",
+            UserMessage = new string('m', 40_000),
+            TurnContext = new string('c', 40_000),
+        };
+
+        new ExecuteAgentTurnCommandValidator().Validate(command).IsValid.Should().BeTrue();
     }
 }

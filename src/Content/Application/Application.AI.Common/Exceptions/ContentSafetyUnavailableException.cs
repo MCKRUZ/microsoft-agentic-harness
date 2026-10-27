@@ -20,8 +20,11 @@ namespace Application.AI.Common.Exceptions;
 /// The message never contains the screened text.
 /// </para>
 /// </remarks>
-public sealed class ContentSafetyUnavailableException : ApplicationExceptionBase, IHttpStatusException
+public sealed class ContentSafetyUnavailableException : ApplicationExceptionBase, IHttpStatusException, IScreeningRefusal
 {
+    /// <inheritdoc />
+    public string ClientMessage => SafeMessage;
+
     /// <inheritdoc />
     public int StatusCode => 503;
 

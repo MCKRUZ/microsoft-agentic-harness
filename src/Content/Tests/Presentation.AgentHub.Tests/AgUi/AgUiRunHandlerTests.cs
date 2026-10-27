@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services.AI;
@@ -578,6 +579,48 @@ public sealed class AgUiRunHandlerTests
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
 
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    public static TheoryData<Exception> ScreeningRefusals => new()
+    {
+        new ContentSafetyException("Content blocked by safety policy (hate).", "hate"),
+        new ContentSafetyUnavailableException(),
+        new PromptInjectionBlockedException("Prompt injection detected (role_play). Request blocked."),
+    };
+
+    [Theory]
+    [MemberData(nameof(ScreeningRefusals))]
+    public async Task HandleRunAsync_ScreeningRefusal_RemovesTheStoredMessageAndReportsTheRefusal(Exception refusal)
+    {
+        // #959: the user message is appended before the turn runs, and the next run reads history back from the
+        // store unscreened. A refused message left in the store reaches the model on the caller's next run.
+        const string threadId = "conv-refused";
+        const string userId = "user-1";
+        var userMessageId = Guid.NewGuid();
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(refusal);
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "refused text", userMessageId.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var frames = ParseSseFrames(ms);
+        RunErrorMessage(frames).Should().Be(((IScreeningRefusal)refusal).ClientMessage,
+            "the caller is told the turn was refused, not that an error occurred");
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
+        store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),
+            Times.Once, "the refused message is removed from the store it was appended to");
     }
 
     [Fact]

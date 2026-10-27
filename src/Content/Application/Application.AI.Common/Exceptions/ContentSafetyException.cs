@@ -30,8 +30,11 @@ namespace Application.AI.Common.Exceptions;
 /// }
 /// </code>
 /// </example>
-public sealed class ContentSafetyException : ApplicationExceptionBase
+public sealed class ContentSafetyException : ApplicationExceptionBase, IScreeningRefusal
 {
+    /// <inheritdoc />
+    public string ClientMessage => "This message was blocked by the content policy.";
+
     /// <summary>
     /// Gets the category of the safety violation, if specified.
     /// </summary>
