@@ -100,8 +100,15 @@ internal static class CompositionRootTestHost
         var list = settings.ToList();
         ArgumentException.ThrowIfNullOrWhiteSpace(IsolatedStateRoot.Root, nameof(IsolatedStateRoot.Root));
 
-        // The erasure journal (#907) is opened by every composition too, for the same reason and with the same race.
-        foreach (var (key, file) in new[] { (DocumentLoadDatabaseKey, "documents"), (ErasureJournalDatabaseKey, "erasure-journal") })
+        // The erasure journal (#907) is opened by every composition too, for the same reason and with the same race. So is
+        // the conversation database: on its shared default file, two compositions creating its schema at once failed with
+        // "table conversation_budgets already exists" (#924).
+        foreach (var (key, file) in new[]
+                 {
+                     (DocumentLoadDatabaseKey, "documents"),
+                     (ErasureJournalDatabaseKey, "erasure-journal"),
+                     (ConversationDatabaseKey, "conversations"),
+                 })
         {
             if (!list.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
                 list.Add(new(key, Path.Combine(IsolatedStateRoot.Root, $"{file}-{Guid.NewGuid():N}.db")));
@@ -111,6 +118,8 @@ internal static class CompositionRootTestHost
     }
 
     private const string ErasureJournalDatabaseKey = "AppConfig:AI:Erasure:JournalDatabasePath";
+
+    private const string ConversationDatabaseKey = "AppConfig:AI:Conversations:DatabasePath";
 
     /// <summary>
     /// Runs the production <see cref="Infrastructure.AI.Plugins.PluginStartupLoader"/> hosted

@@ -24,6 +24,7 @@ namespace Presentation.Common.Tests.Architecture;
 /// it scans the bytes of the database files after an erasure.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
 {
     private const string UseSqlite = "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions::UseSqlite";

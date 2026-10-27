@@ -27,6 +27,7 @@ namespace Presentation.Common.Tests.Composition;
 /// erasure registration), and that does not erase through <see cref="IPersonalDataEraser"/>.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
 {
     private static readonly Type[] NotStoreContracts = [typeof(IDisposable), typeof(IAsyncDisposable)];

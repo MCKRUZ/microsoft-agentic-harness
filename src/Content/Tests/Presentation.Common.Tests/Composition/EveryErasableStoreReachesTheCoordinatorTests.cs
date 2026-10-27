@@ -23,6 +23,7 @@ namespace Presentation.Common.Tests.Composition;
 /// Databases are pointed at a temporary folder so resolving the stores creates nothing in the shared test directory.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
 {
     private static readonly Type[] NotStoreContracts = [typeof(IPersonalDataEraser), typeof(IDisposable), typeof(IAsyncDisposable)];

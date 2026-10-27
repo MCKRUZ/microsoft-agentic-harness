@@ -24,6 +24,7 @@ namespace Presentation.Common.Tests.Composition;
 /// for that, so the second test requires it to receive exactly the stores erasure does.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class EveryExportableStoreReachesTheExportTests : IDisposable
 {
     private static readonly Type[] NotStoreContracts =

@@ -42,6 +42,7 @@ namespace Presentation.Common.Tests.Composition;
 /// embedding so no model is needed.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
 {
     private const string Subject = "Subject-Oid-7F3A";

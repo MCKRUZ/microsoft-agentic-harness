@@ -20,6 +20,7 @@ namespace Presentation.Common.Tests.Composition;
 /// The handler trusts its validator to have refused a malformed id; the unit tests build the validator directly, so only
 /// this test proves the pipeline actually runs it.
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class DocumentRemovalPipelineTests : IDisposable
 {
     private const string Operator = "dpo-operator-9";

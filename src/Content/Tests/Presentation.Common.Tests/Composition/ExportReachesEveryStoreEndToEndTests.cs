@@ -37,6 +37,7 @@ namespace Presentation.Common.Tests.Composition;
 /// record is a disclosure, however complete it is otherwise.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
 {
     // Not the erasure end-to-end test's ids: the keyword index is one in-memory database for the whole process, and an

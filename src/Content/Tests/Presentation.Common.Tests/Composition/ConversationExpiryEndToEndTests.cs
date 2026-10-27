@@ -34,6 +34,7 @@ namespace Presentation.Common.Tests.Composition;
 /// the expiry receives in this composition must have a seed and a count in <see cref="ConversationStores"/>. The
 /// owner-wide stores are seeded too, as the control: expiry must not touch them.
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class ConversationExpiryEndToEndTests : IDisposable
 {
     private const string Owner = "Owner-Oid-51C2";
