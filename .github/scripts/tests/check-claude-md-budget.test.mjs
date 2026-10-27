@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BUDGET_BYTES, byteLength, findProblems, standingRules } from '../check-claude-md-budget.mjs';
+import { BUDGET_BYTES, byteLength, findProblems, isTestProjectPath, standingRules } from '../check-claude-md-budget.mjs';
 
 const script = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'check-claude-md-budget.mjs');
 const realClaudeMd = resolve(dirname(script), '..', '..', 'CLAUDE.md');
@@ -69,6 +69,14 @@ test('a target of no recognised shape is reported, not skipped', () => {
 
 test('a missing Standing rules section is reported', () => {
     assert.deepEqual(kinds(findProblems('# P\n\nnothing here\n', env())), ['structure']);
+});
+
+// A guard name that survives only in a production XML comment ("see ValidateOnBuildSweepTests")
+// must not count: that is how a deleted guard would keep passing.
+test('only paths inside a test project count as a guard', () => {
+    assert.equal(isTestProjectPath('src/Content/Tests/Presentation.Common.Tests/Composition/ValidateOnBuildSweepTests.cs'), true);
+    assert.equal(isTestProjectPath('src/Content/Infrastructure/Infrastructure.AI.Governance/Adapters/CompositeResponseSanitizer.cs'), false);
+    assert.equal(isTestProjectPath('src/Content/Application/Application.Core/ValidateOnBuildSweepTests.cs'), false);
 });
 
 test('bullets after the section ends are not treated as rules', () => {

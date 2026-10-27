@@ -115,6 +115,9 @@ export function findProblems(text, env) {
 /** Element ids on the ledger page that look like ledger entries. */
 export const ledgerIdsFrom = (html) => new Set([...html.matchAll(/\bid="(inc-\d{2})"/g)].map((m) => m[1]));
 
+/** True when a repo path sits inside a test project (a directory whose name ends in "Tests"). */
+export const isTestProjectPath = (path) => /(^|\/)[^/]*Tests\//.test(path);
+
 /** Files under a test project in src/ that contain `name` as a whole word. */
 export function gitTestFilesFor(repoRoot) {
     return (name) => {
@@ -125,7 +128,7 @@ export function gitTestFilesFor(repoRoot) {
             if (error.status === 1) return []; // git grep: no match
             throw error;
         }
-        return out.split('\n').filter((path) => /(^|\/)[^/]*Tests\//.test(path));
+        return out.split('\n').filter(isTestProjectPath);
     };
 }
 
