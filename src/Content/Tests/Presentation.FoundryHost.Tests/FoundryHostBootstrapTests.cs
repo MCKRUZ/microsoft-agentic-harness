@@ -99,8 +99,10 @@ public sealed class FoundryHostBootstrapTests
     [Fact]
     public void PrepareFoundryEnvironment_OptOutOnlyInALaterSource_HonoursItAndRemovesTheVariable()
     {
-        // Key Vault and App Configuration are added after appsettings, User Secrets and the environment. An opt-out kept
-        // only there must still win, which it does only when the decision reads the merged configuration.
+        // Key Vault and App Configuration are added after appsettings, User Secrets and the environment, so an opt-out
+        // kept only there must win over an earlier "true". This proves the preparation honours the merged value it is
+        // given; that Program.Main hands it the FULL configuration is guarded separately by
+        // ProgramTelemetryOptOutWiringTests.Main_Always_ReadsTheOptOutFromTheFullConfiguration.
         var settings = new ConfigurationBuilder()
             .AddInMemoryCollection([new(FoundryHostBootstrap.EnableFromHostConnectionStringKey, "true")])
             .AddInMemoryCollection([new(FoundryHostBootstrap.EnableFromHostConnectionStringKey, "false")])

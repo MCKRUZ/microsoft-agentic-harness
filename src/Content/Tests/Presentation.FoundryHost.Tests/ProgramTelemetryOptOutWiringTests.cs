@@ -15,6 +15,7 @@ public sealed class ProgramTelemetryOptOutWiringTests
 {
     private const string Prepare = "FoundryHostBootstrap.PrepareFoundryEnvironment(";
     private const string Build = ".BuildValidatedServiceProvider(";
+    private const string FullLoad = "AppConfigHelper.LoadAppConfig(";
 
     [Fact]
     public void Main_Always_PreparesFoundryEnvironmentBeforeBuildingTheServiceProvider()
@@ -24,6 +25,24 @@ public sealed class ProgramTelemetryOptOutWiringTests
 
         PreparesBeforeBuilding(code).Should().BeTrue(
             "the opt-out must remove Foundry's connection string before the composition root binds configuration");
+    }
+
+    /// <summary>
+    /// The decision must read the FULL configuration. With a local-only loader (appsettings, User Secrets, environment),
+    /// a deployer's opt-out kept in Key Vault is silently ignored and every other test stays green — the #904 round-1
+    /// defect. Asserts the settings come from <c>AppConfigHelper.LoadAppConfig</c>, loaded before the preparation runs.
+    /// </summary>
+    [Fact]
+    public void Main_Always_ReadsTheOptOutFromTheFullConfiguration()
+    {
+        var path = RepoRoot.Combine("src", "Content", "Presentation", "Presentation.FoundryHost", "Program.cs");
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
+
+        var fullLoad = code.IndexOf(FullLoad, StringComparison.Ordinal);
+        var prepare = code.IndexOf(Prepare, StringComparison.Ordinal);
+        fullLoad.Should().BeGreaterThanOrEqualTo(0, "the opt-out must be read from AppConfigHelper.LoadAppConfig, which includes Key Vault and App Configuration");
+        fullLoad.Should().BeLessThan(prepare, "the full configuration must be loaded before it is handed to the preparation");
+        code.Should().NotContain("LoadLocalAppConfig", "a local-only loader ignores an opt-out kept in Key Vault");
     }
 
     [Fact]

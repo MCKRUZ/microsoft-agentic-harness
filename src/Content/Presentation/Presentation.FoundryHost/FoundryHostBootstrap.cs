@@ -34,7 +34,8 @@ internal static class FoundryHostBootstrap
 
     /// <summary>
     /// Whether the host uses Foundry's connection string, from the deployer's setting for
-    /// <see cref="EnableFromHostConnectionStringKey"/> in any configuration source.
+    /// <see cref="EnableFromHostConnectionStringKey"/> in the configuration the host loads (see
+    /// <c>AppConfigHelper.LoadAppConfig</c> for which sources and App Configuration labels that includes).
     /// </summary>
     /// <param name="configured">The setting's raw value, or <c>null</c> when it is not set.</param>
     /// <returns>
@@ -139,7 +140,8 @@ internal static class FoundryHostBootstrap
             notices.Add((LogLevel.Information,
                 $"Foundry supplied {AppInsightsVariable}, so the Foundry hosting layer exports its traces and logs to that " +
                 $"Application Insights resource, and the harness's Azure Monitor exporter is {harness}. Set " +
-                $"{EnableFromHostConnectionStringKey} to false in any configuration source to send nothing there."));
+                $"{EnableFromHostConnectionStringKey} to false (appsettings, User Secrets, the environment, or Key Vault / " +
+                "App Configuration where this build loads them) to send nothing there."));
         else if (hostSupplied)
             notices.Add((LogLevel.Information,
                 $"{EnableFromHostConnectionStringKey} is false, so FoundryHost removed Foundry's {AppInsightsVariable}: " +

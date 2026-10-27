@@ -14,8 +14,9 @@ public class AzureMonitorExporterConfig
     /// <summary>
     /// Gets or sets the Application Insights connection string. The exporter sends only when this is set and
     /// <see cref="Enabled"/> is <see langword="true"/>; it does not fall back to
-    /// <c>APPLICATIONINSIGHTS_CONNECTION_STRING</c>. Load it from Azure Key Vault in production. FoundryHost maps
-    /// that variable onto this setting; no other host reads it.
+    /// <c>APPLICATIONINSIGHTS_CONNECTION_STRING</c>. Load it from Azure Key Vault in production. By default
+    /// FoundryHost maps that variable onto this setting, unless <see cref="EnableFromHostConnectionString"/> is
+    /// <see langword="false"/>; no other host reads it.
     /// </summary>
     public string? ConnectionString { get; set; }
 
@@ -30,8 +31,10 @@ public class AzureMonitorExporterConfig
     /// its own traces and logs to it, so a deployer who has not chosen Azure Monitor still exports to that resource.
     /// </para>
     /// <para>
-    /// Set this to <see langword="false"/>, in any configuration source, Key Vault and App Configuration included, and
-    /// FoundryHost removes the variable before anything reads it: nothing is exported to Foundry's resource, and
+    /// Set this to <see langword="false"/> in any source the host loads (appsettings, User Secrets, the environment,
+    /// and in Release builds without <c>DisableAzureConfigSources</c>, Key Vault and App Configuration's unlabelled or
+    /// <c>API</c>-labelled keys) and FoundryHost removes the variable before anything reads it: nothing is exported to
+    /// Foundry's resource, and
     /// <see cref="Enabled"/> and <see cref="ConnectionString"/> are the deployer's own. Every other host ignores it
     /// (#904).
     /// </para>
