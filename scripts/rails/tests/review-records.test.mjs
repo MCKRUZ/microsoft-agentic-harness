@@ -91,10 +91,12 @@ test('workflow parsing yields the check names a PR would report', () => {
 test('a required check that no workflow declares is reported (the plan\'s planted-check proof)', () => {
   const result = compareChecks({
     requiredLive: ['build-and-test', 'planted-check'],
-    requiredCommitted: ['build-and-test'],
+    requiredCommitted: ['build-and-test', 'planted-in-json'],
     declaredOnPullRequest: ['build-and-test', 'grader'],
     observedOnPullRequests: ['build-and-test', 'grader'],
   });
+  assert.deepEqual(result.committed_not_declared, ['planted-in-json']);
+  assert.deepEqual(result.committed_not_live, ['planted-in-json']);
   assert.deepEqual(result.required_not_declared, ['planted-check']);
   assert.deepEqual(result.required_not_observed, ['planted-check']);
   assert.deepEqual(result.live_not_committed, ['planted-check']);
