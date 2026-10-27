@@ -1,0 +1,18 @@
+# Known-clean: refactor: share the queue-or-abandon step between the three run starters
+id: CLEAN-882
+kind: clean
+pr: 882
+base_sha: 4deabebdd2bf2a3e9e876cb709b5fd34c10bcd0e
+head_sha_before_fix: b5b44a23758beffe0d1a57c85716d4a300c58e0a
+fix_sha: null
+expected: null
+caught_by: null
+scope: correctness
+valid_until: null
+notes: >-
+  Single-commit behaviour-preserving refactor extracting the shared queue-or-abandon step
+  (AdmittedRunDispatch) used by the three run starters (5 files, +186/-63 under src/; base is the
+  head's parent). correctness-review check run 118265074135 concluded success; comment bottom line
+  "**Bottom line:** CORRECT. This refactor keeps behaviour the same." No later fix found: git log
+  origin/main --no-merges --since=2026-10-19T20:38:21Z on the PR's src/ files returned nothing, and
+  gh search prs "#882" returned no other PR (grep-based, not exhaustive).

@@ -1,0 +1,19 @@
+# Known-clean: fix: seal the decision list on a pending escalation
+id: CLEAN-879
+kind: clean
+pr: 879
+base_sha: ab6cb5f7edaf17b301fb25a620af818d35ec34d6
+head_sha_before_fix: 564b56d50ab857fe438ac74234250a6c39afd681
+fix_sha: null
+expected: null
+caught_by: null
+scope: correctness
+valid_until: null
+notes: >-
+  Single-commit PR sealing a pending escalation's decision list on every write and verifying it on
+  rehydration, closing #863 (5 files, +171/-7 under src/; base is the head's parent).
+  correctness-review check run 117786906430 concluded success; comment bottom line "**Bottom line:**
+  CORRECT." with an upgrade-quarantine advisory. No later fix found: git log origin/main --no-merges
+  --since=2026-10-18T23:06:19Z on the PR's src/ files found only 11539a49 (an additive
+  [PersonalDataStore] attribute on EfCoreEscalationStateStore), and gh search prs "#879" returned no
+  other PR (grep-based, not exhaustive).
