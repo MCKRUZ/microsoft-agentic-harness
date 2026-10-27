@@ -151,15 +151,15 @@ interface. Change one only together with every reader, in the same PR.
 
 | What | Exact form | Written by | Read by |
 | --- | --- | --- | --- |
-| Risk tier label | exactly one of `tier:0`, `tier:1`, `tier:2` | `tier-gate.yml` (computed from the change, never the author) | telemetry, breaker, `merge-gate.ps1` |
-| Tier gate status | commit status context `tier-gate` on the PR head SHA | `tier-gate.yml`, `tier-signoff.yml` | the checks ruleset |
+| Risk tier label | exactly one of `tier:0`, `tier:1`, `tier:2` | `tier-gate.yml` (computed from the change, never the author; the agent may not set one by hand) | telemetry, breaker, `human-only-guard.ps1` (merge rule) |
+| Tier gate status | commit status context `tier-gate` on the PR head SHA | `tier-gate.yml` (recomputed on push, body edit, PR comment and finished Deep Review) | the `main-checks` ruleset |
 | PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` (tier ≥1) | the agent, from `PULL_REQUEST_TEMPLATE.md` | `tier-gate.yml` (tier 1 needs Testing evidence and How to revert non-empty), grader, telemetry |
 | Local review rounds | a line `Review-rounds: <n>` in the PR body (`<n>` = local `/code-review` rounds before the push; `cap` when the 3-round cap was hit) | `pre-push-review` skill | telemetry |
 | Finding marker | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
 | Severity tag | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
 | Disposition | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
 | Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a tier-1 or tier-2 PR | telemetry |
-| Tier-2 sign-off | a PR comment by `MCKRUZ`: `Reviewed-by: @MCKRUZ <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/signoff-guard.ps1` denies any agent tool call that contains it | `tier-signoff.yml` |
+| Tier-2 sign-off | a PR comment by the repository owner: `Reviewed-by: @<owner> <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/human-only-guard.ps1` denies any agent tool call that contains it | `tier-gate.yml` via `tier-status.mjs` |
 | Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
 
 Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`,
@@ -168,26 +168,78 @@ and `round-cap-ack` (Matt's verbatim "push anyway", which releases the cap; the 
 empty one). `-Round <n>` records which local round a receipt closes. A receipt may carry a findings array, one object per finding:
 `{"anchor": "<path>:<line>", "class": "<kebab-class>", "tag": "important|nit|pre-existing", "disposition": "fixed|wrong|intentional|didnt-matter"}`.
 
+## Risk tiers — how much of Matt's attention a change gets
+
+Anthropic's Claude Code team scales human review by risk: none for low-risk changes once the
+automated checks are green, one person for ordinary ones, two for the riskiest — and **the change
+sets the tier, not the author**. On this solo repo the "people" column becomes Matt's attention:
+
+| Tier | What it covers | What merges it |
+| --- | --- | --- |
+| **0** | Plain documentation; test files that only **add** lines | Green checks. The agent merges it (`gh pr merge --admin`); Matt does not read it |
+| **1** | Every other change | Matt reads the PR body's evidence block (Testing evidence, Risk, How to revert, Explainer) and merges |
+| **2** | `.github/**`, `.claude/settings.json`, `.claude/hooks/**`, `scripts/rails/**`, `**/Auth/**`, `**/Identity/**`, `**/Security/**`, `**/Migrations/**`, `infra/**`; anything the security gate wants reviewed; more than 1,000 changed lines under `src/` | A second, independent model review (`deep-review`) runs; Matt reads it and the evidence, then posts `Reviewed-by: @<owner> <head-sha> — <what he read>`. A new push needs a new sign-off |
+
+`.github/scripts/tier-rules.mjs` is the single definition (unit-tested; keep its gated paths in
+step with `CODEOWNERS`). It only ever raises a tier and never reads the PR description.
+Deliberately **not** tier 0: an edit or deletion of an existing test, `CLAUDE.md`, `.claude/**`,
+`skills/`, `agents/` and the published OpenAPI spec — the review loop and its guards live there.
+
+What enforces it:
+
+- `tier-gate.yml` labels every PR and publishes the required `tier-gate` status. It runs on
+  `pull_request_target`, i.e. the **default branch's** copy, so a PR cannot rewrite the rules that
+  grade it. That is safe only because it never executes PR code (see its header and "Gate
+  integrity" below).
+- The **circuit breaker**: if a tier-0 merge is ever reverted, `tier-breaker.yml` opens a
+  `rails:breaker` issue and, while it is open, nothing is tier 0. Matt re-arms it by closing the
+  issue. It recognises `gh pr revert` PRs and git's standard `This reverts commit …` message; a
+  hand-worded revert is not detected, so open a breaker issue by hand for one.
+- `human-only-guard.ps1` lets the agent merge only `tier:0` PRs, and never set a tier label, post
+  a sign-off, or close the breaker.
+- Depth follows the tier: `correctness-review` gets 120 turns and a wider brief on tier 2.
+
 ## Required status checks
 
-The ruleset requires exactly these check contexts to be green before merge:
+Two rulesets, split so that the admin bypass a solo repo needs for approvals cannot also skip the
+checks (with one ruleset it did — a `pull_request`-mode bypass actor bypasses every rule in it):
 
-- `build-and-test`
-- `OWASP Agentic Top-10 Gate`
-- `security-review`
-- `correctness-review`
-- `frontend (Presentation.Dashboard)`
-- `frontend (Presentation.WebUI)`
+- **`main-checks`** (`rulesets/main-checks.json`) — **no bypass actors.** Requires these contexts
+  green, every review thread resolved, no deletion, no force-push:
+  - `build-and-test`
+  - `OWASP Agentic Top-10 Gate`
+  - `security-review`
+  - `correctness-review`
+  - `frontend (Presentation.Dashboard)`
+  - `frontend (Presentation.WebUI)`
+  - `tier-gate`
+- **`main-branch-protection`** (`rulesets/main-branch-protection.json`) — the 1-approval +
+  code-owner rule, with the admin bypass (see "Solo-repo accommodation").
 
-The live ruleset is the authority; `rulesets/main-branch-protection.json` must match it exactly.
-On 2026-10-27 it did not (live required the two frontend jobs and
-`require_extra_approval_for_unattributed_changes`; the JSON had neither), so re-running the apply
-script would have silently dropped two required checks. Check parity before any apply:
+`tier-gate` can only be required once `tier-gate.yml` is on `main` (it runs the default branch's
+copy); apply the split after that PR merges, never before, or every PR waits on a status nobody
+sets.
+
+**Recovery.** With no bypass on `main-checks`, a rail that cannot report — most likely an expired
+`CLAUDE_CODE_OAUTH_TOKEN`, which makes the AI reviewers fail closed — blocks every merge,
+including the admin's. Repository admins can always edit rulesets:
+
+```bash
+scripts/rails/apply-branch-protection.sh --disable main-checks   # merge the fix, then:
+scripts/rails/apply-branch-protection.sh --enable main-checks
+```
+
+The live rulesets are the authority; the JSON files must match them exactly. On 2026-10-27 they
+did not (live required the two frontend jobs and `require_extra_approval_for_unattributed_changes`;
+the JSON had neither), so re-running the apply script would have silently dropped two required
+checks. Check parity before any apply:
 
 ```bash
 N='{bypass_actors, rules: [.rules[] | {type, parameters: (.parameters // null)}]}'
-diff <(jq -S "$N" .github/rulesets/main-branch-protection.json) \
-     <(gh api repos/MCKRUZ/microsoft-agentic-harness/rulesets/17747162 | jq -S "$N")
+for f in .github/rulesets/*.json; do
+  id=$(gh api repos/MCKRUZ/microsoft-agentic-harness/rulesets --jq ".[] | select(.name==\"$(jq -r .name "$f")\") | .id")
+  diff <(jq -S "$N" "$f") <(gh api "repos/MCKRUZ/microsoft-agentic-harness/rulesets/$id" | jq -S "$N") && echo "parity: $f"
+done
 ```
 
 A second live ruleset, `Protection` (id 16093641: deletion + non-fast-forward, `include: []`),
@@ -209,13 +261,19 @@ one of these by adding a path filter to its trigger.
 ## Solo-repo accommodation (read this)
 
 GitHub forbids approving your own PR, so on a single-maintainer repo the
-"non-author approval" rule cannot be self-satisfied. The ruleset is configured
-**armed with an owner bypass**: it requires 1 approval + code-owner review, but
-the repository-admin role is a bypass actor with `bypass_mode: pull_request`, so
-you can still self-merge your own PRs today. `pull_request` (not `always`) is
-deliberate: even the owner cannot push *directly* to `main` skipping CI — every
-change to `main` still rides a PR and its checks; the bypass only waives the
-human-approval requirement that a solo repo can't satisfy.
+"non-author approval" rule cannot be self-satisfied. The `main-branch-protection`
+ruleset is configured **armed with an owner bypass**: it requires 1 approval +
+code-owner review, but the repository-admin role is a bypass actor with
+`bypass_mode: pull_request`, so you can still self-merge your own PRs today. Since
+2026-10-27 that bypass waives **only** the approval: the required checks live in
+`main-checks`, which has no bypass, so even the owner cannot merge a red PR. (Before
+the split, the one ruleset held both, and the bypass skipped the checks too — the
+prose here said otherwise.)
+
+What stands in for the missing second human is the tier system above: the change
+decides whether Matt reads nothing, reads the evidence, or reads an independent
+review and signs off on a specific commit. It never stands in for Matt himself, and
+an agent's approval never counts as his (`human-only-guard.ps1`).
 
 This is honest, not hidden: the human-review rule is fully wired and becomes real
 the moment a second collaborator (or a review bot) joins — at that point, **remove
@@ -236,6 +294,16 @@ review. The real closure is a **non-author review of rails changes** — which i
 exactly what branch protection enforces once a second reviewer exists (remove the
 owner bypass then). **Never** switch these workflows to `pull_request_target`:
 that would expose secrets and the write token to forked-PR code.
+
+The one exception is `tier-gate.yml`, and it is an exception in the safe direction. A gate that
+decides how much human review a change gets must not run the PR's own copy of its rules, or a PR
+could lower its own tier — so it runs the default branch's copy on `pull_request_target`. It is
+safe there only because it executes nothing from the PR: it checks out the base branch, reads the
+PR head as git objects (`git diff`), runs only base-branch scripts, reads the PR body through the
+API (never interpolated into a shell line), and holds no secret beyond a `GITHUB_TOKEN` scoped to
+labels and statuses. Any future step that checks out, builds or runs PR code there reopens the
+hole this note describes. `deep-review.yml` runs the AI reviewer and therefore stays on
+`pull_request`, like the other reviewers.
 
 ## Prove the rails (the shakedown — the-rails.md §9)
 
@@ -262,6 +330,15 @@ Before trusting these, force each one to fail and confirm it's caught:
   `accepted-risk:correctness` label and confirm it goes green. Close it unmerged.
   Do this before promoting it to a required check (go-live step 4).
 - **CI / OWASP** — already exercised by every real PR.
+- **tier-gate** (after the ruleset split is applied) — (1) a docs-only throwaway PR must be
+  labelled `tier:0`, go green, and merge with `gh pr merge --admin`; (2) a PR touching
+  `.github/workflows/ci.yml` must be `tier:2`, wait on `deep-review`, stay pending until the
+  owner posts a sign-off naming its head commit, then go green — and go pending again after one
+  more push; (3) a `src/` PR with the template left empty must be `tier:1` and red until Testing
+  evidence and How to revert are filled in; (4) `gh pr merge --admin` on a red PR must be refused
+  (proves `main-checks` has no bypass). Unit coverage: `node --test ".github/scripts/tests/*.test.mjs"`.
+- **circuit breaker** — revert a throwaway tier-0 merge with `gh pr revert`, run the Tier Breaker
+  workflow, and confirm a `rails:breaker` issue opens and the next docs-only PR is `tier:1`.
 
 ## Deferred (not built — no cloud deployment exists yet)
 

@@ -134,6 +134,17 @@ still open:
 
 Batch the fixes for one round into one push: every push re-runs the Opus reviewers.
 
+## Who merges
+
+`tier-gate` labels the PR from the change itself (`.github/RAILS.md`, "Risk tiers"):
+
+- **`tier:0`** (plain docs, additive tests): once every check is green and every thread
+  resolved, merge it yourself with `gh pr merge <n> --merge --admin`.
+- **`tier:1`**: tell Matt it is ready and that the evidence block is filled in. He merges.
+- **`tier:2`**: tell Matt it is ready for his read of the deep review and the evidence, and
+  that his sign-off must name the head commit. Never post the sign-off yourself, and never
+  try to change the tier label — `human-only-guard.ps1` denies both.
+
 ## What this does not replace
 
 - The full local test suite still has to be green before push — this skill is about
