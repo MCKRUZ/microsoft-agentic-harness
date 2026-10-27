@@ -4,9 +4,9 @@
 // Only comments authored by the Actions bot count: a human (or an agent on Matt's token) replying
 // "Correctness review was right: ..." is not a verdict.
 
-const BOT_LOGINS = new Set(['github-actions', 'github-actions[bot]']);
+export const BOT_LOGINS = Object.freeze(['github-actions', 'github-actions[bot]']);
 
-export const isBotAuthor = (login) => BOT_LOGINS.has(login ?? '');
+export const isBotAuthor = (login) => BOT_LOGINS.includes(login ?? '');
 
 /** Leading HTML tag (optional) and the `## <Reviewer> ...` heading each workflow writes. */
 export const COMMENT_KIND = Object.freeze({
@@ -32,12 +32,12 @@ export const CORRECTNESS_HEADING_SECTION = /^#{2,4}[ \t]*Blocking defects[ \t]*:
 export const CORRECTNESS_TOKEN = /\b(DEFECTS FOUND|CORRECT)\b/;
 export const GRADER_TOKEN = /\bLOOKS (GOOD|RISKY)\b/;
 export const SECURITY_TOKEN = /\b(PASS|BLOCK)\b/;
-const NONE = /^\W*none\b/i;
+export const CORRECTNESS_NONE = /^\W*none\b/i;
 
 function classifyBlockingSection(text) {
   const trimmed = text.trim();
   if (trimmed === '') return null;
-  return NONE.test(trimmed) ? 'correct' : 'defects-found';
+  return CORRECTNESS_NONE.test(trimmed) ? 'correct' : 'defects-found';
 }
 
 /** → 'correct' | 'defects-found' | 'unclassified'. */

@@ -42,6 +42,10 @@ export const NO_DATA = 'no data';
 // "feat(review-followups): wave 2 design decisions". Known misses (left out for precision):
 // "fix: correct #648 fix's diagnosis and test after grader control run".
 
+/** A commit's subject is the full first line of its message. (GraphQL `messageHeadline` is cut at ~72 characters.) */
+export const COMMIT_SUBJECT_RULE = 'first line of the full commit message (never GraphQL messageHeadline, which truncates)';
+export const commitSubject = (message) => (message ?? '').split(/\r?\n/, 1)[0].trim();
+
 /** The conventional-commit prefix (`type(scope)!: `); stripped before the description is matched. */
 export const COMMIT_TYPE_PREFIX = /^\w+(?:\([^)]*\))?!?:\s*/;
 
@@ -81,6 +85,8 @@ export const isRevertSubject = (subject) => REVERT_SUBJECT.test(subject);
 // ── Review conventions (RAILS.md table) ───────────────────────────────────────────────────────────
 
 export const TIER_LABEL = /^tier:([012])$/;
+export const INCIDENT_LABEL = /^incident(?::.*)?$/;
+export const WEEKLY_FILE = /^(\d{4}-W\d{2})\.json$/;
 export const REVIEW_ROUNDS_LINE = /^Review-rounds:[ \t]*(\d+|cap)[ \t]*$/im;
 export const REVIEWED_MINUTES_LINE = /^Reviewed:[ \t]*(\d+(?:\.\d+)?)[ \t]*min\b/im;
 export const SIGNOFF_LINE = /^Reviewed-by:[ \t]*@MCKRUZ[ \t]+([0-9a-f]{7,40})[ \t]+[—–-]/im;

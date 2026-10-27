@@ -5,7 +5,8 @@ import { NO_DATA } from '../lib/review-parsers.mjs';
 import { percentile, summarize, share, isoWeek, previousIsoWeekWindow, missingWeeks, weekStartFromLabel } from '../lib/stats.mjs';
 import { parseWorkflow, compareChecks } from '../lib/checks.mjs';
 import { aggregate, buildPrRecord, runsForPr } from '../lib/pr-records.mjs';
-import { commitSubject, formatSummary, parseArgs, resolveWindow } from '../collect-review-metrics.mjs';
+import { formatSummary, parseArgs, resolveWindow } from '../collect-review-metrics.mjs';
+import { commitSubject } from '../lib/review-parsers.mjs';
 
 test('the commit subject is the full first line, never GitHub\'s 72-character headline', () => {
   const subject = 'fix: apply second /code-review round on #738 (vacuous proof, layering, gaps)';

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-27T12:47:30.568Z",
+  "generated_at": "2026-10-27T12:55:31.506Z",
   "repo": "MCKRUZ/microsoft-agentic-harness",
   "window": {
     "label": "2026-09-27_2026-10-27",
@@ -20,6 +20,7 @@
     "window": "PRs whose mergedAt is in [since, until) UTC; per_week values = count * 7 / window days",
     "review_fix_commit": {
       "rule": "a non-merge PR commit (parents < 2) whose subject matches scope OR whose description (subject minus type prefix) matches description",
+      "subject": "first line of the full commit message (never GraphQL messageHeadline, which truncates)",
       "scope": "/^(?:review(?:\\([^)]*\\))?|\\w+\\((?:[^)]*[,/ ])?review-(?:fix(?:es)?|follow-?ups?)\\))!?:/i",
       "type_prefix": "/^\\w+(?:\\([^)]*\\))?!?:\\s*/",
       "description": "/\\bfindings?\\b|\\b(?:review\\w*|correctness|run-gates|grader)\\b[^,;]{0,25}\\badvisor(?:y|ies)\\b|\\badvisor(?:y|ies)\\b[^,;]{0,40}\\breview(?:ers?|s)?\\b|\\b(?:review(?:ers?|s)?|grader|run-gates)\\b[^,;]{0,30}?\\b(?:found|flagged|caught|raised|follow-?ups?|fix(?:es)?|cleanups?|hardening)\\b|\\b(?:review(?:ers?|s)?|simplify|grader|run-gates)\\s+(?:round|pass)\\b|\\b(?:found|flagged|caught|raised)\\b[^,;]{0,35}?\\b(?:review(?:ers?|s)?|grader|run-gates|gates?|CI)\\b|\\bgates?\\s+(?:found|flagged|caught)\\b|\\b(?:after|per|from|act on|address(?:es|ed)?|appl(?:y|ies|ied))\\s+(?:the\\s+|a\\s+)?(?:[\\w#/'-]+\\s+){0,3}?(?:[\\w/]+-)?review(?:ers?)?\\b(?!\\s+(?:cycle|skill|receipts?|process|rails?|agents?|bridge|artifacts?|content|models?|gates?)\\b)|\\((?:#\\d+\\s+|PR\\s+#?\\d+\\s+)?\\/?(?:code-|security-|correctness-)?(?:review|simplify)(?:\\s+fix(?:es)?)?(?:,[^)]*)?\\)|\\bround[- ]?\\d+[a-z]?\\b|\\b(?:\\d+(?:st|nd|rd|th)|second|third|fourth|fifth|sixth|final)[- ](?:(?:\\/?code-review|security-review|correctness-review|review|\\/?simplify|run-gates|grader)\\s+)?(?:round|pass)\\b(?!-)|\\breview(?:er)?'s\\b[^,;]{0,30}?\\bgaps?\\b|\\/simplify\\b|\\bsimplify\\s+(?:review|findings?|fix(?:es)?|cleanups?)\\b/i",
@@ -29,14 +30,24 @@
       "regex": "/^(?:Revert\\b|revert(?:\\([^)]*\\))?!?:)/",
       "source": "git log <ref> --since --until (all commits reachable from main, not first-parent)"
     },
+    "incident_label": "/^incident(?::.*)?$/",
+    "weekly_file": "/^(\\d{4}-W\\d{2})\\.json$/",
     "ci_runs": {
+      "workflows": [
+        ".github/workflows/correctness-review.yml",
+        ".github/workflows/security-review.yml",
+        ".github/workflows/grader.yml"
+      ],
       "matching": "workflow runs with event=pull_request, head_branch = PR head branch, created_at in [PR createdAt, PR mergedAt]",
       "runs": "every matched run, any conclusion (latest attempt only, as the runs API lists it)",
       "verdict_runs": "matched runs that concluded success or failure (excludes cancelled-by-concurrency and skipped)",
       "rounds_to_pass_ci": "ci_correctness_runs = correctness-review runs per PR, any conclusion (the definition behind the review-process plan's §0 figure of 2.02); ci_correctness_verdict_runs = verdict_runs only"
     },
     "verdict_comments": {
-      "author": "github-actions only",
+      "author_logins": [
+        "github-actions",
+        "github-actions[bot]"
+      ],
       "kind": {
         "correctness": "/^\\s*(?:<!--\\s*correctness-review\\s*-->\\s*)?##\\s*Correctness review\\b/i",
         "grader": "/^\\s*(?:<!--\\s*grader(?:-verdict)?\\s*-->\\s*)?##\\s*Grader verdict\\b/i",
@@ -46,6 +57,7 @@
         "order": "inline Blocking-defects section, else heading Blocking-defects section (\"none\" = correct, any other content = defects-found), else first token",
         "inline_section": "/\\*\\*Blocking defects:?\\*\\*:?[ \\t]*([^\\n]*)/i",
         "heading_section": "/^#{2,4}[ \\t]*Blocking defects[ \\t]*:?[ \\t]*\\n([\\s\\S]*?)(?=^#{2,4}[ \\t]|(?![\\s\\S]))/im",
+        "section_none": "/^\\W*none\\b/i",
         "token": "/\\b(DEFECTS FOUND|CORRECT)\\b/"
       },
       "grader": "/\\bLOOKS (GOOD|RISKY)\\b/",
@@ -55,14 +67,18 @@
     "conventions": {
       "tier_label": "/^tier:([012])$/",
       "review_rounds": "/^Review-rounds:[ \\t]*(\\d+|cap)[ \\t]*$/im",
-      "reviewed_minutes": "/^Reviewed:[ \\t]*(\\d+(?:\\.\\d+)?)[ \\t]*min\\b/im in a PR comment by MCKRUZ; last one wins",
+      "reviewed_minutes": "/^Reviewed:[ \\t]*(\\d+(?:\\.\\d+)?)[ \\t]*min\\b/im in a PR comment by human_reviewer; last one wins",
       "signoff": "/^Reviewed-by:[ \\t]*@MCKRUZ[ \\t]+([0-9a-f]{7,40})[ \\t]+[—–-]/im",
       "finding_marker": "/^\\s*<!--\\s*rail:(correctness|security|deep-review)\\s+sha=([0-9a-f]{7,40})\\s+anchor=(\\S+)\\s+class=([a-z0-9-]+)\\s+tag=(important|nit|pre-existing)\\s*-->/i on the first comment of an inline review thread",
       "severity_tag": "/^\\s*\\[(Important|Nit|Pre-existing)\\]/i",
       "disposition": "/^Disposition:[ \\t]*(fixed|wrong|intentional|didnt-matter)[ \\t]*(?:—|–|--?)[ \\t]*(\\S.*)$/im in any reply on the finding's thread; last one wins"
     },
     "noise_rate": "(wrong + didnt-matter) / (fixed + wrong + intentional + didnt-matter), over marker-carrying findings",
-    "matt_comments": "issue comments, non-empty review bodies and inline comments authored by MCKRUZ, minus convention lines (Disposition:/Reviewed:/Reviewed-by:). UPPER BOUND: agents post with the same token, so their comments are counted too",
+    "human_reviewer": "MCKRUZ",
+    "matt_comments": {
+      "rule": "issue comments, non-empty review bodies and inline comments authored by human_reviewer, minus those matching convention_comment. UPPER BOUND: agents post with the same token, so their comments are counted too",
+      "convention_comment": "/^\\s*(?:Disposition:|Reviewed:|Reviewed-by:)/i"
+    },
     "no_data": "\"no data\" means the convention that produces the value has not been used in the window. It is never written for a failed API call (the run fails instead) and never for a real zero",
     "percentile": "linear interpolation between closest ranks: rank = p/100 * (n-1) over ascending values (numpy default, Excel PERCENTILE.INC); median = p50",
     "checks": "required = live rules/branches/main and committed .github/rulesets/*.json targeting the default branch; declared = static read of pull_request-triggered workflow job names (matrix expanded) plus literal commit-status contexts; observed = check runs and statuses on the head commit of every PR in the window",

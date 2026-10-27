@@ -103,19 +103,30 @@ fails the run.
 ## Known limits of the instrument
 
 - **Review-fix share depends on how commit subjects are written.** The regex was tuned for precision.
-  From 2026-10-05 (ISO week 41), agents' subjects rarely name the review that prompted a change. Over
-  the same commits on main, the frozen regex matched 11.9% in ISO week 40 and 2.4–7.4% after it. Even
-  the bare word "review" appears only 1–4 times a week. A falling share therefore does not prove that
-  rework fell. Read it next to `rounds_to_pass.ci_correctness_runs`, which counts pushes the reviewer
-  had to look at again, whatever the subjects say.
-- **Control.** The same instrument reproduces the hand-measured figures in the review-process plan (§0)
-  on the 50 PRs merged 2026-10-19 → 2026-10-27:
-  - correctness-review runs per PR: mean 2.04, median 2, p90 3, max 4 (plan: 2.02 / 2 / 3 / 4)
-  - grader comments: 41 LOOKS GOOD, 11 LOOKS RISKY (plan: 41 / 11)
-  - PRs over 1,000 changed lines: 21 (plan: 21)
+  From 2026-10-05 (ISO week 41), commit subjects on main stopped naming reviews. The frozen regex
+  matched 11.9% of main's non-merge commits in ISO week 40 and 2.4–7.4% in each week after it, and
+  even the bare word "review" appears only 1–4 times a week. Subjects alone cannot tell whether rework
+  fell or only stopped being named. Read the share next to `rounds_to_pass.ci_correctness_runs`, which
+  counts pushes the reviewer had to look at again, whatever the subjects say.
+- **Reconciling the earlier 24.7% and ~14%.** On the same 60 days of main's non-merge commits
+  (2026-08-28 → 2026-10-27, 697 commits), the frozen regex matches 19.4% and the plan's broad regex
+  matches 24.2%. The baseline's `review_fix.share` is lower again because it covers a different set:
+  commits of PRs merged in its 30-day window, most of them after the phrasing change.
+- **Control.** The same instrument, run on the 50 PRs merged 2026-10-19 → 2026-10-27, reproduces most
+  of the figures hand-measured in the review-process plan (§0):
 
-  The remaining differences come from the 50-PR set having shifted by about one PR since the plan was
-  written.
+  | Figure | This instrument | Plan §0 |
+  | --- | --- | --- |
+  | correctness-review runs per PR (mean / median / p90 / max) | 2.04 / 2 / 3 / 4 | 2.02 / 2 / 3 / 4 |
+  | grader comments (LOOKS GOOD / LOOKS RISKY) | 41 / 11 | 41 / 11 |
+  | PRs over 1,000 changed lines | 21 | 21 |
+  | correctness comments (CORRECT / DEFECTS FOUND) | 53 / 3 | 55 / 2 |
+  | PRs with a failed correctness run | 4 | 3 |
+
+  The last two rows are **unexplained**. Moving the 50-PR set back by one to six PRs does not reproduce
+  them: it gives 51–52 / 3 and 4 in every case. Possible causes are that the plan matched tokens in
+  comment bodies rather than classifying whole comments, or counted failures differently. The plan
+  does not record its method, so neither can be checked.
 - **Static workflow reading.** `declared` contexts come from a line-based reader of job names and
   inline matrix lists, not a full YAML parser. `observed` comes from real check runs and is the
   authoritative "does anything produce it".

@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { NO_DATA, isRevertSubject } from './lib/review-parsers.mjs';
+import { INCIDENT_LABEL, NO_DATA, WEEKLY_FILE, commitSubject, isRevertSubject } from './lib/review-parsers.mjs';
 import { REVIEWER_WORKFLOWS, aggregate, buildPrRecord } from './lib/pr-records.mjs';
 import { compareChecks, parseWorkflow } from './lib/checks.mjs';
 import { buildDefinitions } from './lib/definitions.mjs';
@@ -24,6 +24,9 @@ import { isoWeek, missingWeeks, previousIsoWeekWindow } from './lib/stats.mjs';
 const DAY = 86400000;
 const MAX_BUFFER = 512 * 1024 * 1024;
 const PR_PAGE_SIZE = 20;
+// The search API and filtered workflow-run listings stop at 1,000 results; reaching that means data is missing.
+const API_RESULT_CAP = 1000;
+const ISSUE_LIMIT = 500;
 
 const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', maxBuffer: MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
 const gh = (args) => run('gh', args);
@@ -55,7 +58,7 @@ export function resolveWindow(options, now = new Date()) {
 
 const PR_QUERY = `query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: ${PR_PAGE_SIZE}, after: $after) {
-    pageInfo { hasNextPage endCursor }
+    issueCount pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number createdAt mergedAt headRefName additions deletions changedFiles body
       labels(first: 20) { nodes { name } }
@@ -70,8 +73,6 @@ const PR_QUERY = `query($q: String!, $after: String) {
 }`;
 
 const login = (node) => node.author?.login ?? 'ghost';
-// GraphQL messageHeadline is cut at ~72 characters with an ellipsis; the subject is the full first line.
-export const commitSubject = (message) => (message ?? '').split(/\r?\n/, 1)[0].trim();
 
 function normalizePr(node, warnings) {
   if (node.comments.totalCount > node.comments.nodes.length) warnings.push(`PR #${node.number}: ${node.comments.totalCount} comments, first 100 counted`);
@@ -101,6 +102,7 @@ function fetchMergedPrs(repo, window, warnings) {
     const args = ['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${query}`];
     if (after) args.push('-f', `after=${after}`);
     const { data } = ghJson(args);
+    if (data.search.issueCount >= API_RESULT_CAP) throw new Error(`${data.search.issueCount} PRs match; search returns at most ${API_RESULT_CAP}. Use a shorter window.`);
     prs.push(...data.search.nodes.map((node) => normalizePr(node, warnings)));
     after = data.search.pageInfo.hasNextPage ? data.search.pageInfo.endCursor : null;
   } while (after);
@@ -109,9 +111,11 @@ function fetchMergedPrs(repo, window, warnings) {
 }
 
 function fetchRuns(repo, workflow, createdSince) {
-  return jsonLines(gh(['api', '-X', 'GET', `repos/${repo}/actions/workflows/${workflow}.yml/runs`,
+  const runs = jsonLines(gh(['api', '-X', 'GET', `repos/${repo}/actions/workflows/${workflow}.yml/runs`,
     '-f', 'event=pull_request', '-f', `created=>=${createdSince.toISOString()}`, '-f', 'per_page=100', '--paginate',
     '--jq', '.workflow_runs[] | {head_branch, event, created_at, conclusion, run_attempt}']));
+  if (runs.length >= API_RESULT_CAP) throw new Error(`${workflow}: ${runs.length} runs listed; the runs API stops at ${API_RESULT_CAP}. Use a shorter window.`);
+  return runs;
 }
 
 function windowEndCommit(ref, until) {
@@ -150,14 +154,16 @@ function liveRequiredContexts(repo) {
 }
 
 function issuesWithLabel(repo, label, state) {
-  return ghJson(['issue', 'list', '--repo', repo, '--label', label, '--state', state, '--limit', '500', '--json', 'number,title,createdAt,state']);
+  const issues = ghJson(['issue', 'list', '--repo', repo, '--label', label, '--state', state, '--limit', String(ISSUE_LIMIT), '--json', 'number,title,createdAt,state']);
+  if (issues.length >= ISSUE_LIMIT) throw new Error(`label ${label}: ${issues.length} issues listed, the limit asked for. Raise ISSUE_LIMIT.`);
+  return issues;
 }
 
 function guardrails(repo, ref, window, labels) {
   const log = git(['log', ref, `--since=${window.since.toISOString()}`, `--until=${window.until.toISOString()}`, '--format=%H%x1f%s']);
   const reverts = log.split('\n').filter(Boolean).map((line) => line.split('\x1f')).filter(([, subject]) => isRevertSubject(subject))
     .map(([sha, subject]) => ({ sha: sha.slice(0, 12), subject }));
-  const incidentLabels = labels.filter((name) => name === 'incident' || name.startsWith('incident:'));
+  const incidentLabels = labels.filter((name) => INCIDENT_LABEL.test(name));
   const inWindow = (issue) => Date.parse(issue.createdAt) >= window.since.getTime() && Date.parse(issue.createdAt) < window.until.getTime();
   const incidents = incidentLabels.length === 0 ? NO_DATA
     : incidentLabels.flatMap((label) => issuesWithLabel(repo, label, 'all')).filter(inWindow).map(({ number, title }) => ({ number, title }));
@@ -176,7 +182,7 @@ const CONVENTION_LABELS = ['tier:0', 'tier:1', 'tier:2', 'rails:breaker', 'incid
 function telemetryHealth(dataDir, label) {
   if (!dataDir) return NO_DATA;
   if (!existsSync(dataDir)) return { weekly_files_seen: 0, missing_weeks_before_this_one: [] };
-  const existing = readdirSync(dataDir).map((file) => /^(\d{4}-W\d{2})\.json$/.exec(file)?.[1]).filter(Boolean);
+  const existing = readdirSync(dataDir).map((file) => WEEKLY_FILE.exec(file)?.[1]).filter(Boolean);
   return { weekly_files_seen: existing.length, missing_weeks_before_this_one: missingWeeks(existing, label) };
 }
 
