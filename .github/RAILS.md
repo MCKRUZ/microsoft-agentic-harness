@@ -16,12 +16,14 @@ them live, and how to prove they actually catch things.
 | **security-review** | `workflows/security-review.yml` | every PR; reviews when the diff contains security-relevant code, touches a gated path, or carries `risk:high` | **Blocks on HIGH** |
 | **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when the diff touches `src/**` | **Blocks on a high-confidence defect** |
 | **grader** | `workflows/grader.yml` | every PR | Advisory comment |
-| **frontend (Presentation.Dashboard, Presentation.WebUI)** | `workflows/ci.yml` | every PR (no path filter) | Fails the run on a test, typecheck or lint failure; not one of the four required checks |
+| **frontend (Presentation.Dashboard, Presentation.WebUI)** | `workflows/ci.yml` | every PR (no path filter) | **Blocks** — both jobs are required checks (live since before 2026-10-27; the committed ruleset JSON caught up that day) |
 | **Documentation Structure Check** | `workflows/docs-links.yml` | PRs and pushes to main touching `documentation/**` | Fails the run on a dead link, stale anchor or sidebar drift; not required |
 | **Dependency Audit** | `workflows/dependency-audit.yml` | PRs and pushes to main touching package manifests, plus a schedule | Fails the run on a vulnerable dependency outside the allowlist; not required |
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
 | **AgentHub container build** | `workflows/agenthub-container.yml` | PRs touching `src/`, `skills/`, `agents/`; nightly | Advisory (not required). PRs build amd64 only unless the Dockerfile changes; nightly builds arm64 too |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
+| **Human-only guard** | `../.claude/hooks/human-only-guard.ps1` | every agent `gh` or GitHub-MCP call | **Denies** the agent applying an `accepted-risk:*` label or posting a commit status / check run by hand. (Tier rules — sign-offs, the tier-0 merge rule, the breaker — arrive with the tier system.) |
+| **Hook tests** | `workflows/hook-tests.yml` | PRs touching `.claude/hooks/**` or `.claude/settings.json` | Fails the run when any `.claude/hooks/tests/*.tests.ps1` suite fails; not required |
 
 > **All four AI rails run on the Claude subscription, not metered API credits.** Every one of
 > them passes `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}` and **no**
@@ -45,8 +47,14 @@ them live, and how to prove they actually catch things.
 > (`.github/scripts/security-gate-scope.sh`), correctness-review from whether `src/**` changed.
 > Expect both on most source PRs; that is the intended trade, not a misconfiguration.
 
-Branch protection (`rulesets/main-branch-protection.json`) makes the four
+Branch protection (`rulesets/main-branch-protection.json`) makes the six
 blocking checks mandatory and requires a non-author approval + code-owner review.
+
+The agent's `gh` is authenticated as Matt, so to GitHub an agent-made decision looks exactly like
+his. The human-only guard is what keeps "an agent's approval never counts as a human's" true for
+everything done through Claude Code. Its limits are stated in its header: it reads the tool
+call's own text (and a `--body-file`), so a determined workaround is possible, and it does not
+gate Matt's own terminal.
 
 ### Running the gates locally, before you push
 
@@ -141,22 +149,28 @@ Several rails emit text that other rails parse: the tier gate reads the PR body,
 counts rounds and dispositions, the circuit breaker reads tier labels. These strings are an
 interface. Change one only together with every reader, in the same PR.
 
+Rows marked **(planned)** belong to the risk-tier system, which is being redesigned: a first version
+(PRs #980/#981, closed unmerged on 2026-10-27) hit the three-round review cap. Two blockers were
+structural: GitHub's Actions token cannot resolve review threads, so "every thread resolved" would
+have meant resolving every finding by hand; and a sign-off bound to the exact head commit is voided
+by the update-to-main that strict required checks force. Nothing reads or writes a planned row yet.
+
 | What | Exact form | Written by | Read by |
 | --- | --- | --- | --- |
-| Risk tier label | exactly one of `tier:0`, `tier:1`, `tier:2` | `tier-gate.yml` (computed from the change, never the author) | telemetry, breaker, `merge-gate.ps1` |
-| Tier gate status | commit status context `tier-gate` on the PR head SHA | `tier-gate.yml`, `tier-signoff.yml` | the checks ruleset |
-| PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` (tier ≥1) | the agent, from `PULL_REQUEST_TEMPLATE.md` | `tier-gate.yml` (tier 1 needs Testing evidence and How to revert non-empty), grader, telemetry |
+| Risk tier label **(planned)** | exactly one of `tier:0`, `tier:1`, `tier:2` (labels exist) | the tier gate, computed from the change, never the author | telemetry |
+| PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` | the agent, from `PULL_REQUEST_TEMPLATE.md` | grader (empty Testing evidence or How to revert = `INSUFFICIENT SPEC`), telemetry |
 | Local review rounds | a line `Review-rounds: <n>` in the PR body (`<n>` = local `/code-review` rounds before the push; `cap` when the 3-round cap was hit) | `pre-push-review` skill | telemetry |
-| Finding marker | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
-| Severity tag | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
-| Disposition | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
-| Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a tier-1 or tier-2 PR | telemetry |
-| Tier-2 sign-off | a PR comment by `MCKRUZ`: `Reviewed-by: @MCKRUZ <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/signoff-guard.ps1` denies any agent tool call that contains it | `tier-signoff.yml` |
-| Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
+| Finding marker **(planned)** | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
+| Severity tag **(planned)** | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
+| Disposition **(planned)** | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
+| Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a PR he read | telemetry |
+| Override approvers | repository variable `RAILS_OVERRIDE_APPROVERS` (comma-separated logins; default: the repository owner) | the repo admin | `override-applied-by-owner.sh` — an `accepted-risk:*` label counts only if its latest `labeled` event is by an approver |
+| Circuit breaker **(planned)** | an **open** issue labelled `rails:breaker` (label exists) | — | — |
 
-Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`, and
-`round-cap` (written when the 3-round cap stops the loop; a `round-cap` receipt never satisfies the
-push gate on its own). A receipt may carry a findings array, one object per finding:
+Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`,
+`round-cap` (written when the 3-round cap stops the loop; while it exists the push gate denies),
+and `round-cap-ack` (Matt's verbatim "push anyway", which releases the cap; the writer refuses an
+empty one). `-Round <n>` records which local round a receipt closes. A receipt may carry a findings array, one object per finding:
 `{"anchor": "<path>:<line>", "class": "<kebab-class>", "tag": "important|nit|pre-existing", "disposition": "fixed|wrong|intentional|didnt-matter"}`.
 
 ## Required status checks
@@ -167,6 +181,27 @@ The ruleset requires exactly these check contexts to be green before merge:
 - `OWASP Agentic Top-10 Gate`
 - `security-review`
 - `correctness-review`
+- `frontend (Presentation.Dashboard)`
+- `frontend (Presentation.WebUI)`
+
+The live ruleset is the authority; `rulesets/main-branch-protection.json` must match it exactly.
+On 2026-10-27 it did not (live required the two frontend jobs and
+`require_extra_approval_for_unattributed_changes`; the JSON had neither), so re-running the apply
+script would have silently dropped two required checks. Check parity before any apply:
+
+```bash
+N='{bypass_actors, rules: [.rules[] | {type, parameters: (.parameters // null)}]}'
+diff <(jq -S "$N" .github/rulesets/main-branch-protection.json) \
+     <(gh api repos/MCKRUZ/microsoft-agentic-harness/rulesets/17747162 | jq -S "$N")
+```
+
+A second live ruleset, `Protection` (id 16093641: deletion + non-fast-forward, `include: []`),
+targets no branch and therefore does nothing. It is not managed here; it is recorded so nobody
+mistakes it for the main-branch protection.
+
+Overrides, both audited on the PR timeline and both Matt's alone (the human-only guard denies the
+agent applying them): `accepted-risk:correctness` and `accepted-risk:security` accept a **known**
+finding. Neither overrides a review that did not finish (a provisional block).
 
 The grader is intentionally **not** required — it advises the human Checker.
 
