@@ -85,14 +85,26 @@ internal static class CompositionRootTestHost
         return (services, configuration);
     }
 
-    private const string DocumentLoadDatabaseKey = "AppConfig:AI:Rag:Documents:LoadLedgerDatabasePath";
+    // Every SQLite database a composition opens on its own, by the setting that names it, and whether that setting is a
+    // file path or a connection string. Not the governance state database: its path must stay inside the application
+    // directory, and it is opened only when durable governance state is turned on.
+    private static readonly (string Key, string File, bool ConnectionString)[] OwnDatabases =
+    [
+        ("AppConfig:AI:Rag:Documents:LoadLedgerDatabasePath", "documents", false),
+        ("AppConfig:AI:Erasure:JournalDatabasePath", "erasure-journal", false),
+        ("AppConfig:AI:Conversations:DatabasePath", "conversations", false),
+        ("AppConfig:AI:Planner:DatabasePath", "planner", false),
+        ("AppConfig:AI:Schedules:DatabasePath", "schedules", false),
+        ("AppConfig:AI:SkillTraining:CheckpointDatabasePath", "skill-training", false),
+        ("AppConfig:AI:PromptUsage:ConnectionString", "prompt-usage", true),
+        ("AppConfig:AI:EvalDashboard:ConnectionString", "eval-dashboard", true),
+    ];
 
     /// <summary>
-    /// Gives each composition its own document load database unless the test chose one. Every composition opens it (the
-    /// ingest handler and the document removal both depend on it), and compositions run in parallel: on one shared file
-    /// their schema creation raced each other and the tests that clear SQLite's connection pools, and failed
-    /// intermittently where main, without that database, did not. Placed under this run's state root, which is removed
-    /// when the run ends.
+    /// Gives each composition its own copy of every SQLite database it opens, unless the test chose one. Compositions run
+    /// in parallel, and on one shared default file two of them creating a schema at once fail with "table ... already
+    /// exists" (#924: the document load ledger, then the conversation database, then the schedules database, each in
+    /// turn). Placed under this run's state root, which is removed when the run ends.
     /// </summary>
     private static IEnumerable<KeyValuePair<string, string?>> WithOwnDocumentLoadDatabase(
         IEnumerable<KeyValuePair<string, string?>> settings)
@@ -100,26 +112,16 @@ internal static class CompositionRootTestHost
         var list = settings.ToList();
         ArgumentException.ThrowIfNullOrWhiteSpace(IsolatedStateRoot.Root, nameof(IsolatedStateRoot.Root));
 
-        // The erasure journal (#907) is opened by every composition too, for the same reason and with the same race. So is
-        // the conversation database: on its shared default file, two compositions creating its schema at once failed with
-        // "table conversation_budgets already exists" (#924).
-        foreach (var (key, file) in new[]
-                 {
-                     (DocumentLoadDatabaseKey, "documents"),
-                     (ErasureJournalDatabaseKey, "erasure-journal"),
-                     (ConversationDatabaseKey, "conversations"),
-                 })
+        foreach (var (key, file, connectionString) in OwnDatabases)
         {
-            if (!list.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
-                list.Add(new(key, Path.Combine(IsolatedStateRoot.Root, $"{file}-{Guid.NewGuid():N}.db")));
+            if (list.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            var path = Path.Combine(IsolatedStateRoot.Root, $"{file}-{Guid.NewGuid():N}.db");
+            list.Add(new(key, connectionString ? $"Data Source={path}" : path));
         }
 
         return list;
     }
-
-    private const string ErasureJournalDatabaseKey = "AppConfig:AI:Erasure:JournalDatabasePath";
-
-    private const string ConversationDatabaseKey = "AppConfig:AI:Conversations:DatabasePath";
 
     /// <summary>
     /// Runs the production <see cref="Infrastructure.AI.Plugins.PluginStartupLoader"/> hosted
