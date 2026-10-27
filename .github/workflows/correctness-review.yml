@@ -90,6 +90,19 @@ jobs:
             echo "No source under src/ changed — correctness review not required."
           fi
 
+          # Depth by risk: a tier-2 change (gated path or >1,000 src lines; see
+          # .github/scripts/tier-rules.mjs) gets a deeper pass, because a missed bug there costs
+          # more than the extra review time. Unclassifiable fails toward the deeper pass.
+          TIER="$(node .github/scripts/tier-rules.mjs --base "origin/$BASE_REF" | sed -n 's/^tier=//p')" || TIER=2
+          if [ "${TIER:-2}" = "2" ]; then
+            echo "max_turns=120" >> "$GITHUB_OUTPUT"
+            echo "depth=deep" >> "$GITHUB_OUTPUT"
+            echo "Tier 2 — deep correctness pass (120 turns)."
+          else
+            echo "max_turns=80" >> "$GITHUB_OUTPUT"
+            echo "depth=standard" >> "$GITHUB_OUTPUT"
+          fi
+
       # Clear any verdict a PR may have COMMITTED into the tree. The verdict must
       # come from this run, not from attacker-supplied content; we write/read it
       # under the runner temp dir (outside the workspace) so a committed
@@ -132,6 +145,9 @@ jobs:
             finding to a line from that file. The diff base is origin/${{ github.base_ref }}.
             Budget your turns: prefer a single `git diff` over many per-file reads, and
             do not re-read a file you have already seen.
+            Review depth: ${{ steps.detect.outputs.depth }}. On "deep" (a tier-2 change: a gated
+            path or more than 1,000 changed lines), also trace each changed public member to its
+            callers and check the rubric's "Always check" classes across the whole diff.
 
             STEP 3 — Replace the verdict, and post findings.
             Overwrite ${{ runner.temp }}/correctness-verdict.txt with your real verdict.
@@ -156,7 +172,7 @@ jobs:
             than an incomplete review that leaves the provisional block in place.
           claude_args: |
             --model opus
-            --max-turns 80
+            --max-turns ${{ steps.detect.outputs.max_turns }}
             --allowedTools Bash,Read,Grep,Glob,Write
 
       # Findings become inline threads tagged [Important]/[Nit]/[Pre-existing], de-duplicated
