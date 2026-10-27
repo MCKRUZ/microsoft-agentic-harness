@@ -120,6 +120,20 @@ to remember.
     to run the reviews again or whether it's ready — that's the decision this skill exists
     to make for you.
 
+## After CI reports: answer every thread
+
+The CI reviewers post each finding as an inline thread tagged `[Important]`, `[Nit]` or
+`[Pre-existing]`, and the merge is blocked until every thread is resolved. A thread whose
+finding a later review no longer reports is resolved automatically as fixed. For each one
+still open:
+
+- **Fix it**, push, and let the next review clear it, or
+- **Reply** `Disposition: <wrong | intentional | didnt-matter> — <reason>` and resolve the
+  thread. An `[Important]` thread may be closed that way only on Matt's word; quote him
+  in the reply.
+
+Batch the fixes for one round into one push: every push re-runs the Opus reviewers.
+
 ## What this does not replace
 
 - The full local test suite still has to be green before push — this skill is about

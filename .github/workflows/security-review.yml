@@ -141,15 +141,48 @@ jobs:
             First line must be EXACTLY "SECURITY_VERDICT: PASS" or "SECURITY_VERDICT: BLOCK".
             On BLOCK, add a second line "reason: <one-line summary>" — never containing
             the word PROVISIONAL, which is reserved for the step-1 fail-safe.
-            Also POST your findings as a PR comment.
+            Also POST your summary as a PR comment, starting with the finding count.
 
-            If you are running low on turns, STOP reviewing and do step 3 with the
+            STEP 4 — Write every finding as a JSON array to
+            ${{ runner.temp }}/security-findings.json (write `[]` when there are none).
+            Each element: {"path": "<repo-relative path>", "line": <a changed line>,
+            "class": "<kebab-case vulnerability class>", "tag": "important" | "nit" |
+            "pre-existing", "title": "<one line>", "body": "<attack path and fix, markdown>"}.
+            HIGH is "important"; MEDIUM and LOW are "nit"; an issue on code this PR did not
+            change is "pre-existing". A later step posts these as inline review threads and
+            de-duplicates them, so report every issue present NOW, including ones already
+            reported: a finding you leave out is treated as fixed and its thread resolved.
+            Do not post inline comments yourself.
+
+            If you are running low on turns, STOP reviewing and do steps 3 and 4 with the
             verdict you have. A completed BLOCK with a real reason is far more useful
             than an incomplete review that leaves the provisional block in place.
           claude_args: |
             --model opus
             --max-turns 80
             --allowedTools Bash,Read,Grep,Glob,Write,Edit
+
+      # See the matching step in correctness-review.yml: inline, tagged, de-duplicated,
+      # self-clearing threads, and never after an incomplete review.
+      - name: Post findings as inline review threads
+        if: steps.detect.outputs.review_required == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT_FILE: ${{ runner.temp }}/security-verdict.txt
+          FINDINGS_FILE: ${{ runner.temp }}/security-findings.json
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$VERDICT_FILE" ] || sed -n '2p' "$VERDICT_FILE" | grep -q PROVISIONAL; then
+            echo "Review did not complete; not posting or resolving any findings."; exit 0
+          fi
+          if [ ! -f "$FINDINGS_FILE" ]; then
+            echo "::warning::The reviewer wrote no findings file; inline threads not updated."; exit 0
+          fi
+          node .github/scripts/post-review-findings.mjs --reviewer security --findings "$FINDINGS_FILE" \
+            --pr "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA"
 
       - name: Enforce verdict (block on HIGH)
         if: steps.detect.outputs.review_required == 'true'

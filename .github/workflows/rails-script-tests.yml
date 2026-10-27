@@ -1,0 +1,31 @@
+name: Rails Script Tests
+
+# Unit tests for the Node scripts the rails run (.github/scripts/*.mjs), e.g. the poster that
+# turns reviewer findings into inline threads. The workflows that call these scripts only show
+# whether a script ran, never whether its rules — no repeated findings, self-clearing threads —
+# still hold, so the tests run on their own whenever a script or test changes.
+#
+# Not a required check, so the path filter is safe.
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/rails-script-tests.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  rails-script-tests:
+    name: rails-script-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      # A glob, not the directory: `node --test <dir>` treats the directory as one test file.
+      - name: Run node:test suites
+        run: node --test ".github/scripts/tests/*.test.mjs"
