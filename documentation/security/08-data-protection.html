@@ -533,10 +533,15 @@
                         <li><strong>On reads</strong> it filters out expired nodes, so stale data simply isn't returned.</li>
                         <li>
                             It emits a <code>MemoryAuditEvent</code> (<code>Remember</code> / <code>Recall</code> /
-                            <code>Forget</code> / <code>Erasure</code>, with <code>ActorId</code>, <code>Timestamp</code>
-                            and <code>ScopeId</code>) to <code>IMemoryAuditSink</code>. The default sink writes it to the
-                            structured log (<code>AppConfig:AI:Rag:GraphRag:AuditSinkProvider</code>, default
-                            <code>structured_logging</code>); it is not one of the hash-chained JSONL governance trails.
+                            <code>Forget</code> / <code>Improve</code> / <code>Erasure</code> / <code>Expiry</code> /
+                            <code>DocumentRemoval</code>, with <code>ActorId</code>, <code>Timestamp</code> and
+                            <code>ScopeId</code>) to <code>IMemoryAuditSink</code>. Retention expiry is recorded as
+                            <code>Expiry</code> and document removal as <code>DocumentRemoval</code>, both with the actor
+                            <code>system</code>. The default sink writes the event to the structured log
+                            (<code>AppConfig:AI:Rag:GraphRag:AuditSinkProvider</code>, default
+                            <code>structured_logging</code>), and only while <code>ComplianceEnabled</code> is on (the
+                            default); with it off, nothing is recorded. It is not one of the hash-chained JSONL governance
+                            trails.
                             Deletions record how many nodes and edges were removed, never their ids: memory node ids
                             embed the owner and the memory key, so a deletion record that listed them would keep what was
                             deleted.
@@ -544,7 +549,9 @@
                     </ul>
                     <p>
                         Retention rules are not hardcoded: they come from <code>IRetentionPolicyProvider</code>, resolved
-                        per tenant and per dataset, so different customers and datasets can carry different lifetimes.
+                        per entity type from <code>AppConfig:AI:Rag:GraphRag:RetentionPolicies</code>
+                        (<code>ConfigRetentionPolicyProvider</code>). A policy has no tenant or dataset, so every customer
+                        on one host shares the same lifetimes.
                     </p>
 
                     <h3 id="retention-periods">Retention periods outside the graph (#901)</h3>
@@ -820,7 +827,9 @@
                         The audit trails (governance, escalation, change, egress and drift) are hash-chained, and the audit
                         archiver moves their finished days into write-once storage (<code>Presentation.AuditArchiver</code>,
                         #416). Removing one person's records from them would break the evidence they exist to provide, so
-                        erasure lists them on the receipt rather than editing them. The basis is GDPR Article 17(3): the
+                        erasure lists the five live trails on the receipt rather than editing them. The archive itself is
+                        built only in the separate archiver host, so it gets no receipt line of its own. The basis is GDPR
+                        Article 17(3): the
                         right to erasure does not apply where processing is necessary for compliance with a legal
                         obligation (point (b)), or for the establishment, exercise or defence of legal claims (point (e)).
                         That basis does not remove storage limitation (Article 5(1)(e)): the archive needs an end date too,
@@ -857,7 +866,8 @@
                             audit files are never deleted; running it is how they get a retention period.
                         </li>
                         <li>
-                            <strong>Reducing what the trails hold</strong> in the first place is tracked in #903.
+                            <strong>What the trails hold</strong> about people is reduced to pseudonymous references
+                            (#903); see <a href="#audit-trail-pseudonyms">what the audit trails record about people</a>.
                         </li>
                     </ul>
                     <p>
@@ -883,8 +893,11 @@
                     <p>
                         "Delete the user's data" is easy to say and hard to do correctly, because an agent's knowledge of
                         a user is scattered across several stores, and some of them cannot be searched for one person at
-                        all. The harness erases everything it can find for the person, lists everything it cannot, and
-                        says plainly whether the person is fully gone.
+                        all. The harness erases everything it can find for the person and lists everything it cannot. The
+                        receipt's verdict says whether anything is kept with no end date. <code>Full</code> does not mean
+                        "fully gone": logs, traces and the response cache can still hold the person's text until they
+                        expire, and the audit trails and business content are kept on purpose (see
+                        <a href="#erasure-receipt">the receipt</a>).
                     </p>
                     <p>
                         <code>PersonalDataErasureCoordinator</code>
@@ -1003,12 +1016,13 @@
                                 those would deny people their own erasure.</li>
                     </ul>
                     <p>
-                        The refusal is recorded in the erasure audit trail. Operator erasure still accepts an application
+                        The refusal is recorded as an erasure audit record (see below for where that is kept). Operator
+                        erasure still accepts an application
                         holding the erasure role, since an automated pipeline for data-subject requests is a legitimate
                         caller there.
                     </p>
 
-                    <div class="callout callout-tip">
+                    <div class="callout callout-tip" id="erasure-receipt">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
                             <div class="callout-title">The receipt says what happened in every store</div>
@@ -1018,19 +1032,26 @@
                                 structured record returned to the caller. It carries:
                             </p>
                             <ul style="margin-bottom: 0">
-                                <li><code>RequestId</code> and <code>ScopeId</code>, and the <code>RequestedAt</code> /
+                                <li><code>RequestId</code> and <code>ScopeId</code> (the person's id, lower-cased and
+                                    trimmed; returned to the caller and never logged), and the <code>RequestedAt</code> /
                                     <code>CompletedAt</code> window.</li>
+                                <li><code>UnmatchedDocumentIds</code>: document ids drawn from the erased graph nodes that
+                                    matched no row in any store.</li>
                                 <li>The knowledge graph's counts: nodes, edges, feedback weights, vector embeddings,
                                     full-text rows and cross-session memories actually removed.</li>
                                 <li>
                                     <code>Stores</code>: one line per store, with a status and, unless it was erased, a
                                     fixed reason. <code>Erased</code> (with the count removed), <code>Failed</code>,
-                                    <code>Skipped</code> (held back because an earlier store failed),
-                                    <code>NotSupported</code> (a configured store that cannot erase), and three for stores
-                                    that cannot be searched for one person: <code>RetainedIndefinitely</code> (nothing
-                                    reliably ages it out, such as log files, traces, the response cache, and stores whose
-                                    retention period can be switched off), <code>RetainedUntilExpiry</code> (its records
-                                    go away on their own, such as a store held only in memory) and
+                                    <code>Skipped</code> (held back: an earlier store failed, or the person's
+                                    conversations or planned tasks started or ran while the erasure was under way, or a
+                                    store was only partly erased), <code>NotSupported</code> (a store configured in this
+                                    host that holds personal data but cannot erase one person's), and three for stores
+                                    that cannot be searched for one person: <code>RetainedUntilExpiry</code> (each record is
+                                    deleted within a period: log files, traces and the response cache by default, and stores
+                                    held only in memory), <code>RetainedIndefinitely</code> (nothing ages it out: one of
+                                    those stores with its retention switched off, or durable escalation state and durable
+                                    change proposals, whose closed records are kept only until a period that can be
+                                    switched off) and
                                     <code>RetainedByObligation</code> (the tamper-evident audit trails, kept on purpose;
                                     the line names the kinds of data each holds, for example tool inputs or the network
                                     addresses a tool reached). One more line is always there:
@@ -1049,17 +1070,76 @@
                                     page said that the stores on the retention gap list made every default receipt
                                     <code>Partial</code>; they could not, because each of them erases by owner and so
                                     appeared as an erasure line. They are now kept by design, with the reason above.
-                                    Reducing what the audit trails record is tracked in #903.
+                                    Turning on durable escalation state or durable change proposals
+                                    (<code>EscalationsEnabled</code>, <code>ChangeProposalsEnabled</code>, both off by
+                                    default) makes every receipt <code>Partial</code>, because those stores keep open
+                                    records with no end date.
                                 </li>
                             </ul>
                         </div>
                     </div>
 
+                    <h3 id="erasure-gaps">What erasure cannot reach</h3>
+                    <p>
+                        Every store declares what it can do with <code>[PersonalDataStore]</code>, and the receipt reports
+                        from those declarations. The stores that cannot erase one person's data, by default:
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Why not</th>
+                                <th>Stores</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Not keyed by person, so one person's records cannot be found</td>
+                                <td>The chat response cache, the log files and structured application logs, execution
+                                    traces, agent delegation records, change proposals and their evidence, durable
+                                    escalation state, and the in-memory learnings store</td>
+                            </tr>
+                            <tr>
+                                <td>Kept on purpose: removing a person would break tamper-evident evidence</td>
+                                <td>The governance, change, drift, egress and escalation audit trails, and the audit
+                                    archive</td>
+                            </tr>
+                            <tr>
+                                <td>Erasure's own record of unfinished work</td>
+                                <td>The erasure journal, which ages out after <code>JournalRetention</code></td>
+                            </tr>
+                            <tr>
+                                <td>Deleted item by item, not by person</td>
+                                <td>Workflow checkpoints and their Markdown copies</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <ul>
+                        <li>
+                            A store a deployer adds that declares <code>[PersonalDataStore]</code> but has no eraser is
+                            listed as <code>NotSupported</code> ("the store configured in this host holds personal data
+                            but cannot erase one person's"), and the receipt is <code>Partial</code>.
+                        </li>
+                        <li>
+                            A cross-session memory backend that cannot delete (a remote one) makes the receipt
+                            <code>Partial</code>, with the reason "cross-session memory purge is not supported by the
+                            configured backend".
+                        </li>
+                        <li>
+                            Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
+                            the audit archive, and the erasure audit records themselves, which sit in the logs.
+                        </li>
+                        <li>
+                            Self-service erasure is limited to 5 requests an hour per person; operator erasure to 30 an
+                            hour.
+                        </li>
+                    </ul>
+
                     <h3>The erasure audit record</h3>
                     <p>
                         Each request writes an <code>Attempted</code> record before anything is deleted and an outcome
-                        after, paired by a correlation id, through the shared audit sink. The record proves the erasure
-                        happened without keeping the identity it erased: it holds who asked (an operator by id; a person
+                        after, paired by a correlation id, through <code>IAuditSink</code>, with the action
+                        <code>right_to_erasure</code>. The record is meant to prove the erasure happened without keeping
+                        the identity it erased: it holds who asked (an operator by id; a person
                         erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
                         and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
                         <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
@@ -1068,6 +1148,22 @@
                         blocks an erasure. Log lines on the erasure path carry neither the person's id nor their
                         conversation or memory ids.
                     </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">By default the record is a log line</div>
+                            <p style="margin: 0">
+                                The only <code>IAuditSink</code> the harness registers is <code>StructuredLogAuditSink</code>,
+                                which writes the record as one Information-level log line. It is not one of the
+                                hash-chained audit trails, it is not archived, and it lasts only as long as the host's log
+                                destination keeps it: file logs are deleted after <code>Logging:Retention:RetainFor</code>,
+                                30 days by default. To keep erasure records as accountability evidence, send logs to a
+                                durable destination with a longer retention, or register a durable <code>IAuditSink</code>.
+                                Export records (<code>subject_access_export</code>) go the same way. Tracked in #969.
+                            </p>
+                        </div>
+                    </div>
 
                     <h3>Deleted text on disk</h3>
                     <p>
@@ -1317,6 +1413,65 @@
                         <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code> to
                         <code>false</code> in appsettings, User Secrets or the environment. What the telemetry may contain
                         is governed by content capture and redaction, not by this switch.
+                    </p>
+
+                    <h2 id="deployer-responsibilities">What the deploying organisation must do</h2>
+                    <p>
+                        The harness supplies mechanisms: an inventory of where personal data is kept, erasure and export
+                        that report honestly on every store, retention periods, pseudonymous audit references and the
+                        startup warnings on this page. It cannot make a deployment lawful. Under the GDPR the deploying
+                        organisation is the controller (or a processor acting for one), and these remain its job:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Lawful basis (Article 6).</strong> Decide and record the basis for each purpose the
+                            agent serves, and for any special-category data it may see (Article 9).
+                        </li>
+                        <li>
+                            <strong>Privacy notice (Articles 13 and 14).</strong> Tell people what the agent keeps, for
+                            how long, who it is shared with, and how to ask for a copy or erasure. The retention periods
+                            and the receipt statuses on this page are the facts to draw on.
+                        </li>
+                        <li>
+                            <strong>Processor agreements (Article 28).</strong> Have a data processing agreement with every
+                            service the deployment sends personal data to: the model provider, Azure AI Content Safety,
+                            Azure Monitor, Azure AI Search, and any database or cache you host elsewhere.
+                        </li>
+                        <li>
+                            <strong>Regions and transfers (Chapter V).</strong> Choose the region of each of those
+                            services, and put transfer safeguards in place where data leaves the EEA. FoundryHost sends
+                            telemetry to the Application Insights resource Foundry supplies unless you turn that off (see
+                            <a href="#foundry-telemetry">telemetry export</a>).
+                        </li>
+                        <li>
+                            <strong>Records of processing (Article 30).</strong> The personal-data inventory (every
+                            <code>[PersonalDataStore]</code> declaration) is a starting point for your record, not the
+                            record itself.
+                        </li>
+                        <li>
+                            <strong>Data protection impact assessment (Article 35).</strong> An AI agent that remembers
+                            people across sessions is likely to need one. Use the
+                            <a href="01-threat-model.html">threat model</a> and this page as inputs.
+                        </li>
+                        <li>
+                            <strong>Security of processing (Article 32).</strong> Encrypt data at rest (see
+                            <a href="#data-at-rest">above</a>), keep authentication bypass off outside Development, turn
+                            on content safety if you need it, and turn on knowledge isolation if more than one tenant
+                            shares the host.
+                        </li>
+                        <li>
+                            <strong>Breaches (Articles 33 and 34).</strong> Have a process to detect, assess and report a
+                            personal-data breach within 72 hours. The audit trails and telemetry help with detection; the
+                            process is yours.
+                        </li>
+                        <li>
+                            <strong>Requests from people (Articles 15 to 22).</strong> Decide who handles access and
+                            erasure requests, set <code>AppConfig:AI:Erasure:OperatorTenantIds</code> so operators can act
+                            for people who cannot use self-service, and keep the receipts.
+                        </li>
+                    </ul>
+                    <p>
+                        This is a checklist, not legal advice. Agree each item with your data protection officer.
                     </p>
 
                     <h2 id="secrets">Secrets management</h2>
