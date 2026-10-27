@@ -551,7 +551,7 @@ You are the team's automated code review assistant. For each pull request:
                     <h2>Things to avoid</h2>
                     <ul>
                         <li><strong>Skipping DI registration</strong> — your code compiles and your tests "pass" in isolation, but the agent never sees the new tool. Run the harness end-to-end before merging.</li>
-                        <li><strong>Bypassing factories</strong> — never construct <code>AIAgent</code>, <code>IChatClient</code>, or <code>AgentExecutionContext</code> directly. Lost content safety, OTel, and config consistency.</li>
+                        <li><strong>Bypassing factories</strong> — never construct <code>AIAgent</code>, <code>IChatClient</code>, or <code>AgentExecutionContext</code> directly. Lost OTel, function-invocation limits, and config consistency. (Content safety is lost only by going around the mediator: it is a pipeline behavior on the request.)</li>
                         <li><strong>Skipping the SKILL.md frontmatter</strong> — without it, the loader can't discover the skill. Validate frontmatter renders correctly with the loader tests.</li>
                         <li><strong>Hardcoding paths or model names</strong> — pull from <code>AppConfig</code> via <code>IOptionsMonitor</code>. Never embed credentials or endpoints.</li>
                     </ul>

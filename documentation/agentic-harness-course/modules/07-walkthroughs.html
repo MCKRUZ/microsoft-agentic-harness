@@ -66,7 +66,7 @@
           <div class="chat-avatar" style="background: var(--color-actor-3)">P</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: var(--color-actor-3)">MediatR Pipeline</span>
-            <p>I am fifteen checkpoints in a row. Every command passes through me before reaching its handler &mdash; exception capture, content safety, tool permissions, governance, prompt-injection, audit, validation, caching, tracing, response sanitization, timeout.</p>
+            <p>I am twenty-two checkpoints in a row. Every command passes through me before reaching its handler &mdash; validation, authorization, caching, tracing, timeout, exception capture, audit, prompt-injection scan, content safety, token budget, response sanitization, and the post-turn memory capture.</p>
           </div>
         </div>
         <div class="chat-message" data-msg="3" data-sender="actor-4" style="display:none">
@@ -159,9 +159,9 @@
       <div class="step-card" style="border-left-color: var(--color-actor-3)">
         <div class="step-num" style="background: var(--color-actor-3)">3</div>
         <div class="step-body">
-          <strong>The MediatR pipeline &mdash; twelve checkpoints</strong>
-          <p><code>Application.AI.Common/DependencyInjection.cs:59&ndash;68</code> + <code>Application.Common/DependencyInjection.cs:63&ndash;67</code></p>
-          <p>Every command is wrapped, outer to inner, in 15 behaviors: <code>UnhandledException</code> &rarr; <code>AgentContextPropagation</code> &rarr; <code>AuditTrail</code> &rarr; <code>ContentSafety</code> &rarr; <code>ToolPermission</code> &rarr; <code>GovernancePolicy</code> &rarr; <code>PromptInjection</code> &rarr; <code>Hook</code> &rarr; <code>RetrievalAudit</code> &rarr; <code>ResponseSanitization</code> &rarr; <code>RequestValidation</code> &rarr; <code>Authorization</code> &rarr; <code>Caching</code> &rarr; <code>RequestTracing</code> &rarr; <code>Timeout</code> &rarr; <strong>Handler</strong>. Three of these (Governance, PromptInjection, ResponseSanitization) were added in Phase 2 of the harness work and now form the security spine alongside ContentSafety.</p>
+          <strong>The MediatR pipeline &mdash; twenty-two checkpoints</strong>
+          <p><code>Application.Common/DependencyInjection.cs:74&ndash;80</code> + <code>Application.AI.Common/DependencyInjection.cs:94&ndash;127</code></p>
+          <p>Every command is wrapped, outer to inner, in 22 behaviors. The six from <code>Application.Common</code> are outermost, because the composition root registers that layer first and MediatR runs behaviors in registration order: <code>RequestValidation</code> &rarr; <code>Authorization</code> &rarr; <code>Idempotency</code> &rarr; <code>Caching</code> &rarr; <code>RequestTracing</code> &rarr; <code>Timeout</code> &rarr; <code>UnhandledException</code> &rarr; <code>AmbientRequestScope</code> &rarr; <code>AgentContextPropagation</code> &rarr; <code>AgentIdentityResolution</code> &rarr; <code>AuditTrail</code> &rarr; <code>PromptInjection</code> &rarr; <code>ContentSafety</code> &rarr; <code>TokenBudget</code> &rarr; <code>Hook</code> &rarr; <code>RetrievalAudit</code> &rarr; <code>ResponseSanitization</code> &rarr; <code>ToolOutputCompression</code> &rarr; <code>KnowledgeExtraction</code> &rarr; <code>WorkEpisodeCapture</code> &rarr; <code>SkillEffectivenessTracking</code> &rarr; <code>PromptUsageTracking</code> &rarr; <strong>Handler</strong>. Most act only on requests that opt in through a marker interface. PromptInjection and ResponseSanitization were added in Phase 2 of the harness work and form the security spine alongside ContentSafety. Tool permission and governance policy are no longer pipeline behaviors: they run on the live tool-call path, inside <code>GovernedAIFunction</code>.</p>
         </div>
       </div>
 

@@ -19,9 +19,11 @@ Plus the custom LLM span processor that enriches traces with agentic context.
 ### Screen 2: Content Safety & Permissions (Flow Animation)
 Flow animation showing a message that triggers content safety:
 1. User sends message → Pipeline starts
-2. ContentSafetyBehavior screens the input → "Flagged: potential prompt injection"
-3. Pipeline halts → Agent never sees the message
+2. ContentSafetyBehavior screens the input → "Blocked: Violence scored at or above BlockAtSeverity" (Azure provider; the default AllowAll provider passes everything)
+3. Pipeline halts → Agent never sees the message; `agent.safety.blocks` is incremented with the category tag
 4. Then a clean message goes through → ContentSafety approves → continues to handler
+
+Prompt injection is not content safety's job: `PromptInjectionBehavior` scans for it just before this step. Content safety scores only the four harm categories (Hate, SelfHarm, Sexual, Violence).
 
 ### Screen 2b: Tool Output Compression (Visual)
 Large tool outputs (file reads, API responses, search results) can flood the context window. The harness includes a **ToolOutputCompressionBehavior** — a MediatR pipeline behavior that automatically compresses oversized tool results before they reach the agent. Compression strategies are selected by content type (structured data, free text, code, etc.) and applied transparently. This prevents context overflow and keeps the agent focused on relevant information rather than drowning in raw output.
@@ -40,34 +42,50 @@ Tie everything together — the harness as a complete system. Then a comprehensi
 ## Code Snippets
 
 ### Snippet 1: ContentSafetyBehavior
+Simplified from `src/Content/Application/Application.AI.Common/MediatRBehaviors/ContentSafetyBehavior.cs`.
 ```csharp
-public class ContentSafetyBehavior<TRequest, TResponse>
-    : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IContentScreenable
+public sealed class ContentSafetyBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
 {
+    // ctor: ITextContentSafetyService, IObservabilityStore, IOptions<AppConfig> (no logger)
+
     public async Task<TResponse> Handle(
         TRequest request, RequestHandlerDelegate<TResponse> next,
         CancellationToken cancellationToken)
     {
-        var content = request.GetContentToScreen();
+        if (request is not IContentScreenable { ScreeningTarget: ContentScreeningTarget.Input or ContentScreeningTarget.Both } screenable)
+            return await next();
 
-        if (!string.IsNullOrWhiteSpace(content))
+        ContentSafetyResult result;
+        try
         {
-            var safetyResult = await _contentSafetyService.ScreenContentAsync(
-                content, cancellationToken);
-
-            if (!safetyResult.IsSafe)
-            {
-                _logger.LogWarning(
-                    "Content safety violation detected: {Categories}",
-                    string.Join(", ", safetyResult.FlaggedCategories));
-
-                ContentSafetyMetrics.Violations.Add(1);
-                throw new ContentSafetyException(safetyResult);
-            }
+            result = await _safetyService.ScreenAsync(screenable.ContentToScreen, cancellationToken);
+        }
+        catch (ContentSafetyUnavailableException)
+        {
+            // Recorded as "unscreened"; refused as a service failure unless BlockWhenUnavailable is false.
+            await RecordAsync(request, SafetyConventions.OutcomeValues.Unscreened, category: null, cancellationToken);
+            if (_config.Value.AI.ContentSafety.BlockWhenUnavailable)
+                throw;
+            return await next();
         }
 
-        return await next();
+        // agent.safety.evaluations (outcome tag) + the session's safety event
+        await RecordAsync(request,
+            result.IsBlocked ? SafetyConventions.OutcomeValues.Block : SafetyConventions.OutcomeValues.Pass,
+            result.Category, cancellationToken);
+
+        if (!result.IsBlocked)
+            return await next();
+
+        // agent.safety.blocks, tagged with phase, filter and category
+        ContentSafetyMetrics.Blocks.Add(1, /* phase and filter tags, then */
+            new KeyValuePair<string, object?>(SafetyConventions.Category, result.Category ?? "unknown"));
+
+        var reason = result.BlockReason ?? "Content blocked by safety policy.";
+        if (ResultHelper.TryCreateFailure<TResponse>(nameof(Result.ContentBlocked), reason, out var blockedResult))
+            return blockedResult;
+        throw new ContentSafetyException(reason, result.Category);
     }
 }
 ```
