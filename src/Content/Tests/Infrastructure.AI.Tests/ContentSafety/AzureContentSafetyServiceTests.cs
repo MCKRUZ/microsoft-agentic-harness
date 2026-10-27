@@ -82,6 +82,20 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
+    public async Task ScreenAsync_ALongTextWithABlankTail_ScreensOnlyTheChunksWithText()
+    {
+        // Only one response is queued: a request for a blank chunk would get the fallback, which scores no category and
+        // is treated as an outage.
+        _handler.Respond(Clean);
+        var text = "hello" + new string(' ', AzureContentSafetyService.MaxChunkLength * 2);
+
+        var result = await Service().ScreenAsync(text, CancellationToken.None);
+
+        result.IsBlocked.Should().BeFalse();
+        _handler.Bodies.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task ScreenAsync_ACategoryExactlyAtTheThreshold_Blocks()
     {
         // The threshold is inclusive: "block at 4" blocks a 4, not only what is above it.

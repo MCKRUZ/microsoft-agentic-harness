@@ -90,7 +90,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             NullLogger<ConversationOrchestrator>.Instance);
     }
 
-    private const string GenericError = "An error occurred processing your request.";
+    // Literal, not RejectedTurnMessage.NotAcceptedMessage: the wording is what the caller sees, so it is pinned here.
+    private const string GenericError = "This message could not be accepted. Check its length and try again.";
 
     /// <summary>Every rejection that happens before the model sees the message.</summary>
     public static TheoryData<Exception> Refusals => new()

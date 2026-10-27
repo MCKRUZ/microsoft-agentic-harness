@@ -619,7 +619,9 @@ public sealed class AgUiRunHandlerTests
 
         var frames = ParseSseFrames(ms);
         RunErrorMessage(frames).Should().Be(
-            refusal is IScreeningRefusal screening ? screening.ClientMessage : "An error occurred during agent execution.",
+            refusal is IScreeningRefusal screening
+                ? screening.ClientMessage
+                : "This message could not be accepted. Check its length and try again.",
             "a screening refusal is reported as one, not as an error");
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
         store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),

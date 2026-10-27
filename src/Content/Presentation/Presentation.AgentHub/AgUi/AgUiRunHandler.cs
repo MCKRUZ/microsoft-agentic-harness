@@ -370,10 +370,9 @@ public sealed class AgUiRunHandler
         {
             // Rejected before the model saw it, so nothing was streamed. The message stored above is removed (#959);
             // see RejectedTurnMessage. Every AG-UI run stores its message, so the removal always applies.
-            _logger.LogWarning("AG-UI run {RunId}: rejected before dispatch ({Rejection}).", input.RunId, ex.GetType().Name);
-            await RejectedTurnMessage.RemoveAsync(_conversationStore, input.ThreadId, callerId, userMsg.Id, _logger, ct);
-            await writer.WriteAsync(
-                new RunErrorEvent(ex is IScreeningRefusal refusal ? refusal.ClientMessage : DispatchErrorMessage), ct);
+            _logger.LogWarning(ex, "AG-UI run {RunId}: rejected before dispatch.", input.RunId);
+            await RejectedTurnMessage.RemoveAsync(_conversationStore, input.ThreadId, callerId, userMsg.Id, _logger);
+            await writer.WriteAsync(new RunErrorEvent(RejectedTurnMessage.ClientMessage(ex)), ct);
             return;
         }
         catch (Exception ex)

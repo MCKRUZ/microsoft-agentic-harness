@@ -42,6 +42,15 @@ public static class RejectedTurnMessage
     public static bool ShouldRemove(Exception rejection, bool storedForThisTurn) =>
         storedForThisTurn || rejection is not ContentSafetyUnavailableException;
 
+    /// <summary>What the caller is told when validation rejects the message.</summary>
+    public const string NotAcceptedMessage = "This message could not be accepted. Check its length and try again.";
+
+    /// <summary>What the caller is told about a rejection. Never contains the rejected text.</summary>
+    /// <param name="rejection">The rejection, as recognised by <see cref="IsRejection"/>.</param>
+    /// <returns>The refusal's own message, or <see cref="NotAcceptedMessage"/> for a validation rejection.</returns>
+    public static string ClientMessage(Exception rejection) =>
+        rejection is IScreeningRefusal refusal ? refusal.ClientMessage : NotAcceptedMessage;
+
     /// <summary>
     /// Removes the message with id <paramref name="messageId"/>. Best effort: a failure is logged as the replay risk it
     /// is, and the caller still reports the rejection.
@@ -51,19 +60,21 @@ public static class RejectedTurnMessage
     /// <param name="callerId">The authenticated caller; the store refuses another owner's conversation.</param>
     /// <param name="messageId">The id the rejected message was stored under.</param>
     /// <param name="logger">Where a failed removal is reported.</param>
-    /// <param name="ct">Cancels the removal; a cancellation of this token propagates.</param>
+    /// <remarks>
+    /// Takes no cancellation token on purpose: the removal is what keeps the message out of the next turn's history, so a
+    /// caller disconnecting after the rejection must not cancel it.
+    /// </remarks>
     public static async Task RemoveAsync(
-        IConversationStore store, string conversationId, string callerId, Guid messageId, ILogger logger,
-        CancellationToken ct)
+        IConversationStore store, string conversationId, string callerId, Guid messageId, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(logger);
 
         try
         {
-            await store.TruncateFromMessageAsync(conversationId, callerId, messageId, ct);
+            await store.TruncateFromMessageAsync(conversationId, callerId, messageId, CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (Exception ex)
         {
             logger.LogError(ex,
                 "Failed to remove the rejected message from conversation {ConversationId}; it will be replayed as history.",
