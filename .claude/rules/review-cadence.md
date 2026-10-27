@@ -4,9 +4,13 @@
 Run these two skills in order:
 
 1. **`/code-review`** — Security and quality check. Catches hardcoded secrets, missing validation, mutation violations, structural issues. Blocks if CRITICAL or HIGH issues found.
-2. **`/review-changes deep`** — Narrative HTML report explaining the *why* behind changes. Generates a self-contained report in `.claude/reviews/`. Open for the user to review.
+2. **An explainer, in the PR body** — under `## Explainer`, at most 200 words written from the diff and the files it touches: what this slice of the code does, what the change does to it, and what would break if it were wrong. Matt reads this instead of the diff on tier-1 PRs, so it must describe the code as it now is, not the session's history. For a tier-2 change he may ask for a fuller HTML explainer in `.claude/reviews/` as well.
 
 Do NOT skip these. Run them even when changes seem straightforward.
+
+(Until 2026-10-27 step 2 was `/review-changes deep`, maintained through a `claude-code-reviewer`
+skill and a `.claude/.session-manifest.json`. Neither skill existed in this repo, the global skill
+set, or any installed plugin, so the step had never run: a documented control nothing invoked.)
 
 ## The review gate enforces this mechanically
 
@@ -51,7 +55,12 @@ The `pre-push-review` skill runs all three in one pass — prefer it over doing 
   server-side regardless of what any local receipt claims.
 - **Emergency bypass:** set `RAILS_SKIP_REVIEW_GATE=1` (auditable; use sparingly).
 - **Tests:** `pwsh -NoProfile -File .claude/hooks/tests/review-scope.tests.ps1` asserts the scoping
-  and re-arm rules against real commits in this repo's history.
+  and re-arm rules against real commits in this repo's history. Every suite under
+  `.claude/hooks/tests/` runs in CI (`.github/workflows/hook-tests.yml`) when a hook changes.
+- **Human-only decisions:** `.claude/hooks/human-only-guard.ps1` denies the agent posting a tier-2
+  `Reviewed-by: @MCKRUZ` sign-off, applying an `accepted-risk:*` label, re-arming the
+  `rails:breaker` issue, or merging any PR not labelled `tier:0`. When one of these is the next
+  step, tell Matt and stop; do not look for another route.
 
 ## After a Full Layer is Complete
 Run this additional skill:
@@ -64,7 +73,4 @@ When `/code-review` finds HIGH issues:
 2. Get approval on fix approach
 3. Apply fixes
 4. Re-run `/code-review` to verify clean build + 0 warnings
-5. Then run `/review-changes` to capture the full story including fixes
-
-## Session Manifest
-The `claude-code-reviewer` skill maintains `.claude/.session-manifest.json` to track intent behind changes. After every `Edit` or `Write` tool call, update the manifest with the change intent. This enables faster, more accurate review generation.
+5. Update the PR body's `## Explainer` if the fixes changed what the code does

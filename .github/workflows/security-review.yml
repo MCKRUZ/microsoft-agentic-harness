@@ -159,6 +159,12 @@ jobs:
           # continue-on-error so this step can classify the failure rather than
           # the job dying with no explanation). error_max_turns lands here too.
           REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
+          # The only way to clear a HIGH finding without a fix: Matt applies this label,
+          # which is audited on the PR timeline (the agent is denied applying it by
+          # .claude/hooks/human-only-guard.ps1). Until 2026-10-27 the error below told
+          # people to "record a named accepted-risk sign-off" while no override existed,
+          # so the admin bypass was the only exit from a false positive.
+          HAS_ACCEPTED_RISK: ${{ contains(github.event.pull_request.labels.*.name, 'accepted-risk:security') }}
         run: |
           set -euo pipefail
           # Every path here fails closed. The point of separating them is DIAGNOSIS:
@@ -188,7 +194,14 @@ jobs:
                   echo "Reviewer step outcome: ${REVIEWER_OUTCOME}. If the step log ends in 'error_max_turns', the diff outgrew the turn budget — raise --max-turns or split the PR."
                   exit 1 ;;
               esac
-              echo "::error::Security review found HIGH severity issue(s). Resolve them or record a named accepted-risk sign-off."
+              # Like correctness-review: the label accepts a KNOWN finding. It never
+              # overrides the provisional block above, which means no review happened.
+              if [ "$HAS_ACCEPTED_RISK" = "true" ]; then
+                echo "::warning::Security review found HIGH severity issue(s), but the 'accepted-risk:security' label records an accepted-risk override (audited in the PR timeline)."
+                echo "Reviewer reason: ${REASON}"
+                exit 0
+              fi
+              echo "::error::Security review found HIGH severity issue(s). Fix them, or — for a false positive or an accepted risk — Matt applies the 'accepted-risk:security' label (audited on the PR timeline) and resolves the finding with a reason."
               echo "Reviewer reason: ${REASON}"
               exit 1 ;;
             "SECURITY_VERDICT: PASS"*)
