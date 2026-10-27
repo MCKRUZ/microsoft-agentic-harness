@@ -2,13 +2,13 @@
 // that a tier-2 approval covers exactly one commit and only counts when the owner wrote it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { missingEvidence, findSignoff, decideStatus } from '../tier-status.mjs';
+import { missingEvidence, findSignoff, decideStatus, signoffLine } from '../tier-status.mjs';
 
 const head = '0123456789abcdef0123456789abcdef01234567';
 const filled = `## Intent\nFix x.\n\n## Testing evidence\n\`dotnet test\` → Passed 40\n\n## Risk\nlow\n\n## How to revert\n\`gh pr revert 12\`\n\n## Explainer\n...\n\nReview-rounds: 1\n`;
 const template = `## Intent\n\n<!-- what -->\n\n## Testing evidence\n\n<!-- paste output -->\n\n## Risk\n\n## How to revert\n\n<!-- command -->\n\nReview-rounds: <!-- n -->\n`;
 const owner = 'MCKRUZ';
-const signoff = (sha = head.slice(0, 7), login = owner) => ({ login, body: `Reviewed-by: @MCKRUZ ${sha} — read the evidence and the deep review` });
+const signoff = (sha = head, login = owner) => ({ login, body: `Reviewed-by: @MCKRUZ ${sha} — read the evidence and the deep review` });
 
 test('a filled-in template has no missing evidence', () => {
   assert.deepEqual(missingEvidence(filled), []);
@@ -58,20 +58,36 @@ test('tier 2 with empty evidence fails even when signed off', () => {
 });
 
 test('an approval covers one commit: a sign-off naming an older commit does not count', () => {
-  assert.equal(findSignoff([signoff('fedcba9')], head, owner), null);
+  assert.equal(findSignoff([signoff('fedcba9876543210fedcba9876543210fedcba98')], head, owner), null);
+});
+
+test('a short commit prefix never counts — a prefix can be ground to carry the approval onto other code', () => {
+  for (const n of [7, 12, 39]) assert.equal(findSignoff([signoff(head.slice(0, n))], head, owner), null, `${n} hex`);
 });
 
 test("only the owner's sign-off counts", () => {
-  assert.equal(findSignoff([signoff(head.slice(0, 7), 'github-actions[bot]')], head, owner), null);
-  assert.equal(findSignoff([signoff(head.slice(0, 7), 'someone-else')], head, owner), null);
+  assert.equal(findSignoff([signoff(head, 'github-actions[bot]')], head, owner), null);
+  assert.equal(findSignoff([signoff(head, 'someone-else')], head, owner), null);
 });
 
 test('a bare sign-off with no sentence about what was read does not count', () => {
-  assert.equal(findSignoff([{ login: owner, body: `Reviewed-by: @MCKRUZ ${head.slice(0, 7)}` }], head, owner), null);
+  assert.equal(findSignoff([{ login: owner, body: `Reviewed-by: @MCKRUZ ${head}` }], head, owner), null);
 });
 
-test('the full sha, and a plain hyphen, are accepted', () => {
+test('a plain hyphen and any login case are accepted', () => {
   assert.ok(findSignoff([{ login: 'mckruz', body: `Reviewed-by: @MCKRUZ ${head} - read it` }], head, owner));
+});
+
+test('when the PR edits the deep review, the gate stops waiting for it but still needs the sign-off', () => {
+  const base = { tier: 2, body: filled, headSha: head, owner, deepReview: null, deepReviewTrusted: false };
+  const waiting = decideStatus({ ...base, comments: [] });
+  assert.equal(waiting.state, 'pending');
+  assert.match(waiting.description, /FULL diff/);
+  assert.equal(decideStatus({ ...base, comments: [signoff()] }).state, 'success');
+});
+
+test('the copy-paste sign-off line names the full commit id', () => {
+  assert.match(signoffLine('MCKRUZ', head.toUpperCase()), new RegExp(`^Reviewed-by: @MCKRUZ ${head} — `));
 });
 
 test('every description fits the 140-character status limit', () => {

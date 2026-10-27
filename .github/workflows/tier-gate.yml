@@ -110,6 +110,14 @@ jobs:
             if [ -n "$OPEN" ]; then TIER=1; REASONS="$REASONS; tier-0 breaker open ($OPEN)"; fi
           fi
           echo "Tier $TIER: $REASONS"
+          # The deep review runs the PR's OWN copy of its workflow and scripts, so a PR that edits
+          # them could post a "completed" review without reviewing. For such a PR the review cannot
+          # vouch for anything: tier-status stops waiting for it and asks for a full-diff read.
+          SELF="$(git diff --name-only "origin/${BASE}...refs/remotes/pr/head" -- \
+            .github/workflows/deep-review.yml .github/scripts/tier-rules.mjs \
+            .github/scripts/post-review-findings.mjs .github/scripts/security-gate-scope.sh)"
+          if [ -n "$SELF" ]; then TRUSTED=false; echo "Deep review untrusted — this PR edits: $SELF"; else TRUSTED=true; fi
+          echo "deep_review_trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
           # The verdict belongs to exactly this commit; tier-status publishes it there and nowhere else.
           echo "sha=$(git rev-parse refs/remotes/pr/head)" >> "$GITHUB_OUTPUT"
           echo "tier=$TIER" >> "$GITHUB_OUTPUT"
@@ -138,4 +146,5 @@ jobs:
           REASONS: ${{ steps.tier.outputs.reasons }}
           OWNER: ${{ github.repository_owner }}
           SHA: ${{ steps.tier.outputs.sha }}
-        run: node .github/scripts/tier-status.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" --sha "$SHA" --tier "$TIER" --reasons "$REASONS" --owner "$OWNER"
+          TRUSTED: ${{ steps.tier.outputs.deep_review_trusted }}
+        run: node .github/scripts/tier-status.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" --sha "$SHA" --tier "$TIER" --reasons "$REASONS" --owner "$OWNER" --deep-review-trusted "$TRUSTED"

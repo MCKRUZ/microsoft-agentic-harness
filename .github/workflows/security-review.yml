@@ -28,6 +28,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # Read the PR's label history: an override counts only if the owner applied it.
+  issues: read
 
 concurrency:
   group: security-review-${{ github.event.pull_request.number }}
@@ -184,6 +186,16 @@ jobs:
           node .github/scripts/post-review-findings.mjs --reviewer security --findings "$FINDINGS_FILE" \
             --pr "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA"
 
+      # The override counts only when the repository owner applied it (latest `labeled` event).
+      - name: Verify who applied the override
+        id: override
+        if: steps.detect.outputs.review_required == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+        run: bash .github/scripts/override-applied-by-owner.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" accepted-risk:security "$OWNER"
+
       - name: Enforce verdict (block on HIGH)
         if: steps.detect.outputs.review_required == 'true'
         env:
@@ -196,8 +208,9 @@ jobs:
           # which is audited on the PR timeline (the agent is denied applying it by
           # .claude/hooks/human-only-guard.ps1). Until 2026-10-27 the error below told
           # people to "record a named accepted-risk sign-off" while no override existed,
-          # so the admin bypass was the only exit from a false positive.
-          HAS_ACCEPTED_RISK: ${{ contains(github.event.pull_request.labels.*.name, 'accepted-risk:security') }}
+          # so the admin bypass was the only exit from a false positive. Presence alone is not
+          # enough: the previous step checks the owner applied it.
+          HAS_ACCEPTED_RISK: ${{ steps.override.outputs.accepted == 'true' }}
         run: |
           set -euo pipefail
           # Every path here fails closed. The point of separating them is DIAGNOSIS:

@@ -159,7 +159,7 @@ interface. Change one only together with every reader, in the same PR.
 | Severity tag | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
 | Disposition | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
 | Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a tier-1 or tier-2 PR | telemetry |
-| Tier-2 sign-off | a PR comment by the repository owner: `Reviewed-by: @<owner> <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/human-only-guard.ps1` denies any agent tool call that contains it | `tier-gate.yml` via `tier-status.mjs` |
+| Tier-2 sign-off | a PR comment by the repository owner: `Reviewed-by: @<owner> <full 40-hex head commit id> — <one sentence on what was read>` (a short prefix could be ground to carry the approval onto other code; the gate posts a copy-paste line) | **Matt only** — `.claude/hooks/human-only-guard.ps1` denies any agent tool call that contains it | `tier-gate.yml` via `tier-status.mjs` |
 | Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
 
 Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`,
@@ -178,7 +178,7 @@ sets the tier, not the author**. On this solo repo the "people" column becomes M
 | --- | --- | --- |
 | **0** | Plain documentation; test files that only **add** lines | Green checks. The agent merges it (`gh pr merge --admin`); Matt does not read it |
 | **1** | Every other change | Matt reads the PR body's evidence block (Testing evidence, Risk, How to revert, Explainer) and merges |
-| **2** | `.github/**`, `.claude/settings.json`, `.claude/hooks/**`, `scripts/rails/**`, `**/Auth/**`, `**/Identity/**`, `**/Security/**`, `**/Migrations/**`, `infra/**`; anything the security gate wants reviewed; more than 1,000 changed lines under `src/` | A second, independent model review (`deep-review`) runs; Matt reads it and the evidence, then posts `Reviewed-by: @<owner> <head-sha> — <what he read>`. A new push needs a new sign-off |
+| **2** | `.github/**`, `.claude/settings.json`, `.claude/hooks/**`, `scripts/rails/**`, `**/Auth/**`, `**/Identity/**`, `**/Security/**`, `**/Migrations/**`, `infra/**`; anything the security gate wants reviewed; more than 1,000 changed lines under `src/` | A second, independent model review (`deep-review`) runs; Matt reads it and the evidence, then posts `Reviewed-by: @<owner> <full head commit id> — <what he read>` (the gate posts the exact line to copy). A new push needs a new sign-off. If the PR edits the deep review itself, that review cannot vouch for anything, so the gate stops waiting for it and the sign-off must cover the full diff |
 
 `.github/scripts/tier-rules.mjs` is the single definition (unit-tested; keep its gated paths in
 step with `CODEOWNERS`). It only ever raises a tier and never reads the PR description.

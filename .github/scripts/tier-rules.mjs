@@ -46,7 +46,8 @@ const DOC_EXTENSIONS = ['.md', '.html', '.png', '.jpg', '.jpeg', '.gif', '.webp'
 const EXECUTABLE_HTML = /<script|javascript:|\son[a-z]+\s*=/i;
 // A brand-new test file is additive; these constructs run without being a test, or change how
 // every other test behaves, so a file that adds one is not.
-const TEST_SIDE_EFFECTS = /\[\s*(?:assembly\s*:|ModuleInitializer)/;
+// Matched anywhere, so `[System.Runtime.CompilerServices.ModuleInitializer]` counts as well.
+const TEST_SIDE_EFFECTS = /\[\s*assembly\s*:|ModuleInitializer/;
 
 function segments(path) {
   return path.split('/');
@@ -99,20 +100,28 @@ export function classify(files, { securityRequired = false, addedText = () => ''
   return { tier: 0, reasons: [files.length ? 'plain docs and new tests only' : 'no changed files'] };
 }
 
-/** Parses `git diff --name-status` and `git diff --numstat` (both with -M) into file records. */
-export function parseDiff(nameStatus, numstat) {
+/**
+ * Parses NUL-separated `git diff -z --no-renames --name-status` and `--numstat` output into file
+ * records. -z matters: without it git C-quotes any path with non-ASCII or special characters
+ * (`"src/Content/Auth/\303\244.cs"`), and the leading quote made such a path miss every gated
+ * prefix, so a tier-2 change dropped to tier 1.
+ */
+export function parseDiff(nameStatusZ, numstatZ) {
   const counts = new Map();
-  for (const line of numstat.split('\n').filter(Boolean)) {
-    const [a, d, ...rest] = line.split('\t');
-    const path = rest.at(-1);
+  for (const rec of numstatZ.split('\0').filter(Boolean)) {
+    const [a, d, ...rest] = rec.replace(/^\n/, '').split('\t');
+    const path = rest.join('\t');
     counts.set(path, { added: a === '-' ? 0 : Number(a), deleted: d === '-' ? 0 : Number(d) });
   }
-  return nameStatus.split('\n').filter(Boolean).map((line) => {
-    const parts = line.split('\t');
-    const status = parts[0][0];
-    const path = parts.at(-1);
-    return { path, status, ...(counts.get(path) ?? { added: 0, deleted: 0 }) };
-  });
+  const fields = nameStatusZ.split('\0');
+  const files = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const status = fields[i].replace(/^\n/, '')[0];
+    const path = fields[i + 1];
+    if (!status || !path) continue;
+    files.push({ path, status, ...(counts.get(path) ?? { added: 0, deleted: 0 }) });
+  }
+  return files;
 }
 
 function git(args) {
@@ -124,10 +133,10 @@ function main(argv) {
   for (let i = 0; i < argv.length; i += 2) opts[argv[i].replace(/^--/, '')] = argv[i + 1];
   if (!opts.base) throw new Error('missing --base');
   const range = `${opts.base}...${opts.head}`;
-  // numstat with -M prints renames as "old => new" or "{a => b}/c"; --no-renames avoids that.
+  // --no-renames: numstat would otherwise print "old => new". -z: no C-quoting of odd paths.
   const files = parseDiff(
-    git(['diff', '--no-renames', '--name-status', range]),
-    git(['diff', '--no-renames', '--numstat', range]),
+    git(['diff', '-z', '--no-renames', '--name-status', range]),
+    git(['diff', '-z', '--no-renames', '--numstat', range]),
   );
   const addedText = (path) => git(['diff', '--no-renames', range, '--', path])
     .split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).join('\n');

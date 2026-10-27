@@ -35,15 +35,24 @@ export function missingEvidence(body) {
   });
 }
 
-/** The owner's sign-off comment for this head commit, or null. Only the owner's comments count. */
+/**
+ * The owner's sign-off comment for this head commit, or null. Only the owner's comments count,
+ * and only the FULL 40-hex commit id: a short prefix can be ground (a 7-hex prefix is ~2^28
+ * SHA-1 attempts, minutes) to carry an approval onto code nobody read.
+ */
 export function findSignoff(comments, headSha, owner) {
-  const re = new RegExp(`Reviewed-by:\\s*@${owner}\\s+([0-9a-f]{7,40})\\s+[—-]+\\s*\\S`, 'i');
+  const re = new RegExp(`Reviewed-by:\\s*@${owner}\\s+([0-9a-f]{40})(?![0-9a-f])\\s+[—-]+\\s*\\S`, 'i');
   for (const c of comments) {
     if ((c.login ?? '').toLowerCase() !== owner.toLowerCase()) continue;
     const m = re.exec(c.body ?? '');
-    if (m && headSha.toLowerCase().startsWith(m[1].toLowerCase())) return c;
+    if (m && m[1].toLowerCase() === headSha.toLowerCase()) return c;
   }
   return null;
+}
+
+/** The exact line the owner pastes to sign off this commit. */
+export function signoffLine(owner, headSha) {
+  return `Reviewed-by: @${owner} ${headSha.toLowerCase()} — <one sentence on what you read>`;
 }
 
 /**
@@ -57,22 +66,32 @@ export function hasDeepReviewSummary(comments, headSha) {
   return comments.some((c) => c.login === 'github-actions[bot]' && (c.body ?? '').toLowerCase().includes(marker));
 }
 
-/** Pure decision: { state: success|failure|pending, description }. Descriptions stay ≤140 chars. */
-export function decideStatus({ tier, body, comments, headSha, owner, deepReview }) {
+/**
+ * Pure decision: { state: success|failure|pending, description, awaitingSignoff }. Descriptions
+ * stay ≤140 chars.
+ *
+ * deepReviewTrusted is false when the PR edits the deep review itself (its workflow or the
+ * scripts it runs). That review runs the PR's own copy, so its completion proves nothing; the
+ * gate then stops waiting for it and the owner's sign-off must cover a read of the full diff.
+ */
+export function decideStatus({ tier, body, comments, headSha, owner, deepReview, deepReviewTrusted = true }) {
   const short = headSha.slice(0, 7);
-  if (tier === 0) return { state: 'success', description: 'Tier 0: plain docs / additive tests. Merges on green.' };
+  if (tier === 0) return { state: 'success', description: 'Tier 0: plain docs / new tests. Merges on green.' };
   const missing = missingEvidence(body);
   if (missing.length) return { state: 'failure', description: `Tier ${tier}: fill in the PR body section(s): ${missing.join(', ')}.` };
   if (tier === 1) return { state: 'success', description: 'Tier 1: evidence present. Matt reads it and merges.' };
-  if (deepReview !== 'success') {
-    const why = deepReview ? `deep review is ${deepReview}` : 'deep review has not finished';
-    return { state: 'pending', description: `Tier 2: ${why} on ${short}.` };
-  }
-  if (!hasDeepReviewSummary(comments, headSha)) {
-    return { state: 'pending', description: `Tier 2: no deep-review summary for ${short} (draft, or the review did not run). Re-run Deep Review.` };
+  if (deepReviewTrusted) {
+    if (deepReview !== 'success') {
+      const why = deepReview ? `deep review is ${deepReview}` : 'deep review has not finished';
+      return { state: 'pending', description: `Tier 2: ${why} on ${short}.` };
+    }
+    if (!hasDeepReviewSummary(comments, headSha)) {
+      return { state: 'pending', description: `Tier 2: no deep-review summary for ${short} (draft, or the review did not run). Re-run Deep Review.` };
+    }
   }
   if (!findSignoff(comments, headSha, owner)) {
-    return { state: 'pending', description: `Tier 2: awaiting "Reviewed-by: @${owner} ${short} — ..." from ${owner}.` };
+    const read = deepReviewTrusted ? 'read the deep review + evidence' : 'PR edits the deep review: read the FULL diff';
+    return { state: 'pending', awaitingSignoff: true, description: `Tier 2: ${read}, then sign off on the full commit id (see PR comment).` };
   }
   return { state: 'success', description: `Tier 2: signed off by ${owner} at ${short}.` };
 }
@@ -88,6 +107,32 @@ function deepReviewConclusion(repo, sha) {
   if (!runs.length) return null;
   const latest = runs.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))[0];
   return latest.status === 'completed' ? latest.conclusion : latest.status;
+}
+
+const HINT_MARKER = '<!-- rail:tier-gate-signoff -->';
+
+/** One bot comment, kept current, carrying the exact line the owner pastes to sign off. */
+function upsertSignoffHint(repo, pr, owner, headSha, deepReviewTrusted) {
+  const what = deepReviewTrusted
+    ? 'the deep review summary, its inline findings, and the evidence block'
+    : 'the **full diff** — this PR edits the deep review itself, so its result cannot vouch for anything';
+  const body = [
+    HINT_MARKER,
+    `**Tier 2 — awaiting @${owner}'s sign-off on \`${headSha.slice(0, 7)}\`.** Read ${what}, then post this comment yourself (the agent is not allowed to):`,
+    '',
+    '```',
+    signoffLine(owner, headSha),
+    '```',
+    '',
+    'It must name the full commit id. A new push needs a new sign-off.',
+  ].join('\n');
+  const existing = JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments?per_page=100`])).flat()
+    .find((c) => c.user?.login === 'github-actions[bot]' && (c.body ?? '').startsWith(HINT_MARKER));
+  if (existing) {
+    if (existing.body !== body) gh(['api', '--method', 'PATCH', `repos/${repo}/issues/comments/${existing.id}`, '-f', `body=${body}`]);
+  } else {
+    gh(['api', '--method', 'POST', `repos/${repo}/issues/${pr}/comments`, '-f', `body=${body}`]);
+  }
 }
 
 function main(argv) {
@@ -111,7 +156,9 @@ function main(argv) {
       .map((c) => ({ login: c.user?.login, body: c.body }))
     : [];
   const deepReview = tier === 2 ? deepReviewConclusion(o.repo, headSha) : null;
-  const decision = decideStatus({ tier, body: pr.body, comments, headSha, owner: o.owner, deepReview });
+  const deepReviewTrusted = o['deep-review-trusted'] !== 'false';
+  const decision = decideStatus({ tier, body: pr.body, comments, headSha, owner: o.owner, deepReview, deepReviewTrusted });
+  if (decision.awaitingSignoff) upsertSignoffHint(o.repo, o.pr, o.owner, headSha, deepReviewTrusted);
 
   const runUrl = process.env.GITHUB_SERVER_URL && process.env.GITHUB_RUN_ID
     ? `${process.env.GITHUB_SERVER_URL}/${o.repo}/actions/runs/${process.env.GITHUB_RUN_ID}` : undefined;

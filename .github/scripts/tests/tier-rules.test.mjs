@@ -100,11 +100,21 @@ test('reasons say why, for the PR comment', () => {
   assert.match(reasons[0], /gated path: \.github\/workflows\/ci\.yml/);
 });
 
-test('git diff output parses, including binary files and adds', () => {
-  const files = parseDiff('M\tsrc/A.cs\nA\tdocs/x.png\nD\tREADME.md\n', '3\t1\tsrc/A.cs\n-\t-\tdocs/x.png\n0\t9\tREADME.md\n');
+test('git diff -z output parses, including binary files and adds', () => {
+  const files = parseDiff('M\0src/A.cs\0A\0docs/x.png\0D\0README.md\0', '3\t1\tsrc/A.cs\0-\t-\tdocs/x.png\0' + '0\t9\tREADME.md\0');
   assert.deepEqual(files, [
     { path: 'src/A.cs', status: 'M', added: 3, deleted: 1 },
     { path: 'docs/x.png', status: 'A', added: 0, deleted: 0 },
     { path: 'README.md', status: 'D', added: 0, deleted: 9 },
   ]);
+});
+
+test('a path with non-ASCII characters is still gated (no C-quoting under -z)', () => {
+  const files = parseDiff('M\0src/Content/Auth/Ünïcode.cs\0', '2\t0\tsrc/Content/Auth/Ünïcode.cs\0');
+  assert.equal(classify(files).tier, 2);
+});
+
+test('a fully qualified module initializer in a new test file is caught too', () => {
+  const p = 'src/Content/Tests/App.Tests/Init.cs';
+  assert.equal(tierOf([file(p, { status: 'A', deleted: 0 })], added({ [p]: '+[System.Runtime.CompilerServices.ModuleInitializer]' })), 1);
 });
