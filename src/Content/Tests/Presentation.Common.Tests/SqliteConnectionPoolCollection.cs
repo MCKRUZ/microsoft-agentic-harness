@@ -8,11 +8,12 @@ namespace Presentation.Common.Tests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <c>ClearAllPools</c> closes every pooled SQLite connection in the process, not only the caller's, and xUnit runs test
-/// classes in parallel. Closing the last connection to a database checkpoints its write-ahead log and deletes the
-/// <c>-wal</c> file, so a sibling's clean-up could remove the file <c>ErasureReachesEveryStoreEndToEndTests</c> scans
-/// for erased bytes, between its erase and its scan. The end-to-end classes here also share the process-wide in-memory
-/// keyword index, which is the other interference #924 records.
+/// <c>ClearAllPools</c> closes every idle pooled SQLite connection in the process, not only the caller's, and xUnit runs
+/// test classes in parallel. The end-to-end classes here rely on idle pooled connections staying open:
+/// <c>ErasureReachesEveryStoreEndToEndTests</c> scans each database's write-ahead log after an erasure, and closing the
+/// last connection to a database checkpoints that log and deletes the <c>-wal</c> file between the erase and the scan.
+/// The process-wide in-memory keyword index they share is dropped the same way when its last connection closes, the
+/// other interference #924 records. The classes that clear the pools are, almost all, these same end-to-end classes.
 /// </para>
 /// <para>
 /// A <c>DisableParallelization</c> collection runs after the parallel ones, one test at a time, so nothing else is
