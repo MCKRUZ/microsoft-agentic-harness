@@ -1,0 +1,21 @@
+# TryGetContentArray requires EVERY content element to be a typed block, so one malformed element exempts the whole array from sanitize/redact/bound
+id: INC-28
+kind: incident
+pr: 555
+base_sha: 6c8d06323790644798c6d70d42695431abac382e
+head_sha_before_fix: fdf14a3e11d7ae56b3b0afd781c2e5daa8d4de8c
+fix_sha: f353e608c4e72963d3a8fe43a2e219a306670e98
+expected:
+  path: src/Content/Application/Application.AI.Common/Services/Governance/ToolResultText.cs
+  line: 402
+  class: narrowed-check-false-negative
+caught_by: local
+scope: security
+valid_until: null
+notes: >-
+  CLAUDE.md cites #488, but that is the issue; PR #555 implements the fix. In the loop at lines 397-405,
+  any element that is not an object with a string "type" hits `return false;` (line 402). A hostile MCP
+  server can append one malformed element to keep an injection-bearing text block next to it from
+  being scrubbed. The fix commit switches to require-any (Any(IsContentBlock)). Caught by the second
+  local /code-review + security-reviewer round (zero check-runs on this commit; CI ran only on final
+  head f48bb1ab). This is a security-class defect, outside the correctness rubric's scope.

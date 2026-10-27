@@ -1,0 +1,24 @@
+# ContentFilterLocalLogRedactor takes an ILogger<T> ctor dependency while being built inside the ILoggerFactory replacement factory: infinite re-entrance
+id: INC-25
+kind: incident
+pr: 499
+base_sha: f78c19efe364b92d33187d4e742dde145860fc6a
+head_sha_before_fix: 02dcb9661fb2dd96b62b4204c3b54eeff34cdba1
+fix_sha: 329fbae729989a5914c6ea6b9d6a49b28987cc80
+expected:
+  path: src/Content/Infrastructure/Infrastructure.Observability/Logging/ContentFilterLocalLogRedactor.cs
+  line: 48
+  class: di-factory-cycle
+caught_by: local
+scope: correctness
+valid_until: null
+notes: >-
+  At 02dcb966 the new ContentFilterLocalLogRedactor (registered as the ILocalLogRedactor singleton) takes
+  `ILogger<ContentFilterLocalLogRedactor> logger` (line 48; field at 42), and it is resolved via
+  `sp.GetService<ILocalLogRedactor>()` inside IServiceCollectionExtensions.WrapWithLocalLogRedaction's
+  ILoggerFactory replacement delegate (Application.Common/Extensions/IServiceCollectionExtensions.cs:108-119),
+  so resolving the logger re-enters the factory forever and every host hangs. Fix 329fbae7 drops the ctor
+  parameter and uses `NullLogger<ContentFilterLocalLogRedactor>.Instance`. The defect was pushed in
+  494c7ae2 and 02dcb966. It was caught by an independent local security-review pass before the PR was opened
+  (fix committed 22:46Z, PR created 22:53Z); CI never saw the defective head. The CLAUDE.md entry cites
+  issue #457; the PR is #499.

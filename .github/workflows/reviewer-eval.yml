@@ -1,0 +1,387 @@
+name: Reviewer Eval
+
+# Incidents are the reviewer's eval. Every defect the correctness reviewer has missed or caught, once
+# pinned to real commits, becomes a case: check out the commit where the defect existed, run the
+# reviewer exactly as correctness-review.yml does, and record whether a finding lands on the file the
+# defect lives in. Known-clean PRs ride along and count false alarms. A change to the reviewer's
+# prompt, rubric or workflow is then scored against the same cases instead of shipping unmeasured.
+#
+# Cases live in .github/reviewer-eval/cases/, one YAML file each:
+#   id                  INC-NN (an entry in the Incident Ledger, onboarding chapter 19) or CLEAN-<pr>
+#   kind                incident | clean
+#   pr, base_sha        the PR and its base commit
+#   head_sha_before_fix the commit where the defect existed (for a clean case: the reviewed head)
+#   fix_sha             the commit that fixed it (null for clean)
+#   expected            {path, line, class}: where the defect lives (null for clean)
+#   caught_by           who caught it originally (local | ci-correctness | ci-security | second-pass | user | unknown)
+#   scope               correctness | security — which rubric the defect class belongs to. Security-class
+#                       cases still run here (a better correctness reviewer may catch them) but recall is
+#                       also reported for correctness scope alone.
+#   valid_until         null, or the date after which the code has moved so far the case no longer applies
+#   notes               how the SHAs were verified, and what else a scorer should count as a hit
+#
+# Deliberate differences from correctness-review.yml, each forced by replaying history:
+#   - The base is a SHA from the case, not origin/<base_ref>. diff-anchors.sh takes its merge-base.
+#   - The CURRENT rubric, diff-anchors.sh, CLAUDE.md and .claude/ are copied over the historical tree,
+#     so a rubric PR is scored with its own rubric rather than whatever existed at the old commit.
+#   - Findings go to a JSON file under the runner temp dir instead of a PR comment, and the token is
+#     read-only: the reviewer must not comment on the PR under evaluation or on the historical PRs.
+#   - The historical commit is fetched with its ancestors only, without credentials left behind, so
+#     the later fix commit is not in the clone. The case file (the answer key) is never on disk while
+#     the reviewer runs; its fields travel as step outputs.
+#
+# Cost: each case is one Opus run on the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN — never
+# anthropic_api_key; see .github/RAILS.md for why). max-parallel 2 keeps the burst small. The turn
+# cap matches correctness-review.yml's, because a lower one would turn large-diff cases into
+# incompletes and measure the budget instead of the rubric.
+#
+# NOT a required check, so the path filter on pull_request is safe here (RAILS.md, "Required status
+# checks", explains why a required check must never carry one).
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # Mondays 04:23 UTC — the baseline later rubric PRs are compared against
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/*-rubric.md'
+      - '.github/workflows/correctness-review.yml'
+      - '.github/workflows/security-review.yml'
+      - '.github/reviewer-eval/**'
+      - '.github/workflows/reviewer-eval.yml'
+
+# Only summarize gets actions: read. Every case result carries its answer key (expected.path), so a
+# reviewer that could list and download artifacts could read the next case's answer.
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewer-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cases:
+    name: List cases
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.list.outputs.files }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/reviewer-eval
+      - id: list
+        run: |
+          set -euo pipefail
+          files="$(ls .github/reviewer-eval/cases/*.yaml | xargs -n1 basename | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          echo "files=${files}" >> "$GITHUB_OUTPUT"
+          echo "Cases: ${files}"
+
+  replay:
+    name: Replay ${{ matrix.case }}
+    needs: cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case: ${{ fromJSON(needs.cases.outputs.files) }}
+    steps:
+      # 1. The tools under evaluation, from THIS ref, kept outside the workspace.
+      - name: Checkout the current rubric and tools
+        uses: actions/checkout@v7
+        with:
+          path: .eval-current
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            .claude
+            scripts/rails
+            CLAUDE.md
+          sparse-checkout-cone-mode: false
+
+      - name: Read the case and stash the current tools
+        id: case
+        env:
+          CASE_FILE: .eval-current/.github/reviewer-eval/cases/${{ matrix.case }}
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo "::error::yq is not on this runner image; the case cannot be parsed."; exit 1; }
+          for key in id kind pr base_sha head_sha_before_fix scope caught_by valid_until; do
+            echo "${key}=$(yq -r ".${key}" "$CASE_FILE")" >> "$GITHUB_OUTPUT"
+          done
+          echo "expected_path=$(yq -r '.expected.path // ""' "$CASE_FILE")" >> "$GITHUB_OUTPUT"
+          echo "expected_line=$(yq -r '.expected.line // ""' "$CASE_FILE")" >> "$GITHUB_OUTPUT"
+          echo "expected_class=$(yq -r '.expected.class // ""' "$CASE_FILE")" >> "$GITHUB_OUTPUT"
+          head="$(yq -r '.head_sha_before_fix' "$CASE_FILE")"; base="$(yq -r '.base_sha' "$CASE_FILE")"
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::case SHAs must be 40-hex"; exit 1; }
+          # A case past its valid_until reviews code the rubric no longer describes: skip it, score nothing.
+          valid_until="$(yq -r '.valid_until // ""' "$CASE_FILE")"
+          if [ -n "$valid_until" ] && [ "$valid_until" != null ] && [[ ! "$valid_until" > "$(date -u +%F)" ]]; then
+            echo "expired=true" >> "$GITHUB_OUTPUT"; echo "::notice::Case expired on $valid_until; not replayed."
+          else
+            echo "expired=false" >> "$GITHUB_OUTPUT"
+          fi
+          mkdir -p "$RUNNER_TEMP/current/.github" "$RUNNER_TEMP/current/scripts/rails"
+          cp .eval-current/.github/correctness-review-rubric.md "$RUNNER_TEMP/current/.github/"
+          cp .eval-current/scripts/rails/diff-anchors.sh "$RUNNER_TEMP/current/scripts/rails/"
+          cp .eval-current/CLAUDE.md "$RUNNER_TEMP/current/"
+          cp -R .eval-current/.claude "$RUNNER_TEMP/current/.claude"
+          rm -rf .eval-current
+
+      # 2. The historical commit, with its ancestors and the base's, and nothing newer.
+      - name: Checkout the commit where the defect existed
+        if: steps.case.outputs.expired != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.case.outputs.head_sha_before_fix }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch history, overlay the current tools, compute anchors
+        if: steps.case.outputs.expired != 'true'
+        id: anchors
+        env:
+          HEAD_SHA: ${{ steps.case.outputs.head_sha_before_fix }}
+          BASE_SHA: ${{ steps.case.outputs.base_sha }}
+          REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          # Fetch by SHA from an explicit URL so no remote-tracking refs (and so no later commits,
+          # including the fix) land in the clone, and no credential stays in .git/config.
+          git fetch --no-tags --unshallow "$REPO_URL" "$HEAD_SHA"
+          git fetch --no-tags "$REPO_URL" "$BASE_SHA"
+          [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || { echo "::error::HEAD is not the case commit"; exit 1; }
+          MERGE_BASE="$(git merge-base "$BASE_SHA" HEAD)"
+          echo "merge_base=${MERGE_BASE}" >> "$GITHUB_OUTPUT"
+
+          rm -rf .claude
+          cp -R "$RUNNER_TEMP/current/." .
+          chmod +x scripts/rails/diff-anchors.sh
+
+          ANCHORS_FILE="${RUNNER_TEMP}/correctness-anchors.txt"
+          scripts/rails/diff-anchors.sh --base "$BASE_SHA" -- 'src/' > "$ANCHORS_FILE"
+          echo "anchors_file=${ANCHORS_FILE}" >> "$GITHUB_OUTPUT"
+          echo "Changed-line ranges under src/: $(grep -c . "$ANCHORS_FILE" || true)"
+          [ -s "$ANCHORS_FILE" ] || { echo "::error::No src/ changes between the case's base and head — the case can measure nothing."; exit 1; }
+
+      - name: Reset verdict
+        if: steps.case.outputs.expired != 'true'
+        run: rm -f "${{ runner.temp }}/correctness-verdict.txt" "${{ runner.temp }}/correctness-findings.json"
+
+      # Same action, credentials, model, turn cap and tools as correctness-review.yml. Steps 1 and 2
+      # of the prompt are that workflow's, word for word apart from the base; step 3 records findings
+      # in a file instead of posting a PR comment.
+      - name: Run correctness-reviewer
+        if: steps.case.outputs.expired != 'true'
+        id: reviewer
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are running as the correctness-reviewer for a pull request.
+
+            STEP 1 — DO THIS FIRST, BEFORE READING ANYTHING ELSE.
+            Write this exact two-line content to ${{ runner.temp }}/correctness-verdict.txt:
+
+            CORRECTNESS_VERDICT: BLOCK
+            reason: PROVISIONAL - the review did not run to completion
+
+            This is a fail-safe. If you run out of turns or error out later, that
+            provisional block is what the gate sees, and it is the correct answer.
+            Do not skip it and do not leave it until the end.
+
+            STEP 2 — Review.
+            Read the rubric at .github/correctness-review-rubric.md and follow it exactly.
+            The changed-line anchor set is at ${{ steps.anchors.outputs.anchors_file }} —
+            review ONLY those lines and the code they directly touch, and anchor every
+            finding to a line from that file. The diff base is ${{ steps.anchors.outputs.merge_base }}
+            (compare it with HEAD, e.g. `git diff ${{ steps.anchors.outputs.merge_base }} HEAD -- src/`).
+            Budget your turns: prefer a single `git diff` over many per-file reads, and
+            do not re-read a file you have already seen.
+
+            STEP 3 — Replace the verdict, and record findings.
+            Overwrite ${{ runner.temp }}/correctness-verdict.txt with your real verdict.
+            First line must be EXACTLY "CORRECTNESS_VERDICT: PASS" or "CORRECTNESS_VERDICT: BLOCK".
+            On BLOCK, add a second line "reason: <one-line summary>" — never containing
+            the word PROVISIONAL, which is reserved for the step-1 fail-safe.
+            Do NOT post anything to GitHub. Instead of the PR comment the rubric describes,
+            write every finding, blocking and advisory, to ${{ runner.temp }}/correctness-findings.json
+            as a JSON array with one object per finding:
+            {"anchor": "<path>:<line>", "severity": "BLOCK" or "ADVISE", "class": "<kebab-class>", "defect": "<one line>"}
+            Write [] when there are none.
+
+            If you are running low on turns, STOP reviewing and do step 3 with the
+            verdict you have. A completed BLOCK with a real reason is far more useful
+            than an incomplete review that leaves the provisional block in place.
+          claude_args: |
+            --model opus
+            --max-turns 80
+            --allowedTools Bash,Read,Grep,Glob,Write
+
+      - name: Score the case
+        env:
+          VERDICT_FILE: ${{ runner.temp }}/correctness-verdict.txt
+          FINDINGS_FILE: ${{ runner.temp }}/correctness-findings.json
+          CASE_ID: ${{ steps.case.outputs.id }}
+          CASE_FILE_NAME: ${{ matrix.case }}
+          KIND: ${{ steps.case.outputs.kind }}
+          PR: ${{ steps.case.outputs.pr }}
+          SCOPE: ${{ steps.case.outputs.scope }}
+          CAUGHT_BY: ${{ steps.case.outputs.caught_by }}
+          EXPECTED_PATH: ${{ steps.case.outputs.expected_path }}
+          EXPECTED_LINE: ${{ steps.case.outputs.expected_line }}
+          EXPECTED_CLASS: ${{ steps.case.outputs.expected_class }}
+          REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
+          EXPIRED: ${{ steps.case.outputs.expired }}
+        run: |
+          set -euo pipefail
+          FIRST="$(head -n1 "$VERDICT_FILE" 2>/dev/null || true)"
+          REASON="$(sed -n '2p' "$VERDICT_FILE" 2>/dev/null || true)"
+          case "$FIRST" in
+            "CORRECTNESS_VERDICT: PASS"*) verdict=PASS ;;
+            "CORRECTNESS_VERDICT: BLOCK"*) verdict=BLOCK ;;
+            *) verdict=none ;;
+          esac
+          # A provisional block, or no verdict at all, means the review never finished. That is not
+          # a miss — the reviewer did not look — so it is scored separately as incomplete.
+          status=complete
+          if [ "$verdict" = none ] || [[ "$REASON" == *PROVISIONAL* ]]; then status=incomplete; fi
+          [ "$EXPIRED" = true ] && status=expired
+          if jq -e 'type == "array"' "$FINDINGS_FILE" >/dev/null 2>&1; then
+            findings="$(jq -c '[.[] | {anchor: (.anchor // "" | tostring), severity: (.severity // "" | ascii_upcase), class: (.class // ""), defect: (.defect // "")}]' "$FINDINGS_FILE")"
+          else
+            findings='[]'
+            if [ "$status" = complete ]; then status=no-findings-file; fi
+          fi
+          mkdir -p results
+          jq -n \
+            --arg id "$CASE_ID" --arg file "$CASE_FILE_NAME" --arg kind "$KIND" --argjson pr "$PR" \
+            --arg scope "$SCOPE" --arg caught_by "$CAUGHT_BY" --arg status "$status" --arg verdict "$verdict" \
+            --arg reason "$REASON" --arg outcome "$REVIEWER_OUTCOME" \
+            --arg path "$EXPECTED_PATH" --arg line "$EXPECTED_LINE" --arg class "$EXPECTED_CLASS" \
+            --argjson findings "$findings" '
+            def onpath: [ $findings[] | select((.anchor | split(":")[0]) == $path) ];
+            {
+              id: $id, file: $file, kind: $kind, pr: $pr, scope: $scope, caught_by: $caught_by,
+              status: $status, verdict: $verdict, reason: $reason, reviewer_outcome: $outcome,
+              findings: $findings,
+              expected: (if $kind == "incident" then {path: $path, line: ($line | tonumber? // null), class: $class} else null end),
+              hit: (if $kind == "incident" and $status == "complete" then (onpath | length > 0) else null end),
+              hit_block: (if $kind == "incident" and $status == "complete" then (onpath | map(select(.severity == "BLOCK")) | length > 0) else null end),
+              nearest_line_delta: (if $kind == "incident" and ($line | tonumber? // null) != null and (onpath | length > 0)
+                then (onpath | map((.anchor | split(":")[1] // "" | split("-")[0] | tonumber? // 1e9) - ($line | tonumber) | fabs) | min) else null end),
+              harmful: (if $kind == "clean" and $status == "complete" then ($findings | map(select(.severity == "BLOCK")) | length) else null end)
+            }' > "results/${CASE_FILE_NAME%.yaml}.json"
+          cat "results/${CASE_FILE_NAME%.yaml}.json"
+
+      - name: Upload case result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: case-${{ matrix.case }}
+          path: results/
+          if-no-files-found: warn
+
+  summarize:
+    name: Summarize and compare with the baseline
+    needs: replay
+    if: always() && needs.replay.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list / gh run download for the scheduled baseline
+    steps:
+      - name: Collect case results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: case-*
+          path: results
+          merge-multiple: true
+
+      - name: Build results.json
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(results/*.json)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::No case produced a result."; exit 1; }
+          jq -s --arg event "$EVENT" --arg run_id "$RUN_ID" --arg sha "$SHA" --arg date "$(date -u +%FT%TZ)" '
+            def recall(xs): (xs | map(select(.hit != null))) as $s
+              | {hits: ($s | map(select(.hit)) | length), scored: ($s | length),
+                 recall: (if ($s | length) > 0 then (($s | map(select(.hit)) | length) / ($s | length)) else null end)};
+            (map(select(.kind == "incident"))) as $inc
+            | {
+                run_id: $run_id, event: $event, sha: $sha, date: $date,
+                incident: recall($inc),
+                incident_correctness_scope: recall($inc | map(select(.scope == "correctness"))),
+                harmful_findings: (map(select(.kind == "clean" and .harmful != null) | .harmful) | add // 0),
+                incomplete: (map(select(.status != "complete" and .status != "expired")) | map(.id + " (" + .file + ")")),
+                expired: (map(select(.status == "expired")) | map(.file)),
+                cases: (sort_by(.file))
+              }' "${files[@]}" > results.json
+          jq '{incident, incident_correctness_scope, harmful_findings, incomplete, expired}' results.json
+
+      - name: Upload results.json
+        uses: actions/upload-artifact@v7
+        with:
+          name: reviewer-eval-results
+          path: results.json
+
+      - name: Job summary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Reviewer eval"
+            jq -r '"Recall (all incident cases): **\(.incident.hits)/\(.incident.scored)**  ·  correctness scope: **\(.incident_correctness_scope.hits)/\(.incident_correctness_scope.scored)**  ·  harmful findings on clean PRs: **\(.harmful_findings)**  ·  incomplete: **\(.incomplete | length)**"' results.json
+            echo
+            echo "| Case | PR | Scope | Status | Verdict | Result |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            jq -r '.cases[] | "| \(.file) | #\(.pr) | \(.scope) | \(.status) | \(.verdict) | \(
+              if .kind == "incident" then (if .hit == null then "—" elif .hit then "hit" + (if .hit_block then " (BLOCK)" else " (advisory)" end) + (if .nearest_line_delta != null then ", \(.nearest_line_delta) lines off" else "" end) else "**miss**" end)
+              else (if .harmful == null then "—" else "\(.harmful) harmful" end) end) |"' results.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On a rubric or reviewer PR, compare with the most recent successful scheduled run, over the
+      # cases both runs completed. With no baseline yet (before the first Monday run), report and pass.
+      - name: Compare recall with the scheduled baseline
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          baseline_run="$(gh run list --workflow reviewer-eval.yml --event schedule --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -z "$baseline_run" ]; then
+            echo "::notice::No successful scheduled run yet, so there is no baseline to compare with. This run's numbers become comparable after the first weekly run."
+            exit 0
+          fi
+          gh run download "$baseline_run" -n reviewer-eval-results -D baseline
+          jq -n --slurpfile cur results.json --slurpfile base baseline/results.json '
+            def scored(r): r.cases | map(select(.kind == "incident" and .hit != null) | {key: .file, value: .hit}) | from_entries;
+            (scored($cur[0])) as $c | (scored($base[0])) as $b
+            | ([$c | keys[] | select($b[.] != null)]) as $common
+            | {common: ($common | length),
+               current_hits: ($common | map(select($c[.])) | length),
+               baseline_hits: ($common | map(select($b[.])) | length),
+               lost: ($common | map(select($b[.] and ($c[.] | not)))),
+               gained: ($common | map(select($c[.] and ($b[.] | not)))),
+               harmful_now: $cur[0].harmful_findings, harmful_baseline: $base[0].harmful_findings}' > compare.json
+          cat compare.json
+          {
+            echo
+            echo "### Against scheduled run ${baseline_run}"
+            jq -r '"Recall on \(.common) cases both runs completed: **\(.current_hits)** now vs **\(.baseline_hits)** baseline. Lost: \(.lost | join(", ") | if . == "" then "none" else . end). Gained: \(.gained | join(", ") | if . == "" then "none" else . end). Harmful findings: \(.harmful_now) now vs \(.harmful_baseline)."' compare.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          if jq -e '.harmful_now > .harmful_baseline' compare.json >/dev/null; then
+            echo "::warning::More harmful findings on known-clean PRs than the baseline."
+          fi
+          if jq -e '.current_hits < .baseline_hits' compare.json >/dev/null; then
+            echo "::error::Reviewer recall dropped below the last scheduled run's (see the job summary for the cases lost)."
+            exit 1
+          fi

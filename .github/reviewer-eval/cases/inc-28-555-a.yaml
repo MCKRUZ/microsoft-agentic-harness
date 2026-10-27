@@ -1,0 +1,21 @@
+# TryGetContentArray requires an isError/structuredContent/_meta marker, missing a spec-conformant marker-less MCP result (e.g. one with a resource_link block)
+id: INC-28
+kind: incident
+pr: 555
+base_sha: 6c8d06323790644798c6d70d42695431abac382e
+head_sha_before_fix: 012f5721f3251cc98a5a8e01594c7630d701af93
+fix_sha: fdf14a3e11d7ae56b3b0afd781c2e5daa8d4de8c
+expected:
+  path: src/Content/Application/Application.AI.Common/Services/Governance/ToolResultText.cs
+  line: 376
+  class: narrowed-check-false-negative
+caught_by: local
+scope: security
+valid_until: null
+notes: >-
+  CLAUDE.md cites #488, but that is the issue; PR #555 implements the fix. Lines 376-378 require one of
+  isError/structuredContent/_meta, but McpJsonUtilities.DefaultOptions omits null properties, so a
+  marker-less success result (text + resource_link) skips sanitize/redact/bound. The fix commit
+  replaces the marker test with a content-block "type" discriminator check. Caught by the local
+  security-reviewer agent before push: this commit has zero GitHub check-runs, and CI reviews ran only
+  on the final head f48bb1ab. This is a security-class defect, outside the correctness rubric's scope.
