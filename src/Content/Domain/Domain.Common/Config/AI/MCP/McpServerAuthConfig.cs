@@ -114,6 +114,13 @@ public class McpServerAuthConfig
     /// </remarks>
     public bool AllowAnonymous { get; set; }
 
+    /// <summary>
+    /// Allows <see cref="AllowAnonymous"/> outside the Development environment. Off by default: anywhere else the MCP
+    /// server refuses to start in anonymous mode unless this is also set, and logs the choice at Critical on every
+    /// start when it is (#904). Only honored server-side, like <see cref="AllowAnonymous"/>.
+    /// </summary>
+    public bool AllowAnonymousOutsideDevelopment { get; set; }
+
     /// <summary>Gets whether authentication is configured.</summary>
     public bool IsConfigured => Type != McpServerAuthType.None;
 

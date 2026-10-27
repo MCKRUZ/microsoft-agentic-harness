@@ -405,7 +405,9 @@
                             <div class="callout-title">Anonymous mode is a development mode, and it removes isolation</div>
                             <p style="margin: 0">
                                 With <code>Auth:AllowAnonymous: true</code> every request authenticates as one
-                                synthetic principal, and the host logs a prominent warning for as long as it runs. Two
+                                synthetic principal, and the host logs a prominent warning at startup. Outside the
+                                Development environment it refuses to start unless
+                                <code>Auth:AllowAnonymousOutsideDevelopment: true</code> is also set. Two
                                 consequences: <strong>every caller shares one owner</strong>, so ownership checks pass
                                 for everyone and anyone can run, poll, or delete anyone's handle; and
                                 <strong>every run gets the <code>Default</code> envelope</strong>, because the synthetic

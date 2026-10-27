@@ -13,6 +13,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Presentation.ExecutionApi.Services;
 using Presentation.ExecutionApi.Streaming;
+using Application.Common.Hosting;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Presentation.ExecutionApi.Extensions;
 
@@ -231,7 +234,14 @@ public static class ExecutionApiServiceCollectionExtensions
                 .AddScheme<AuthenticationSchemeOptions, AnonymousAuthenticationHandler>(
                     AnonymousAuthenticationHandler.SchemeName, _ => { });
             services.AddAuthorization();
-            services.AddHostedService<ExecutionApiAnonymousModeStartupWarning>();
+            // Refuses to start outside Development unless AllowAnonymousOutsideDevelopment is also set, and logs the
+            // mode at startup either way (#904).
+            services.AddHostedService(sp => new UnauthenticatedModeStartupGuard(
+                "Bundle API anonymous mode (AppConfig:AI:BundleExecution:Auth:AllowAnonymous=true)",
+                "AppConfig:AI:BundleExecution:Auth:AllowAnonymousOutsideDevelopment",
+                auth.AllowAnonymousOutsideDevelopment,
+                sp.GetRequiredService<IHostEnvironment>(),
+                sp.GetRequiredService<ILogger<UnauthenticatedModeStartupGuard>>()));
             return services;
         }
 

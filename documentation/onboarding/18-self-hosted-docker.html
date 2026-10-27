@@ -324,12 +324,22 @@ curl http://localhost:8080/health/subsystems</code></pre>
 }</code></pre>
                     </div>
                     <p>
-                        Both flags are required together, deliberately. <code>Auth:Disabled</code> alone only takes
-                        effect in the Development environment — it does nothing in a production-configured
-                        container. <code>AllowOutsideDevelopment</code> is the explicit, reviewable decision to
-                        accept that trade-off outside Development, instead of the alternative of mislabeling a real
-                        deployment as "Development" (which also silently turns off unrelated hardening, like forced
+                        Both flags are required together, deliberately. Outside the Development environment
+                        <code>Auth:Disabled</code> alone makes the host <strong>refuse to start</strong>, naming the
+                        missing setting: with sign-in off every caller is one synthetic identity, so one person's
+                        memory, conversations and erasure requests would be everyone's, and that must not happen
+                        because of a leftover setting. <code>AllowOutsideDevelopment</code> is the explicit, reviewable
+                        decision to accept that trade-off outside Development, and the host logs it at Critical on every
+                        start so it shows up in any log review. It is also the honest alternative to mislabeling a real
+                        deployment as "Development" (which silently turns off unrelated hardening, like forced
                         HTTPS).
+                    </p>
+                    <p>
+                        Never run a deployment with <code>ASPNETCORE_ENVIRONMENT=Development</code>. The startup check
+                        treats Development as a developer's machine and lets the sign-in bypass through without the
+                        override, and in Development the bypass uses the developer handler, which gives every caller
+                        operator roles (escalation admin, change approval, drift and registry operations), not the
+                        self-hosted handler's none.
                     </p>
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
