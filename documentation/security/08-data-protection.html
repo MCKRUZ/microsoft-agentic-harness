@@ -225,13 +225,32 @@
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
                         <div class="callout-body">
-                            <div class="callout-title">The single-tenant switch is deliberate</div>
+                            <div class="callout-title">Isolation is off by default, and says so</div>
+                            <p>
+                                <code>AppConfig:AI:Rag:GraphRag:MultiTenantIsolation</code> defaults to
+                                <code>false</code>, which suits a single-tenant deployment. In that mode the decorator is
+                                not registered at all, and a host outside Development logs a warning at startup saying
+                                what is shared. With isolation off:
+                            </p>
+                            <ul>
+                                <li>
+                                    <strong>Still private:</strong> each user's remembered facts. Memory ids are
+                                    namespaced by tenant and user (see <a href="#memory-namespacing">memory
+                                    namespacing</a>), so recall, search and forget only ever reach the caller's own.
+                                </li>
+                                <li>
+                                    <strong>Shared by every user and tenant:</strong> the graph's entities extracted from
+                                    ingested documents, and the learnings recalled into turns.
+                                </li>
+                                <li>
+                                    <strong>Shared either way:</strong> ingested documents through retrieval, and
+                                    graph-based retrieval (GraphRAG). Turning isolation on does not make documents
+                                    private.
+                                </li>
+                            </ul>
                             <p style="margin: 0">
-                                When the <code>MultiTenantIsolation</code> config is disabled, all access passes — the
-                                decorator becomes a pass-through and the store behaves as a single shared graph. This is
-                                an intentional mode for single-tenant deployments, not a bug. If you run more than one
-                                customer on one harness, this switch must be <strong>on</strong>; treat it as a
-                                load-bearing setting and verify it in every environment.
+                                If you run more than one customer on one harness, turn this switch <strong>on</strong>,
+                                treat it as a load-bearing setting, and verify it in every environment.
                             </p>
                         </div>
                     </div>
@@ -1231,6 +1250,73 @@
                         <code>Off</code> and a classification provider are configured. This keeps the closed-by-default
                         posture on capabilities while avoiding false positives that would block legitimate work in
                         deployments that have not adopted Purview labelling.
+                    </p>
+
+                    <h2 id="data-at-rest">Data at rest: what the harness does not encrypt</h2>
+                    <p>
+                        The harness does not encrypt the files it keeps personal data in. Its local stores are plaintext
+                        on disk: SQLite databases, the knowledge-graph files, JSONL audit trails, log files and spilled
+                        tool results. Owner-only file permissions are applied on Linux; on Windows the files inherit the
+                        folder's access control. Encryption at rest is therefore the deployer's job, and the usual answer
+                        is to encrypt the volume the data directory sits on.
+                    </p>
+                    <p>
+                        The harness cannot detect whether a volume is encrypted, so it asks instead. Outside Development,
+                        a host warns at startup until the deployer records an answer in
+                        <code>AppConfig:Infrastructure:DataAtRest:Encryption</code>. <code>Unspecified</code> (the
+                        default) warns; <code>Volume</code> records that the volume is encrypted and is logged at
+                        Information. The check is <code>DataAtRestStartupCheck</code>
+                        (<code>src/Content/Infrastructure/Infrastructure.AI/DataAtRest/DataAtRestStartupCheck.cs</code>).
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Where the data is</th>
+                                <th>Examples</th>
+                                <th>How to protect it at rest</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Local SQLite databases</td>
+                                <td>Conversations and budgets, planner runs, prompt usage, schedules, the erasure journal, the document load ledger, the keyword index when it is file-backed</td>
+                                <td>Volume or disk encryption (BitLocker, LUKS, a cloud provider's disk encryption). The harness does not ship SQLCipher.</td>
+                            </tr>
+                            <tr>
+                                <td>Local files</td>
+                                <td>JSONL audit trails, log files, file-system conversation transcripts, spilled tool results, the Kùzu graph</td>
+                                <td>Volume or disk encryption, on the same volume as the databases.</td>
+                            </tr>
+                            <tr>
+                                <td>The audit archive</td>
+                                <td>Sealed audit segments copied off the host</td>
+                                <td>The storage service's own encryption at rest, for example Azure Storage's (see <a href="#audit-archive-retention">the audit archive</a>).</td>
+                            </tr>
+                            <tr>
+                                <td>PostgreSQL</td>
+                                <td>The observability store; the PostgreSQL knowledge-graph backend</td>
+                                <td>The database server's encryption at rest. A managed service such as Azure Database for PostgreSQL encrypts its storage; a self-hosted server needs disk encryption.</td>
+                            </tr>
+                            <tr>
+                                <td>Other external services</td>
+                                <td>Neo4j, Azure AI Search, the distributed cache</td>
+                                <td>That service's encryption-at-rest setting. Check it for each one you configure.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3 id="foundry-telemetry">Telemetry export from FoundryHost</h3>
+                    <p>
+                        Every host except FoundryHost exports to Azure Monitor only when
+                        <code>AppConfig:Observability:Exporters:AzureMonitor:Enabled</code> is set. Foundry injects
+                        <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> into every hosted container, and FoundryHost
+                        turns the exporter on when it is present, so the harness's traces and metrics go to that
+                        Application Insights resource without any setting of the deployer's. FoundryHost says so at
+                        startup. To leave the exporter to <code>Enabled</code> instead, set
+                        <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code> to
+                        <code>false</code> in appsettings, User Secrets or the environment. What the telemetry may contain
+                        is governed by content capture and redaction, not by this switch.
                     </p>
 
                     <h2 id="secrets">Secrets management</h2>
