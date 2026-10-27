@@ -305,9 +305,10 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
         var previewLength = Math.Min(config.PreviewSizeChars, spillable.Length);
         var preview = $"{spillable[..previewLength]}\n... [{spillable.Length} chars persisted to {resultId}]";
 
+        // No path: it embeds the conversation id, and a log line outlives the erasure of the conversation (#924).
         _logger.LogInformation(
-            "Tool result {ResultId} from {ToolName} persisted to disk: {Length} chars at {Path}",
-            resultId, toolName, spillable.Length, storagePath);
+            "Tool result {ResultId} from {ToolName} persisted to disk: {Length} chars",
+            resultId, toolName, spillable.Length);
 
         return new ToolResultReference
         {
@@ -373,8 +374,8 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
         var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.txt");
 
         _logger.LogDebug(
-            "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId} from {Path}",
-            offset, maxChars, resultId, storagePath);
+            "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId}",
+            offset, maxChars, resultId);
 
         // #574: reading the whole stored file into memory on EVERY page was replaced with a short-lived
         // cache of the decoded content — the same IMemoryCache-plus-sliding-expiration shape
@@ -507,7 +508,10 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
                     // One file's deletion failing (concurrently deleted, permissions) must not stop
                     // the sweep from reclaiming everything else it can — the same must-not-throw
                     // discipline ToolCallAdmissionPipeline applies to a spill failure.
-                    _logger.LogWarning(ex, "Failed to delete expired tool result at {Path}; will retry on the next sweep.", filePath);
+                    // Neither the path nor the exception, whose message carries the path: both name the conversation.
+                    _logger.LogWarning(
+                        "Failed to delete an expired tool result ({ExceptionType}); will retry on the next sweep.",
+                        ex.GetType().Name);
                 }
             }
 
