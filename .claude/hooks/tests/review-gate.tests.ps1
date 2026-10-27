@@ -105,7 +105,14 @@ try {
     (Invoke-Gate 'git push')
 
   'simplify: no findings' | & pwsh -NoProfile -File $writer -Kind simplify | Out-Null
-  Assert-That 'ALLOWED once both reviews are recorded' `
+  # The gate requires THREE receipts. Until 2026-10-27 this suite recorded two and expected an
+  # allow — it had been failing since the run-gates receipt was added, unnoticed because no CI
+  # ran it (now .github/workflows/hook-tests.yml does).
+  Assert-That 'still DENIED with code-review and simplify but no run-gates receipt' `
+    (Invoke-Gate 'git push')
+
+  'run-gates: build, test, owasp, docs-links passed' | & pwsh -NoProfile -File $writer -Kind run-gates | Out-Null
+  Assert-That 'ALLOWED once all three receipts are recorded' `
     (-not (Invoke-Gate 'git push'))
 
   Write-Host ''
@@ -154,6 +161,46 @@ try {
   Set-Content -Path (Join-Path $tmp 'src/Content/Widget.cs') -Value 'public class Widget { public int Uncommitted; }' -Encoding UTF8
   Assert-That 'a dirty src/ tree is DENIED' `
     (Invoke-Gate 'git push')
+
+  Write-Host ''
+  Write-Host 'Convergence: the 3-round cap stops the push until Matt acknowledges it' -ForegroundColor Cyan
+
+  & git -C $tmp checkout -q -- 'src'
+  & git -C $tmp checkout -q -b capped main
+  Set-Content -Path (Join-Path $tmp 'src/Content/Widget.cs') -Value 'public class Widget { public int Capped; }' -Encoding UTF8
+  & git -C $tmp add -A
+  & git -C $tmp commit -q -m 'feat: capped change'
+  foreach ($k in 'code-review', 'simplify', 'run-gates') { "$k ok" | & pwsh -NoProfile -File $writer -Kind $k | Out-Null }
+  Assert-That 'ALLOWED with all three receipts and no cap' (-not (Invoke-Gate 'git push'))
+
+  'round 3: 2 Important findings still open' | & pwsh -NoProfile -File $writer -Kind round-cap -Round 3 | Out-Null
+  Assert-That 'a round-cap receipt DENIES the push even with all three receipts' (Invoke-Gate 'git push')
+
+  '' | & pwsh -NoProfile -File $writer -Kind round-cap-ack 2>$null | Out-Null
+  Assert-That 'an empty round-cap-ack is refused by the writer' ($LASTEXITCODE -ne 0)
+  Assert-That 'and the push stays DENIED' (Invoke-Gate 'git push')
+
+  'Matt: "push it anyway, I will review the approach in the PR"' | & pwsh -NoProfile -File $writer -Kind round-cap-ack | Out-Null
+  Assert-That 'ALLOWED once Matt''s acknowledgement is recorded' (-not (Invoke-Gate 'git push'))
+
+  Write-Host ''
+  Write-Host 'Dispositions: findings are validated before they are recorded' -ForegroundColor Cyan
+
+  $receiptDir = Join-Path $tmp '.claude/.review-receipts'
+  $good = Join-Path $tmp 'findings-good.json'
+  Set-Content -Path $good -Value '[{"anchor":"src/Content/Widget.cs:1","class":"missing-null-check","tag":"important","disposition":"fixed"},{"anchor":"src/Content/Widget.cs:1","class":"naming","tag":"nit","disposition":"didnt-matter"}]' -Encoding UTF8
+  'round 2' | & pwsh -NoProfile -File $writer -Kind code-review -Round 2 -FindingsFile $good | Out-Null
+  $receipt = Get-ChildItem $receiptDir -Filter '*.code-review' | Sort-Object LastWriteTime | Select-Object -Last 1 | Get-Content -Raw
+  Assert-That 'a valid findings file is stored with the round number' `
+    (($receipt -match 'round: 2') -and ($receipt -match '"disposition":"didnt-matter"'))
+
+  $bad = Join-Path $tmp 'findings-bad.json'
+  Set-Content -Path $bad -Value '[{"anchor":"Widget.cs","class":"Bad Class","tag":"blocker","disposition":"ignored"}]' -Encoding UTF8
+  $before = (Get-ChildItem $receiptDir -Filter '*.code-review' | Select-Object -Last 1).LastWriteTimeUtc
+  'round 3' | & pwsh -NoProfile -File $writer -Kind code-review -Round 3 -FindingsFile $bad 2>$null | Out-Null
+  $code = $LASTEXITCODE
+  $after = (Get-ChildItem $receiptDir -Filter '*.code-review' | Select-Object -Last 1).LastWriteTimeUtc
+  Assert-That 'an invalid findings file is refused and nothing is rewritten' (($code -ne 0) -and ($before -eq $after))
 
 } finally {
   $env:CLAUDE_PROJECT_DIR = $originalProjectDir

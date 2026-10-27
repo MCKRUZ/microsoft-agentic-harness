@@ -34,11 +34,28 @@
 # turning "might forget entirely" into "must produce inspectable evidence" — a real
 # improvement over nothing, not a guarantee against a determined or careless bypass.
 
+#
+# Convergence (2026-10-27; Anthropic, "How the Claude Code team does code review" — one PR ran
+# 50+ review rounds overnight, ~59% of the repeat findings were code present since round 1):
+#   * -Round <n> records which local /code-review round this receipt closes.
+#   * -FindingsFile <path> attaches a JSON array of findings with their disposition, the
+#     article's noise measure: [{"anchor":"src/X.cs:42","class":"null-deref","tag":"important",
+#     "disposition":"fixed"}]. Values are validated against .github/RAILS.md "Review conventions".
+#   * -Kind round-cap is written when the third round still has open Important findings. It
+#     never satisfies the gate; review-gate.ps1 denies the push until -Kind round-cap-ack exists.
+#   * -Kind round-cap-ack records Matt's decision to push anyway. Pipe his words verbatim. Like
+#     every receipt, its content is only as honest as the writer (see "Honest scope" above).
+
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('code-review', 'simplify', 'run-gates')]
-  [string]$Kind
+  [ValidateSet('code-review', 'simplify', 'run-gates', 'round-cap', 'round-cap-ack')]
+  [string]$Kind,
+
+  [ValidateRange(1, 99)]
+  [int]$Round = 0,
+
+  [string]$FindingsFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,7 +93,37 @@ $receiptDir = Join-Path $projectDir '.claude/.review-receipts'
 New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
 
 $summary = [Console]::In.ReadToEnd()
+if ($Kind -eq 'round-cap-ack' -and -not "$summary".Trim()) {
+  [Console]::Error.WriteLine('save-review-receipt: a round-cap-ack must carry Matt''s words. Nothing written.'); exit 1
+}
 if (-not $summary) { $summary = "($Kind run; no summary piped)" }
+
+$findingsBlock = ''
+if ($FindingsFile) {
+  if (-not (Test-Path -LiteralPath $FindingsFile -PathType Leaf)) {
+    [Console]::Error.WriteLine("save-review-receipt: findings file not found: $FindingsFile"); exit 1
+  }
+  try {
+    $findings = @(Get-Content -LiteralPath $FindingsFile -Raw | ConvertFrom-Json)
+  } catch {
+    [Console]::Error.WriteLine("save-review-receipt: findings file is not valid JSON: $($_.Exception.Message)"); exit 1
+  }
+  $tags = 'important', 'nit', 'pre-existing'
+  $dispositions = 'fixed', 'wrong', 'intentional', 'didnt-matter'
+  $i = 0
+  foreach ($f in $findings) {
+    $i++
+    $problems = @()
+    if ([string]$f.anchor -notmatch '^[^\s:]+:\d+$') { $problems += "anchor '$($f.anchor)' is not <path>:<line>" }
+    if ([string]$f.class -notmatch '^[a-z0-9]+(-[a-z0-9]+)*$') { $problems += "class '$($f.class)' is not kebab-case" }
+    if ($tags -notcontains [string]$f.tag) { $problems += "tag '$($f.tag)' is not one of $($tags -join '|')" }
+    if ($dispositions -notcontains [string]$f.disposition) { $problems += "disposition '$($f.disposition)' is not one of $($dispositions -join '|')" }
+    if ($problems) {
+      [Console]::Error.WriteLine("save-review-receipt: finding #$i is invalid: $($problems -join '; '). Nothing written."); exit 1
+    }
+  }
+  $findingsBlock = "findings: " + (ConvertTo-Json -InputObject $findings -Compress -Depth 4) + "`n"
+}
 
 # Record the covered file list in the receipt so a human can audit what the review saw,
 # not just that some review happened.
@@ -84,13 +131,14 @@ $header = @(
   "# $Kind receipt",
   "fingerprint: $fingerprint",
   "recorded-at-commit: $sha",
+  $(if ($Round -gt 0) { "round: $Round" }),
   "reviewed-files:"
   ($change.Paths | ForEach-Object { "  - $_" })
   ""
-) | Out-String
+) | Where-Object { $null -ne $_ } | Out-String
 
 $path = Join-Path $receiptDir "$fingerprint.$Kind"
-Set-Content -Path $path -Value ($header + $summary) -Encoding UTF8
+Set-Content -Path $path -Value ($header + $findingsBlock + $summary) -Encoding UTF8
 
 Write-Output ("Saved $Kind receipt for fingerprint $fingerprint " +
               "($($change.Paths.Count) reviewable file(s)) at .claude/.review-receipts/$fingerprint.$Kind")
