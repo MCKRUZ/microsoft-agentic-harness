@@ -9,14 +9,16 @@
 # indistinguishable from his. This hook is what makes the difference real for every action taken
 # through Claude Code. It fires on PreToolUse for Bash and the GitHub MCP tools and denies:
 #
-#   1. Posting a tier-2 sign-off (`Reviewed-by: @MCKRUZ <sha> — ...`). tier-signoff.yml turns
+#   1. Posting a tier-2 sign-off (`Reviewed-by: @<owner> <sha> — ...`). tier-gate.yml turns
 #      that comment into the green `tier-gate` status a tier-2 PR needs; only Matt may write it.
 #   2. Applying an `accepted-risk:*` label. Those labels override a blocking correctness or
 #      security finding; accepting a known risk is a human decision.
 #   3. Re-arming the tier-0 circuit breaker: closing, or removing the label from, an issue
 #      labelled `rails:breaker`. The breaker trips when a tier-0 auto-merge was reverted; Matt
 #      reads why before turning auto-merge back on.
-#   4. Merging any PR that is not labelled `tier:0`. Tier 0 (plain docs, additive tests) merges
+#   4. Merging any PR that is not labelled `tier:0`, and adding or removing a `tier:*` label
+#      (tier-gate.yml computes it from the change; a hand-set label would steer this very
+#      check). Tier 0 (plain docs, additive tests) merges
 #      on green without a human read; tier 1 and tier 2 are merged by Matt, who reads the
 #      evidence first. tier-gate.yml computes the label from the change, never from the author.
 #
@@ -48,7 +50,9 @@ function Deny([string]$reason) {
   exit 0
 }
 
-$SignoffPattern  = '(?i)Reviewed-by:\s*@?MCKRUZ\b'
+# Any login: a team cloning this template has its own owner, and tier-status.mjs reads the
+# repository owner, so the guard must not assume MCKRUZ.
+$SignoffPattern  = '(?i)Reviewed-by:\s*@?[A-Za-z0-9]'
 $GitHubWriteVerb = '(?i)(\bgh\b|\bcurl\b|Invoke-RestMethod|Invoke-WebRequest|api\.github\.com)'
 
 function Get-ReferencedFileText([string]$command) {
@@ -121,6 +125,9 @@ if ($tool -eq 'Bash') {
   if ($text -match '(?i)accepted-risk:' -and $command -match '(?i)(--add-label|/labels\b|label(s)?\s*=)' -and $command -notmatch '(?i)\bgh\s+label\s+(create|list|view|edit)\b') {
     Deny 'applying an accepted-risk:* label overrides a blocking review finding. Accepting a known risk is Matt''s decision; surface the finding to him instead.'
   }
+  if ($command -match '(?i)\btier:[0-2]\b' -and $command -match '(?i)(--add-label|--remove-label|/labels\b|label(s)?\s*=)' -and $command -notmatch '(?i)\bgh\s+label\s+(create|list|view|edit)\b') {
+    Deny 'tier labels are computed from the change by tier-gate.yml, never set by hand. If the tier looks wrong, tell Matt why; the fix belongs in .github/scripts/tier-rules.mjs.'
+  }
   if ($command -match '(?i)rails:breaker' -and $command -match '(?i)(--remove-label|\bclose\b|state\s*=\s*closed)') {
     Deny 'that would re-arm the tier-0 circuit breaker (rails:breaker). Only Matt re-arms it.'
   }
@@ -145,6 +152,9 @@ if ($tool -like 'mcp__github__*') {
   $text = $toolInput | ConvertTo-Json -Depth 10 -Compress
   if ($text -match $SignoffPattern) {
     Deny 'a "Reviewed-by: @MCKRUZ" sign-off is Matt''s own statement that he read a tier-2 change. The agent never posts it.'
+  }
+  if ($text -match '(?i)\btier:[0-2]\b' -and $text -match '(?i)"labels"') {
+    Deny 'tier labels are computed from the change by tier-gate.yml, never set by hand.'
   }
   if ($text -match '(?i)accepted-risk:' -and $text -match '(?i)"labels"') {
     Deny 'applying an accepted-risk:* label is Matt''s decision; surface the finding to him instead.'

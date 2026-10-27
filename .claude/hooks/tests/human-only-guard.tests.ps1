@@ -60,6 +60,7 @@ $bodyFile = Join-Path $stubDir 'body.md'
 Set-Content -LiteralPath $bodyFile -Value "Looks fine.`nReviewed-by: @MCKRUZ abc1234 — read the evidence"
 Assert-Decision 'sign-off smuggled through --body-file is denied' $true (Bash "gh pr comment 12 --body-file `"$bodyFile`"")
 Assert-Decision 'sign-off via the GitHub MCP tool is denied' $true (Invoke-Guard 'mcp__github__add_issue_comment' @{ body = 'Reviewed-by: @MCKRUZ abc1234 — ok'; issue_number = 12 })
+Assert-Decision "a template consumer's owner sign-off is denied too" $true (Bash 'gh pr comment 12 --body "Reviewed-by: @acme-lead abc1234 — read it"')
 Assert-Decision 'an ordinary PR comment is allowed' $false (Bash 'gh pr comment 12 --body "Ready for your sign-off."')
 Assert-Decision 'grepping docs for the pattern (no GitHub write) is allowed' $false (Bash 'git grep -n "Reviewed-by: @MCKRUZ" .github/RAILS.md')
 
@@ -68,6 +69,12 @@ Assert-Decision 'adding accepted-risk:security is denied' $true (Bash 'gh pr edi
 Assert-Decision 'adding accepted-risk:correctness via api is denied' $true (Bash 'gh api repos/MCKRUZ/x/issues/12/labels -f "labels[]=accepted-risk:correctness"')
 Assert-Decision 'creating the label definition is allowed' $false (Bash 'gh label create accepted-risk:security --color B60205')
 Assert-Decision 'adding an ordinary label is allowed' $false (Bash 'gh pr edit 12 --add-label needs-triage')
+
+Write-Host 'Tier labels'
+Assert-Decision 'relabelling a PR tier:0 by hand is denied' $true (Bash 'gh pr edit 12 --add-label tier:0')
+Assert-Decision 'removing a tier label by hand is denied' $true (Bash 'gh pr edit 12 --remove-label tier:2')
+Assert-Decision 'setting a tier label through the MCP tool is denied' $true (Invoke-Guard 'mcp__github__issue_write' @{ issue_number = 12; labels = @('tier:0') })
+Assert-Decision 'creating the tier label definitions is allowed' $false (Bash 'gh label create tier:0 --color 0E8A16')
 
 Write-Host 'Circuit breaker'
 Assert-Decision 'closing the breaker issue is denied' $true (Bash 'gh issue close 40' @{ STUB_ISSUE_LABELS = 'rails:breaker' })
