@@ -42,6 +42,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # Read the PR's label history: an override counts only if an approver applied it.
+  issues: read
 
 concurrency:
   group: correctness-review-${{ github.event.pull_request.number }}
@@ -148,16 +150,25 @@ jobs:
             --max-turns 80
             --allowedTools Bash,Read,Grep,Glob,Write
 
+      # The override counts only when an approver applied it (latest `labeled` event).
+      # Approvers: repository variable RAILS_OVERRIDE_APPROVERS, else the repository owner.
+      - name: Verify who applied the override
+        id: override
+        if: steps.detect.outputs.review_required == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          APPROVERS: ${{ vars.RAILS_OVERRIDE_APPROVERS || github.repository_owner }}
+        run: bash .github/scripts/override-applied-by-owner.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" accepted-risk:correctness "$APPROVERS"
+
       - name: Enforce verdict (block on high-confidence defect)
         if: steps.detect.outputs.review_required == 'true'
         env:
           VERDICT_FILE: ${{ runner.temp }}/correctness-verdict.txt
-          # The label is an AUDITED manual override (who applied it is in the PR
-          # timeline), not an authorization check — this step cannot reliably tell
-          # the applier from the author across every trigger type. The "a non-author
-          # signs off" guarantee is enforced by the branch ruleset's required
-          # non-author approval, which still gates the merge after this passes.
-          HAS_ACCEPTED_RISK: ${{ contains(github.event.pull_request.labels.*.name, 'accepted-risk:correctness') }}
+          # The label is an AUDITED manual override, and it counts only when an approver
+          # applied it: the previous step reads the PR's label history. Anyone with triage
+          # access, or a job holding a pull-requests:write token, can add a label.
+          HAS_ACCEPTED_RISK: ${{ steps.override.outputs.accepted == 'true' }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
         run: |
           set -euo pipefail
