@@ -36,6 +36,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # CLAUDE.md is loaded into every agent turn and every CI review, so its size is paid on every
+      # call; it once reached 40 KB. This holds it to 12,288 bytes and fails when a standing rule's
+      # arrow names a test, ledger entry or rubric that no longer exists. It runs here, in the
+      # required job, because a path-filtered workflow would not run on the PR that breaks it. The
+      # script's own tests run first, so the check cannot silently stop being able to fail.
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: CLAUDE.md budget and standing-rule pointers
+        run: |
+          node --test .github/scripts/tests/check-claude-md-budget.test.mjs
+          node .github/scripts/check-claude-md-budget.mjs
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:

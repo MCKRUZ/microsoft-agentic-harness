@@ -1,5 +1,5 @@
 ---
-paths: src/Content/**/AI/**/*.cs, src/Content/**/AI.Common/**/*.cs, src/Content/Domain/Domain.AI/**/*.cs
+paths: src/Content/**/AI/**/*.cs, src/Content/**/Application.AI.Common/**/*.cs, src/Content/Domain/Domain.AI/**/*.cs
 ---
 # AI Agent Layer Rules
 
