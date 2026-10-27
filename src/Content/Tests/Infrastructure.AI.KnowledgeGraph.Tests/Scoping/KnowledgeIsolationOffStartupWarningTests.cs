@@ -17,7 +17,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Scoping;
 public sealed class KnowledgeIsolationOffStartupWarningTests
 {
     [Fact]
-    public void TheWarning_IsRegisteredWithTheKnowledgeGraph()
+    public void AddKnowledgeGraphDependencies_Always_RegistersIsolationWarning()
     {
         var config = new AppConfig();
         var services = new ServiceCollection();
@@ -33,7 +33,7 @@ public sealed class KnowledgeIsolationOffStartupWarningTests
     [InlineData(false, "Development", 0)]
     [InlineData(false, null, 1)]
     [InlineData(true, "Production", 0)]
-    public async Task TheWarning_IsLoggedOnlyWhenIsolationIsOffOutsideDevelopment(
+    public async Task StartAsync_IsolationAndEnvironment_WarnsOnlyWhenOffOutsideDevelopment(
         bool isolation, string? environment, int warnings)
     {
         // Decided from the same setting the store's registration reads, read at startup. No host environment at all

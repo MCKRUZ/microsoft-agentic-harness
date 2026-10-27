@@ -93,7 +93,7 @@ public sealed class FoundryHostBootstrapTests
     [InlineData("not-a-boolean", true)]
     [InlineData("false", false)]
     [InlineData("False", false)]
-    public void UsesHostConnectionString_OnlyAnExplicitFalseOptsOut(string? configured, bool uses) =>
+    public void UsesHostConnectionString_ConfiguredValue_FalseOnlyForExplicitFalse(string? configured, bool uses) =>
         FoundryHostBootstrap.UsesHostConnectionString(configured).Should().Be(uses);
 
     [Fact]

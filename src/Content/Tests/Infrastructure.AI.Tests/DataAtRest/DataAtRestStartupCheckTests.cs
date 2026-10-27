@@ -23,7 +23,7 @@ public sealed class DataAtRestStartupCheckTests
     [InlineData(DataAtRestEncryption.Unspecified, "Development", null)]
     [InlineData(DataAtRestEncryption.Volume, "Production", LogLevel.Information)]
     [InlineData((DataAtRestEncryption)7, "Production", LogLevel.Warning)]
-    public async Task StartAsync_WarnsUnlessTheDeployerStatedTheVolumeIsEncrypted(
+    public async Task StartAsync_EncryptionStatement_WarnsUnlessVolumeIsEncrypted(
         DataAtRestEncryption encryption, string? environment, LogLevel? expected)
     {
         // No host environment at all (a composition without a host) is not Development, so it warns. A value outside the
@@ -48,7 +48,7 @@ public sealed class DataAtRestStartupCheckTests
     }
 
     [Fact]
-    public async Task TheWarning_SaysTheFilesAreNotEncryptedAndWhatToSet()
+    public async Task StartAsync_NoStatement_SaysFilesAreNotEncryptedAndWhatToSet()
     {
         var logger = new CapturingLogger<DataAtRestStartupCheck>();
 

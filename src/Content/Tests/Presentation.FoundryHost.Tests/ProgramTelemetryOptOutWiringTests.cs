@@ -27,7 +27,7 @@ public sealed class ProgramTelemetryOptOutWiringTests
     }
 
     [Fact]
-    public void PreparesBeforeBuilding_WrongOrderMissingCallOrCommentOnly_ReturnsFalse()
+    public void PreparesBeforeBuilding_SampleSources_DetectsOnlyACallBeforeTheBuild()
     {
         const string inOrder = "var f = FoundryHostBootstrap.PrepareFoundryEnvironment(s, r, w);\n" +
             "var p = services.BuildValidatedServiceProvider();";

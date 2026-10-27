@@ -15,7 +15,7 @@ namespace Presentation.Common.Tests.Composition;
 public sealed class DataAtRestStartupCheckCompositionTests
 {
     [Fact]
-    public void EveryHost_StartsTheCheck()
+    public void GetServices_AnyHost_RegistersDataAtRestCheck()
     {
         var (services, _) = CompositionRootTestHost.ComposeServices([]);
 
@@ -24,7 +24,7 @@ public sealed class DataAtRestStartupCheckCompositionTests
     }
 
     [Fact]
-    public async Task TheCheck_ReadsTheStatementFromBoundConfiguration()
+    public async Task StartAsync_StatementInBoundConfiguration_LogsVolumeIsEncrypted()
     {
         await using var provider = CompositionRootTestHost.BuildProvider(
             [new("AppConfig:Infrastructure:DataAtRest:Encryption", "Volume")]);
