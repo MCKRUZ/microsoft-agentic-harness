@@ -145,6 +145,51 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         logger.Entries.Should().NotContain(e => e.Message.Contains(conversation, StringComparison.OrdinalIgnoreCase));
     }
 
+    [SkippableFact]
+    public async Task PruneExpired_DeleteThatFails_LogsNothingThatNamesTheConversation()
+    {
+        // #924: the failed-delete warning used to carry the path and the exception, whose message repeats it.
+        const string conversation = "conversation-without-digits";
+        var logger = new Infrastructure.AI.Tests.Resilience.RecordingLogger<FileSystemToolResultStore>();
+        var sut = new FileSystemToolResultStore(
+            OptionsMonitor(),
+            PermissiveAdmission.PermissiveSanitizer(),
+            new DefaultContentRedactionFilter(),
+            new MemoryCache(new MemoryCacheOptions()),
+            logger);
+        var stored = await sut.StoreIfLargeAsync(conversation, "search", null, new string('x', 200), scopeIsRetrievable: true);
+        var path = stored.FullContentPath!;
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow - TimeSpan.FromDays(2));
+
+        using var refusal = RefuseDeletion(path);
+        var removed = await sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+        Skip.If(removed == 1, "this account can delete from a read-only directory (root), so the failure can't be produced");
+
+        logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning, "the delete must have failed, or the check proves nothing");
+        logger.Entries.Should().NotContain(e => e.Message.Contains(conversation, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Makes the OS refuse to delete <paramref name="path"/> until disposed.</summary>
+    private static IDisposable RefuseDeletion(string path)
+    {
+        if (OperatingSystem.IsWindows())
+            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var directory = Path.GetDirectoryName(path)!;
+        var original = File.GetUnixFileMode(directory);
+        File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        return new RestoreMode(directory, original);
+    }
+
+    private sealed class RestoreMode(string directory, UnixFileMode mode) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(directory, mode);
+        }
+    }
+
     private IOptionsMonitor<AppConfig> OptionsMonitor()
     {
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
