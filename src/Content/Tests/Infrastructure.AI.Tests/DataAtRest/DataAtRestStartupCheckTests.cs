@@ -2,11 +2,11 @@ using Domain.Common.Config;
 using Domain.Common.Config.Infrastructure;
 using FluentAssertions;
 using Infrastructure.AI.DataAtRest;
-using Infrastructure.AI.Tests.Resilience;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.DataAtRest;
@@ -30,7 +30,7 @@ public sealed class DataAtRestStartupCheckTests
         // enum is no statement at all, so it warns too.
         var config = new AppConfig();
         config.Infrastructure.DataAtRest.Encryption = encryption;
-        var logger = new RecordingLogger<DataAtRestStartupCheck>();
+        var logger = new CapturingLogger<DataAtRestStartupCheck>();
         var check = new DataAtRestStartupCheck(
             Options.Create(config),
             logger,
@@ -39,19 +39,22 @@ public sealed class DataAtRestStartupCheckTests
         await check.StartAsync(CancellationToken.None);
 
         if (expected is null)
-            logger.Entries.Should().BeEmpty();
+            logger.Messages.Should().BeEmpty();
         else
-            logger.Entries.Should().ContainSingle().Which.Level.Should().Be(expected.Value);
+        {
+            logger.Messages.Should().ContainSingle();
+            logger.Logged(expected.Value, string.Empty).Should().BeTrue();
+        }
     }
 
     [Fact]
     public async Task TheWarning_SaysTheFilesAreNotEncryptedAndWhatToSet()
     {
-        var logger = new RecordingLogger<DataAtRestStartupCheck>();
+        var logger = new CapturingLogger<DataAtRestStartupCheck>();
 
         await new DataAtRestStartupCheck(Options.Create(new AppConfig()), logger).StartAsync(CancellationToken.None);
 
-        logger.Entries.Single().Message.Should().Contain("does not encrypt")
+        logger.Messages.Single().Should().Contain("does not encrypt")
             .And.Contain("AppConfig:Infrastructure:DataAtRest:Encryption");
     }
 }
