@@ -12,8 +12,9 @@ namespace Infrastructure.AI.KnowledgeGraph.Scoping;
 /// <remarks>
 /// <para>
 /// Off is a reasonable default for a single-tenant deployment, and a poor one to leave unnoticed in a deployment several
-/// people or organisations use. It reads the setting from the same <see cref="IOptionsMonitor{TOptions}"/> the store's
-/// registration reads, so the warning and the store cannot disagree about whether isolation is on.
+/// people or organisations use. It reads the same setting, through the same <see cref="IOptionsMonitor{TOptions}"/>, as
+/// the store's registration, at startup. The store reads it once, when its singleton is first resolved; a configuration
+/// reload between that and startup can leave the two disagreeing about whether isolation is on.
 /// </para>
 /// <para>
 /// The message claims only what the code does. Each user's remembered facts are private either way: their ids are

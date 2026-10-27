@@ -36,8 +36,8 @@ public sealed class KnowledgeIsolationOffStartupWarningTests
     public async Task TheWarning_IsLoggedOnlyWhenIsolationIsOffOutsideDevelopment(
         bool isolation, string? environment, int warnings)
     {
-        // Decided from the live setting the store's registration reads, so the two cannot disagree. No host environment
-        // at all (a composition without a host) is not Development, so it warns.
+        // Decided from the same setting the store's registration reads, read at startup. No host environment at all
+        // (a composition without a host) is not Development, so it warns.
         var config = new AppConfig();
         config.AI.Rag.GraphRag.MultiTenantIsolation = isolation;
         var logger = new Mock<ILogger<KnowledgeIsolationOffStartupWarning>>();
