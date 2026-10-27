@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
-namespace Infrastructure.AI.KnowledgeGraph.Tests;
+namespace Infrastructure.AI.KnowledgeGraph.Tests.Scoping;
 
 /// <summary>
 /// <see cref="KnowledgeIsolationOffStartupWarning"/> (#904): a deployment running with knowledge isolation off, the
@@ -21,8 +21,6 @@ public sealed class KnowledgeIsolationOffStartupWarningTests
     {
         var config = new AppConfig();
         var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton(Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config));
 
         services.AddKnowledgeGraphDependencies(config);
 

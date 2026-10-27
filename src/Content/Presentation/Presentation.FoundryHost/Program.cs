@@ -240,18 +240,11 @@ public static class Program
     }
 
     // One setting from the deployer's appsettings, User Secrets and environment, read before Foundry's environment is
-    // applied. Without Key Vault or App Configuration, which the composition root loads afterwards; the configuration
-    // is released at once rather than kept alive with its file watchers.
+    // applied. Without Key Vault or App Configuration, which the composition root loads afterwards.
     private static string? ReadLocalSetting(string key)
     {
         var local = AppConfigHelper.LoadLocalAppConfig(typeof(Program).Assembly);
-        try
-        {
+        using (local as IDisposable)
             return local[key];
-        }
-        finally
-        {
-            (local as IDisposable)?.Dispose();
-        }
     }
 }
