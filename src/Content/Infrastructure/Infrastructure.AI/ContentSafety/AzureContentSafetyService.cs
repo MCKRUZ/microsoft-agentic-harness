@@ -86,6 +86,10 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
     {
         ArgumentNullException.ThrowIfNull(content);
 
+        // Nothing to screen. Sent as is, the service rejects it, and the fail-closed policy would refuse the request.
+        if (string.IsNullOrWhiteSpace(content))
+            return Pass;
+
         foreach (var chunk in Chunks(content))
         {
             var result = await ScreenChunkAsync(chunk, cancellationToken).ConfigureAwait(false);

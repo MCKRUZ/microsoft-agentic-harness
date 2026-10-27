@@ -70,4 +70,19 @@ public sealed class ExecuteAgentTurnCommandScreeningTests
 
         new ExecuteAgentTurnCommandValidator().Validate(command).IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public void Validate_AnOversizedWhitespaceOnlyTurnContext_Fails()
+    {
+        // Whitespace-only context is not screened, so the combined limit does not count it; it is bounded on its own.
+        var command = new ExecuteAgentTurnCommand
+        {
+            AgentName = "agent",
+            UserMessage = "hi",
+            TurnContext = new string(' ', 100_001),
+        };
+
+        new ExecuteAgentTurnCommandValidator().Validate(command).Errors
+            .Should().ContainSingle().Which.ErrorMessage.Should().Be("Turn context exceeds maximum length.");
+    }
 }

@@ -21,5 +21,9 @@ public class ExecuteAgentTurnCommandValidator : AbstractValidator<ExecuteAgentTu
 		RuleFor(x => x.ContentToScreen)
 			.MaximumLength(100_000).WithMessage("Message and turn context together exceed the maximum length.")
 			.When(x => !string.IsNullOrEmpty(x.TurnContext));
+
+		// Bounded on its own too: a whitespace-only turn context is not screened, so the rule above does not count it.
+		RuleFor(x => x.TurnContext)
+			.MaximumLength(100_000).WithMessage("Turn context exceeds maximum length.");
 	}
 }

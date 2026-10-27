@@ -14,7 +14,8 @@ namespace Application.AI.Common.Exceptions;
 /// or a <c>ContentBlocked</c> result tells the caller the text itself was harmful, which is permanent and not worth
 /// retrying, and counts toward the block metrics a deployment alerts on. This exception surfaces as a service failure
 /// instead: HTTP 503 where the host maps errors through <c>IHttpStatusException</c>, which the caller can retry once the
-/// service is back. AgentHub's SignalR and AG-UI turn paths do not map it yet (#952).
+/// service is back. AgentHub's SignalR and AG-UI turn paths send <see cref="ClientMessage"/>, which tells the caller to
+/// try again, and do not count it against the agent's health (#952).
 /// </para>
 /// <para>
 /// The message never contains the screened text.
@@ -23,7 +24,7 @@ namespace Application.AI.Common.Exceptions;
 public sealed class ContentSafetyUnavailableException : ApplicationExceptionBase, IHttpStatusException, IScreeningRefusal
 {
     /// <inheritdoc />
-    public string ClientMessage => SafeMessage;
+    public string ClientMessage => "Content could not be screened right now. Try again shortly.";
 
     /// <inheritdoc />
     public int StatusCode => 503;

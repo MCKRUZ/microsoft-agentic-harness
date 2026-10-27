@@ -186,11 +186,9 @@ public sealed partial class ConversationOrchestrator
                 "Turn dispatch for conversation {ConversationId} cancelled by client disconnect.", conversationId);
             throw;
         }
-        catch (Exception ex) when (ex is IScreeningRefusal refusal)
+        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
         {
-            // Not the agent failing, so not counted against its health, and nothing to add to the transcript.
-            return await HandleScreeningRefusalAsync(
-                conversationId, callerId, userMessageId, storedForThisTurn, ex, refusal, ct);
+            return await HandleRejectedTurnAsync(conversationId, callerId, userMessageId, storedForThisTurn, ex, ct);
         }
         catch (Exception ex)
         {
@@ -428,36 +426,25 @@ public sealed partial class ConversationOrchestrator
         });
     }
 
-    // The turn was refused before the model saw it. A message stored for this turn is removed again (#959): the next turn
-    // reads its history back from the store unscreened, so left in place it would reach the model the moment the caller
-    // sent anything that passes. A retried message is kept: it was accepted by an earlier turn, and removing it on a
-    // refusal such as a screening outage would delete the caller's own history and desync the count the client was sent.
-    private async Task<TurnOutcome> HandleScreeningRefusalAsync(
-        string conversationId, string callerId, Guid userMessageId, bool storedForThisTurn,
-        Exception ex, IScreeningRefusal refusal, CancellationToken ct)
+    // Rejected before the model saw it (#959): see RejectedTurnMessage for which rejections remove the stored message.
+    // Not the agent failing, so not counted against its health, and no error row is added to the transcript.
+    private async Task<TurnOutcome> HandleRejectedTurnAsync(
+        string conversationId, string callerId, Guid userMessageId, bool storedForThisTurn, Exception rejection,
+        CancellationToken ct)
     {
-        _logger.LogWarning("Turn for conversation {ConversationId} refused by request screening ({Refusal}).",
-            conversationId, ex.GetType().Name);
-        if (!storedForThisTurn)
-            return new TurnOutcome { Success = false, ErrorMessage = refusal.ClientMessage };
-
-        try
-        {
-            await _conversationStore.TruncateFromMessageAsync(conversationId, callerId, userMessageId, ct);
-        }
-        catch (Exception storeEx) when (storeEx is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            _logger.LogError(storeEx,
-                "Failed to remove the refused message from conversation {ConversationId}; it will be replayed as history.",
-                conversationId);
-        }
+        _logger.LogWarning("Turn for conversation {ConversationId} rejected before dispatch ({Rejection}).",
+            conversationId, rejection.GetType().Name);
+        if (RejectedTurnMessage.ShouldRemove(rejection, storedForThisTurn))
+            await RejectedTurnMessage.RemoveAsync(_conversationStore, conversationId, callerId, userMessageId, _logger, ct);
 
         return new TurnOutcome
         {
             Success = false,
-            ErrorMessage = refusal.ClientMessage,
+            ErrorMessage = rejection is IScreeningRefusal refusal ? refusal.ClientMessage : GenericTurnErrorMessage,
         };
     }
+
+    private const string GenericTurnErrorMessage = "An error occurred processing your request.";
 
     private async Task<TurnOutcome> HandleTurnErrorAsync(
         string conversationId, string callerId, Exception ex, AgentTurnErrorKind errorKind, CancellationToken ct)
@@ -471,7 +458,7 @@ public sealed partial class ConversationOrchestrator
             && _environment.IsDevelopment()
             && !string.IsNullOrWhiteSpace(ex.Message)
                 ? ex.Message
-                : "An error occurred processing your request.";
+                : GenericTurnErrorMessage;
 
         try
         {

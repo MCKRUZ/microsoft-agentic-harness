@@ -366,15 +366,14 @@ public sealed class AgUiRunHandler
         {
             throw;
         }
-        catch (Exception ex) when (ex is IScreeningRefusal refusal)
+        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
         {
-            // Refused before the model saw it. The message was stored above and the next run reads its history back
-            // from the store unscreened, so it is removed again (#959), as the SignalR transport does.
-            _logger.LogWarning("AG-UI run {RunId}: refused by request screening ({Refusal}).", input.RunId, ex.GetType().Name);
-            await RemoveRefusedMessageAsync(input.ThreadId, callerId, userMsg.Id, ct);
-            if (sink.Started)
-                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-            await writer.WriteAsync(new RunErrorEvent(refusal.ClientMessage), ct);
+            // Rejected before the model saw it, so nothing was streamed. The message stored above is removed (#959);
+            // see RejectedTurnMessage. Every AG-UI run stores its message, so the removal always applies.
+            _logger.LogWarning("AG-UI run {RunId}: rejected before dispatch ({Rejection}).", input.RunId, ex.GetType().Name);
+            await RejectedTurnMessage.RemoveAsync(_conversationStore, input.ThreadId, callerId, userMsg.Id, _logger, ct);
+            await writer.WriteAsync(
+                new RunErrorEvent(ex is IScreeningRefusal refusal ? refusal.ClientMessage : DispatchErrorMessage), ct);
             return;
         }
         catch (Exception ex)
@@ -382,7 +381,7 @@ public sealed class AgUiRunHandler
             _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
             if (sink.Started)
                 await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-            await writer.WriteAsync(new RunErrorEvent("An error occurred during agent execution."), ct);
+            await writer.WriteAsync(new RunErrorEvent(DispatchErrorMessage), ct);
             return;
         }
         finally
@@ -501,19 +500,7 @@ public sealed class AgUiRunHandler
     /// </remarks>
     private static string GetCallerId(ClaimsPrincipal principal) => principal.GetUserId();
 
-    // Best-effort: a failure leaves the message to be replayed as history, which is logged as the error it is.
-    private async Task RemoveRefusedMessageAsync(string threadId, string callerId, Guid messageId, CancellationToken ct)
-    {
-        try
-        {
-            await _conversationStore.TruncateFromMessageAsync(threadId, callerId, messageId, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            _logger.LogError(ex,
-                "Failed to remove the refused message from thread {ThreadId}; it will be replayed as history.", threadId);
-        }
-    }
+    private const string DispatchErrorMessage = "An error occurred during agent execution.";
 
     /// <summary>
     /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly
