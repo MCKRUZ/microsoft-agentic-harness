@@ -38,6 +38,7 @@ namespace Presentation.Common.Tests.Composition;
 /// pinned by that store's own <c>*ErasureTests</c>; this test proves they are reached, under an operator, without leaking.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class OperatorErasureEndToEndTests : IDisposable
 {
     // Mixed case on purpose: conversations match the id as issued, the graph and schedules match it canonicalized.

@@ -31,6 +31,7 @@ namespace Presentation.Common.Tests.Composition;
 /// <c>RegisterConversationStore</c> stops being reachable from a host.
 /// </para>
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class ConversationStoreCompositionTests : IDisposable
 {
     private readonly string _workingDir;
