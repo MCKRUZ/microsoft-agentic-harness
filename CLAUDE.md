@@ -35,7 +35,7 @@ Key architectural concepts from the reference:
 - **Skill Training Loop**: `TrainSkillCommandHandler` chains the 6 stages on the same call stack (no MediatR re-entrance inner-loop); epoch-boundary mechanisms (SlowUpdate, MetaSkillUpdate) are separate CQRS commands dispatched via `IMediator` so they get the standard pipeline (validation, audit, telemetry)
 
 ## Documentation
-- **Developer Onboarding Guide**: `documentation/onboarding/` — 18-chapter guide for engineers (deployed at `/`). Chapter 17 is the Execution API integration guide (bundles, workflows, tool discovery); its OpenAPI spec is `documentation/onboarding/assets/openapi/bundle-api.yaml` (filename kept deliberately — it is a published URL) (hand-written; to change the contract, follow *Change the wire contract* in `src/Content/Presentation/Presentation.ExecutionApi/README.md`)
+- **Developer Onboarding Guide**: `documentation/onboarding/` — 19-chapter guide for engineers (deployed at `/`). Chapter 19, the Incident Ledger, holds every `INC-NN` below. Chapter 17 is the Execution API integration guide (bundles, workflows, tool discovery); its OpenAPI spec is `documentation/onboarding/assets/openapi/bundle-api.yaml` (filename kept deliberately — it is a published URL) (hand-written; to change the contract, follow *Change the wire contract* in `src/Content/Presentation/Presentation.ExecutionApi/README.md`)
 - **Architecture Guide**: `documentation/architecture/` — Azure infrastructure playbook (deployed at `/architecture/`)
 - **Security Guide**: `documentation/security/` — threat model, governance, sandbox, egress/SSRF, content safety, OWASP Agentic evals (deployed at `/security/`)
 - **Interactive Course**: `documentation/agentic-harness-course/` — Visual course for non-technical audiences (deployed at `/agentic-harness-course/`)
@@ -51,7 +51,7 @@ Key architectural concepts from the reference:
 - `dotnet run --project src/Content/Presentation/Presentation.ConsoleUI` — Run console
 
 ## Verification
-After changes: `dotnet build src/AgenticHarness.slnx && dotnet test src/AgenticHarness.slnx`
+After changes: build, then test (commands above).
 
 ## Code Style
 - Immutability: records, `with` expressions, `ImmutableList<T>`, init-only properties
@@ -71,9 +71,29 @@ After changes: `dotnet build src/AgenticHarness.slnx && dotnet test src/AgenticH
 
 This is a production template that enterprise consumers will clone. Corners cut now propagate to every downstream consumer. The global "Optimize for Best Outcome, Not Speed" rule applies with extra weight here:
 
-- Match or exceed the reference implementation (`C:\CodeRepos\ApplicationTemplate`) on patterns, abstractions, and rigor. Never ship something here that you'd reject when reviewing the reference.
+- Match or exceed the reference implementation on patterns, abstractions, and rigor. Never ship something here that you'd reject when reviewing the reference.
 - When the reference is silent on a problem, design the best answer; do not invent a smaller answer just because the reference didn't address it.
 - Every public type ships with full XML docs (already a rule) — same reasoning. Consumers are reading this as teaching material.
+
+## Standing rules
+Each arrow names the enforcing test, the review rubric, or the ledger entry. Subsystem rules: `.claude/rules/*.md`. `check-claude-md-budget.mjs` caps this file at 12,288 bytes and checks every arrow.
+- A request carrying user text must implement `IContentScreenable`; `ContentSafetyBehavior` screens nothing else → INC-05
+- `AIContextProvider.ProvideAIContextAsync` is additive: subtract or rewrite in `InvokingCoreAsync`; test via `InvokingAsync` → AIContextProviderMergeContractTests
+- Never re-check conversation ownership at a call site; pass `callerId` and let `IConversationStore` refuse (a mock refuses nothing) → INC-18
+- Retry, breaker and fallback decide via `IProviderErrorClassifier`, never exception type; 429/5xx stay transient → DefaultProviderErrorClassifierTests
+- An authenticated request gets a knowledge scope or is rejected (null = GLOBAL); identity only via `GetUserIdOrNull()` → CallerIdentityResolutionBoundaryTests
+- When one result type means two things, return a distinct type, not a better field → correctness-review-rubric
+- A fix to one occurrence of a repeated pattern is not done until every sibling has it → correctness-review-rubric
+- A new enum member updates every hand-kept "all values" list; pin each with a test → DefaultValues_MatchEveryRedactionCategoryEnumMember
+- Close a check at the pipeline's true final exit, not after the nearest filter → correctness-review-rubric
+- Nothing built inside the `ILoggerFactory` (or any core) factory takes `ILogger<T>`; sweep after core DI changes → ValidateOnBuildSweepTests
+- Before changing a shared object, read what each real consumer does with it → correctness-review-rubric
+- A control counts only if a host invokes it: name the line whose deletion removes it and the test that then fails → SecurityControlHasACallerTests
+- Narrowing a check: also test the other direction (no new false negative) against a real producer's wire shape → correctness-review-rubric
+- Per-caller MCP credentials need caller identity in `McpConnectionManager`'s cache keys → SharedCaches_AreKeyedByServerNameOnly
+- Arm child governance only via `GovernanceArmer` (a preset; `OpenChild` for child scopes), never a hand copy → GovernanceArmerTests
+- Publish ambient state around every step of an async iterator, not once; re-assert attribution via `ReassertAttribution()` → AttributionIsPublishedByTheExecutionContextOnlyTests
+- Package skew: pin the transitive package in `Presentation.Common.csproj` or list it in `KnownHostSkews` with a reason → PackageSkewTests
 
 <!-- gitnexus:start -->
 

@@ -6,7 +6,7 @@ paths: src/Content/**/MCPServer/**/*.cs, src/Content/**/Tools/**/*.cs
 ## Tool Implementation Pattern
 1. Define interface in `Application.AI.Common/Interfaces/` (e.g., `IMyTool`)
 2. Implement in `Infrastructure.AI/Tools/` or `Infrastructure.Common/Services/`
-3. Register as keyed singleton in `Infrastructure.Common/DependencyInjection.cs`
+3. Register as keyed singleton in `Infrastructure.Common/DependencyInjection.cs` — always `AddKeyedSingleton<T>(toolName, ...)`, never unkeyed (INC-02)
 4. Add JSON schema via `IToolSchemaService` for agent discovery
 5. Convert to `AITool` via `IToolConverter`
 
