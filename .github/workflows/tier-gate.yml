@@ -1,0 +1,138 @@
+name: Tier Gate
+
+# Risk-tiered human review (Anthropic, "How the Claude Code team does code review"): the change
+# sets the tier, never the author, and Matt's attention goes where the risk is. This workflow
+# classifies every PR (tier-rules.mjs), labels it tier:0/1/2, and publishes the `tier-gate`
+# commit status that the checks ruleset requires (tier-status.mjs says what each tier needs).
+# See .github/RAILS.md, "Risk tiers".
+#
+# WHY pull_request_target (read before changing the trigger)
+# Every other rail runs on `pull_request`, i.e. the PR's OWN copy of the workflow — which a PR
+# could edit to pass itself (RAILS.md, "Gate integrity"). For the gate that decides how much human
+# review a change gets, that would let a PR lower its own tier. So this one runs the DEFAULT
+# BRANCH's copy. That is only safe because it never executes anything from the PR:
+#   * it checks out the base branch, and reads the PR head only as git objects (`git diff`);
+#   * the scripts it runs come from the base branch;
+#   * the PR body reaches scripts through the GitHub API, never interpolated into a shell line;
+#   * it uses no secret except the GITHUB_TOKEN, scoped below to labels and statuses.
+# Do not add a step that checks out, builds, installs or runs PR code here.
+#
+# Triggers: every push or body edit (pull_request_target), any PR comment (the owner's sign-off
+# arrives as one), and a finished Deep Review (it has to be done before a tier-2 sign-off counts).
+# Labels and comments made with GITHUB_TOKEN start no workflow, which is why the status is
+# recomputed from GitHub's state on each of these events rather than reacting to a label.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created, edited]
+  workflow_run:
+    workflows: ["Deep Review"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+  checks: read
+
+concurrency:
+  group: tier-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  tier-classifier:
+    name: tier-classifier
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_FROM_PR: ${{ github.event.pull_request.number }}
+          PR_FROM_ISSUE: ${{ github.event.issue.number }}
+          PR_FROM_RUN: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          PR="${PR_FROM_PR:-${PR_FROM_ISSUE:-${PR_FROM_RUN:-}}}"
+          if [ -z "$PR" ] && [ -n "$RUN_SHA" ]; then
+            # workflow_run carries no PR list for fork PRs; find it by commit.
+            PR="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RUN_SHA/pulls" --jq '.[0].number // empty')"
+          fi
+          if [ -z "$PR" ]; then echo "No pull request for this event; nothing to gate."; exit 0; fi
+          STATE="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)"
+          if [ "$STATE" != "open" ]; then echo "PR #$PR is $STATE; nothing to gate."; exit 0; fi
+          BASE="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .base.ref)"
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the base branch (never the PR)
+        if: steps.pr.outputs.number
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify the change
+        id: tier
+        if: steps.pr.outputs.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          BASE: ${{ steps.pr.outputs.base }}
+        run: |
+          set -uo pipefail
+          # The PR head as data only: fetched into a ref, diffed, never checked out.
+          git fetch --no-tags origin "refs/pull/${PR}/head:refs/remotes/pr/head" "refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          SEC="$(bash .github/scripts/security-gate-scope.sh --base "origin/${BASE}" --head refs/remotes/pr/head --format human)"
+          SEC_CODE=$?
+          SEC_REQUIRED="$(printf '%s\n' "$SEC" | sed -n 's/^required=//p')"
+          if [ "$SEC_CODE" -ne 0 ] || [ -z "$SEC_REQUIRED" ]; then
+            echo "::warning::security scope could not be computed; failing closed to tier 2."
+            SEC_REQUIRED=true
+          fi
+          OUT="$(node .github/scripts/tier-rules.mjs --base "origin/${BASE}" --head refs/remotes/pr/head --security-required "$SEC_REQUIRED")"
+          if [ $? -ne 0 ]; then
+            TIER=2; REASONS="could not classify the diff (failing closed)"
+          else
+            TIER="$(printf '%s\n' "$OUT" | sed -n 's/^tier=//p')"
+            REASONS="$(printf '%s\n' "$OUT" | sed -n 's/^reasons=//p')"
+          fi
+          # Circuit breaker: while a rails:breaker issue is open, nothing is tier 0.
+          if [ "$TIER" = "0" ]; then
+            OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label rails:breaker --state open --json number --jq 'map("#\(.number)") | join(",")' 2>/dev/null)" || OPEN="(lookup failed)"
+            if [ -n "$OPEN" ]; then TIER=1; REASONS="$REASONS; tier-0 breaker open ($OPEN)"; fi
+          fi
+          echo "Tier $TIER: $REASONS"
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+          { echo "reasons<<__REASONS__"; echo "$REASONS"; echo "__REASONS__"; } >> "$GITHUB_OUTPUT"
+
+      - name: Label the PR with its tier
+        if: steps.pr.outputs.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          TIER: ${{ steps.tier.outputs.tier }}
+        run: |
+          set -euo pipefail
+          for t in 0 1 2; do
+            [ "$t" = "$TIER" ] && continue
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "tier:$t" >/dev/null 2>&1 || true
+          done
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "tier:$TIER"
+
+      - name: Publish the tier-gate status
+        if: steps.pr.outputs.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          TIER: ${{ steps.tier.outputs.tier }}
+          REASONS: ${{ steps.tier.outputs.reasons }}
+          OWNER: ${{ github.repository_owner }}
+        run: node .github/scripts/tier-status.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" --tier "$TIER" --reasons "$REASONS" --owner "$OWNER"

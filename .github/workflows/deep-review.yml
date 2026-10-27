@@ -1,0 +1,131 @@
+name: Deep Review
+
+# The second, independent review on a tier-2 change (CI and rails, hooks, auth, security,
+# migrations, infrastructure, or more than 1,000 changed lines under src/). On the Claude Code
+# team the highest-risk paths need two people; on this solo repo the second "person" is this
+# fresh model review, and Matt reads it before posting his sign-off. It informs; it never decides:
+# its findings arrive as inline threads (which must be answered before merge), and the tier-gate
+# status counts its completion, not its opinion. An agent's review never stands in for Matt's.
+#
+# Different question from correctness-review: not "is this line correct?" but "does this change
+# solve its stated problem, fit the system, avoid breaking something else, and is it the right
+# change at all?" — the whole-change reasoning a second human would bring.
+#
+# Runs on `pull_request` (the PR's own copy), like the other reviewers, so fork PRs never see the
+# OAuth token. It reports a `deep-review` check on every PR; below tier 2 it passes trivially.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: deep-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deep-review:
+    name: deep-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Is this tier 2?
+        id: tier
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -uo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          SEC="$(bash .github/scripts/security-gate-scope.sh --base FETCH_HEAD --format human)" || SEC="required=true"
+          SEC_REQUIRED="$(printf '%s\n' "$SEC" | sed -n 's/^required=//p')"
+          OUT="$(node .github/scripts/tier-rules.mjs --base FETCH_HEAD --security-required "${SEC_REQUIRED:-true}")" || OUT="tier=2"
+          TIER="$(printf '%s\n' "$OUT" | sed -n 's/^tier=//p')"
+          echo "$OUT"
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "Draft PR — deep review deferred until ready_for_review."
+          elif [ "$TIER" = "2" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "Tier $TIER — no deep review needed."
+          fi
+
+      - name: Run the deep reviewer
+        id: reviewer
+        if: steps.tier.outputs.run == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Subscription billing, OAuth token only — see .github/RAILS.md before adding an API key.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are the second, independent reviewer for tier-2 PR #${{ github.event.pull_request.number }}.
+            You stand in for the second human reviewer a high-risk change would get on a larger
+            team. Matt, the owner, will read your review before signing off, and reads it INSTEAD
+            of most of the diff, so your job is to tell him what he must look at himself.
+
+            Read: the PR description (the stated intent; `gh pr view ${{ github.event.pull_request.number }}`),
+            CLAUDE.md, .github/RAILS.md, and the diff against origin/${{ github.base_ref }}.
+            Other reviewers already cover line-level correctness (correctness-review) and
+            exploitability (security-review). Do not repeat their work. Answer instead:
+              1. Does the change do what the description says, completely?
+              2. Does it fit the system — this repo's conventions and architecture — or does it
+                 set a pattern others would copy badly?
+              3. What else could it break: callers, configuration, other workflows, consumers
+                 of this template?
+              4. Is this the right change at all? Is there a simpler route, or an earlier
+                 decision it contradicts?
+              5. What would the automated checks on this PR NOT catch?
+
+            Then do BOTH:
+            A. POST one PR comment that starts with the line
+               `<!-- rail:deep-review-summary sha=${{ github.event.pull_request.head.sha }} -->`
+               then a count line ("N findings: x Important, y Nit" or "No findings."), then a
+               short "Read these yourself" list of the specific files or hunks Matt should open,
+               each with one line on why. No praise, no filler.
+            B. Write your findings as a JSON array to ${{ runner.temp }}/deep-review-findings.json
+               (`[]` when none). Each element: {"path", "line" (a changed line), "class"
+               (kebab-case), "tag" ("important" | "nit" | "pre-existing"), "title", "body"}.
+               Report every finding present NOW, including any already reported: one you leave
+               out is treated as fixed. Do not post inline comments yourself.
+            Write B before A if you are running low on turns.
+          claude_args: |
+            --model opus
+            --max-turns 100
+            --allowedTools Bash,Read,Grep,Glob,Write
+
+      - name: Post findings as inline review threads
+        if: steps.tier.outputs.run == 'true' && steps.reviewer.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FINDINGS_FILE: ${{ runner.temp }}/deep-review-findings.json
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$FINDINGS_FILE" ]; then echo "::warning::No findings file written."; exit 0; fi
+          node .github/scripts/post-review-findings.mjs --reviewer deep-review --findings "$FINDINGS_FILE" \
+            --pr "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA"
+
+      # The tier-gate status counts this check's success as "the second review happened". A
+      # review that errored or ran out of turns must therefore fail, so the gate keeps waiting.
+      - name: Require a completed review
+        if: steps.tier.outputs.run == 'true'
+        env:
+          OUTCOME: ${{ steps.reviewer.outcome }}
+          FINDINGS_FILE: ${{ runner.temp }}/deep-review-findings.json
+        run: |
+          if [ "$OUTCOME" != "success" ] || [ ! -f "$FINDINGS_FILE" ]; then
+            echo "::error::The deep review did not complete (outcome: $OUTCOME). Re-run this job; a tier-2 sign-off cannot count until it finishes."
+            exit 1
+          fi
+          echo "Deep review completed."
