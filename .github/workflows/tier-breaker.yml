@@ -1,0 +1,29 @@
+name: Tier Breaker
+
+# Trips the tier-0 circuit breaker when a tier-0 merge is reverted: opens a `rails:breaker` issue,
+# and while one is open tier-gate.yml classes nothing as tier 0. Matt re-arms by closing it.
+# See .github/scripts/tier-breaker.mjs. Runs after every push to main (a revert lands there) and
+# daily as a backstop.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  tier-breaker:
+    name: tier-breaker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Look for reverted tier-0 merges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/tier-breaker.mjs --repo "$GITHUB_REPOSITORY" --days 14
