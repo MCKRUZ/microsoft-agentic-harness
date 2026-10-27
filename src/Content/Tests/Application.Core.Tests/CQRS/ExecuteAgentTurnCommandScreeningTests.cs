@@ -74,7 +74,7 @@ public sealed class ExecuteAgentTurnCommandScreeningTests
     [Fact]
     public void Validate_AnOversizedWhitespaceOnlyTurnContext_Fails()
     {
-        // Whitespace-only context is not screened, so the combined limit does not count it; it is bounded on its own.
+        // Whitespace-only context is not screened, but the limit is on what the caller sent, so it still counts.
         var command = new ExecuteAgentTurnCommand
         {
             AgentName = "agent",
@@ -83,6 +83,6 @@ public sealed class ExecuteAgentTurnCommandScreeningTests
         };
 
         new ExecuteAgentTurnCommandValidator().Validate(command).Errors
-            .Should().ContainSingle().Which.ErrorMessage.Should().Be("Turn context exceeds maximum length.");
+            .Should().ContainSingle().Which.ErrorMessage.Should().Contain("together");
     }
 }

@@ -188,7 +188,11 @@ public sealed partial class ConversationOrchestrator
         }
         catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
         {
-            return await HandleRejectedTurnAsync(conversationId, callerId, userMessageId, storedForThisTurn, ex);
+            // Rejected before the model saw it (#959). Not the agent failing, so not counted against its health, and no
+            // error row is added to the transcript.
+            var clientMessage = await RejectedTurnMessage.RejectAsync(
+                _conversationStore, conversationId, callerId, userMessageId, storedForThisTurn, ex, _logger);
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
         }
         catch (Exception ex)
         {
@@ -426,20 +430,6 @@ public sealed partial class ConversationOrchestrator
         });
     }
 
-    // Rejected before the model saw it (#959): see RejectedTurnMessage for which rejections remove the stored message.
-    // Not the agent failing, so not counted against its health, and no error row is added to the transcript.
-    private async Task<TurnOutcome> HandleRejectedTurnAsync(
-        string conversationId, string callerId, Guid userMessageId, bool storedForThisTurn, Exception rejection)
-    {
-        _logger.LogWarning(rejection, "Turn for conversation {ConversationId} rejected before dispatch.", conversationId);
-        if (RejectedTurnMessage.ShouldRemove(rejection, storedForThisTurn))
-            await RejectedTurnMessage.RemoveAsync(_conversationStore, conversationId, callerId, userMessageId, _logger);
-
-        return new TurnOutcome { Success = false, ErrorMessage = RejectedTurnMessage.ClientMessage(rejection) };
-    }
-
-    private const string GenericTurnErrorMessage = "An error occurred processing your request.";
-
     private async Task<TurnOutcome> HandleTurnErrorAsync(
         string conversationId, string callerId, Exception ex, AgentTurnErrorKind errorKind, CancellationToken ct)
     {
@@ -452,7 +442,7 @@ public sealed partial class ConversationOrchestrator
             && _environment.IsDevelopment()
             && !string.IsNullOrWhiteSpace(ex.Message)
                 ? ex.Message
-                : GenericTurnErrorMessage;
+                : "An error occurred processing your request.";
 
         try
         {

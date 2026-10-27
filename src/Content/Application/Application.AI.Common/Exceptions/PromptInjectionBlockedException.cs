@@ -32,5 +32,8 @@ public sealed class PromptInjectionBlockedException : InvalidOperationException,
     }
 
     /// <inheritdoc />
-    public string ClientMessage => "This message was blocked by the content policy.";
+    public string ClientMessage => IScreeningRefusal.BlockedMessage;
+
+    /// <inheritdoc />
+    public bool IsVerdict => true;
 }

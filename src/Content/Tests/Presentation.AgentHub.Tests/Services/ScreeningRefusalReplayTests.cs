@@ -2,12 +2,9 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
-using Application.AI.Common.Services;
 using Application.AI.Common.Services.AI;
-using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
-using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using MediatR;
@@ -15,7 +12,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Time.Testing;
 using Moq;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Interfaces;
@@ -47,10 +43,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     public ScreeningRefusalReplayTests()
     {
         Directory.CreateDirectory(_dir);
-        _store = new FileSystemConversationStore(
-            Options.Create(new ConversationsConfig { ConversationsPath = _dir }),
-            new FakeTimeProvider(DateTimeOffset.UtcNow),
-            NullLogger<FileSystemConversationStore>.Instance);
+        _store = TestConversationStore.Create(_dir);
         _observability.Setup(o => o.StartSessionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
         _observability.Setup(o => o.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
@@ -90,33 +83,9 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             NullLogger<ConversationOrchestrator>.Instance);
     }
 
-    // Literal, not RejectedTurnMessage.NotAcceptedMessage: the wording is what the caller sees, so it is pinned here.
-    private const string GenericError = "This message could not be accepted. Check its length and try again.";
-
-    /// <summary>Every rejection that happens before the model sees the message.</summary>
-    public static TheoryData<Exception> Refusals => new()
-    {
-        new ContentSafetyException("Content blocked by safety policy (hate).", "hate"),
-        new ContentSafetyUnavailableException(),
-        new PromptInjectionBlockedException("Prompt injection detected (role_play). Request blocked."),
-        // Validation runs before screening, so a message it rejects was never screened at all.
-        new ValidationException("ContentToScreen: Message and turn context together exceed the maximum length."),
-    };
-
-    /// <summary>The rejections that are a verdict on the message, as opposed to a screening outage.</summary>
-    public static TheoryData<Exception> DefiniteRejections => new()
-    {
-        new ContentSafetyException("Content blocked by safety policy (hate).", "hate"),
-        new PromptInjectionBlockedException("Prompt injection detected (role_play). Request blocked."),
-        new ValidationException("UserMessage: User message exceeds maximum length."),
-    };
-
-    private static string ClientMessageFor(Exception rejection) =>
-        rejection is IScreeningRefusal refusal ? refusal.ClientMessage : GenericError;
-
     [Theory]
-    [MemberData(nameof(Refusals))]
-    public async Task ARefusedTurn_IsNotInTheNextTurnsHistory(Exception refusal)
+    [MemberData(nameof(RejectionCases.All), MemberType = typeof(RejectionCases))]
+    public async Task ARefusedTurn_IsNotInTheNextTurnsHistory(Exception refusal, string toldTheCaller)
     {
         var conversation = await _store.CreateAsync("agent", "user-a");
         IReadOnlyList<ChatMessage>? secondTurnHistory = null;
@@ -137,7 +106,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             "conn", conversation.Id, Guid.NewGuid(), "continue", "user-a", null, CancellationToken.None);
 
         first.Success.Should().BeFalse();
-        first.ErrorMessage.Should().Be(ClientMessageFor(refusal), "the caller is told why, without the text");
+        first.ErrorMessage.Should().Be(toldTheCaller, "the caller is told why, without the text");
         second.Success.Should().BeTrue();
         secondTurnHistory.Should().NotBeNull();
         secondTurnHistory!.Select(m => m.Text).Should().NotContain(text => text.Contains(Refused),
@@ -148,8 +117,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(Refusals))]
-    public async Task ARefusedEdit_RemovesTheEditedMessage(Exception refusal)
+    [MemberData(nameof(RejectionCases.All), MemberType = typeof(RejectionCases))]
+    public async Task ARefusedEdit_RemovesTheEditedMessage(Exception refusal, string toldTheCaller)
     {
         var conversation = await SeedExchangeAsync("the original question");
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>())).ThrowsAsync(refusal);
@@ -157,7 +126,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         var outcome = await Orchestrator().EditAndResubmitAsync(
             "conn", conversation.Id, conversation.UserMessageId, Guid.NewGuid(), Refused, "user-a", null, CancellationToken.None);
 
-        outcome.ErrorMessage.Should().Be(ClientMessageFor(refusal));
+        outcome.ErrorMessage.Should().Be(toldTheCaller);
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content)
             .Should().NotContain(content => content.Contains(Refused), "the edited text was stored for this turn and refused");
         _health.Verify(h => h.RecordError(It.IsAny<string>()), Times.Never);
@@ -180,8 +149,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(DefiniteRejections))]
-    public async Task ARetryThatIsDefinitelyRejected_RemovesTheMessage(Exception rejection)
+    [MemberData(nameof(RejectionCases.Verdicts), MemberType = typeof(RejectionCases))]
+    public async Task ARetryThatIsDefinitelyRejected_RemovesTheMessage(Exception rejection, string toldTheCaller)
     {
         // The earlier turn may have stored the message without screening it (an outage with BlockWhenUnavailable off,
         // or detection since tightened). Rejected now, it would otherwise be replayed unscreened on the next send.
@@ -191,7 +160,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         var outcome = await Orchestrator().RetryFromMessageAsync(
             "conn", conversation.Id, conversation.AssistantMessageId, "user-a", null, CancellationToken.None);
 
-        outcome.ErrorMessage.Should().Be(ClientMessageFor(rejection));
+        outcome.ErrorMessage.Should().Be(toldTheCaller);
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content)
             .Should().NotContain(content => content.Contains(Refused), "a rejected message stays out of the history");
     }

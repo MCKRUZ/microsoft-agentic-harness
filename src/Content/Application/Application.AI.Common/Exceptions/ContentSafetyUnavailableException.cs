@@ -24,7 +24,13 @@ namespace Application.AI.Common.Exceptions;
 public sealed class ContentSafetyUnavailableException : ApplicationExceptionBase, IHttpStatusException, IScreeningRefusal
 {
     /// <inheritdoc />
+    /// <remarks>
+    /// Says to try again, which <see cref="SafeMessage"/>, the HTTP 503 body, leaves to the status code.
+    /// </remarks>
     public string ClientMessage => "Content could not be screened right now. Try again shortly.";
+
+    /// <inheritdoc />
+    public bool IsVerdict => false;
 
     /// <inheritdoc />
     public int StatusCode => 503;

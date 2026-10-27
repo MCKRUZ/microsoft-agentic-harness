@@ -38,14 +38,17 @@ internal static class TestConversationStore
     /// <param name="path">An isolated temp directory owned by the calling factory.</param>
     internal static void UseIsolatedDirectory(IServiceCollection services, string path)
     {
-        services.AddSingleton<IConversationStore>(new FileSystemConversationStore(
-            Options.Create(new ConversationsConfig { ConversationsPath = path }),
-            // Real time on purpose: these factories serve behavioural hub and controller tests that
-            // assert on transcripts, not on timestamps, and a frozen clock would make every message
-            // in a conversation share one instant.
-            TimeProvider.System,
-            NullLogger<FileSystemConversationStore>.Instance));
-
+        services.AddSingleton<IConversationStore>(Create(path));
         services.AddSingleton<IConversationTurnLease>(new InProcessConversationTurnLease());
     }
+
+    /// <summary>A file-backed store rooted at <paramref name="path"/>, for tests that drive one directly.</summary>
+    /// <param name="path">An isolated temp directory owned by the calling test.</param>
+    internal static FileSystemConversationStore Create(string path) =>
+        new(
+            Options.Create(new ConversationsConfig { ConversationsPath = path }),
+            // Real time on purpose: these tests assert on transcripts, not on timestamps, and a frozen
+            // clock would make every message in a conversation share one instant.
+            TimeProvider.System,
+            NullLogger<FileSystemConversationStore>.Instance);
 }

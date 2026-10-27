@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Security.Claims;
-using Application.AI.Common.Exceptions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
@@ -368,11 +367,10 @@ public sealed class AgUiRunHandler
         }
         catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
         {
-            // Rejected before the model saw it, so nothing was streamed. The message stored above is removed (#959);
-            // see RejectedTurnMessage. Every AG-UI run stores its message, so the removal always applies.
-            _logger.LogWarning(ex, "AG-UI run {RunId}: rejected before dispatch.", input.RunId);
-            await RejectedTurnMessage.RemoveAsync(_conversationStore, input.ThreadId, callerId, userMsg.Id, _logger);
-            await writer.WriteAsync(new RunErrorEvent(RejectedTurnMessage.ClientMessage(ex)), ct);
+            // Rejected before the model saw it, so nothing was streamed (#959). Every AG-UI run stores its message above.
+            var clientMessage = await RejectedTurnMessage.RejectAsync(
+                _conversationStore, input.ThreadId, callerId, userMsg.Id, storedForThisTurn: true, ex, _logger);
+            await writer.WriteAsync(new RunErrorEvent(clientMessage), ct);
             return;
         }
         catch (Exception ex)
@@ -380,7 +378,7 @@ public sealed class AgUiRunHandler
             _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
             if (sink.Started)
                 await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-            await writer.WriteAsync(new RunErrorEvent(DispatchErrorMessage), ct);
+            await writer.WriteAsync(new RunErrorEvent("An error occurred during agent execution."), ct);
             return;
         }
         finally
@@ -499,7 +497,6 @@ public sealed class AgUiRunHandler
     /// </remarks>
     private static string GetCallerId(ClaimsPrincipal principal) => principal.GetUserId();
 
-    private const string DispatchErrorMessage = "An error occurred during agent execution.";
 
     /// <summary>
     /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly

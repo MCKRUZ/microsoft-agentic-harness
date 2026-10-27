@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
-using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services.AI;
@@ -581,18 +580,9 @@ public sealed class AgUiRunHandlerTests
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    public static TheoryData<Exception> ScreeningRefusals => new()
-    {
-        new ContentSafetyException("Content blocked by safety policy (hate).", "hate"),
-        new ContentSafetyUnavailableException(),
-        new PromptInjectionBlockedException("Prompt injection detected (role_play). Request blocked."),
-        // Validation runs before screening, so a message it rejects was never screened.
-        new ValidationException("ContentToScreen: Message and turn context together exceed the maximum length."),
-    };
-
     [Theory]
-    [MemberData(nameof(ScreeningRefusals))]
-    public async Task HandleRunAsync_RejectedBeforeDispatch_RemovesTheStoredMessageAndReportsTheRefusal(Exception refusal)
+    [MemberData(nameof(RejectionCases.All), MemberType = typeof(RejectionCases))]
+    public async Task HandleRunAsync_RejectedBeforeDispatch_RemovesTheStoredMessageAndReportsTheRefusal(Exception refusal, string toldTheCaller)
     {
         // #959: the user message is appended before the turn runs, and the next run reads history back from the
         // store unscreened. A refused message left in the store reaches the model on the caller's next run.
@@ -618,11 +608,7 @@ public sealed class AgUiRunHandlerTests
             MakeInput(threadId, "refused text", userMessageId.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
 
         var frames = ParseSseFrames(ms);
-        RunErrorMessage(frames).Should().Be(
-            refusal is IScreeningRefusal screening
-                ? screening.ClientMessage
-                : "This message could not be accepted. Check its length and try again.",
-            "a screening refusal is reported as one, not as an error");
+        RunErrorMessage(frames).Should().Be(toldTheCaller, "a rejection is reported as one, not as an error");
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
         store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),
             Times.Once, "the refused message is removed from the store it was appended to");

@@ -13,6 +13,15 @@ namespace Application.AI.Common.Exceptions;
 /// </remarks>
 public interface IScreeningRefusal
 {
+    /// <summary>What the caller is told when the content itself was refused.</summary>
+    const string BlockedMessage = "This message was blocked by the content policy.";
+
     /// <summary>What the caller is told. Never contains the screened text.</summary>
     string ClientMessage { get; }
+
+    /// <summary>
+    /// <see langword="true"/> when the refusal is a verdict on the text (blocked, or an injection pattern);
+    /// <see langword="false"/> when the text could not be screened, which says nothing about it.
+    /// </summary>
+    bool IsVerdict { get; }
 }
