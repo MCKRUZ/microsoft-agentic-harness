@@ -1405,7 +1405,8 @@
                     <h3 id="foundry-telemetry">Telemetry export from FoundryHost</h3>
                     <p>
                         Every host except FoundryHost exports to Azure Monitor only when
-                        <code>AppConfig:Observability:Exporters:AzureMonitor:Enabled</code> is set. Foundry injects
+                        <code>AppConfig:Observability:Exporters:AzureMonitor:Enabled</code> is set and a
+                        <code>ConnectionString</code> is given. Foundry injects
                         <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> into every hosted container. By default
                         FoundryHost turns the harness's exporter on with it, and the Foundry hosting layer
                         (<code>AgentHost</code>) exports its own traces and logs to it as well, so telemetry goes to that
@@ -1415,12 +1416,12 @@
                     <p>
                         To send nothing there, set
                         <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code> to
-                        <code>false</code> in appsettings, User Secrets or the environment. FoundryHost then removes the
+                        <code>false</code> in any configuration source. FoundryHost then removes the
                         variable before anything reads it, so neither the harness nor the hosting layer exports to
                         Foundry's resource, and Foundry's portal shows no traces for the agent. The harness's exporter is
                         then yours to point at your own resource with <code>Enabled</code> and
-                        <code>ConnectionString</code>. The setting is read before Key Vault and App Configuration load, so
-                        it has no effect there, and the host warns if it finds it only there. What the telemetry may
+                        <code>ConnectionString</code>. The setting is honoured from every configuration source,
+                        including Key Vault and App Configuration. What the telemetry may
                         contain is governed by content capture and redaction, not by this switch.
                     </p>
 
