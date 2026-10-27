@@ -287,6 +287,12 @@ public class AIConfig
     /// </summary>
     public ErasureConfig Erasure { get; set; } = new();
 
+    /// <summary>
+    /// Gets or sets which service screens request text for harmful content (#904). Defaults to allowing everything; set
+    /// <c>Provider</c> to <c>AzureAIContentSafety</c> for real screening.
+    /// </summary>
+    public ContentSafety.ContentSafetyConfig ContentSafety { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 

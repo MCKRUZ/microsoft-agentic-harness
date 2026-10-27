@@ -28,6 +28,9 @@ public static class SafetyConventions
         public const string Pass = "pass";
         public const string Block = "block";
         public const string Redact = "redact";
+
+        /// <summary>The text could not be screened (the safety service was unavailable): not a verdict on it.</summary>
+        public const string Unscreened = "unscreened";
     }
 
     /// <summary>

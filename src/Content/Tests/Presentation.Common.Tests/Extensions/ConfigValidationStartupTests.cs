@@ -42,6 +42,10 @@ public class ConfigValidationStartupTests
     public static TheoryData<string, Dictionary<string, string?>> InvalidSectionValues => new()
     {
         {
+            "ContentSafetyConfig",
+            new Dictionary<string, string?> { ["AppConfig:AI:ContentSafety:Provider"] = "AzureAIContentSafety" }
+        },
+        {
             "AuditPseudonymKey",
             new Dictionary<string, string?> { ["AppConfig:AI:Audit:PseudonymKey"] = "too-short" }
         },

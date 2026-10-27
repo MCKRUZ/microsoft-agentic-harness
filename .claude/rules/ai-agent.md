@@ -36,7 +36,7 @@ Declarative config with:
 - Tool schemas generated via `IToolSchemaService`
 
 ## Content Safety
-Always wire content safety middleware through AgentFactory. Check `AppConfig.AI.ContentSafety` for enabled filters (PII detection, prompt shield, blocked keywords).
+Content safety screens request input through `ContentSafetyBehavior` (MediatR), using the `ITextContentSafetyService` that `AppConfig.AI.ContentSafety.Provider` selects: `AllowAll` (the default; screens nothing, warns at startup outside Development) or `AzureAIContentSafety` (`Endpoint`, `ApiKey` or `Auth`, `Categories`, `BlockAtSeverity`, `BlockWhenUnavailable`). There is no PII-detection or blocked-keyword setting: PII redaction is the separate `IContentRedactionFilter`, and prompt-injection detection is governance (`IPromptInjectionScanner`). Model output is not passed through content safety.
 
 ## Chat Client Selection
 Use `IChatClientFactory` — supports Azure OpenAI, OpenAI, AI Foundry. Never hardcode endpoints or model names; pull from `AppConfig.AI.AgentFramework`.

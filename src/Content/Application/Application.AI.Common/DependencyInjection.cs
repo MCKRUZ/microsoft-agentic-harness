@@ -53,6 +53,7 @@ namespace Application.AI.Common;
 ///   <item><description><c>UnhandledExceptionBehavior</c> — safety net with agent context enrichment</description></item>
 ///   <item><description><c>AgentContextPropagationBehavior</c> — sets scoped agent identity</description></item>
 ///   <item><description><c>AuditTrailBehavior</c> — records IAuditable requests</description></item>
+///   <item><description><c>PromptInjectionBehavior</c> — local pattern scan of IContentScreenable requests, before the (possibly external) content-safety call</description></item>
 ///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
 ///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
 ///   <item><description><c>RetrievalAuditBehavior</c> — logs retrieval-augmented generation audit trails</description></item>
@@ -102,13 +103,16 @@ public static class DependencyInjection
             // before identity acquisition begins. No-op when AppConfig.AI.Identity.Enabled is false.
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentIdentityResolutionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
+            // The local prompt-injection scan runs before content safety: it costs nothing, while content safety
+            // may be a metered, rate-limited call to an external service (#904). Text the scan refuses is never
+            // sent out, and during a screening outage it is still refused as an injection, not as "try again".
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
             // Tool permission + graded-autonomy risk + declarative policy now run on the agent's live
             // tool path via IToolInvocationGovernor (GovernedAIFunction), not as MediatR behaviors —
             // nothing in production implements IToolRequest, so the old ToolPermissionBehavior /
             // GovernancePolicyBehavior never fired for agent tool calls. They were removed to avoid
             // dead, drift-prone duplicates of the governor's logic.
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             // Pre-flight token budget gate: short-circuits IConsumesTokens requests whose
             // estimate exceeds the remaining scoped budget, then records actual usage post-turn.
             // Placed after request-screening behaviors and before the LLM-invoking handler.

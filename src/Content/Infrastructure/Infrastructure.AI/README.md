@@ -263,7 +263,7 @@ Infrastructure.AI/
 │   ├── ContextCompactionService.cs    Orchestrates strategy selection + hooks
 │   └── Strategies/                    Full, Partial, Micro implementations
 ├── Config/                     DirectoryWalkConfigDiscovery (@include support)
-├── ContentSafety/              StructuredLogContentSafetyService
+├── ContentSafety/              AllowAllContentSafetyService (default), AzureContentSafetyService
 ├── Context/                    FileSystemToolResultStore
 ├── Factories/                  ChatClientFactory (6 providers)
 ├── Generators/                 StateMarkdownGenerator

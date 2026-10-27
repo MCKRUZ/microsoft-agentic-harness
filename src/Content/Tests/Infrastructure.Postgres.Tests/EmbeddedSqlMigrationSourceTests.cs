@@ -38,10 +38,11 @@ public sealed class EmbeddedSqlMigrationSourceTests
                 "006_context_snapshots_unattributed_tokens",
                 "007_session_messages_source_failed",
                 "008_retention_indexes",
+                "009_safety_events_outcome_unscreened",
             },
             scripts.Select(s => s.Id));
 
-        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7, 8 }, scripts.Select(s => s.Ordinal));
+        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, scripts.Select(s => s.Ordinal));
         Assert.All(scripts, s => Assert.False(string.IsNullOrWhiteSpace(s.Sql)));
     }
 

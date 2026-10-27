@@ -352,6 +352,60 @@ public sealed class ObservabilitySchemaUpgradeTests
             """));
     }
 
+    /// <summary>One safety event with the given outcome and phase, on a session of its own (the FK needs one).</summary>
+    private static string InsertSafetyEventWithOutcome(string outcome, string phase = "prompt") =>
+        $"""
+        WITH s AS (
+            INSERT INTO sessions (conversation_id, agent_name)
+            VALUES ('outcome-probe-{phase}-{outcome}', 'ProbeAgent')
+            RETURNING id)
+        INSERT INTO safety_events (session_id, phase, outcome)
+        SELECT id, '{phase}', '{outcome}' FROM s
+        """;
+
+    /// <summary>
+    /// Migration 009 (#904): an evaluation the safety service could not make is recorded as <c>unscreened</c>.
+    /// Control and treatment on the same database: the previous release must refuse the word, which is the silent
+    /// write failure this migration exists to end, and the migrated one accept it.
+    /// </summary>
+    [SkippableFact]
+    public async Task ADatabaseOnThePreviousRelease_RejectsAnUnscreenedEvent_UntilTheMigrationRunnerReachesIt()
+    {
+        await using var schema = await MigrationTestSchema.CreateAsync();
+
+        var all = ObservabilityMigrations.Load();
+        var previousRelease = all.Where(s => s.Ordinal < 9).ToArray();
+        await schema.ApplyAsync(previousRelease, Ledger);
+
+        Assert.NotNull(await schema.TryExecuteAsync(InsertSafetyEventWithOutcome("unscreened")));
+
+        var applied = await schema.ApplyAsync(all, Ledger);
+        Assert.Equal(all.Count - previousRelease.Length, applied);
+
+        Assert.Null(await schema.TryExecuteAsync(InsertSafetyEventWithOutcome("unscreened")));
+    }
+
+    [SkippableFact]
+    public async Task TheWidenedOutcomeConstraintStillRefusesAWordThatIsNotAnOutcome_AndKeepsTheOldOnes()
+    {
+        await using var schema = await MigrationTestSchema.CreateAsync();
+        await schema.ApplyAsync(ObservabilityMigrations.Load(), Ledger);
+
+        // Dropped and not re-added would pass the test above while having removed the guard.
+        var rejected = await schema.TryExecuteAsync(InsertSafetyEventWithOutcome("maybe"));
+        Assert.NotNull(rejected);
+        Assert.Contains("safety_events_outcome_check", rejected!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        // Re-declaring the list is where an existing word gets dropped by accident.
+        foreach (var outcome in new[] { "pass", "block", "redact" })
+            Assert.Null(await schema.TryExecuteAsync(InsertSafetyEventWithOutcome(outcome)));
+
+        // The phase constraint does not mention outcome and must survive the drop loop.
+        var badPhase = await schema.TryExecuteAsync(InsertSafetyEventWithOutcome("pass", phase: "sideways"));
+        Assert.NotNull(badPhase);
+        Assert.Contains("phase", badPhase!.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
     [SkippableFact]
     public async Task ABaselineOnlyDatabase_IsBroughtAllTheWayForward()
     {

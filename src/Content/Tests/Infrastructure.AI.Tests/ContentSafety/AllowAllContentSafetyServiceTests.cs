@@ -8,17 +8,17 @@ using Xunit;
 namespace Infrastructure.AI.Tests.ContentSafety;
 
 /// <summary>
-/// Tests for <see cref="StructuredLogContentSafetyService"/> verifying
+/// Tests for <see cref="AllowAllContentSafetyService"/> verifying
 /// pass-through behavior and logging.
 /// </summary>
-public sealed class StructuredLogContentSafetyServiceTests
+public sealed class AllowAllContentSafetyServiceTests
 {
-    private readonly Mock<ILogger<StructuredLogContentSafetyService>> _logger = new();
-    private readonly StructuredLogContentSafetyService _sut;
+    private readonly Mock<ILogger<AllowAllContentSafetyService>> _logger = new();
+    private readonly AllowAllContentSafetyService _sut;
 
-    public StructuredLogContentSafetyServiceTests()
+    public AllowAllContentSafetyServiceTests()
     {
-        _sut = new StructuredLogContentSafetyService(_logger.Object);
+        _sut = new AllowAllContentSafetyService(_logger.Object);
     }
 
     [Fact]

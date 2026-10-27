@@ -137,7 +137,7 @@
                         <li><code>AgentContextPropagationBehavior</code> — copies agent/conversation IDs into ambient OTel baggage</li>
                         <li><code>AgentIdentityResolutionBehavior</code> — resolves the acting agent identity</li>
                         <li><code>AuditTrailBehavior</code> — JSONL audit log of every command</li>
-                        <li><code>ContentSafetyBehavior</code> — runs Azure Content Safety (or mock) on inputs &amp; outputs</li>
+                        <li><code>ContentSafetyBehavior</code> — screens request input with the configured provider (Azure AI Content Safety, or allow-all); model output is not screened</li>
                         <li><code>PromptInjectionBehavior</code> — guards against user-prompted system-prompt overrides</li>
                         <li><code>TokenBudgetBehavior</code> — enforces per-conversation token spend</li>
                         <li><code>HookBehavior</code> — fires pre/post hooks declared by plugins</li>
@@ -473,9 +473,15 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
 
                     <h3 id="content-safety">Content safety middleware</h3>
                     <p>
-                        Both input prompts and model outputs flow through <code>ContentSafetyBehavior</code> — Azure AI
-                        Content Safety in production, a structured-log fake in dev (<code>StructuredLogContentSafetyService</code>).
-                        Severity thresholds are per-category and configurable.
+                        Request input flows through <code>ContentSafetyBehavior</code>, which screens it with the service
+                        <code>AppConfig:AI:ContentSafety:Provider</code> selects. The default,
+                        <code>AllowAllContentSafetyService</code>, screens nothing and says so at startup outside
+                        Development; <code>AzureContentSafetyService</code> sends the text to Azure AI Content Safety and
+                        blocks it when any configured category reaches <code>BlockAtSeverity</code> (one threshold for
+                        every category). When the text cannot be screened (the service is down, throttled, or rejects the
+                        credential) the evaluation is recorded as <code>unscreened</code>, never as a pass or a block, and
+                        the request is refused by default (HTTP 503 on the HTTP hosts; AgentHub's turn paths still report
+                        an internal error, #952); <code>BlockWhenUnavailable: false</code> lets it through instead. Model output and ingested documents are not screened.
                     </p>
 
                     <h3 id="conversation-cache">Conversation cache</h3>

@@ -72,6 +72,7 @@
     <PackageVersion Include="Cronos" Version="0.13.0" />
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
+    <PackageVersion Include="Azure.AI.ContentSafety" Version="1.0.0" />
     <!-- Agent Framework's OpenAI adapters. A package compiled against an older OpenAI library than the
          one resolved throws MissingMethodException at runtime, not at build time (Azure.AI.OpenAI did, and
          was removed in #799). The per-host PackageSkewTests check every cross-assembly call; the wire-shape
