@@ -18,6 +18,7 @@ namespace Presentation.Common.Tests.Composition;
 /// its line read <c>Erased</c> with nothing removed. The failing store is the one addition to the production wiring; the
 /// coordinator, the conversation store and the journal are the real ones.
 /// </remarks>
+[Collection(SqliteConnectionPoolCollection.Name)]
 public sealed class ErasureJournalEndToEndTests : IDisposable
 {
     private const string Subject = "Journal-Subject-1";
