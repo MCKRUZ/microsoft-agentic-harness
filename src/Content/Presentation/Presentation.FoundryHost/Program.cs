@@ -10,8 +10,10 @@ using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
+using Presentation.Common.Helpers;
 
 namespace Presentation.FoundryHost;
 
@@ -50,7 +52,8 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        MapFoundryEnvironmentToHarnessConfig();
+        var readConfigured = ReadLocalConfiguration();
+        MapFoundryEnvironmentToHarnessConfig(readConfigured);
 
         // Build the harness composition root: skills, governance, tools, RAG, knowledge graph,
         // telemetry, and the Phase 1 Foundry Responses inference provider. The provider is kept
@@ -68,6 +71,10 @@ public static class Program
         // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2)
         // and centralizes the ASP0000 suppression for the console-style hosts.
         var provider = services.BuildValidatedServiceProvider();
+
+        // Said at startup, because the export follows from the platform rather than from anything the deployer set.
+        if (FoundryHostBootstrap.DescribeAzureMonitorExport(Environment.GetEnvironmentVariable, readConfigured) is { } export)
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program)).LogInformation("{AzureMonitorExport}", export);
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —
@@ -232,11 +239,20 @@ public static class Program
     /// <remarks>
     /// Existing values are never overwritten, so an operator can still override any mapping with the
     /// native <c>AppConfig__...</c> key. App Insights additionally enables the Azure Monitor exporter
-    /// so harness traces and metrics flow to the injected connection string.
+    /// so harness traces and metrics flow to the injected connection string, unless the deployer
+    /// opted out in their own configuration (<see cref="FoundryHostBootstrap.EnableFromHostConnectionStringKey"/>).
     /// </remarks>
-    private static void MapFoundryEnvironmentToHarnessConfig()
+    // The deployer's appsettings, User Secrets and environment, read before the overrides are written. Without Key
+    // Vault or App Configuration: the composition root loads those once the overrides are in place.
+    private static Func<string, string?> ReadLocalConfiguration()
     {
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Environment.GetEnvironmentVariable);
+        var local = AppConfigHelper.LoadLocalAppConfig(typeof(Program).Assembly);
+        return key => local[key];
+    }
+
+    private static void MapFoundryEnvironmentToHarnessConfig(Func<string, string?> readConfigured)
+    {
+        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Environment.GetEnvironmentVariable, readConfigured);
         foreach (var (target, value) in overrides)
         {
             // Never clobber a value an operator set explicitly via the native AppConfig__ key.

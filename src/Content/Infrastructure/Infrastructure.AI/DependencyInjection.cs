@@ -239,6 +239,7 @@ public static partial class DependencyInjection
         // --- Content safety and audit ---
 
         RegisterContentSafety(services);
+        services.AddHostedService<DataAtRest.DataAtRestStartupCheck>();
         services.AddSingleton<IAuditSink, StructuredLogAuditSink>();
 
         // --- Skills and agents ---

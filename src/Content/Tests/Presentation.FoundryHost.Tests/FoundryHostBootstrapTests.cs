@@ -46,6 +46,55 @@ public sealed class FoundryHostBootstrapTests
     }
 
     [Fact]
+    public void BuildConfigOverrides_DeployerOptedOut_MapsTheConnectionStringButLeavesTheExporterOff()
+    {
+        // Foundry injects the connection string into every container, so without this opt-out a deployer could not
+        // keep the harness's telemetry out of it: the override is an environment variable, which outranks appsettings.
+        var overrides = FoundryHostBootstrap.BuildConfigOverrides(
+            Env(("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=abc")),
+            Env((FoundryHostBootstrap.EnableFromHostConnectionStringKey, "false")));
+
+        overrides.Should().ContainKey("AppConfig__Observability__Exporters__AzureMonitor__ConnectionString");
+        overrides.Should().NotContainKey("AppConfig__Observability__Exporters__AzureMonitor__Enabled");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("true")]
+    [InlineData("not-a-boolean")]
+    public void BuildConfigOverrides_AnythingButAnExplicitFalse_KeepsTheExporterOn(string? configured)
+    {
+        var overrides = FoundryHostBootstrap.BuildConfigOverrides(
+            Env(("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=abc")),
+            Env((FoundryHostBootstrap.EnableFromHostConnectionStringKey, configured)));
+
+        overrides["AppConfig__Observability__Exporters__AzureMonitor__Enabled"].Should().Be("true");
+    }
+
+    [Fact]
+    public void DescribeAzureMonitorExport_SaysWhyExportIsOnAndHowToStopIt()
+    {
+        var said = FoundryHostBootstrap.DescribeAzureMonitorExport(
+            Env(("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=secret-key")), Env());
+
+        said.Should().Contain("is on").And.Contain(FoundryHostBootstrap.EnableFromHostConnectionStringKey)
+            .And.NotContain("secret-key", "the connection string is a credential and stays out of the log");
+    }
+
+    [Fact]
+    public void DescribeAzureMonitorExport_OptedOut_SaysTheDeployerSettingDecides()
+    {
+        FoundryHostBootstrap.DescribeAzureMonitorExport(
+                Env(("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=abc")),
+                Env((FoundryHostBootstrap.EnableFromHostConnectionStringKey, "false")))
+            .Should().Contain("follows AppConfig:Observability:Exporters:AzureMonitor:Enabled");
+    }
+
+    [Fact]
+    public void DescribeAzureMonitorExport_NoConnectionString_SaysNothing() =>
+        FoundryHostBootstrap.DescribeAzureMonitorExport(Env(), Env()).Should().BeNull();
+
+    [Fact]
     public void BuildConfigOverrides_WithNoEnvironment_AppliesOnlyStandaloneRagDefault()
     {
         var overrides = FoundryHostBootstrap.BuildConfigOverrides(Env());

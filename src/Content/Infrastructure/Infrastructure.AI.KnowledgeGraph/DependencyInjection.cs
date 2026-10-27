@@ -131,6 +131,10 @@ public static partial class DependencyInjection
             return store;
         });
 
+        // Off by default; said at startup so a shared deployment does not run with it unnoticed (#904).
+        if (!appConfig.AI.Rag.GraphRag.MultiTenantIsolation)
+            services.AddHostedService<KnowledgeIsolationOffStartupWarning>();
+
         // Provenance stamping
         services.AddSingleton<IProvenanceStamper>(sp =>
             new DefaultProvenanceStamper(

@@ -12,7 +12,8 @@ namespace Domain.Common.Config.Infrastructure;
 /// AppConfig.Infrastructure
 /// ├── StateManagement  — Workflow state persistence (JSON checkpoints, Markdown)
 /// ├── ContentProvider  — Content source abstraction (FileSystem, Database, HTTP)
-/// └── FileSystem       — Sandboxed file system access for agent tools
+/// ├── FileSystem       — Sandboxed file system access for agent tools
+/// └── DataAtRest       — The deployer's protection of the local files personal data is kept in
 /// </code>
 /// </para>
 /// </remarks>
@@ -36,6 +37,11 @@ public class InfrastructureConfig
     /// Gets or sets the file system tool configuration.
     /// </summary>
     public FileSystemConfig FileSystem { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets how the deployer protects the local files personal data is kept in (#904).
+    /// </summary>
+    public DataAtRestConfig DataAtRest { get; set; } = new();
 }
 
 /// <summary>
