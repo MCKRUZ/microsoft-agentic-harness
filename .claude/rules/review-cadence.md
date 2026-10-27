@@ -57,9 +57,8 @@ The `pre-push-review` skill runs all three in one pass — prefer it over doing 
 - **Tests:** `pwsh -NoProfile -File .claude/hooks/tests/review-scope.tests.ps1` asserts the scoping
   and re-arm rules against real commits in this repo's history. Every suite under
   `.claude/hooks/tests/` runs in CI (`.github/workflows/hook-tests.yml`) when a hook changes.
-- **Human-only decisions:** `.claude/hooks/human-only-guard.ps1` denies the agent posting a tier-2
-  `Reviewed-by: @MCKRUZ` sign-off, applying an `accepted-risk:*` label, re-arming the
-  `rails:breaker` issue, or merging any PR not labelled `tier:0`. When one of these is the next
+- **Human-only decisions:** `.claude/hooks/human-only-guard.ps1` denies the agent applying an
+  `accepted-risk:*` label or posting a commit status / check run by hand. When one of these is the next
   step, tell Matt and stop; do not look for another route.
 
 ## After a Full Layer is Complete

@@ -22,7 +22,7 @@ them live, and how to prove they actually catch things.
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
 | **AgentHub container build** | `workflows/agenthub-container.yml` | PRs touching `src/`, `skills/`, `agents/`; nightly | Advisory (not required). PRs build amd64 only unless the Dockerfile changes; nightly builds arm64 too |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
-| **Human-only guard** | `../.claude/hooks/human-only-guard.ps1` | every agent `gh` or GitHub-MCP call | **Denies** the agent posting a tier-2 sign-off, applying an `accepted-risk:*` label, re-arming the `rails:breaker`, or merging a PR that is not `tier:0` |
+| **Human-only guard** | `../.claude/hooks/human-only-guard.ps1` | every agent `gh` or GitHub-MCP call | **Denies** the agent applying an `accepted-risk:*` label or posting a commit status / check run by hand. (Tier rules — sign-offs, the tier-0 merge rule, the breaker — arrive with the tier system.) |
 | **Hook tests** | `workflows/hook-tests.yml` | PRs touching `.claude/hooks/**` or `.claude/settings.json` | Fails the run when any `.claude/hooks/tests/*.tests.ps1` suite fails; not required |
 
 > **All four AI rails run on the Claude subscription, not metered API credits.** Every one of
@@ -149,18 +149,23 @@ Several rails emit text that other rails parse: the tier gate reads the PR body,
 counts rounds and dispositions, the circuit breaker reads tier labels. These strings are an
 interface. Change one only together with every reader, in the same PR.
 
+Rows marked **(planned)** belong to the risk-tier system, which is being redesigned: a first version
+(PRs #980/#981, closed unmerged on 2026-10-27) hit the three-round review cap. Two blockers were
+structural: GitHub's Actions token cannot resolve review threads, so "every thread resolved" would
+have meant resolving every finding by hand; and a sign-off bound to the exact head commit is voided
+by the update-to-main that strict required checks force. Nothing reads or writes a planned row yet.
+
 | What | Exact form | Written by | Read by |
 | --- | --- | --- | --- |
-| Risk tier label | exactly one of `tier:0`, `tier:1`, `tier:2` | `tier-gate.yml` (computed from the change, never the author) | telemetry, breaker, `merge-gate.ps1` |
-| Tier gate status | commit status context `tier-gate` on the PR head SHA | `tier-gate.yml`, `tier-signoff.yml` | the checks ruleset |
-| PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` (tier ≥1) | the agent, from `PULL_REQUEST_TEMPLATE.md` | `tier-gate.yml` (tier 1 needs Testing evidence and How to revert non-empty), grader, telemetry |
+| Risk tier label **(planned)** | exactly one of `tier:0`, `tier:1`, `tier:2` (labels exist) | the tier gate, computed from the change, never the author | telemetry |
+| PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` | the agent, from `PULL_REQUEST_TEMPLATE.md` | grader (empty Testing evidence or How to revert = `INSUFFICIENT SPEC`), telemetry |
 | Local review rounds | a line `Review-rounds: <n>` in the PR body (`<n>` = local `/code-review` rounds before the push; `cap` when the 3-round cap was hit) | `pre-push-review` skill | telemetry |
-| Finding marker | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
-| Severity tag | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
-| Disposition | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
-| Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a tier-1 or tier-2 PR | telemetry |
-| Tier-2 sign-off | a PR comment by `MCKRUZ`: `Reviewed-by: @MCKRUZ <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/signoff-guard.ps1` denies any agent tool call that contains it | `tier-signoff.yml` |
-| Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
+| Finding marker **(planned)** | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
+| Severity tag **(planned)** | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
+| Disposition **(planned)** | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
+| Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a PR he read | telemetry |
+| Override approvers | repository variable `RAILS_OVERRIDE_APPROVERS` (comma-separated logins; default: the repository owner) | the repo admin | `override-applied-by-owner.sh` — an `accepted-risk:*` label counts only if its latest `labeled` event is by an approver |
+| Circuit breaker **(planned)** | an **open** issue labelled `rails:breaker` (label exists) | — | — |
 
 Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`,
 `round-cap` (written when the 3-round cap stops the loop; while it exists the push gate denies),
