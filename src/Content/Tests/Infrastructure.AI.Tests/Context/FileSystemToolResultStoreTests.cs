@@ -122,6 +122,29 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
             "the file must be read from disk once, on the first page, and served from cache thereafter");
     }
 
+    [Fact]
+    public async Task SpillingAndReadingBack_LogNothingThatNamesTheConversation()
+    {
+        // #924: the spill path embeds the conversation id, and a log line outlives the conversation's erasure. The end-to-end
+        // erasure test caught it only when log redaction happened to miss the random GUID's digit runs; a conversation id
+        // without digits makes the check deterministic.
+        const string conversation = "conversation-without-digits";
+        var logger = new Infrastructure.AI.Tests.Resilience.RecordingLogger<FileSystemToolResultStore>();
+        var sut = new FileSystemToolResultStore(
+            OptionsMonitor(),
+            PermissiveAdmission.PermissiveSanitizer(),
+            new DefaultContentRedactionFilter(),
+            new MemoryCache(new MemoryCacheOptions()),
+            logger);
+
+        var stored = await sut.StoreIfLargeAsync(conversation, "search", null, new string('x', 200), scopeIsRetrievable: true);
+        await sut.RetrievePageAsync(stored.ResultId, conversation, offset: 0, maxChars: 20);
+
+        stored.IsPersistedToDisk.Should().BeTrue("the spill must happen, or the check proves nothing");
+        logger.Entries.Should().NotBeEmpty();
+        logger.Entries.Should().NotContain(e => e.Message.Contains(conversation, StringComparison.OrdinalIgnoreCase));
+    }
+
     private IOptionsMonitor<AppConfig> OptionsMonitor()
     {
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
