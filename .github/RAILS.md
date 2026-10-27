@@ -162,9 +162,10 @@ interface. Change one only together with every reader, in the same PR.
 | Tier-2 sign-off | a PR comment by `MCKRUZ`: `Reviewed-by: @MCKRUZ <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/signoff-guard.ps1` denies any agent tool call that contains it | `tier-signoff.yml` |
 | Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
 
-Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`, and
-`round-cap` (written when the 3-round cap stops the loop; a `round-cap` receipt never satisfies the
-push gate on its own). A receipt may carry a findings array, one object per finding:
+Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`,
+`round-cap` (written when the 3-round cap stops the loop; while it exists the push gate denies),
+and `round-cap-ack` (Matt's verbatim "push anyway", which releases the cap; the writer refuses an
+empty one). `-Round <n>` records which local round a receipt closes. A receipt may carry a findings array, one object per finding:
 `{"anchor": "<path>:<line>", "class": "<kebab-class>", "tag": "important|nit|pre-existing", "disposition": "fixed|wrong|intentional|didnt-matter"}`.
 
 ## Required status checks

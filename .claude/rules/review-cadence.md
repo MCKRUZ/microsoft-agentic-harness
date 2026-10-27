@@ -71,6 +71,13 @@ Run this additional skill:
 When `/code-review` finds HIGH issues:
 1. Present findings to user
 2. Get approval on fix approach
-3. Apply fixes
-4. Re-run `/code-review` to verify clean build + 0 warnings
+3. Apply fixes — every instance of the finding's class, not only the flagged line
+4. Re-run `/code-review` on what the fixes changed, with the earlier findings marked
+   "already reported — do not repeat"
 5. Update the PR body's `## Explainer` if the fixes changed what the code does
+
+**Review must converge: three rounds at most.** If the third round still has an Important
+finding open, stop and tell Matt the approach may be wrong, rather than starting a fourth. The
+`pre-push-review` skill writes a `round-cap` receipt and the push gate refuses until Matt says to
+push anyway. (Anthropic's Claude Code team saw one PR run 50+ rounds overnight; after capping
+rounds and re-reviewing only new diffs, PRs needing five or more rounds fell from 8.9% to 1.5%.)
