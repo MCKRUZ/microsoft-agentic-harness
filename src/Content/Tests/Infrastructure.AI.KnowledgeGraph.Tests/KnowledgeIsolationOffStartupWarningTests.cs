@@ -16,33 +16,35 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests;
 /// </summary>
 public sealed class KnowledgeIsolationOffStartupWarningTests
 {
-    [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void TheWarning_IsRegisteredOnlyWhenIsolationIsOff(bool isolation, bool registered)
+    [Fact]
+    public void TheWarning_IsRegisteredWithTheKnowledgeGraph()
     {
         var config = new AppConfig();
-        config.AI.Rag.GraphRag.MultiTenantIsolation = isolation;
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config));
 
         services.AddKnowledgeGraphDependencies(config);
 
-        services.Any(d => d.ServiceType == typeof(IHostedService)
-                && d.ImplementationType == typeof(KnowledgeIsolationOffStartupWarning))
-            .Should().Be(registered);
+        services.Should().Contain(d => d.ServiceType == typeof(IHostedService)
+            && d.ImplementationType == typeof(KnowledgeIsolationOffStartupWarning));
     }
 
     [Theory]
-    [InlineData("Production", 1)]
-    [InlineData("Development", 0)]
-    [InlineData(null, 1)]
-    public async Task TheWarning_IsLoggedOutsideDevelopment(string? environment, int warnings)
+    [InlineData(false, "Production", 1)]
+    [InlineData(false, "Development", 0)]
+    [InlineData(false, null, 1)]
+    [InlineData(true, "Production", 0)]
+    public async Task TheWarning_IsLoggedOnlyWhenIsolationIsOffOutsideDevelopment(
+        bool isolation, string? environment, int warnings)
     {
-        // No host environment at all (a composition without a host) is not Development, so it warns.
+        // Decided from the live setting the store's registration reads, so the two cannot disagree. No host environment
+        // at all (a composition without a host) is not Development, so it warns.
+        var config = new AppConfig();
+        config.AI.Rag.GraphRag.MultiTenantIsolation = isolation;
         var logger = new Mock<ILogger<KnowledgeIsolationOffStartupWarning>>();
         var warning = new KnowledgeIsolationOffStartupWarning(
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config),
             logger.Object,
             environment is null ? null : Mock.Of<IHostEnvironment>(e => e.EnvironmentName == environment));
 

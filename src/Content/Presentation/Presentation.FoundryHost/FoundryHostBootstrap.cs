@@ -1,4 +1,5 @@
 using Domain.AI.Agents;
+using Microsoft.Extensions.Logging;
 
 namespace Presentation.FoundryHost;
 
@@ -19,37 +20,101 @@ internal static class FoundryHostBootstrap
     /// </summary>
     internal const string StateRootSubdirectory = "agent-state";
 
+    /// <summary>The variable Foundry injects with its Application Insights connection string.</summary>
+    internal const string AppInsightsVariable = "APPLICATIONINSIGHTS_CONNECTION_STRING";
+
     /// <summary>
-    /// The deployer's opt-out from FoundryHost turning Azure Monitor export on whenever Foundry
-    /// supplies a connection string (<c>AzureMonitorExporterConfig.EnableFromHostConnectionString</c>).
+    /// The deployer's opt-out from sending this host's telemetry to the Application Insights resource
+    /// Foundry supplies (<c>AzureMonitorExporterConfig.EnableFromHostConnectionString</c>).
     /// </summary>
     internal const string EnableFromHostConnectionStringKey =
         "AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString";
 
     /// <summary>
-    /// Says, for the startup log, whether Azure Monitor export was turned on from Foundry's
-    /// connection string and how to stop it, or <c>null</c> when Foundry supplied none.
+    /// Whether the host uses Foundry's connection string, from the deployer's local setting for
+    /// <see cref="EnableFromHostConnectionStringKey"/>.
+    /// </summary>
+    /// <param name="configured">The setting's raw value, or <c>null</c> when it is not set.</param>
+    /// <returns>
+    /// <see langword="false"/> only for an explicit <c>false</c>, so a typo cannot silently turn export off; the
+    /// options binder rejects a value that is not a boolean when the configuration loads.
+    /// </returns>
+    internal static bool UsesHostConnectionString(string? configured) =>
+        !bool.TryParse(configured, out var use) || use;
+
+    /// <summary>
+    /// Writes Foundry's environment onto the harness configuration keys, before the composition root
+    /// loads configuration, and removes Foundry's connection string when the deployer opted out (#904).
     /// </summary>
     /// <param name="readEnv">Reads an environment variable by name (returns <c>null</c> when unset).</param>
-    /// <param name="readConfigured">Reads the deployer's own local configuration, as for <see cref="BuildConfigOverrides"/>.</param>
-    internal static string? DescribeAzureMonitorExport(Func<string, string?> readEnv, Func<string, string?>? readConfigured)
+    /// <param name="writeEnv">Sets an environment variable; <c>null</c> removes it.</param>
+    /// <param name="useHostConnectionString">The deployer's choice, from <see cref="UsesHostConnectionString"/>.</param>
+    /// <returns>Whether Foundry supplied a connection string.</returns>
+    /// <remarks>
+    /// <para>
+    /// A value an operator set with the native <c>AppConfig__...</c> key is never overwritten.
+    /// </para>
+    /// <para>
+    /// Removing the connection string is what makes the opt-out complete. The Foundry hosting layer
+    /// (<c>AgentHost</c>) exports its own traces and logs to Azure Monitor whenever the variable is
+    /// set, and the Azure Monitor exporter reads it too when no connection string is configured. With
+    /// it gone, neither sends anything to Foundry's resource; the deployer can still point the
+    /// harness's exporter at a resource of their own. Foundry's portal then shows no traces for this
+    /// agent.
+    /// </para>
+    /// </remarks>
+    internal static bool ApplyFoundryEnvironment(
+        Func<string, string?> readEnv, Action<string, string?> writeEnv, bool useHostConnectionString)
     {
         ArgumentNullException.ThrowIfNull(readEnv);
-        if (string.IsNullOrWhiteSpace(readEnv("APPLICATIONINSIGHTS_CONNECTION_STRING")))
-            return null;
+        ArgumentNullException.ThrowIfNull(writeEnv);
 
-        return EnablesFromHostConnectionString(readConfigured)
-            ? "Azure Monitor export is on because Foundry supplied APPLICATIONINSIGHTS_CONNECTION_STRING. Traces and "
-              + $"metrics go to that resource. Set {EnableFromHostConnectionStringKey} to false to leave the exporter to "
-              + "AppConfig:Observability:Exporters:AzureMonitor:Enabled."
-            : $"Foundry supplied APPLICATIONINSIGHTS_CONNECTION_STRING, but {EnableFromHostConnectionStringKey} is false, so "
-              + "Azure Monitor export follows AppConfig:Observability:Exporters:AzureMonitor:Enabled.";
+        var hostSupplied = !string.IsNullOrWhiteSpace(readEnv(AppInsightsVariable));
+        foreach (var (target, value) in BuildConfigOverrides(readEnv, useHostConnectionString))
+        {
+            if (string.IsNullOrEmpty(readEnv(target)))
+                writeEnv(target, value);
+        }
+
+        if (hostSupplied && !useHostConnectionString)
+            writeEnv(AppInsightsVariable, null);
+        return hostSupplied;
     }
 
-    // Anything but an explicit "false" keeps the default, so a typo cannot silently turn export off; the options
-    // binder rejects a value that is not a boolean when the configuration loads.
-    private static bool EnablesFromHostConnectionString(Func<string, string?>? readConfigured) =>
-        !bool.TryParse(readConfigured?.Invoke(EnableFromHostConnectionStringKey), out var enabled) || enabled;
+    /// <summary>
+    /// Says at startup where this host's telemetry goes, from the configuration the host actually bound.
+    /// </summary>
+    /// <param name="hostSupplied">Whether Foundry supplied a connection string.</param>
+    /// <param name="usedHostConnectionString">The deployer's local choice, as applied before startup.</param>
+    /// <param name="harnessExporterEnabled">The bound <c>AppConfig:Observability:Exporters:AzureMonitor:Enabled</c>.</param>
+    /// <param name="boundUseHostConnectionString">
+    /// The bound value of <see cref="EnableFromHostConnectionStringKey"/>, which also sees Key Vault and App Configuration.
+    /// </param>
+    /// <returns>The messages to log, each with its level; empty when there is nothing to say.</returns>
+    internal static IReadOnlyList<(LogLevel Level, string Message)> DescribeTelemetryExport(
+        bool hostSupplied, bool usedHostConnectionString, bool harnessExporterEnabled, bool boundUseHostConnectionString)
+    {
+        var notices = new List<(LogLevel, string)>();
+        var harness = harnessExporterEnabled ? "on" : "off";
+        if (hostSupplied && usedHostConnectionString)
+            notices.Add((LogLevel.Information,
+                $"Foundry supplied {AppInsightsVariable}, so the Foundry hosting layer exports its traces and logs to that " +
+                $"Application Insights resource, and the harness's Azure Monitor exporter is {harness}. Set " +
+                $"{EnableFromHostConnectionStringKey} to false in appsettings, User Secrets or the environment to send " +
+                "nothing there."));
+        else if (hostSupplied)
+            notices.Add((LogLevel.Information,
+                $"{EnableFromHostConnectionStringKey} is false, so FoundryHost removed Foundry's {AppInsightsVariable}: " +
+                "nothing is exported to Foundry's Application Insights resource. The harness's Azure Monitor exporter is " +
+                $"{harness} (AppConfig:Observability:Exporters:AzureMonitor)."));
+
+        if (usedHostConnectionString && !boundUseHostConnectionString)
+            notices.Add((LogLevel.Warning,
+                $"{EnableFromHostConnectionStringKey} is false only in a configuration source FoundryHost reads after it " +
+                "has applied Foundry's environment, such as Key Vault or App Configuration, so it had no effect. Set it in " +
+                "appsettings, User Secrets or the environment."));
+        return notices;
+    }
 
     /// <summary>
     /// Resolves the directory the agent session store persists the framework's runtime state to:
@@ -99,15 +164,14 @@ internal static class FoundryHostBootstrap
     /// Only non-empty source values produce overrides. A present
     /// <c>APPLICATIONINSIGHTS_CONNECTION_STRING</c> additionally enables the Azure Monitor exporter
     /// so harness traces and metrics flow to the injected sink, unless the deployer set
-    /// <see cref="EnableFromHostConnectionStringKey"/> to <c>false</c> (#904).
+    /// <see cref="EnableFromHostConnectionStringKey"/> to <c>false</c>, in which case neither is
+    /// mapped (#904).
     /// </remarks>
-    /// <param name="readConfigured">
-    /// Reads the deployer's own local configuration (appsettings, User Secrets, environment) by
-    /// <c>:</c>-separated key, or <c>null</c> to read nothing. It is consulted for the Azure Monitor
-    /// opt-out only.
+    /// <param name="useHostConnectionString">
+    /// Whether to use Foundry's connection string; see <see cref="ApplyFoundryEnvironment"/>.
     /// </param>
     internal static IReadOnlyDictionary<string, string> BuildConfigOverrides(
-        Func<string, string?> readEnv, Func<string, string?>? readConfigured = null)
+        Func<string, string?> readEnv, bool useHostConnectionString = true)
     {
         ArgumentNullException.ThrowIfNull(readEnv);
 
@@ -116,12 +180,11 @@ internal static class FoundryHostBootstrap
         AddIfPresent(overrides, readEnv, "FOUNDRY_PROJECT_ENDPOINT", "AppConfig__AI__AIFoundry__ProjectEndpoint");
         AddIfPresent(overrides, readEnv, "AZURE_AI_MODEL_DEPLOYMENT_NAME", "AppConfig__AI__AgentFramework__DefaultDeployment");
 
-        var appInsights = readEnv("APPLICATIONINSIGHTS_CONNECTION_STRING");
-        if (!string.IsNullOrWhiteSpace(appInsights))
+        var appInsights = readEnv(AppInsightsVariable);
+        if (useHostConnectionString && !string.IsNullOrWhiteSpace(appInsights))
         {
             overrides["AppConfig__Observability__Exporters__AzureMonitor__ConnectionString"] = appInsights;
-            if (EnablesFromHostConnectionString(readConfigured))
-                overrides["AppConfig__Observability__Exporters__AzureMonitor__Enabled"] = "true";
+            overrides["AppConfig__Observability__Exporters__AzureMonitor__Enabled"] = "true";
         }
 
         AddHomeRootedStatePaths(overrides, readEnv);

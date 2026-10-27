@@ -1406,13 +1406,22 @@
                     <p>
                         Every host except FoundryHost exports to Azure Monitor only when
                         <code>AppConfig:Observability:Exporters:AzureMonitor:Enabled</code> is set. Foundry injects
-                        <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> into every hosted container, and FoundryHost
-                        turns the exporter on when it is present, so the harness's traces and metrics go to that
+                        <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> into every hosted container. By default
+                        FoundryHost turns the harness's exporter on with it, and the Foundry hosting layer
+                        (<code>AgentHost</code>) exports its own traces and logs to it as well, so telemetry goes to that
                         Application Insights resource without any setting of the deployer's. FoundryHost says so at
-                        startup. To leave the exporter to <code>Enabled</code> instead, set
+                        startup.
+                    </p>
+                    <p>
+                        To send nothing there, set
                         <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code> to
-                        <code>false</code> in appsettings, User Secrets or the environment. What the telemetry may contain
-                        is governed by content capture and redaction, not by this switch.
+                        <code>false</code> in appsettings, User Secrets or the environment. FoundryHost then removes the
+                        variable before anything reads it, so neither the harness nor the hosting layer exports to
+                        Foundry's resource, and Foundry's portal shows no traces for the agent. The harness's exporter is
+                        then yours to point at your own resource with <code>Enabled</code> and
+                        <code>ConnectionString</code>. The setting is read before Key Vault and App Configuration load, so
+                        it has no effect there, and the host warns if it finds it only there. What the telemetry may
+                        contain is governed by content capture and redaction, not by this switch.
                     </p>
 
                     <h2 id="deployer-responsibilities">What the deploying organisation must do</h2>

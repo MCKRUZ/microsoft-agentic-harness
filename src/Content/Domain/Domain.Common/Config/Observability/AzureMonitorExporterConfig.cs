@@ -19,15 +19,21 @@ public class AzureMonitorExporterConfig
     public string? ConnectionString { get; set; }
 
     /// <summary>
-    /// Gets or sets whether a host whose platform supplies a connection string turns the exporter on by itself.
+    /// Gets or sets whether a host sends its telemetry to the Application Insights resource its platform supplies.
     /// </summary>
     /// <value>Default: <see langword="true"/>.</value>
     /// <remarks>
+    /// <para>
     /// Only FoundryHost reads this. Foundry injects <c>APPLICATIONINSIGHTS_CONNECTION_STRING</c> into every hosted
-    /// container, and FoundryHost turns the exporter on when it is present, so a deployer who has not chosen Azure
-    /// Monitor still exports the harness's traces and metrics to that resource. Set this to <see langword="false"/>, in
-    /// appsettings, User Secrets or the environment, to leave <see cref="Enabled"/> to the deployer's own setting. Every
-    /// other host ignores it and needs <see cref="Enabled"/> set explicitly (#904).
+    /// container. By default FoundryHost turns the harness's exporter on with it, and the Foundry hosting layer exports
+    /// its own traces and logs to it, so a deployer who has not chosen Azure Monitor still exports to that resource.
+    /// </para>
+    /// <para>
+    /// Set this to <see langword="false"/>, in appsettings, User Secrets or the environment, and FoundryHost removes the
+    /// variable before anything reads it: nothing is exported to Foundry's resource, and <see cref="Enabled"/> and
+    /// <see cref="ConnectionString"/> are the deployer's own. Key Vault and App Configuration are read too late for this
+    /// setting; the host warns when it is set only there. Every other host ignores it (#904).
+    /// </para>
     /// </remarks>
     public bool EnableFromHostConnectionString { get; set; } = true;
 }

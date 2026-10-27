@@ -52,8 +52,10 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        var readConfigured = ReadLocalConfiguration();
-        MapFoundryEnvironmentToHarnessConfig(readConfigured);
+        var useHostConnectionString = FoundryHostBootstrap.UsesHostConnectionString(
+            ReadLocalSetting(FoundryHostBootstrap.EnableFromHostConnectionStringKey));
+        var hostSuppliedAppInsights = FoundryHostBootstrap.ApplyFoundryEnvironment(
+            Environment.GetEnvironmentVariable, Environment.SetEnvironmentVariable, useHostConnectionString);
 
         // Build the harness composition root: skills, governance, tools, RAG, knowledge graph,
         // telemetry, and the Phase 1 Foundry Responses inference provider. The provider is kept
@@ -72,9 +74,14 @@ public static class Program
         // and centralizes the ASP0000 suppression for the console-style hosts.
         var provider = services.BuildValidatedServiceProvider();
 
-        // Said at startup, because the export follows from the platform rather than from anything the deployer set.
-        if (FoundryHostBootstrap.DescribeAzureMonitorExport(Environment.GetEnvironmentVariable, readConfigured) is { } export)
-            provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program)).LogInformation("{AzureMonitorExport}", export);
+        // Said at startup, from what the host actually bound: the export follows from the platform rather than from
+        // anything the deployer set.
+        var azureMonitor = provider.GetRequiredService<IOptions<AppConfig>>().Value.Observability.Exporters.AzureMonitor;
+        var startupLog = provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program));
+        foreach (var (level, message) in FoundryHostBootstrap.DescribeTelemetryExport(
+                     hostSuppliedAppInsights, useHostConnectionString, azureMonitor.Enabled,
+                     azureMonitor.EnableFromHostConnectionString))
+            startupLog.Log(level, "{TelemetryExport}", message);
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —
@@ -232,34 +239,19 @@ public static class Program
             .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Copies Foundry's runtime-injected environment variables onto the configuration keys the
-    /// harness binds, so the existing config pipeline consumes them without bespoke binding code.
-    /// </summary>
-    /// <remarks>
-    /// Existing values are never overwritten, so an operator can still override any mapping with the
-    /// native <c>AppConfig__...</c> key. App Insights additionally enables the Azure Monitor exporter
-    /// so harness traces and metrics flow to the injected connection string, unless the deployer
-    /// opted out in their own configuration (<see cref="FoundryHostBootstrap.EnableFromHostConnectionStringKey"/>).
-    /// </remarks>
-    // The deployer's appsettings, User Secrets and environment, read before the overrides are written. Without Key
-    // Vault or App Configuration: the composition root loads those once the overrides are in place.
-    private static Func<string, string?> ReadLocalConfiguration()
+    // One setting from the deployer's appsettings, User Secrets and environment, read before Foundry's environment is
+    // applied. Without Key Vault or App Configuration, which the composition root loads afterwards; the configuration
+    // is released at once rather than kept alive with its file watchers.
+    private static string? ReadLocalSetting(string key)
     {
         var local = AppConfigHelper.LoadLocalAppConfig(typeof(Program).Assembly);
-        return key => local[key];
-    }
-
-    private static void MapFoundryEnvironmentToHarnessConfig(Func<string, string?> readConfigured)
-    {
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Environment.GetEnvironmentVariable, readConfigured);
-        foreach (var (target, value) in overrides)
+        try
         {
-            // Never clobber a value an operator set explicitly via the native AppConfig__ key.
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(target)))
-            {
-                Environment.SetEnvironmentVariable(target, value);
-            }
+            return local[key];
+        }
+        finally
+        {
+            (local as IDisposable)?.Dispose();
         }
     }
 }
