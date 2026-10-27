@@ -135,6 +135,30 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
    To reverse it, remove the context from the JSON and re-run the apply script — do not
    disable the workflow, which would leave the required check permanently unreported.
 
+## Review conventions (a frozen interface)
+
+Several rails emit text that other rails parse: the tier gate reads the PR body, the telemetry job
+counts rounds and dispositions, the circuit breaker reads tier labels. These strings are an
+interface. Change one only together with every reader, in the same PR.
+
+| What | Exact form | Written by | Read by |
+| --- | --- | --- | --- |
+| Risk tier label | exactly one of `tier:0`, `tier:1`, `tier:2` | `tier-gate.yml` (computed from the change, never the author) | telemetry, breaker, `merge-gate.ps1` |
+| Tier gate status | commit status context `tier-gate` on the PR head SHA | `tier-gate.yml`, `tier-signoff.yml` | the checks ruleset |
+| PR body sections | `## Intent`, `## Testing evidence`, `## Risk`, `## How to revert`, `## Explainer` (tier ≥1) | the agent, from `PULL_REQUEST_TEMPLATE.md` | `tier-gate.yml` (tier 1 needs Testing evidence and How to revert non-empty), grader, telemetry |
+| Local review rounds | a line `Review-rounds: <n>` in the PR body (`<n>` = local `/code-review` rounds before the push; `cap` when the 3-round cap was hit) | `pre-push-review` skill | telemetry |
+| Finding marker | hidden `<!-- rail:<reviewer> sha=<head7> anchor=<path>:<line> class=<kebab-class> tag=<important\|nit\|pre-existing> -->` as the first line of each inline review comment; `<reviewer>` is `correctness`, `security` or `deep-review` | the CI reviewers | the next review round (no repeats), telemetry |
+| Severity tag | `[Important]`, `[Nit]`, `[Pre-existing]` at the start of the visible comment text | the CI reviewers | humans, telemetry |
+| Disposition | a reply on the finding's thread: `Disposition: <fixed\|wrong\|intentional\|didnt-matter> — <reason>`, then the thread is resolved | the agent; `[Important]` may be closed as `wrong`, `intentional` or `didnt-matter` only on Matt's word | telemetry (noise rate) |
+| Matt's review time | a PR comment `Reviewed: <n> min` | Matt, when he merges a tier-1 or tier-2 PR | telemetry |
+| Tier-2 sign-off | a PR comment by `MCKRUZ`: `Reviewed-by: @MCKRUZ <head-sha, ≥7 hex> — <one sentence on what was read>` | **Matt only** — `.claude/hooks/signoff-guard.ps1` denies any agent tool call that contains it | `tier-signoff.yml` |
+| Circuit breaker | an **open** issue labelled `rails:breaker` | `tier-breaker.yml` (on a reverted tier-0 merge) | `tier-gate.yml` (no PR is classed tier 0 while one is open); Matt closes it to re-arm |
+
+Receipt kinds under `.claude/.review-receipts/`: `code-review`, `simplify`, `run-gates`, and
+`round-cap` (written when the 3-round cap stops the loop; a `round-cap` receipt never satisfies the
+push gate on its own). A receipt may carry a findings array, one object per finding:
+`{"anchor": "<path>:<line>", "class": "<kebab-class>", "tag": "important|nit|pre-existing", "disposition": "fixed|wrong|intentional|didnt-matter"}`.
+
 ## Required status checks
 
 The ruleset requires exactly these check contexts to be green before merge:
