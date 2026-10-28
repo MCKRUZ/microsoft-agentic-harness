@@ -267,7 +267,7 @@ internal static class FoundryHostBootstrap
         // Per-session agent working state that also defaults under .agent-sessions/: offloaded tool
         // results (large outputs spilled to disk), subagent delegation records, and the inter-agent
         // mailbox. StoragePath is the .agent-sessions root itself (the store appends
-        // {session}/tool-results/), so it maps to the state root directly. Mailbox has no writer
+        // {scope folder}/tool-results/), so it maps to the state root directly. Mailbox has no writer
         // today but is rooted now so the capability lands persistent when it ships.
         overrides["AppConfig__AI__ContextManagement__ToolResultStorage__StoragePath"] = stateRoot;
         overrides["AppConfig__AI__Orchestration__Subagent__DelegationStoragePath"] = $"{stateRoot}/delegations";

@@ -1162,6 +1162,21 @@
                             Self-service erasure is limited to 5 requests an hour per person; operator erasure to 30 an
                             hour.
                         </li>
+                        <li>
+                            <strong>Spilled tool results written before #928.</strong> The conversation database
+                            compares ids exactly, so <code>ticket-42</code> and <code>TICKET-42</code> can belong to two
+                            people. (The file-backed conversation store, on Windows or macOS, treats the two as one
+                            conversation: it refuses the second when another person owns the first, and lets the same
+                            person use both names for one transcript.) Spill
+                            folders are now named after the id lower-cased plus a hash of the exact id, so two such ids
+                            never share a folder, even on Windows or macOS, which ignore case in names. Before #928 the
+                            folder kept the id's case, and on those systems both ids wrote into one folder. Erasure and the
+                            person's copy still find such an old folder, but only for the id that created it: it is
+                            erased and copied whole for that id, including any spills the other id wrote there, and the
+                            other id's spills in it are not found for that other person. The files carry no owner, so
+                            they cannot be separated. Old folders receive no new writes and are deleted by the 7-day
+                            spill retention. A page of an old spill can no longer be fetched by the agent.
+                        </li>
                     </ul>
 
                     <h3>The erasure audit record</h3>

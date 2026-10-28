@@ -181,7 +181,8 @@ public sealed class OperatorErasureEndToEndTests : IDisposable
         return result.Value!;
     }
 
-    private string SpillDirectory(string conversationId) => Path.Combine(_workingDir, "spills", conversationId);
+    private string SpillDirectory(string conversationId) =>
+        Path.Combine(_workingDir, "spills", Infrastructure.AI.Context.FileSystemToolResultStore.ScopeDirectoryName(conversationId));
 
     private IEnumerable<string> SpilledFiles(string conversationId) =>
         Directory.Exists(SpillDirectory(conversationId))

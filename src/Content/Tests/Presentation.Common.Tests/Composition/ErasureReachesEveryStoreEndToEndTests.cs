@@ -248,7 +248,7 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         {
             ["step budget"] = (await budget.GetStatusAsync(run.StepConversationId)).ConsumedTokens,
             ["run budget"] = (await budget.GetStatusAsync(run.RunBudgetKey)).ConsumedTokens,
-            ["model step spills"] = SpilledFiles(run.StepConversationId.Replace(':', '~')),
+            ["model step spills"] = SpilledFiles(run.StepConversationId),
             ["tool step spills"] = SpilledFiles(run.ToolResultScopeId),
             ["prompt usage"] = await usage.PromptUsages.CountAsync(u => u.CaseId == $"{run.StepConversationId}:1"),
             ["run records"] = await planner.PlanRuns.CountAsync(r => r.PlanGraphId == run.Person.PlanId.Value),
@@ -347,9 +347,9 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         return await Stores[store].Remaining(scope.ServiceProvider, person);
     }
 
-    private int SpilledFiles(string scopeDirectory)
+    private int SpilledFiles(string scopeId)
     {
-        var directory = Path.Combine(_workingDir, "spills", scopeDirectory);
+        var directory = Path.Combine(_workingDir, "spills", Infrastructure.AI.Context.FileSystemToolResultStore.ScopeDirectoryName(scopeId));
         return Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count() : 0;
     }
 

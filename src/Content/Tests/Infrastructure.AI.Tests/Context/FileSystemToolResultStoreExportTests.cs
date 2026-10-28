@@ -74,7 +74,7 @@ public sealed class FileSystemToolResultStoreExportTests : IDisposable
 
         records.Select(r => r.GetProperty("scope").GetString()).Should().BeEquivalentTo(
             ["conv-a", "plan-1:step-a", "job-1"],
-            "a step's directory is stored with '~' for ':', but the copy names the id the person's run used");
+            "the folder name is not the id, but the copy names the id the person's run used");
         Text(records).Should().Contain("own conversation").And.Contain("model step").And.Contain("tool step");
         Text(records).Should().NotContain("someone else").And.NotContain("another run");
         records.Should().AllSatisfy(r => r.GetProperty("resultId").GetString().Should().NotBeNullOrEmpty());
