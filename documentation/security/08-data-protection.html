@@ -1217,6 +1217,37 @@
                         </div>
                     </div>
 
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A record the trail cannot write is held, then written</div>
+                            <p style="margin: 0">
+                                When the trail cannot be appended to (its chain lock still busy after the writer's
+                                ten-second wait, a full disk, a folder it may not write), the record is held in
+                                <code>{AuditStoragePath}/compliance-pending</code> instead of surviving only as the error
+                                log line (#995). Each held file is the exact line the trail refused, with an operator
+                                already replaced by their keyed reference, so it holds nothing the trail would not; it is
+                                flushed to disk and renamed into place before the request returns. A background service
+                                writes held records into the trail when the host starts and every minute, oldest first,
+                                and removes each file only once its record is in the trail. A pass first looks for every
+                                held line in the trail and only removes those already there, so a crash between writing and
+                                removing never writes a record twice, and an exclusive lock in the folder stops hosts that
+                                share it from replaying the same record. The trail is in the order records were appended:
+                                a replayed record keeps its own <code>timestamp</code> and <code>correlation_id</code> but
+                                can sit after records made later, so order requests by <code>timestamp</code>. Every record
+                                that could not be written is counted on
+                                <code>agent.compliance.audit_write_failures</code>, tagged
+                                <code>agent.compliance.audit.outcome</code>: <code>pending</code> when it is held,
+                                <code>lost</code> when it could not be held either (logged as critical; alert on it), and
+                                <code>agent.compliance.audit_records_replayed</code> counts the held records written since.
+                                The folder is on the trail's volume, so a full or read-only volume usually refuses the held
+                                file as well; holding mainly covers a busy lock and passing I/O failures. A held file
+                                that is not a record is renamed <code>.unreadable</code>, counted as lost and left for an
+                                operator.
+                            </p>
+                        </div>
+                    </div>
+
                     <h3>Deleted text on disk</h3>
                     <p>
                         SQLite normally marks a deleted row's space free without clearing it, so erased text could still be

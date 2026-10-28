@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Audit;
 using Application.Core.Compliance;
 using Domain.AI.Audit;
@@ -31,15 +32,20 @@ namespace Infrastructure.AI.Audit;
 /// not kept for good. A person erasing their own data, the document age limit and an unidentified operator are recorded by
 /// their fixed names, which identify no one.
 /// </para>
+/// <para>
+/// <strong>A record that cannot be appended is held, not dropped (#995).</strong> When the chain is busy, the disk is
+/// full or the folder cannot be written, the record is held in <c>{Erasure:AuditStoragePath}/compliance-pending</c> and
+/// <see cref="ReplayPendingAsync"/> writes it to the chain later. See <c>JsonlComplianceAuditTrail.Pending.cs</c>.
+/// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL day-files under {Erasure:AuditStoragePath}/compliance (default .agent-sessions/compliance) of every erasure, data export and document removal: the requesting operator as a keyed reference, the subject as a keyed reference when Erasure:SubjectReferenceKey is set, the receipt id, completeness and per-store counts. Kept by design: deleting records would break the chain and the proof it holds.",
+    "Hash-chained JSONL day-files under {Erasure:AuditStoragePath}/compliance (default .agent-sessions/compliance) of every erasure, data export and document removal: the requesting operator as a keyed reference, the subject as a keyed reference when Erasure:SubjectReferenceKey is set, the receipt id, completeness and per-store counts. Kept by design: deleting records would break the chain and the proof it holds. A record that could not be appended is held, as the same line, in {Erasure:AuditStoragePath}/compliance-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.Identifiers,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiableAuditChain, IDisposable
+public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -52,6 +58,8 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
     private readonly string _folder;
     private readonly HashChainedJsonlWriter _chain;
     private readonly IAuditPseudonymizer _pseudonymizer;
+    private readonly TimeProvider _clock;
+    private readonly ILogger _logger;
 
     /// <summary>Initializes a new instance of the <see cref="JsonlComplianceAuditTrail"/> class.</summary>
     /// <param name="config">Application configuration providing the trail's folder and the archive.</param>
@@ -74,6 +82,9 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
         _folder = chain.Segments.Folder;
         _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _pseudonymizer = pseudonymizer;
+        _clock = timeProvider;
+        _logger = logger;
+        _pendingFolder = PendingFolder(config.CurrentValue);
     }
 
     /// <inheritdoc />
@@ -83,14 +94,34 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
     public string AuditLocation => _folder;
 
     /// <inheritdoc />
-    public Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
+    /// <remarks>
+    /// A record the chain refuses, or whose append throws, is held for replay and still returned as a failure that says
+    /// so: it is not in the trail yet. Only when it cannot be held either is it lost, logged as critical.
+    /// </remarks>
+    public async Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(actor);
 
-        // The writer logs its own failures; the caller logs the returned reason once more, with the request it belongs to.
-        var recorded = entry with { ExecutorId = RecordedExecutor(actor) };
-        return _chain.AppendAsync(JsonSerializer.Serialize(recorded, SerializeOptions), cancellationToken);
+        // Serialized once, after the operator is replaced by their reference: a held record is this exact line, so the
+        // pending folder never holds the operator's id and replay never pseudonymises a reference twice.
+        var payload = JsonSerializer.Serialize(entry with { ExecutorId = RecordedExecutor(actor) }, SerializeOptions);
+        Result appended;
+        try
+        {
+            // The writer logs its own failures; the caller logs the returned reason once more, with its request.
+            appended = await _chain.AppendAsync(payload, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // For example the writer disposed while the host shuts down, or the caller cancelling: the request this
+            // records has already happened, so the record is held all the same.
+            _logger.LogError(MessageWithheldException.From(ex),
+                "Compliance record not written to {AuditLocation}: the append threw", _folder);
+            appended = Result.Fail($"The append threw {ex.GetType().Name}.");
+        }
+
+        return appended.IsSuccess ? appended : Hold(entry.Action, payload, appended.Errors);
     }
 
     /// <inheritdoc />
