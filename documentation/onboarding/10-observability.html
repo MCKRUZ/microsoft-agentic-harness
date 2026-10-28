@@ -397,10 +397,18 @@ docker run -d --name jaeger \
 
                     <h3>2 · Content safety middleware</h3>
                     <p>
-                        Wrapped around the chat client itself (in <code>AgentFactory</code>). Filters configurable
-                        content categories — PII, profanity, classified information — both on user input and LLM
-                        output. The harness ships with sane defaults; tighten or loosen via
-                        <code>AppConfig.AI.Governance</code>.
+                        A MediatR behavior, <code>ContentSafetyBehavior</code>, that runs right after the injection
+                        scan. It screens the input text of requests that opt in through <code>IContentScreenable</code>
+                        (the agent turn and the document search query); model output is not screened. Configure it
+                        under <code>AppConfig:AI:ContentSafety</code>. The default <code>Provider</code> is
+                        <code>AllowAll</code>, which screens nothing and logs a startup warning outside Development.
+                        With <code>AzureAIContentSafety</code> (plus an <code>Endpoint</code> and an API key or Entra
+                        <code>Auth</code>), the text is scored for four harm categories — Hate, SelfHarm, Sexual,
+                        Violence, narrowed by <code>Categories</code> — and blocked at <code>BlockAtSeverity</code>
+                        (4 by default). There is no PII or keyword detection here. If the service cannot be reached,
+                        the evaluation is recorded as unscreened and the request is refused as a service failure (HTTP 503
+                        where errors pass through <code>GlobalExceptionMiddleware</code>) unless
+                        <code>BlockWhenUnavailable</code> is set to false.
                     </p>
 
                     <h3>3 · Tool-invocation governance — <code>GovernedAIFunction</code></h3>

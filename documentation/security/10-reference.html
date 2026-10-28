@@ -169,10 +169,13 @@
                     <h2 id="pipeline-order">The security pipeline order</h2>
                     <p>
                         Most runtime security runs as <strong>MediatR pipeline behaviors</strong> — interceptors
-                        that wrap every command. The agent behaviors are registered in
-                        <code>src/Content/Application/Application.AI.Common/DependencyInjection.cs</code> and are
-                        deliberately registered first so they form the <em>outermost</em> wrapper. A request
-                        descends through them on the way in; the response climbs back out through them in reverse.
+                        that wrap every command. The six generic behaviors in
+                        <code>src/Content/Application/Application.Common/DependencyInjection.cs</code> are registered
+                        first, because the composition root calls that layer before the AI layer, so they form the
+                        <em>outermost</em> wrapper. The sixteen agent behaviors registered in
+                        <code>src/Content/Application/Application.AI.Common/DependencyInjection.cs</code> run inside
+                        them. A request descends through them on the way in; the response climbs back out through them
+                        in reverse.
                     </p>
 
                     <div class="callout callout-jargon">
@@ -192,7 +195,7 @@
                     <ol class="steps">
                         <li class="step">
                             <div class="step-meta">Inbound &middot; screening</div>
-                            <div class="step-title"><code>AuditTrail</code> → <code>ContentSafety</code> → <code>PromptInjection</code></div>
+                            <div class="step-title"><code>AuditTrail</code> → <code>PromptInjection</code> → <code>ContentSafety</code></div>
                         </li>
                         <li class="step">
                             <div class="step-meta">Center</div>
@@ -209,7 +212,7 @@
                         <em>after</em> the handler, before it can re-enter the model's context. Two more
                         Application-level behaviors —
                         <code>RequestValidation</code> (FluentValidation at the boundary) and
-                        <code>Authorization</code> — run on the inner ring for every command.
+                        <code>Authorization</code> — run on the outer ring, ahead of all of these, for every command.
                     </p>
                     <p>
                         <strong>Tool permission and governance are not MediatR behaviors.</strong> They run on the live
@@ -294,8 +297,13 @@
                             </tr>
                             <tr>
                                 <td>Content safety</td>
-                                <td><code>GovernanceConfig</code>: <code>Enabled</code>, <code>EnablePromptInjectionDetection</code>, <code>EnableResponseSanitization</code>, <code>InjectionBlockThreshold</code>, <code>ResponseBlockThreshold</code></td>
-                                <td>Toggles and thresholds for injection scanning and response sanitization.</td>
+                                <td><code>AppConfig:AI:ContentSafety</code>: <code>Provider</code> (<code>AllowAll</code> / <code>AzureAIContentSafety</code>), <code>Endpoint</code>, <code>ApiKey</code> / <code>Auth</code>, <code>Categories</code>, <code>BlockAtSeverity</code>, <code>BlockWhenUnavailable</code></td>
+                                <td>Screening of request input. Default <code>AllowAll</code> screens nothing (startup warning outside Development); Azure scores Hate / SelfHarm / Sexual / Violence and blocks at <code>BlockAtSeverity</code> (default 4); an outage is refused unless <code>BlockWhenUnavailable</code> is false.</td>
+                            </tr>
+                            <tr>
+                                <td>Injection &amp; sanitization</td>
+                                <td><code>GovernanceConfig</code>: <code>EnablePromptInjectionDetection</code>, <code>InjectionBlockThreshold</code>, <code>EnableResponseSanitization</code>, <code>ResponseBlockThreshold</code></td>
+                                <td>Toggles and thresholds for the prompt-injection scan and tool-output sanitization. Each toggle is independent of <code>GovernanceConfig.Enabled</code>.</td>
                             </tr>
                             <tr>
                                 <td>Data</td>

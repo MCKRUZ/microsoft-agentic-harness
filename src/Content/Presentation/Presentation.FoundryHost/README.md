@@ -41,7 +41,7 @@ conversations or users**, or beyond the 30-day window.
 |---|---|
 | `FOUNDRY_PROJECT_ENDPOINT` | Foundry project endpoint used for model inference. |
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model deployment the agent runs against. |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Telemetry sink; presence auto-enables the Azure Monitor exporter. |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Telemetry sink. By default its presence turns on the harness's Azure Monitor exporter, and the Foundry hosting layer exports its own traces and logs to it. Set the opt-out `EnableFromHostConnectionString` to `false` and FoundryHost removes it before startup, so nothing is sent to Foundry's resource; where to set it and how each source spells it is in the [security guide](../../../../documentation/security/08-data-protection.html#foundry-telemetry-opt-out). FoundryHost logs which applies. |
 | `FOUNDRY_AGENT_ID` | (Optional) which discovered `AGENT.md` to expose. Defaults to `default`. |
 | `HOME` | Persistent session storage root. The host roots all local state under `$HOME/agent-state`. |
 

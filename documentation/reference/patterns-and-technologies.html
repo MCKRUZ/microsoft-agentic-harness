@@ -187,31 +187,31 @@
                         When constructing a service needs multiple dependencies, config lookups, or decoration steps,
                         the harness uses a factory instead of expanding everyone's constructor. The big three:
                     </p>
-                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a fully-configured <code>AIAgent</code> — loads skills, resolves tools, wires content safety and OTel, applies function-invocation limits. <code>src/Content/Application/Application.AI.Common/Factories/AgentFactory.cs</code></div></div>
-                    <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Builds an LLM <code>IChatClient</code> per <code>ClientType</code> — Azure OpenAI, OpenAI, AI Foundry, OpenRouter, Azure AI Inference. Decorates with retries, timeouts, observability, content safety. Split into a Providers partial. <code>src/Content/Infrastructure/Infrastructure.AI/Factories/ChatClientFactory.cs</code></div></div>
+                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a fully-configured <code>AIAgent</code> — loads skills, resolves tools, wires OTel, applies function-invocation limits. <code>src/Content/Application/Application.AI.Common/Factories/AgentFactory.cs</code></div></div>
+                    <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Builds an LLM <code>IChatClient</code> per <code>ClientType</code> — Azure OpenAI, OpenAI, AI Foundry, OpenRouter, Azure AI Inference. Decorates with retries, timeouts, observability. Split into a Providers partial. <code>src/Content/Infrastructure/Infrastructure.AI/Factories/ChatClientFactory.cs</code></div></div>
                     <div class="def"><div class="def-term"><code>AgentExecutionContextFactory</code></div><div class="def-desc">Builds the per-turn execution context — conversation IDs, OTel session, ambient services. <code>src/Content/Application/Application.AI.Common/Factories/AgentExecutionContextFactory.cs</code></div></div>
 
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-block-lang">C# · sketch of the ChatClientFactory shape</span></div>
-                        <pre><code>public IChatClient Create(ClientType type, ChatClientOptions opts)
+                        <div class="code-block-header"><span class="code-block-lang">C# · simplified from ChatClientFactory.CreateChatClientAsync</span></div>
+                        <pre><code>private async Task&lt;IChatClient&gt; CreateChatClientAsync(
+    AIAgentFrameworkClientType clientType, string deploymentOrAgentId,
+    bool disableProviderRetry, CancellationToken cancellationToken)
 {
-    IChatClient inner = type switch
+    return clientType switch
     {
-        ClientType.AzureOpenAI       =&gt; BuildAzureOpenAI(opts),
-        ClientType.OpenAI            =&gt; BuildOpenAI(opts),
-        ClientType.AzureAIInference  =&gt; BuildAzureAIInference(opts),
-        ClientType.OpenRouter        =&gt; BuildOpenRouter(opts),
-        ClientType.Echo              =&gt; new EchoChatClient(),       // tests
-        _ =&gt; throw new InvalidOperationException($"Unknown client type {type}")
+        AIAgentFrameworkClientType.AzureOpenAI      =&gt; await GetAzureOpenAIChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+        AIAgentFrameworkClientType.OpenAI           =&gt; await GetOpenAIChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+        AIAgentFrameworkClientType.AzureAIInference =&gt; await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+        AIAgentFrameworkClientType.Anthropic        =&gt; GetAnthropicChatClient(deploymentOrAgentId),
+        AIAgentFrameworkClientType.Echo             =&gt; new EchoChatClient(),   // tests
+        // ... PersistentAgents, AnthropicDirect, FoundryDirectResponses
+        _ =&gt; throw new ArgumentException($"Unsupported AI framework client type: {clientType}", nameof(clientType))
     };
+}
 
-    // every client gets the same decoration stack — order matters
-    return inner
-        .WithResilience(_resilienceBuilder)            // Polly retries + circuit breaker
-        .WithContentSafety(_contentSafety)             // input/output moderation
-        .WithUsageTracking(_usageMetrics)              // OTel token counters
-        .WithLogging(_logger);                         // structured request/response log
-}</code></pre>
+// AgentFactory then decorates the client it gets back:
+//   chatClient.AsBuilder().UseFunctionInvocation(...).UseOpenTelemetry(...)
+// Content safety is not a client decorator: it is ContentSafetyBehavior in the MediatR pipeline.</code></pre>
                     </div>
 
                     <div class="callout callout-tip">
@@ -221,7 +221,7 @@
                             <p style="margin: 0">
                                 Never construct an <code>AIAgent</code>, <code>IChatClient</code>, or
                                 <code>AgentExecutionContext</code> directly. <strong>Always go through the
-                                factory.</strong> Otherwise you lose content safety, OTel, function limits, and config
+                                factory.</strong> Otherwise you lose OTel, function limits, and config
                                 consistency — and these are exactly the things tests catch you forgetting.
                             </p>
                         </div>
@@ -1260,7 +1260,7 @@ await _store.SaveAsync(attestation, ct);</code></pre>
                         <li><code>BudgetMetrics</code> — token spend, cost tracking</li>
                         <li><code>LlmUsageMetrics</code> — prompt / completion / cached tokens, per provider</li>
                         <li><code>ToolExecutionMetrics</code> — count, latency, error rate per tool</li>
-                        <li><code>ContentSafetyMetrics</code> — violation counts by category &amp; severity</li>
+                        <li><code>ContentSafetyMetrics</code> — evaluations by outcome (pass / block / unscreened) and blocks by category; a severity histogram is defined but not recorded</li>
                         <li><code>DriftMetrics</code> — current vs. baseline quality scores</li>
                         <li><code>EscalationMetrics</code> — approvals, timeouts, rejections</li>
                         <li><code>ResilienceMetrics</code> — circuit-breaker state, retries, fallbacks</li>

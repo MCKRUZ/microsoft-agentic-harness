@@ -80,7 +80,7 @@
                     <div class="def"><div class="def-term">MediatR pipeline</div><div class="def-desc">A series of <code>IPipelineBehavior</code> wrappers (validation, content safety, governance, etc.) that every command flows through.</div></div>
                     <div class="def"><div class="def-term"><code>ExecuteAgentTurnCommandHandler</code></div><div class="def-desc">The handler that actually invokes the agent for a single turn.</div></div>
                     <div class="def"><div class="def-term"><code>AgentConversationCache</code></div><div class="def-desc">Caches one built agent per conversation. A later turn reuses it only while its skills and build options match what it was built from; otherwise the agent is rebuilt.</div></div>
-                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a new agent — loads the skill, resolves tools, wires content safety, attaches OTel.</div></div>
+                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a new agent — loads the skill, resolves tools, applies function-invocation limits, attaches OTel. (Content safety is not here: it is a MediatR behavior on the request.)</div></div>
                     <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Creates the LLM client (Azure OpenAI, OpenAI, or AI Foundry) from <code>AppConfig.AI.AgentFramework</code>.</div></div>
                     <div class="def"><div class="def-term">The agent</div><div class="def-desc">A <code>Microsoft.Agents.AI.AIAgent</code> — assembles the prompt, calls the LLM, dispatches tool calls, loops until done.</div></div>
 
@@ -139,7 +139,10 @@ var result = await _mediator.Send(cmd, cancellationToken);</code></pre>
                                 Before the handler runs, the command is wrapped in
                                 <strong>pipeline behaviors</strong> — one for each cross-cutting concern. Each behavior
                                 can pre-process the request, call the next behavior, and post-process the response.
-                                Registration order matters; the order roughly is:
+                                Registration order matters. The six generic behaviors from <code>Application.Common</code>
+                                (<code>RequestValidation</code>, <code>Authorization</code>, <code>Idempotency</code>,
+                                <code>Caching</code>, <code>RequestTracing</code>, <code>Timeout</code>) are registered first and
+                                so run outermost; inside them, the agent behaviors run in this order:
                             </p>
                             <ol>
                                 <li><code>UnhandledExceptionBehavior</code> — outer wrapper, converts uncaught exceptions to logged errors.</li>
@@ -147,8 +150,8 @@ var result = await _mediator.Send(cmd, cancellationToken);</code></pre>
                                 <li><code>AgentContextPropagationBehavior</code> — copies agent/conversation IDs into ambient tracing tags.</li>
                                 <li><code>AgentIdentityResolutionBehavior</code> — resolves the caller's tenant/owner identity for scope isolation.</li>
                                 <li><code>AuditTrailBehavior</code> — persistent audit log of every command.</li>
-                                <li><code>ContentSafetyBehavior</code> — checks input against configured content filters.</li>
-                                <li><code>PromptInjectionBehavior</code> — runs deterministic prompt-injection detectors on user input.</li>
+                                <li><code>PromptInjectionBehavior</code> — runs deterministic prompt-injection detectors on user input. Local and free, so it runs before content safety.</li>
+                                <li><code>ContentSafetyBehavior</code> — screens the request's input with the configured provider (allow-all by default; Azure AI Content Safety when configured). Model output is not screened.</li>
                                 <li><code>TokenBudgetBehavior</code> — enforces the per-turn token budget.</li>
                                 <li><code>HookBehavior</code> — invokes any configured pre/post hooks.</li>
                                 <li><code>RetrievalAuditBehavior</code> — records RAG retrievals for the turn.</li>
@@ -236,7 +239,7 @@ return await next();   // call the next behavior / handler</code></pre>
                                 <li>Read the skill's <code>allowed-tools</code> declaration. Resolve each one from the keyed DI container.</li>
                                 <li>Convert internal <code>ITool</code> implementations to <code>AITool</code> via <code>AIToolConverter</code> — see <a href="06-tools.html">Tools &amp; Keyed DI</a>.</li>
                                 <li>Create the chat client through <code>IChatClientFactory</code> (Azure OpenAI, OpenAI, or AI Foundry depending on config).</li>
-                                <li>Wrap the chat client with middleware: content safety, OTel, function-invocation limits.</li>
+                                <li>Wrap the chat client with middleware: OTel and function-invocation limits. (Content safety already ran on the request, in the MediatR pipeline.)</li>
                                 <li>Construct a <code>Microsoft.Agents.AI.AIAgent</code> with the system prompt (assembled from skill instructions + any override) and the tool list.</li>
                             </ul>
                             <div class="callout callout-tip">
@@ -347,8 +350,8 @@ var usage = _usageCapture.TakeSnapshot(); // total tokens, cost, tools called</c
         ▼
    ┌────────────── MediatR pipeline (outer→inner) ─────────────┐
    │  UnhandledException → AmbientScope → ContextPropagation →  │
-   │  IdentityResolution → AuditTrail → ContentSafety →         │
-   │  PromptInjection → TokenBudget → Hook → RetrievalAudit →   │
+   │  IdentityResolution → AuditTrail → PromptInjection →       │
+   │  ContentSafety → TokenBudget → Hook → RetrievalAudit →     │
    │  [handler] → ResponseSanitization → ToolOutputCompression →│
    │  KnowledgeExtraction → WorkEpisodeCapture → PromptUsage    │
    └──────────────────────────┬────────────────────────────────┘
@@ -362,7 +365,7 @@ var usage = _usageCapture.TakeSnapshot(); // total tokens, cost, tools called</c
    AgentFactory.CreateAgentFromSkillsAsync(skillIds)
         │  looks up SKILL.md metadata
         │  resolves keyed tools (wrapped by GovernedAIFunction)
-        │  wires content safety + OTel
+        │  wires function-invocation limits + OTel
         ▼
    ChatClientFactory.CreateAsync
         │  AzureOpenAI / OpenAI / AIFoundry

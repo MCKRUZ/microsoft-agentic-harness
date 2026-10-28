@@ -52,7 +52,7 @@
             <div class="arch-icon" style="background: var(--color-actor-3); color: white;">M</div>
             <span><span class="term" data-definition="MediatR is a library that acts like a message dispatcher. Instead of components calling each other directly, they send messages through MediatR, which routes them to the right handler — like a mail sorting facility.">MediatR Pipeline</span></span>
           </div>
-          <div class="arch-component" data-desc="Checks every user message and AI response for harmful content before it goes further — like a content review board on a film set." onclick="showArchDesc(this)">
+          <div class="arch-component" data-desc="Checks the incoming request text for harmful content before it goes further — like a content review board on a film set. It does not check the AI's response, and the default AllowAll provider lets everything through until Azure AI Content Safety is configured." onclick="showArchDesc(this)">
             <div class="arch-icon" style="background: var(--color-actor-3); color: white;">CS</div>
             <span><span class="term" data-definition="Content Safety is a middleware layer that scans messages for harmful, unsafe, or inappropriate content — like a content moderator reviewing posts before they go live.">ContentSafety</span></span>
           </div>

@@ -13,7 +13,7 @@
     { "serviceType": "ai-search", "displayName": "AI Search (prod)", "description": "Standard S2. Vector + BM25. Replicas for HA, partitions for scale." },
     { "serviceType": "aks", "displayName": "Neo4j / KG (prod)", "description": "Neo4j Enterprise on AKS. Causal cluster, zone-redundant, persistent volumes for graph store. ComplianceAwareGraphStore + TenantIsolatedGraphStore on top." },
     { "serviceType": "azure-sql", "displayName": "Azure SQL (prod)", "description": "Plan state. Business Critical, zone-redundant, automated point-in-time restore." },
-    { "serviceType": "redis-cache", "displayName": "Redis Cache (prod)", "description": "AgentConversationCache + skill metadata + content safety result cache. Standard C1." },
+    { "serviceType": "redis-cache", "displayName": "Redis Cache (prod)", "description": "AgentConversationCache + skill metadata. Standard C1." },
     { "serviceType": "storage-account", "displayName": "Storage (prod)", "description": "Geo-redundant (RA-GRS) with lifecycle management auto-tiering ingestion staging to Cool after 30 days and Archive after 180. AG-UI artifacts, escalation JSONL audit, ErasureReceipt records." },
     { "serviceType": "key-vault", "displayName": "Key Vault (prod)", "description": "Premium (HSM-backed keys). Private endpoint, RBAC, soft delete + purge protection, customer-managed keys for storage + SQL." },
     { "serviceType": "entra-id", "displayName": "Entra ID", "description": "Identity. Conditional access, MFA enforced for approver roles in escalation flows." },

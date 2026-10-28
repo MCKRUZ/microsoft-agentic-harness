@@ -133,12 +133,12 @@ throw new ValidationException(failures);  // fallback for non-Result handlers</c
 }</code></pre>
                     </div>
 
-                    <p>The agent pipeline behaviors used by this codebase (registered in <code>Application.AI.Common/DependencyInjection.cs</code>, outermost → innermost):</p>
+                    <p>The agent pipeline behaviors used by this codebase (registered in <code>Application.AI.Common/DependencyInjection.cs</code>, outermost → innermost). The six generic behaviors from <code>Application.Common</code> — validation, authorization, idempotency, caching, tracing, timeout — are registered before these and wrap them all:</p>
                     <ul>
                         <li><code>UnhandledExceptionBehavior</code>, <code>AmbientRequestScopeBehavior</code> — outermost wrappers: catch-all error boundary and the ambient request scope everything else reads from.</li>
                         <li><code>AgentContextPropagationBehavior</code>, <code>AgentIdentityResolutionBehavior</code> — establish agent/conversation IDs and resolve the calling identity into ambient context.</li>
                         <li><code>AuditTrailBehavior</code> — records the request for the tamper-evident audit chain.</li>
-                        <li><code>ContentSafetyBehavior</code>, <code>PromptInjectionBehavior</code> — the safety stack: content moderation and prompt-injection defense on the way in.</li>
+                        <li><code>PromptInjectionBehavior</code>, <code>ContentSafetyBehavior</code> — the safety stack on the way in: the local prompt-injection scan first, then content moderation of the request input (allow-all unless Azure AI Content Safety is configured).</li>
                         <li><code>TokenBudgetBehavior</code>, <code>HookBehavior</code>, <code>RetrievalAuditBehavior</code> — enforce the per-turn token budget, run lifecycle hooks, and audit RAG retrievals.</li>
                         <li><code>ResponseSanitizationBehavior</code>, <code>ToolOutputCompressionBehavior</code> — post-execution: scrub the response and compress large tool output.</li>
                         <li><code>KnowledgeExtractionBehavior</code>, <code>WorkEpisodeCaptureBehavior</code>, <code>SkillEffectivenessTrackingBehavior</code> — post-turn, fire-and-forget knowledge/episode/effectiveness capture.</li>
@@ -169,8 +169,8 @@ throw new ValidationException(failures);  // fallback for non-Result handlers</c
                         we use a factory rather than expanding the constructor of every consumer. The two big ones:
                     </p>
 
-                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a fully-configured <code>AIAgent</code>: loads the skill, resolves tools, wires content safety and OTel, applies function invocation limits. Consumers call <code>factory.Create(skillId)</code>; everything else is internal.</div></div>
-                    <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Builds an LLM chat client based on <code>ClientType</code> — Azure OpenAI, OpenAI, AI Foundry, or Azure AI Inference. Decorates with retries, timeouts, observability, content safety.</div></div>
+                    <div class="def"><div class="def-term"><code>AgentFactory</code></div><div class="def-desc">Builds a fully-configured <code>AIAgent</code>: loads the skill, resolves tools, wires OTel, applies function invocation limits. Consumers call <code>factory.Create(skillId)</code>; everything else is internal.</div></div>
+                    <div class="def"><div class="def-term"><code>ChatClientFactory</code></div><div class="def-desc">Builds an LLM chat client based on <code>ClientType</code> — Azure OpenAI, OpenAI, AI Foundry, or Azure AI Inference. Decorates with retries, timeouts, observability.</div></div>
                     <div class="def"><div class="def-term"><code>AgentExecutionContextFactory</code></div><div class="def-desc">Builds the per-turn execution context — conversation IDs, observability session, ambient services.</div></div>
 
                     <div class="callout callout-tip">
@@ -180,7 +180,7 @@ throw new ValidationException(failures);  // fallback for non-Result handlers</c
                             <p style="margin: 0">
                                 Never construct an <code>AIAgent</code>, <code>IChatClient</code>, or
                                 <code>AgentExecutionContext</code> directly. <strong>Always go through the
-                                factory.</strong> Otherwise you lose content safety, OTel, function limits, and
+                                factory.</strong> Otherwise you lose OTel, function limits, and
                                 config consistency — and these are exactly the things tests catch you forgetting.
                             </p>
                         </div>

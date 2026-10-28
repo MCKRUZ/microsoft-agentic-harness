@@ -160,8 +160,8 @@
                         <tbody>
                             <tr>
                                 <td><strong>User prompt</strong></td>
-                                <td>Direct jailbreaks, injection, requests to exceed authority</td>
-                                <td><a href="07-content-safety.html">Content safety</a> + <a href="03-autonomy-and-governance.html">autonomy</a></td>
+                                <td>Direct jailbreaks, injection, harmful content, requests to exceed authority</td>
+                                <td><a href="07-content-safety.html#prompt-injection">Prompt-injection scan</a> (injection) + <a href="07-content-safety.html">content safety</a> (harm categories, Azure provider only) + <a href="03-autonomy-and-governance.html">autonomy</a></td>
                             </tr>
                             <tr>
                                 <td><strong>Tool output</strong></td>
@@ -171,7 +171,7 @@
                             <tr>
                                 <td><strong>Retrieved documents (RAG)</strong></td>
                                 <td>Poisoned content that hijacks the answer or the agent's goal</td>
-                                <td><a href="07-content-safety.html">Content safety</a> + <a href="08-data-protection.html">provenance</a></td>
+                                <td><a href="08-data-protection.html">Provenance</a> (document content is not content-screened; only the search query text is)</td>
                             </tr>
                             <tr>
                                 <td><strong>Stored memory</strong></td>
@@ -316,7 +316,7 @@
                                 <td>6</td>
                                 <td><a href="07-content-safety.html">Content safety</a></td>
                                 <td>Is the text flowing in or out safe?</td>
-                                <td>Prompt injection, credential leakage, exfiltration URLs, unsafe content</td>
+                                <td>Prompt injection (injection scan, tool-output sanitization), credential leakage, exfiltration URLs, unsafe content in request input (content safety, Azure provider only)</td>
                             </tr>
                             <tr>
                                 <td>7</td>

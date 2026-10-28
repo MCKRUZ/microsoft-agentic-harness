@@ -372,8 +372,9 @@
                                 <code>Presentation.FoundryHost</code> host. The <code>PersistentAgents</code> and
                                 <code>FoundryResponses</code> client types let you run agents backed by Azure AI
                                 Foundry &mdash; either server-managed (persistent state) or built at runtime from a
-                                Foundry project endpoint &mdash; while keeping the full harness middleware pipeline
-                                (OpenTelemetry, content safety, function-invocation limits) via the client-factory hook.
+                                Foundry project endpoint &mdash; while keeping the harness middleware (OpenTelemetry, function-invocation limits) via the
+                                client-factory hook. Content safety is unaffected by the client type: it runs on the turn
+                                request in the MediatR pipeline, not on the chat client.
                             </p>
                         </div>
                     </div>

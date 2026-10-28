@@ -131,6 +131,11 @@ public static partial class DependencyInjection
             return store;
         });
 
+        // Off by default; said at startup so a shared deployment does not run with it unnoticed (#904). The
+        // warning reads the same setting as the store above, at startup; the store reads it once when first
+        // resolved, so a configuration reload in between can make them differ.
+        services.AddHostedService<KnowledgeIsolationOffStartupWarning>();
+
         // Provenance stamping
         services.AddSingleton<IProvenanceStamper>(sp =>
             new DefaultProvenanceStamper(

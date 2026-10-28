@@ -10,8 +10,10 @@ using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
+using Presentation.Common.Helpers;
 
 namespace Presentation.FoundryHost;
 
@@ -50,7 +52,17 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        MapFoundryEnvironmentToHarnessConfig();
+        // The telemetry opt-out is read from the same full configuration the composition root binds (LoadAppConfig), so
+        // an opt-out kept in Key Vault is honoured; where it can be set is described once, in
+        // documentation/security/08-data-protection.html#foundry-telemetry-opt-out. This is a second full load before
+        // the composition root's own, so every Azure configuration source the host has configured is read again at cold
+        // start, and this throwaway configuration's appsettings file watchers live for the process (only its outer root
+        // is disposable). Accepted as the price of an opt-out that works wherever the host reads settings.
+        var settings = AppConfigHelper.LoadAppConfig(typeof(Program).Assembly);
+        (bool HostSupplied, bool UsedHostConnectionString) foundry;
+        using (settings as IDisposable)
+            foundry = FoundryHostBootstrap.PrepareFoundryEnvironment(
+                settings, Environment.GetEnvironmentVariable, Environment.SetEnvironmentVariable);
 
         // Build the harness composition root: skills, governance, tools, RAG, knowledge graph,
         // telemetry, and the Phase 1 Foundry Responses inference provider. The provider is kept
@@ -68,6 +80,15 @@ public static class Program
         // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2)
         // and centralizes the ASP0000 suppression for the console-style hosts.
         var provider = services.BuildValidatedServiceProvider();
+
+        // Said at startup, from what the host actually bound: the export follows from the platform rather than from
+        // anything the deployer set.
+        var azureMonitor = provider.GetRequiredService<IOptions<AppConfig>>().Value.Observability.Exporters.AzureMonitor;
+        var startupLog = provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program));
+        foreach (var (level, message) in FoundryHostBootstrap.DescribeTelemetryExport(
+                     foundry.HostSupplied, foundry.UsedHostConnectionString,
+                     FoundryHostBootstrap.HarnessExporterIsActive(azureMonitor)))
+            startupLog.Log(level, "{TelemetryExport}", message);
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —
@@ -223,27 +244,5 @@ public static class Program
                 new SkillAgentOptions { OwningAgentId = definition.Id },
                 cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Copies Foundry's runtime-injected environment variables onto the configuration keys the
-    /// harness binds, so the existing config pipeline consumes them without bespoke binding code.
-    /// </summary>
-    /// <remarks>
-    /// Existing values are never overwritten, so an operator can still override any mapping with the
-    /// native <c>AppConfig__...</c> key. App Insights additionally enables the Azure Monitor exporter
-    /// so harness traces and metrics flow to the injected connection string.
-    /// </remarks>
-    private static void MapFoundryEnvironmentToHarnessConfig()
-    {
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Environment.GetEnvironmentVariable);
-        foreach (var (target, value) in overrides)
-        {
-            // Never clobber a value an operator set explicitly via the native AppConfig__ key.
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(target)))
-            {
-                Environment.SetEnvironmentVariable(target, value);
-            }
-        }
     }
 }

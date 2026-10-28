@@ -770,7 +770,7 @@ window.SHOWCASE_CATEGORIES = [
                     scenario: [
                         {
                             time: 'A message arrives',
-                            text: 'Before any actual business logic runs, it passes through roughly fourteen separate, ordered checks — exception handling, identity resolution, content safety, prompt-injection screening, budget tracking, and more — each one wrapping the next.',
+                            text: 'Before any actual business logic runs, it passes through twenty-two separate, ordered checks — validation, authorization, exception handling, identity resolution, prompt-injection screening, content safety, budget tracking, and more — each one wrapping the next.',
                         },
                         {
                             time: 'Only then',
@@ -797,19 +797,19 @@ window.SHOWCASE_CATEGORIES = [
                         'One detail worth calling out: agents aren\'t rebuilt on every single turn. The same live agent is <mark class="hl">created once and reused for the rest of that conversation</mark> — explicitly released when the conversation ends, with a time-based safety net that quietly cleans up anything abandoned rather than cleanly closed.',
                     ],
                     techTable: {
-                        columns: ['Behavior (a sample of ~14)', 'What It Does'],
+                        columns: ['Behavior (a sample of the 22)', 'What It Does'],
                         rows: [
                             ['Unhandled Exception', 'Catches anything that goes wrong deeper in the pipeline.'],
                             ['Agent Identity Resolution', 'Establishes which agent is actually running this turn.'],
-                            ['Content Safety', 'Screens output for policy violations before anything is trusted.'],
                             ['Prompt Injection', 'Screens for injected instructions in the incoming content.'],
+                            ['Content Safety', 'Screens the incoming request for harmful content (with Azure AI Content Safety configured; the default provider lets everything through). Model output is not screened.'],
                             ['Token Budget', 'Enforces spending limits for this conversation.'],
                             ['Audit Trail', 'Records what happened for later review.'],
                         ],
                     },
                     engineeringFacts: [
                         {
-                            title: '~14 separate pipeline behaviors, not one big handler',
+                            title: '22 separate pipeline behaviors, not one big handler',
                             body: 'Each one independently authored, doing one job, wrapped around the next in a specific, deliberate order.',
                         },
                         {
@@ -846,7 +846,7 @@ window.SHOWCASE_CATEGORIES = [
                 name: 'Supervisor Agent',
                 status: 'built',
                 exec: 'A real manager-plus-specialists multi-agent pattern — with human plan review and full telemetry — is now reachable from an ordinary conversation. Any agent whose own manifest declares itself a Magentic supervisor gets this automatically, everywhere a normal agent already runs: chat, the bundle API, the planner, orchestrated-task delegation.',
-                eng: 'MagenticOrchestrator wraps the Microsoft Agent Framework\'s own (experimental) Magentic multi-agent workflow (MagenticWorkflowBuilder(manager).AddParticipants(...)), adding OTel spans, a human-in-the-loop plan-review bridge, and content-safety sanitization. ExecuteAgentTurnCommandHandler — the one chokepoint every live surface already dispatches a turn through — branches to it for any agent declaring orchestration: magentic in its AGENT.md, via IMagenticAgentTurnRunner. One turn currently starts a fresh workflow run rather than resuming an in-progress one across turns, and per-tool-call replay memory doesn\'t yet cover a Magentic turn — both tracked as follow-up work, not silently dropped.',
+                eng: 'MagenticOrchestrator wraps the Microsoft Agent Framework\'s own (experimental) Magentic multi-agent workflow (MagenticWorkflowBuilder(manager).AddParticipants(...)), adding OTel spans, a human-in-the-loop plan-review bridge, and governance response sanitization (ICompositeResponseSanitizer, not content safety). ExecuteAgentTurnCommandHandler — the one chokepoint every live surface already dispatches a turn through — branches to it for any agent declaring orchestration: magentic in its AGENT.md, via IMagenticAgentTurnRunner. One turn currently starts a fresh workflow run rather than resuming an in-progress one across turns, and per-tool-call replay memory doesn\'t yet cover a Magentic turn — both tracked as follow-up work, not silently dropped.',
                 deepDive: {
                     scenario: [
                         {
@@ -966,7 +966,7 @@ window.SHOWCASE_CATEGORIES = [
                         },
                         {
                             title: 'Inherits the same observability and safety wrapper',
-                            body: 'Nothing about specialist agents skips the tracing, human-review, or content-safety layers this harness applies to the manager and the workflow as a whole.',
+                            body: 'Nothing about specialist agents skips the tracing or human-review layers this harness applies to the manager and the workflow as a whole. Content safety screens the incoming turn\'s input once, before the workflow starts; what specialists say to each other is not content-screened.',
                         },
                         {
                             title: 'Assembled automatically from the supervisor\'s own manifest',
@@ -2594,7 +2594,7 @@ window.SHOWCASE_CATEGORIES = [
                         rows: [
                             ['Session cost', 'The real dollar cost of a session — not just a token count someone has to convert later.'],
                             ['Resilience', 'Provider fallback activations, circuit breaker transitions, retry attempts per provider.'],
-                            ['Content safety', 'Evaluations run, content blocked, PII redactions performed.'],
+                            ['Content safety', 'Evaluations run (by outcome, including unscreened) and content blocked (by category). PII redaction is a separate feature, not part of content safety.'],
                             ['Tool usefulness', 'Whether a called tool\'s result was actually useful, not just whether it ran.'],
                             ['Drift', 'Quality signals moving away from baseline over time (see Drift Detection).'],
                         ],

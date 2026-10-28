@@ -340,7 +340,7 @@
       "data": {
         "serviceType": "redis-cache",
         "displayName": "Redis Cache (prod)",
-        "description": "AgentConversationCache + skill metadata + content safety result cache. Standard C1.",
+        "description": "AgentConversationCache + skill metadata. Standard C1.",
         "category": "databases",
         "status": "proposed",
         "properties": {
