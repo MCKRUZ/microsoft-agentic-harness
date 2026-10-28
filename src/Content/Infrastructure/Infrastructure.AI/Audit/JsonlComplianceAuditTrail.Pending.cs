@@ -45,9 +45,9 @@ namespace Infrastructure.AI.Audit;
 /// file on) and only removes those it finds. The correlation id is not unique to a record (an attempt and its outcome share
 /// it), so the match is on the whole line, timestamp included. A pass stops at the first append that fails, and the next
 /// pass retries from there. A file that cannot be read (another account owns it, another process holds it open) is left
-/// for the next pass and the files after it go ahead, and is counted once with outcome <c>stuck</c> and logged as an error
-/// once per process, not on every pass; a file that reads but is not a record is set aside as <c>.unreadable</c>, so
-/// neither stops the queue.
+/// for the next pass and the files after it go ahead. It is counted with outcome <c>stuck</c> and logged as an error when
+/// it first sticks, not on every pass; once a pass no longer finds it stuck (read, set aside or gone), a later stick is
+/// reported again. A file that reads but is not a record is set aside as <c>.unreadable</c>, so neither stops the queue.
 /// </para>
 /// <para>
 /// <strong>Who can add records.</strong> Replay appends whatever record a held file contains, so anything that can write
@@ -98,7 +98,10 @@ public sealed partial class JsonlComplianceAuditTrail
     public async Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken)
     {
         if (!Directory.Exists(_pendingFolder))
+        {
+            _reportedStuck.Clear(); // Nothing is held, so nothing is stuck; a folder restored later is news again.
             return PendingRecordsReplay.Nothing;
+        }
 
         var (replayLock, busy) = TryLockPending();
         if (replayLock is null)
@@ -208,8 +211,8 @@ public sealed partial class JsonlComplianceAuditTrail
     {
         var held = new List<HeldRecord>();
         var setAside = 0;
-        var files = HeldFiles();
-        foreach (var path in files)
+        var stuckThisPass = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var path in HeldFiles())
         {
             try
             {
@@ -217,7 +220,6 @@ public sealed partial class JsonlComplianceAuditTrail
                     held.Add(record);
                 else
                     setAside++;
-                _reportedStuck.TryRemove(path, out _); // Readable again: should it stick later, that is news once more.
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
             {
@@ -227,33 +229,39 @@ public sealed partial class JsonlComplianceAuditTrail
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // A file this pass cannot touch must not hold back the others; it is tried again next pass.
+                stuckThisPass.Add(path);
                 ReportStuck(path, ex);
             }
         }
 
-        // A file reported stuck and since removed by hand must not be remembered for the life of the process.
-        foreach (var gone in _reportedStuck.Keys.Except(files, StringComparer.Ordinal))
-            _reportedStuck.TryRemove(gone, out _);
+        // One rule for forgetting: only a file stuck in this pass stays reported. Read, set aside or gone, it is news again
+        // should it stick later.
+        if (!_reportedStuck.IsEmpty)
+        {
+            foreach (var path in _reportedStuck.Keys.Where(path => !stuckThisPass.Contains(path)))
+                _reportedStuck.TryRemove(path, out _);
+        }
 
         return (held, setAside);
     }
 
     /// <summary>
-    /// Counts and logs a held file no pass can open, once per file in this process: on every pass would say "stuck" every
-    /// minute and make the count a measure of time rather than of records not in the trail.
+    /// Counts and logs a held file that cannot be read or set aside when it first sticks, not on every pass: counted each
+    /// minute, the number would measure how long it has been stuck rather than how many records are missing from the trail.
     /// </summary>
     private void ReportStuck(string path, Exception ex)
     {
         if (!_reportedStuck.TryAdd(path, 0))
         {
-            _logger.LogDebug("Held compliance record {PendingFile} still cannot be opened.", path);
+            _logger.LogDebug("Held compliance record {PendingFile} still cannot be read or set aside.", path);
             return;
         }
 
         CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Stuck);
         _logger.LogError(ex,
             "Held compliance record {PendingFile} cannot be read or set aside, so it cannot be written to the trail; every " +
-            "pass retries it, and this is reported once. Check that the application's account can read and rename it.",
+            "pass retries it, and this is reported until a pass finds it no longer stuck. Check that the application's account can " +
+            "read and rename it.",
             path);
     }
 

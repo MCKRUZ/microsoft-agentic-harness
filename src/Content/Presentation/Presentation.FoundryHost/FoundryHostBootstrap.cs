@@ -309,7 +309,8 @@ internal static class FoundryHostBootstrap
     /// <remarks>
     /// Not here: durable governance state, whose database <c>GovernanceStatePaths</c> confines to the application
     /// directory, and prompt usage, configured by a whole connection string that an override would replace along with
-    /// every option a deployer set in it; set <c>AppConfig:AI:PromptUsage:ConnectionString</c> to a path under <c>$HOME</c>.
+    /// every option a deployer set in it; set <c>AppConfig:AI:PromptUsage:ConnectionString</c> to
+    /// <c>Data Source=$HOME/agent-state/prompt-usage.db</c> (the folder must exist; SQLite does not create it).
     /// </remarks>
     private static void AddHomeRootedDataStorePaths(IDictionary<string, string> overrides, string stateRoot)
     {

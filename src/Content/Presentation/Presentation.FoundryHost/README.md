@@ -37,7 +37,9 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   default are rooted too, so turning one on lands it here. Four are not: durable governance state,
   whose database must stay inside the application directory (`GovernanceStatePaths` refuses any
   other); prompt usage, configured by a whole connection string an override would replace (point
-  `AppConfig:AI:PromptUsage:ConnectionString` at a path under `$HOME` yourself); and
+  `AppConfig:AI:PromptUsage:ConnectionString` yourself, as `Data Source=` followed by the absolute
+  path of a file under `$HOME/agent-state`, in a folder that already exists, since SQLite does not
+  create it); and
   skill-training checkpoints and the eval dashboard's run reports, which the personal-data
   inventory records as holding no personal data. Setting `AppConfig:AI:Audit:PseudonymKey` from a
   secret store replaces the key file and is still the right choice when more than one instance

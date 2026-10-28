@@ -282,6 +282,28 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
+    public async Task ReplayPendingAsync_ThePendingFolderRemovedThenRestoredStuck_IsReportedAgain()
+    {
+        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        BreakTheTrail();
+        using var trail = NewTrail();
+        await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+        var held = HeldFiles().Single();
+        var line = File.ReadAllText(held);
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+            await trail.ReplayPendingAsync(CancellationToken.None);
+
+        Directory.Delete(Pending, recursive: true); // Cleared by hand: the pass after finds no folder at all.
+        await trail.ReplayPendingAsync(CancellationToken.None);
+        Directory.CreateDirectory(Pending);
+        File.WriteAllText(held, line); // Restored from a backup, still unreadable.
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+            await trail.ReplayPendingAsync(CancellationToken.None);
+
+        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(2);
+    }
+
+    [Fact]
     public async Task ReplayPendingAsync_AStuckFileRemovedThenStuckAgain_IsReportedAgain()
     {
         using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
