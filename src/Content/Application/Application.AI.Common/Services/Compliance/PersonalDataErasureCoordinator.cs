@@ -70,6 +70,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     private readonly IPlanRunTraceSource? _planRuns;
     private readonly IErasureJournal? _journal;
     private readonly IPlannedTaskCanceller? _runningTasks;
+    private readonly IKeptRunSource? _keptRuns;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -100,6 +101,10 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// Stops the person's planned tasks still running when the request starts, before anything is read (#907).
     /// <see langword="null"/> in a host without plans.
     /// </param>
+    /// <param name="keptRuns">
+    /// Counts the person's workflow and evaluation run records still held after the run store's erasure, which keeps a
+    /// run until it ends (#926). <see langword="null"/> in a host without a run store.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -110,7 +115,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         IConversationStore? conversations = null,
         IPlanRunTraceSource? planRuns = null,
         IErasureJournal? journal = null,
-        IPlannedTaskCanceller? runningTasks = null)
+        IPlannedTaskCanceller? runningTasks = null,
+        IKeptRunSource? keptRuns = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -130,6 +136,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         _planRuns = planRuns;
         _journal = journal;
         _runningTasks = runningTasks;
+        _keptRuns = keptRuns;
     }
 
     /// <inheritdoc />
@@ -208,6 +215,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
+
+        await NoteRunsKeptAsync(ownerId, outcomes);
 
         // #907: never followed into the stores without an owner, so the receipt must not read Full.
         if (subject.WithheldConversationIds.Count > 0)

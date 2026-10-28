@@ -64,6 +64,11 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["EfCoreConversationStore"] = SeedConversationAsync,
         ["FileSystemConversationStore"] = SeedConversationAsync,
         ["EfScheduleStore"] = (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
+        ["InMemoryRunJobStore"] = (sp, p) =>
+        {
+            sp.GetRequiredService<IRunJobStore>().TryCreate(Run(p), int.MaxValue).Should().Be(RunAdmission.Accepted);
+            return Task.CompletedTask;
+        },
         ["KnowledgeGraphExporter"] = SeedGraphAsync,
         ["FileSystemToolResultStore"] = SeedConversationSpillAsync,
         ["EfCorePlanStateStore"] = SeedPlannedTaskRunAsync,
@@ -276,6 +281,17 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
 
     private static GraphEdge Edge(string id, string source, string target, string? ownerId) =>
         new() { Id = id, SourceNodeId = source, TargetNodeId = target, Predicate = "relates_to", ChunkId = id, OwnerId = ownerId };
+
+    private static RunRecord Run(Seeded p) => new()
+    {
+        JobId = $"run-{p.Label}",
+        Kind = RunKind.Workflow,
+        TargetId = $"target-{p.Label}",
+        OwnerId = p.OwnerId,
+        Envelope = new CapabilityEnvelope(),
+        Status = RunStatus.Queued,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
 
     private static ScheduleRecord Schedule(Seeded p) => new()
     {

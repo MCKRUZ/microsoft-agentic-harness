@@ -57,7 +57,7 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
         // turns unreadable, so only the dispatch service sees the bad edit.
         var stable = new Mock<IOptionsMonitor<AppConfig>>();
         stable.Setup(m => m.CurrentValue).Returns(() => _config);
-        _runStore = new InMemoryRunJobStore(stable.Object, _clock);
+        _runStore = new InMemoryRunJobStore(stable.Object, _clock, [], NullLogger<InMemoryRunJobStore>.Instance);
     }
 
     public void Dispose() => _connection.Dispose();
