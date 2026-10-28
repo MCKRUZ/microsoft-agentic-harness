@@ -41,7 +41,10 @@ namespace Presentation.Common.Tests.Architecture;
 /// implementation is a channel is not reached through that call; persistence over HTTP to a remote service, through
 /// reflection, <c>dynamic</c>, configuration-only sinks or native code is not seen. The sibling rule above reaches the
 /// most common case (memory-only stores beside a durable one); the learnings and cross-session memory stores, which
-/// write through graph interfaces, are declared by hand for the same reason.
+/// write through graph interfaces, are declared by hand for the same reason. A memory-only store with no declared
+/// sibling is held in the inventory only once it erases or exports: every type implementing <c>IPersonalDataEraser</c>
+/// or <c>IPersonalDataExporter</c> must carry the descriptor (#926, the run store). One that does neither, and calls no
+/// primitive, is still not seen.
 /// </para>
 /// </remarks>
 public sealed class EveryPersonalDataStoreIsDeclaredTests
@@ -148,6 +151,45 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             "a descriptor that says PurgeByOwner is what erasure, retention and export work plan against; it must be " +
             "true. A store implementing IPersonalDataEraser must say so, and one saying so must implement it or be " +
             "reached through the knowledge-graph erasure (listed in ErasedThroughKnowledgeGraph)");
+    }
+
+    /// <summary>
+    /// Types that erase or export for a person without being a store of their own, with why. Each is checked to still be
+    /// one, so the list cannot excuse a store that later starts keeping data.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ErasesOrExportsForOthers = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["Application.AI.Common.Services.Compliance.NonErasableStore"] =
+            "the stand-in AddPersonalDataEraser puts on the receipt for a declared store that cannot erase; it holds nothing",
+        ["Infrastructure.AI.KnowledgeGraph.Compliance.KnowledgeGraphExporter"] =
+            "reads the owner's nodes and edges through IKnowledgeGraphStore; the graph stores it reads are declared",
+    };
+
+    [Fact]
+    public void EveryTypeThatErasesOrExports_IsADeclaredStore()
+    {
+        // The scan finds a store by the persistence it calls, so a store held only in memory with no declared sibling is
+        // invisible to it (#926: the run store). One that erases or exports a person's data holds it, whatever it calls, so
+        // its descriptor is what keeps it in the inventory; removing the descriptor must fail here, not pass silently.
+        Scanned.Value.Facts.Values
+            .Where(f => !f.IsInterface && !IsDeclared(f) && !ErasesOrExportsForOthers.ContainsKey(f.Name)
+                && (f.Supertypes.Contains(EraserInterface) || f.Supertypes.Contains(ExporterInterface)))
+            .Select(f => f.Name)
+            .Order(StringComparer.Ordinal)
+            .Should().BeEmpty(
+                "a type implementing IPersonalDataEraser or IPersonalDataExporter holds a person's data and must carry " +
+                "[PersonalDataStore], or be listed in ErasesOrExportsForOthers with what it erases or exports for");
+    }
+
+    [Fact]
+    public void EveryTypeErasingOrExportingForOthers_IsStillOne()
+    {
+        var byName = Scanned.Value.Facts.Values.Where(f => !f.IsInterface).ToLookup(f => f.Name, StringComparer.Ordinal);
+
+        ErasesOrExportsForOthers.Keys
+            .Where(name => !byName[name].Any(type => !IsDeclared(type)
+                && (type.Supertypes.Contains(EraserInterface) || type.Supertypes.Contains(ExporterInterface))))
+            .Should().BeEmpty("an entry must name an undeclared type that still erases or exports");
     }
 
     [Fact]
