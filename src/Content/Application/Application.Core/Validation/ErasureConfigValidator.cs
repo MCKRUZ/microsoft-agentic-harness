@@ -31,7 +31,9 @@ public sealed class ErasureConfigValidator : AbstractValidator<ErasureConfig>
 
         // Blank would leave erasures, exports and document removals with no durable proof at all (#969).
         RuleFor(x => x.AuditStoragePath)
-            .NotEmpty().WithMessage("AuditStoragePath must name the compliance audit trail's folder.");
+            .NotEmpty().WithMessage(
+                "AuditStoragePath must name the folder the compliance audit trail is kept in (its compliance and " +
+                "compliance-pending folders go inside it).");
 
         RuleFor(x => x.JournalDatabasePath)
             .NotEmpty().WithMessage("JournalDatabasePath must name the erasure journal's database file.");

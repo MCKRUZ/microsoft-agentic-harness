@@ -1205,8 +1205,8 @@
                             <p style="margin: 0">
                                 Each record is written twice, independently (#969). <code>IComplianceAuditTrail</code> keeps
                                 it in the compliance audit trail: hash-chained JSONL day-files under
-                                <code>AppConfig:AI:Erasure:AuditStoragePath</code> (default
-                                <code>.agent-sessions/compliance</code>, day-files in its <code>compliance</code> folder),
+                                <code>{AppConfig:AI:Erasure:AuditStoragePath}/compliance</code> (by default
+                                <code>.agent-sessions/compliance</code>),
                                 walked by scheduled chain verification and moved to the archive with the other trails when
                                 <code>AppConfig:AI:Audit:ArchivePath</code> is set. Nothing deletes it, and erasure lists it
                                 on every receipt as <code>RetainedByObligation</code> rather than erasing from it. The audit
@@ -1244,7 +1244,10 @@
                                 that could not be written is counted on
                                 <code>agent.compliance.audit_write_failures</code>, tagged
                                 <code>agent.compliance.audit.outcome</code>: <code>pending</code> when it is held,
-                                <code>lost</code> when it could not be held either (logged as critical; alert on it), and
+                                <code>lost</code> when it could not be held either (logged as critical; alert on it),
+                                <code>stuck</code> when a held file cannot be opened (another account owns it, another
+                                process keeps it open), counted and logged as an error once per file in each process rather
+                                than on every pass, so it too means a record missing from the trail, and
                                 <code>agent.compliance.audit_records_replayed</code> counts the held records written since.
                                 The folder is on the trail's volume, so a full or read-only volume usually refuses the held
                                 file as well; holding mainly covers a busy lock and passing I/O failures. A held file
