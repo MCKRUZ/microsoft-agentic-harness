@@ -19,9 +19,11 @@ namespace Presentation.Common.Tests.Architecture;
 /// <strong>The rule, kept narrow so that what it flags is a store.</strong> A type is a holder when one of its own fields,
 /// or a field of a type nested in it, is a collection (or array) whose element names a person: a type with a field
 /// <c>OwnerId</c> or <c>UserId</c>, directly or through the types it holds. Left out, because none of them keeps many
-/// records past one call: records (a value, not a store), a settable auto-property's collection (a data shape's member,
-/// such as an entity's navigation collection), compiler-generated closures and state machines, and a single record held
-/// in a field rather than a collection of them. A holder must be
+/// records past one call: records (a value, not a store), an auto-property collection with a setter (a data shape's
+/// member, such as an entity's navigation collection), compiler-generated closures and state machines, and a single
+/// record held in a field rather than a collection of them. A get-only or init-only auto-property collection does count,
+/// because the compiled code cannot tell a store's <c>{ get; }</c> from a DTO's <c>{ get; init; }</c>: a non-record DTO
+/// or an entity built that way is flagged, and needs an exemption with its reason. None is flagged today. A holder must be
 /// declared a store or channel, or listed in <see cref="HoldsOwnerRecordsWithoutStoringThem"/> with a reason, pinned to
 /// the fields the scan saw.
 /// </para>
@@ -80,16 +82,17 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
     public void TypesThatNameAPerson_AChildReachingAPersonOnlyThroughItsParent_IsFoundWhicheverFieldComesFirst(bool childrenFirst)
     {
         // A parent with an owner and a list of children, each child pointing back at its parent: the child names a person
-        // only through a type still being decided when the child is first reached.
+        // only through a type still being decided when the child is first reached. The parent sorts first, so it is the one
+        // decided first, which is the order in which a memo of "names nobody" taken mid-decision would be kept for the child.
         static PersistenceScan.TypeShape Shape(string name, params PersistenceScan.TypeShape[] args) => new("A", name, args, false);
-        var children = new PersistenceScan.FieldShape("Children", true, Shape("System.Collections.Generic.List`1", Shape("Ns.Child")));
+        var children = new PersistenceScan.FieldShape("Children", true, Shape("System.Collections.Generic.List`1", Shape("Ns.ZChild")));
         var owner = new PersistenceScan.FieldShape("OwnerId", true, new("", "System.String", [], false));
-        var parent = new PersistenceScan.DeclaredType("Ns.Parent", true, false, childrenFirst ? [children, owner] : [owner, children]);
-        var child = new PersistenceScan.DeclaredType("Ns.Child", true, false, [new("Parent", true, Shape("Ns.Parent"))]);
+        var parent = new PersistenceScan.DeclaredType("Ns.AParent", true, false, childrenFirst ? [children, owner] : [owner, children]);
+        var child = new PersistenceScan.DeclaredType("Ns.ZChild", true, false, [new("Parent", true, Shape("Ns.AParent"))]);
 
-        var found = TypesThatNameAPerson([("A/Ns.Child", child), ("A/Ns.Parent", parent)]);
+        var found = TypesThatNameAPerson([("A/Ns.AParent", parent), ("A/Ns.ZChild", child)]);
 
-        found.Should().ContainKey("A/Ns.Child").WhoseValue.Should().Be("Ns.Parent.OwnerId");
+        found.Should().ContainKey("A/Ns.ZChild").WhoseValue.Should().Be("Ns.AParent.OwnerId");
     }
 
     [Theory]
@@ -173,9 +176,9 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
     }
 
     /// <summary>
-    /// Whether a field is a collection the type itself keeps. A get-only auto-property counts, since a store may keep its
-    /// records in one. A settable one does not: that is a data shape's member, such as an entity's navigation collection,
-    /// filled by whoever builds it.
+    /// Whether a field is a collection the type itself keeps. A get-only or init-only auto-property counts, since a store
+    /// may keep its records in one. One with a setter does not: that is a data shape's member, such as an entity's
+    /// navigation collection, filled by whoever builds it.
     /// </summary>
     private static bool IsHeldCollection(PersistenceScan.FieldShape field) =>
         (!field.IsBackingField || field.IsReadOnly) && IsCollection(field.Type);

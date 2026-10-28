@@ -123,8 +123,14 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
                 return Task.CompletedTask;
             },
             // Held, not merely unusable: a handle marked removed but never evicted still names the person and keeps its folder.
-            async (sp, p) => await sp.GetRequiredService<IBundleHandleStore>().CountRunsKeptAsync(p.OwnerId, CancellationToken.None)
-                + (Directory.Exists(BundleStoreSeeds.FolderOf(_workingDir, p.Label)) ? 1 : 0)),
+            // 1 when both the handle and its folder are held, 0 when both are gone, and -1 for anything in between (a handle
+            // the store never took, or one evicted with its folder left behind), which neither check accepts.
+            async (sp, p) =>
+            {
+                var held = await sp.GetRequiredService<IBundleHandleStore>().CountRunsKeptAsync(p.OwnerId, CancellationToken.None) > 0;
+                var onDisk = Directory.Exists(BundleStoreSeeds.FolderOf(_workingDir, p.Label));
+                return held == onDisk ? (held ? 1 : 0) : -1;
+            }),
         ["EfScheduleStore"] = new(
             (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
             async (sp, p) => (await sp.GetRequiredService<IScheduleStore>().ListForOwnerAsync(p.OwnerId, null, CancellationToken.None)).Count),
