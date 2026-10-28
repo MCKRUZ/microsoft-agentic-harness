@@ -256,7 +256,7 @@ Agent Turn Request
 Infrastructure.AI/
 ├── A2A/                        Agent-to-Agent protocol host
 ├── Agents/                     Subagent profiles, mailbox, tool resolver
-├── Audit/                      StructuredLogAuditSink
+├── Audit/                      StructuredLogAuditSink, the hash-chained trail writer and archiver, JsonlComplianceAuditTrail
 ├── Clients/                    EchoChatClient (testing)
 ├── Compaction/
 │   ├── AutoCompactStateMachine.cs     Circuit breaker for compaction storms
