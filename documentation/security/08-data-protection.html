@@ -1135,8 +1135,9 @@
                         <li>
                             <strong>Spilled tool results written before #928.</strong> The conversation database
                             compares ids exactly, so <code>ticket-42</code> and <code>TICKET-42</code> can belong to two
-                            people. (The file-backed conversation store, on Windows or macOS, refuses the second as
-                            someone else's conversation instead.) Spill
+                            people. (The file-backed conversation store, on Windows or macOS, treats the two as one
+                            conversation: it refuses the second when another person owns the first, and lets the same
+                            person use both names for one transcript.) Spill
                             folders are now named after the id lower-cased plus a hash of the exact id, so two such ids
                             never share a folder, even on Windows or macOS, which ignore case in names. Before #928 the
                             folder kept the id's case, and on those systems both ids wrote into one folder. Erasure and the
