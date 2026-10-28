@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
@@ -95,7 +96,7 @@ public static class RunCancellation
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Run {JobId} was cancelled but its watchers could not be told.", stopped.JobId);
+            logger.LogError(MessageWithheldException.From(ex), "Run {JobId} was cancelled but its watchers could not be told.", stopped.JobId);
         }
 
         var withdrawn = await ApprovalWithdrawal.WithdrawAsync(
