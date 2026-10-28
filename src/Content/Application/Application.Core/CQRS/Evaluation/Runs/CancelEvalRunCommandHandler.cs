@@ -1,5 +1,4 @@
 using Application.AI.Common.Interfaces.Escalation;
-using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Runs;
 using Domain.AI.Runs;
@@ -23,8 +22,8 @@ namespace Application.Core.CQRS.Evaluation.Runs;
 /// </para>
 /// <para>
 /// It still goes through <see cref="RunCancellation"/>, the one cancel path every caller shares (#992), so an evaluation
-/// is stopped exactly as erasure stops it. For an evaluation the withdrawal finds nothing to withdraw and nothing is
-/// signalled.
+/// is stopped exactly as erasure stops it. For an evaluation the withdrawal finds nothing to withdraw, and no registry is
+/// passed, so nothing is signalled.
 /// </para>
 /// <para>
 /// Authorized exactly like reading the run: another caller's run, a job that never existed, and a run
@@ -38,7 +37,6 @@ public sealed class CancelEvalRunCommandHandler
     private readonly IRunJobStore _runStore;
     private readonly IRunProgressBroker _progress;
     private readonly IEscalationService _escalations;
-    private readonly IPlanRunCancellationRegistry _cancellationRegistry;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private readonly ILogger<CancelEvalRunCommandHandler> _logger;
@@ -48,7 +46,6 @@ public sealed class CancelEvalRunCommandHandler
         IRunJobStore runStore,
         IRunProgressBroker progress,
         IEscalationService escalations,
-        IPlanRunCancellationRegistry cancellationRegistry,
         IOptionsMonitor<AppConfig> config,
         TimeProvider time,
         ILogger<CancelEvalRunCommandHandler> logger)
@@ -56,7 +53,6 @@ public sealed class CancelEvalRunCommandHandler
         ArgumentNullException.ThrowIfNull(runStore);
         ArgumentNullException.ThrowIfNull(progress);
         ArgumentNullException.ThrowIfNull(escalations);
-        ArgumentNullException.ThrowIfNull(cancellationRegistry);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
@@ -64,7 +60,6 @@ public sealed class CancelEvalRunCommandHandler
         _runStore = runStore;
         _progress = progress;
         _escalations = escalations;
-        _cancellationRegistry = cancellationRegistry;
         _config = config;
         _time = time;
         _logger = logger;
@@ -98,7 +93,9 @@ public sealed class CancelEvalRunCommandHandler
             _runStore,
             _progress,
             _escalations,
-            _cancellationRegistry,
+
+            // Nothing to signal: an evaluation that has started runs to its end.
+            registry: null,
             _logger,
             record,
             new RunCancellationNotice(

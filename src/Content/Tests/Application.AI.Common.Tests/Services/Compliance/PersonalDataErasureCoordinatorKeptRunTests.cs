@@ -121,41 +121,47 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
         line.Reason.Should().NotContain("secret");
     }
 
-    [Fact]
-    public async Task EraseOwnerAsync_LiveRuns_AreCancelledBeforeAnyStoreIsErased()
+    private void RecordRunSteps()
     {
-        // #992. The run store erases only finished runs, so a queued or parked run cancelled after it would survive the
-        // request and keep the receipt Partial on every retry.
-        _liveRuns.Setup(c => c.CancelRunsAsync(Owner, It.IsAny<CancellationToken>()))
-            .Callback(() => _calls.Add("cancel runs"))
-            .ReturnsAsync(0);
-
-        await EraseAsync();
-
-        _calls.Should().ContainInOrder(["cancel runs", "workflow and evaluation runs"]);
-    }
-
-    [Fact]
-    public async Task EraseOwnerAsync_LiveRuns_AreCancelledBeforeRunningPlannedTasksAreStopped()
-    {
-        // A queued workflow run claimed after the planned tasks were stopped would start a planned task nothing stops.
-        _liveRuns.Setup(c => c.CancelRunsAsync(Owner, It.IsAny<CancellationToken>()))
-            .Callback(() => _calls.Add("cancel runs"))
+        _liveRuns.Setup(c => c.CancelPendingRunsAsync(Owner)).Callback(() => _calls.Add("cancel runs")).ReturnsAsync(0);
+        _liveRuns.Setup(c => c.WaitForRunsAsync(Owner, It.IsAny<CancellationToken>()))
+            .Callback(() => _calls.Add("wait for runs"))
             .ReturnsAsync(0);
         _runningTasks.Setup(c => c.StopRunningTasksAsync(Owner, It.IsAny<CancellationToken>()))
             .Callback(() => _calls.Add("stop planned tasks"))
             .ReturnsAsync(0);
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_LiveRuns_AreEndedBeforeAnyStoreIsErased()
+    {
+        // #992. The run store erases only finished runs, so a queued or parked run cancelled after it would survive the
+        // request and keep the receipt Partial on every retry.
+        RecordRunSteps();
 
         await EraseAsync();
 
-        _calls.Should().ContainInOrder(["cancel runs", "stop planned tasks"]);
+        _calls.Should().ContainInOrder(["cancel runs", "wait for runs", "workflow and evaluation runs"]);
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_PendingRuns_AreCancelledBeforePlannedTasksAreStopped_AndWaitedForAfter()
+    {
+        // Cancelled first, so a queued workflow run claimed after the planned tasks were stopped cannot start one nothing
+        // stops; waited for after, because stopping the planned tasks is what signals the person's executing workflows.
+        RecordRunSteps();
+
+        await EraseAsync();
+
+        _calls.Should().ContainInOrder(["cancel runs", "stop planned tasks", "wait for runs"]);
     }
 
     [Fact]
     public async Task EraseOwnerAsync_CancellingRunsThrows_StillErasesEveryStore()
     {
         // A fault here must not shield the rest of the person's data; what it failed to stop is still counted as kept.
-        _liveRuns.Setup(c => c.CancelRunsAsync(Owner, It.IsAny<CancellationToken>()))
+        _liveRuns.Setup(c => c.CancelPendingRunsAsync(Owner)).ThrowsAsync(new InvalidOperationException("secret connection string"));
+        _liveRuns.Setup(c => c.WaitForRunsAsync(Owner, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("secret connection string"));
         _keptRuns.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(1);
 

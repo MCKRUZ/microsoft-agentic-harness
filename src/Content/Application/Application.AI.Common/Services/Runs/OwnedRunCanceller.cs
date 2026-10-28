@@ -1,6 +1,6 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Escalation;
-using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Runs;
 using Microsoft.Extensions.Logging;
@@ -13,10 +13,11 @@ namespace Application.AI.Common.Services.Runs;
 /// <remarks>
 /// <para>
 /// <strong>The same path an owner's cancel takes.</strong> Each run goes through <see cref="RunCancellation"/>, so a queued
-/// run is cancelled and never claimed, a parked one is cancelled and its approvals withdrawn, its watchers are told it
-/// ended, and an executing workflow is signalled. Only the words differ: the watchers are told the run was stopped by
-/// erasure, and the withdrawals are attributed to <see cref="WithdrawnBy"/>, a system actor. Naming the person there would
-/// write their id into the escalation audit, which is kept on purpose, in the act of erasing them.
+/// run is cancelled and never claimed, a parked one is cancelled and its approvals withdrawn, and its watchers are told it
+/// ended. Only the words differ: the watchers are told the run was stopped by erasure, and the withdrawals are attributed
+/// to <see cref="WithdrawnBy"/>, a system actor. Naming the person there would write their id into the escalation audit,
+/// which is kept on purpose, in the act of erasing them. No registry is passed, so an executing workflow is not signalled
+/// here; see <see cref="IOwnedRunCanceller"/> for why.
 /// </para>
 /// <para>
 /// <strong>Authorised by selection.</strong> The cancel commands authorise a run by reading it through the caller's
@@ -25,15 +26,17 @@ namespace Application.AI.Common.Services.Runs;
 /// person's own are reached whoever asked.
 /// </para>
 /// <para>
-/// <strong>Cancelled again on every poll.</strong> An executing workflow can park on a gate before it reaches the point
-/// that notices its signal, and a parked run can be resumed onto the queue by an approval that arrives meanwhile. Either
-/// would slip past a single pass, so each poll repeats the cancel for the runs still live; the store's transitions are
-/// atomic, so repeating one is harmless.
+/// <strong>Cancelled again on every poll, every run of the person's.</strong> An executing workflow can park on a gate
+/// before it notices its signal, a parked run can be resumed onto the queue by an approval that arrives meanwhile, and a
+/// schedule or a client can queue a new run. Each poll therefore cancels whatever of the person's is queued or parked at
+/// that moment; the store's transitions are atomic, so repeating one is harmless. One run that cannot be cancelled is
+/// logged and skipped, so it does not leave the rest running.
 /// </para>
 /// <para>
-/// <strong>Bounded.</strong> An executing evaluation cannot be signalled and a workflow stops only at its next checkpoint,
-/// so the wait gives up after <see cref="DefaultWait"/>, as the planned-task canceller does. A run started during the wait
-/// is not tracked, so it cannot stretch it out; it is kept, and the receipt says to run erasure again.
+/// <strong>Bounded, and only on what was executing when the wait began.</strong> An executing evaluation cannot be
+/// signalled and a workflow stops only at its next checkpoint, so the wait gives up after <see cref="DefaultWait"/>, as
+/// the planned-task canceller does. A run that starts executing during the wait cannot stretch it out; it is kept, and
+/// the receipt says to run erasure again.
 /// </para>
 /// </remarks>
 public sealed class OwnedRunCanceller : IOwnedRunCanceller
@@ -53,7 +56,6 @@ public sealed class OwnedRunCanceller : IOwnedRunCanceller
     private readonly IRunJobStore _store;
     private readonly IRunProgressBroker _progress;
     private readonly IEscalationService _escalations;
-    private readonly IPlanRunCancellationRegistry _registry;
     private readonly TimeProvider _time;
     private readonly ILogger<OwnedRunCanceller> _logger;
     private readonly TimeSpan _wait;
@@ -62,15 +64,13 @@ public sealed class OwnedRunCanceller : IOwnedRunCanceller
     /// <param name="store">Lists and cancels the person's runs.</param>
     /// <param name="progress">Tells a cancelled run's watchers it ended.</param>
     /// <param name="escalations">Withdraws the approvals a parked run was waiting on.</param>
-    /// <param name="registry">Signals an executing workflow to stop.</param>
     /// <param name="time">Stamps the cancellations and times the wait.</param>
-    /// <param name="logger">Logger for how many runs were stopped.</param>
+    /// <param name="logger">Logger for how many runs were stopped, and for one that could not be.</param>
     /// <param name="wait">How long to wait for executing runs to end; <see cref="DefaultWait"/> when omitted.</param>
     public OwnedRunCanceller(
         IRunJobStore store,
         IRunProgressBroker progress,
         IEscalationService escalations,
-        IPlanRunCancellationRegistry registry,
         TimeProvider time,
         ILogger<OwnedRunCanceller> logger,
         TimeSpan? wait = null)
@@ -78,61 +78,81 @@ public sealed class OwnedRunCanceller : IOwnedRunCanceller
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(progress);
         ArgumentNullException.ThrowIfNull(escalations);
-        ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
 
         _store = store;
         _progress = progress;
         _escalations = escalations;
-        _registry = registry;
         _time = time;
         _logger = logger;
         _wait = wait ?? DefaultWait;
     }
 
     /// <inheritdoc />
-    public async Task<int> CancelRunsAsync(string ownerId, CancellationToken cancellationToken)
+    public async Task<int> CancelPendingRunsAsync(string ownerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        var cancelled = await CancelPendingAsync(_store.GetLiveRunsOwnedBy(ownerId)).ConfigureAwait(false);
+        if (cancelled > 0)
+            _logger.LogInformation("Erasure cancelled {Count} queued or parked run(s).", cancelled);
+
+        return cancelled;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> WaitForRunsAsync(string ownerId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
         var live = _store.GetLiveRunsOwnedBy(ownerId);
-        if (live.Count == 0)
-            return 0;
-
-        var tracked = live.Select(r => r.JobId).ToHashSet(StringComparer.Ordinal);
+        var executing = live.Where(r => r.Status == RunStatus.Running).Select(r => r.JobId).ToHashSet(StringComparer.Ordinal);
         var deadline = _time.GetUtcNow() + _wait;
-        var stopped = 0;
 
         while (true)
         {
-            foreach (var run in live)
-                stopped += (await CancelAsync(run)).StoppedImmediately ? 1 : 0;
-
-            live = StillLive(ownerId, tracked);
-            if (live.Count == 0 || _time.GetUtcNow() >= deadline)
+            await CancelPendingAsync(live).ConfigureAwait(false);
+            live = _store.GetLiveRunsOwnedBy(ownerId);
+            executing.IntersectWith(live.Select(r => r.JobId));
+            if (executing.Count == 0 || _time.GetUtcNow() >= deadline)
                 break;
 
             await Task.Delay(PollEvery, _time, cancellationToken).ConfigureAwait(false);
+            live = _store.GetLiveRunsOwnedBy(ownerId);
         }
 
-        _logger.LogInformation(
-            "Erasure cancelled {Stopped} of {Tracked} live run(s); {Remaining} had not ended when it went on.",
-            stopped, tracked.Count, live.Count);
+        if (live.Count > 0)
+            _logger.LogInformation("Erasure stopped waiting with {Count} run(s) not yet ended.", live.Count);
 
         return live.Count;
     }
 
-    private Task<RunCancellationOutcome> CancelAsync(RunRecord run) =>
-        RunCancellation.CancelAsync(
-            _store,
-            _progress,
-            _escalations,
-            _registry,
-            _logger,
-            run,
-            new RunCancellationNotice(_time.GetUtcNow(), Detail, WithdrawalReason, WithdrawnBy));
+    /// <summary>Cancels each queued or parked run in <paramref name="runs"/>, returning how many were cancelled.</summary>
+    private async Task<int> CancelPendingAsync(IReadOnlyList<RunRecord> runs)
+    {
+        var cancelled = 0;
+        foreach (var run in runs.Where(r => r.Status is RunStatus.Queued or RunStatus.Blocked))
+        {
+            try
+            {
+                var outcome = await RunCancellation.CancelAsync(
+                    _store,
+                    _progress,
+                    _escalations,
+                    registry: null,
+                    _logger,
+                    run,
+                    new RunCancellationNotice(_time.GetUtcNow(), Detail, WithdrawalReason, WithdrawnBy)).ConfigureAwait(false);
+                cancelled += outcome.StoppedImmediately ? 1 : 0;
+            }
+            catch (Exception ex)
+            {
+                // The rest of the person's runs must still be cancelled; this one stays live, so it is counted as kept.
+                _logger.LogError(MessageWithheldException.From(ex), "Erasure could not cancel run {JobId}.", run.JobId);
+            }
+        }
 
-    private List<RunRecord> StillLive(string ownerId, HashSet<string> tracked) =>
-        [.. _store.GetLiveRunsOwnedBy(ownerId).Where(r => tracked.Contains(r.JobId))];
+        return cancelled;
+    }
 }

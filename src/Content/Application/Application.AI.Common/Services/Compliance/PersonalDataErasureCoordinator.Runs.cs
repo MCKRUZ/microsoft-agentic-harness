@@ -15,24 +15,43 @@ public sealed partial class PersonalDataErasureCoordinator
         "a run record of the person's was kept: a workflow or evaluation run that was still executing when erasure stopped waiting for it, one that ended or started while erasure ran, or one whose run-scoped state could not be released; run erasure again once the person's runs have ended";
 
     /// <summary>
-    /// Cancels the person's queued and parked runs and signals the executing ones, through the path an owner's cancel takes,
-    /// and waits a bounded time for them to end. A failure is logged and the request goes on: whatever was not stopped is
-    /// still held when <see cref="NoteRunsKeptAsync"/> counts, so the receipt cannot read <c>Full</c> over it.
+    /// Cancels the person's queued and parked runs through the path an owner's cancel takes, withdrawing their approvals.
+    /// A failure is logged and the request goes on: whatever was not cancelled is still held when
+    /// <see cref="NoteRunsKeptAsync"/> counts, so the receipt cannot read <c>Full</c> over it.
     /// </summary>
-    private async Task CancelLiveRunsAsync(string ownerId, CancellationToken cancellationToken)
+    private async Task CancelPendingRunsAsync(string ownerId)
     {
         if (_liveRuns is null)
             return;
 
         try
         {
-            var stillLive = await _liveRuns.CancelRunsAsync(ownerId, cancellationToken);
+            await _liveRuns.CancelPendingRunsAsync(ownerId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not cancel the person's runs.");
+        }
+    }
+
+    /// <summary>
+    /// Waits a bounded time for the person's runs still executing, once their planned tasks have been signalled. A failure
+    /// is contained the same way as <see cref="CancelPendingRunsAsync"/>.
+    /// </summary>
+    private async Task WaitForLiveRunsAsync(string ownerId, CancellationToken cancellationToken)
+    {
+        if (_liveRuns is null)
+            return;
+
+        try
+        {
+            var stillLive = await _liveRuns.WaitForRunsAsync(ownerId, cancellationToken);
             if (stillLive > 0)
-                _logger.LogWarning("Erasure went on with {Count} run(s) still executing; their records will be kept.", stillLive);
+                _logger.LogWarning("Erasure went on with {Count} run(s) not yet ended; their records will be kept.", stillLive);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not cancel the person's runs.");
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not wait for the person's runs.");
         }
     }
 

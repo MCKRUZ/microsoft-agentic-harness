@@ -107,9 +107,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// run until it ends (#926). <see langword="null"/> in a host without a run store.
     /// </param>
     /// <param name="liveRuns">
-    /// Cancels the person's workflow and evaluation runs that have not ended when the request starts, before anything is
-    /// read, so the run store's eraser can remove them with the rest (#992). <see langword="null"/> in a host without a run
-    /// store.
+    /// Cancels the person's queued and parked workflow and evaluation runs when the request starts, and waits for the
+    /// executing ones once the planned tasks are stopped, so the run store's eraser can remove them with the rest (#992).
+    /// <see langword="null"/> in a host without a run store.
     /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
@@ -159,10 +159,14 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         // #992: a queued run would start after the person is erased, and a parked one would keep the receipt Partial. First,
         // so a queued workflow run cannot start a planned task after the stop below has looked for them.
-        await CancelLiveRunsAsync(ownerId, cancellationToken);
+        await CancelPendingRunsAsync(ownerId);
 
         // #907: a planned task already running would keep writing under the ids read below after their stores are cleared.
+        // This also signals the person's executing workflow runs, which are planned tasks of their own plans.
         await StopRunningTasksAsync(ownerId, cancellationToken);
+
+        // #992: then a bounded wait for runs still executing, cancelling any that parked or were queued meanwhile.
+        await WaitForLiveRunsAsync(ownerId, cancellationToken);
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be

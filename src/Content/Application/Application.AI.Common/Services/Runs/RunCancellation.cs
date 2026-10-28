@@ -29,10 +29,13 @@ namespace Application.AI.Common.Services.Runs;
 /// cancellation itself would put the run back to work.
 /// </para>
 /// <para>
-/// <strong>A run already executing is signalled, not rewritten.</strong> Its terminal state is owned by the dispatch in
-/// flight. A workflow is signalled through <see cref="IPlanRunCancellationRegistry"/> by its plan, which reaches only the
-/// run's owner's work: only a plan's owner can start a run of it, and admission allows one live run per workflow. An
-/// evaluation has no such signal and runs to its end.
+/// <strong>A run already executing is signalled, not rewritten, and only when the caller passes a registry.</strong> Its
+/// terminal state is owned by the dispatch in flight. A workflow is signalled through
+/// <see cref="IPlanRunCancellationRegistry"/>, which is keyed by plan, so the signal stops every run of that plan in this
+/// process. The workflow cancel command passes one, having checked the run belongs to the workflow it names. Erasure
+/// does not: it stops the person's executing workflows through the planned-task canceller (#907), which signals only
+/// plans the person owns, so a plan another caller also runs is not stopped on their behalf. An evaluation has no such
+/// signal and runs to its end.
 /// </para>
 /// </remarks>
 public static class RunCancellation
@@ -41,7 +44,9 @@ public static class RunCancellation
     /// <param name="store">The run store holding <paramref name="run"/>.</param>
     /// <param name="progress">Publishes the terminal event for a run no dispatch will finish.</param>
     /// <param name="escalations">Withdraws the approvals a parked run was waiting on.</param>
-    /// <param name="registry">Signals an executing workflow to stop.</param>
+    /// <param name="registry">
+    /// Signals an executing workflow to stop, by its plan; <see langword="null"/> to leave an executing run alone.
+    /// </param>
     /// <param name="logger">Records approvals genuinely left pending; never fails the caller.</param>
     /// <param name="run">The run to stop, already authorised by the caller.</param>
     /// <param name="notice">What to record, and in whose name.</param>
@@ -50,7 +55,7 @@ public static class RunCancellation
         IRunJobStore store,
         IRunProgressBroker progress,
         IEscalationService escalations,
-        IPlanRunCancellationRegistry registry,
+        IPlanRunCancellationRegistry? registry,
         ILogger logger,
         RunRecord run,
         RunCancellationNotice notice)
@@ -58,7 +63,6 @@ public static class RunCancellation
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(progress);
         ArgumentNullException.ThrowIfNull(escalations);
-        ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(notice);
@@ -67,8 +71,8 @@ public static class RunCancellation
         if (stopped is null)
         {
             // Executing, or it ended since the caller read it. Either way its status belongs to the dispatch that holds
-            // it, so all that is left is to ask it to stop.
-            if (run.Kind == RunKind.Workflow && Guid.TryParse(run.TargetId, out var workflowId))
+            // it, so all that is left is to ask it to stop, where the caller can.
+            if (registry is not null && run.Kind == RunKind.Workflow && Guid.TryParse(run.TargetId, out var workflowId))
                 registry.TryCancel(new PlanId(workflowId));
 
             return new RunCancellationOutcome(StoppedImmediately: false, WithdrawnApprovals: 0);

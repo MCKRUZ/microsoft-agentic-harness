@@ -138,8 +138,9 @@ public static partial class DependencyInjection
         services.TryAddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
 
         // Erasure cancels the person's live runs before the store erases the finished ones (#992), through the same cancel
-        // path an owner's cancel takes; singleton with the store and registry it acts through.
-        services.TryAddSingleton<IOwnedRunCanceller, OwnedRunCanceller>();
+        // path an owner's cancel takes. A plain registration, like the planned-task canceller's, so one registered
+        // earlier cannot silently switch this erasure control off.
+        services.AddSingleton<IOwnedRunCanceller, OwnedRunCanceller>();
 
         // Singleton for the same reason: the run publishes from the dispatcher and the watcher reads
         // from a request, so a scoped broker would give each side its own instance and every stream
