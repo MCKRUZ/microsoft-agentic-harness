@@ -35,10 +35,12 @@ namespace Application.AI.Common.Services.Runs;
 /// so it does not leave the rest running.
 /// </para>
 /// <para>
-/// <strong>Bounded, and only on what was executing when the wait began.</strong> An executing evaluation cannot be
-/// signalled and a workflow stops only at its next checkpoint, so the wait gives up after <see cref="DefaultWait"/>, as
-/// the planned-task canceller does, and alongside it, so the two do not add up. A run that starts executing during the
-/// wait is signalled but cannot stretch it out; if it has not ended it is kept, and the receipt says to run erasure again.
+/// <strong>Bounded, and on whatever is executing at each poll.</strong> An executing evaluation cannot be signalled and
+/// a workflow stops only at its next checkpoint, so the wait gives up after <see cref="DefaultWait"/>, as the
+/// planned-task canceller does, and alongside it, so the two do not add up. A run that starts executing during the wait
+/// (claimed from the queue before it could be cancelled) is signalled and waited for too, within the same fixed
+/// deadline, so it cannot stretch the wait out; if it has not ended by then it is kept, and the receipt says to run
+/// erasure again.
 /// </para>
 /// </remarks>
 public sealed class OwnedRunCanceller : IOwnedRunCanceller
@@ -114,15 +116,16 @@ public sealed class OwnedRunCanceller : IOwnedRunCanceller
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
         var live = _store.GetLiveRunsOwnedBy(ownerId);
-        var executing = live.Where(r => r.Status == RunStatus.Running).Select(r => r.JobId).ToHashSet(StringComparer.Ordinal);
         var deadline = _time.GetUtcNow() + _wait;
 
         while (true)
         {
             await StopAsync(live).ConfigureAwait(false);
             live = _store.GetLiveRunsOwnedBy(ownerId);
-            executing.IntersectWith(live.Select(r => r.JobId));
-            if (executing.Count == 0 || _time.GetUtcNow() >= deadline)
+            // Re-read every poll: a run that was queued when the wait began and was claimed by a dispatcher before it
+            // could be cancelled is executing now, and erasure must wait for it too, or it could write the person's
+            // data after their stores were cleared. The deadline is fixed, so a late start cannot stretch the wait.
+            if (!live.Any(r => r.Status == RunStatus.Running) || _time.GetUtcNow() >= deadline)
                 break;
 
             await Task.Delay(PollEvery, _time, cancellationToken).ConfigureAwait(false);

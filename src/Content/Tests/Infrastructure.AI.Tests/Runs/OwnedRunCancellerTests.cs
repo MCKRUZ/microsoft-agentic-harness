@@ -208,6 +208,31 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
+    public async Task WaitForRunsAsync_RunClaimedDuringTheWait_IsWaitedForUntilItEnds()
+    {
+        // A run queued when the wait began and claimed before it could be cancelled is executing by the next poll. Erasure
+        // must wait for it as well, or it could still be writing the person's data when the stores are cleared. Before
+        // #997's review only the runs executing at the start were waited for, so this returned as soon as `running` ended.
+        var running = Admit("running", Subject, RunStatus.Running);
+        var waiting = Canceller(TimeSpan.FromSeconds(30)).WaitForRunsAsync(Subject, CancellationToken.None);
+        var late = Admit("late", Subject, RunStatus.Running);
+
+        _store.Update(running with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+        for (var step = 0; step < 8; step++)
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(250));
+            await Task.Delay(1);
+        }
+
+        waiting.IsCompleted.Should().BeFalse("the run claimed during the wait is still executing");
+
+        _store.Update(late with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+        var stillLive = await AdvanceUntilDoneAsync(waiting);
+
+        stillLive.Should().Be(0);
+    }
+
+    [Fact]
     public async Task WaitForRunsAsync_ExecutingRunEndsDuringTheWait_ReportsNothingStillLive()
     {
         var running = Admit("running", Subject, RunStatus.Running);
