@@ -1229,7 +1229,11 @@
                                 <code>{AuditStoragePath}/compliance-pending</code> instead of surviving only as the error
                                 log line (#995). Each held file is the exact line the trail refused, with an operator
                                 already replaced by their keyed reference, so it holds nothing the trail would not; it is
-                                flushed to disk and renamed into place before the request returns. A background service
+                                flushed to disk and renamed into place before the request returns (the rename itself is
+                                not forced to disk, so on Linux a power cut at that moment can still lose it; a process
+                                crash cannot). A held file one pass cannot read is left for the next, and the files behind
+                                it go ahead. Anything that can write this folder can add a record to the trail, as anything
+                                that can write the trail's own folder can; both are made owner-only. A background service
                                 writes held records into the trail when the host starts and every minute, oldest first,
                                 and removes each file only once its record is in the trail. A pass first looks for every
                                 held line in the trail and only removes those already there, so a crash between writing and

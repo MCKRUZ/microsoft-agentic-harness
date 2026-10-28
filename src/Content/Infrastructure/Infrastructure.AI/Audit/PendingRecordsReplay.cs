@@ -8,9 +8,15 @@ namespace Infrastructure.AI.Audit;
 /// </param>
 /// <param name="SetAside">Held files that could not be read back as a record, renamed so they no longer block the queue.</param>
 /// <param name="Remaining">Records still held when the pass ended.</param>
-/// <param name="Skipped">Whether the pass did nothing because another pass, here or in another process, held the folder.</param>
-public sealed record PendingRecordsReplay(int Written, int AlreadyInTrail, int SetAside, int Remaining, bool Skipped)
+/// <param name="SkippedBecause">
+/// Why the pass did nothing, or <see langword="null"/> when it ran: the replay lock could not be taken, usually because
+/// another pass holds it, here or in another process, but also when the pending folder cannot be written.
+/// </param>
+public sealed record PendingRecordsReplay(int Written, int AlreadyInTrail, int SetAside, int Remaining, string? SkippedBecause)
 {
     /// <summary>A pass that found nothing held.</summary>
-    public static PendingRecordsReplay Nothing { get; } = new(0, 0, 0, 0, Skipped: false);
+    public static PendingRecordsReplay Nothing { get; } = new(0, 0, 0, 0, SkippedBecause: null);
+
+    /// <summary>Gets whether the pass did nothing because it could not take the replay lock.</summary>
+    public bool Skipped => SkippedBecause is not null;
 }

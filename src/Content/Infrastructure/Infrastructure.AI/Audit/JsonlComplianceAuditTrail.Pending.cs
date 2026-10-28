@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.Core.Compliance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Domain.Common.Config;
@@ -30,8 +31,9 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// <para>
 /// <strong>Crash safety.</strong> A file is written under a <c>.tmp</c> name, flushed to disk, then renamed, before
-/// <see cref="RecordAsync"/> returns; replay reads only renamed files. A <c>.tmp</c> left by a crash mid-write is never
-/// read or removed.
+/// <see cref="RecordAsync"/> returns; replay reads only renamed files. The rename itself is not forced to disk (.NET cannot
+/// flush a folder), so on Linux a power cut in the moment after it can still lose the file; a process crash cannot. A
+/// <c>.tmp</c> whose write failed is deleted; one left by a crash mid-write is never read or removed.
 /// </para>
 /// <para>
 /// <strong>Replay and duplicates.</strong> A pass takes an exclusive lock file in the pending folder (skipping the pass
@@ -40,7 +42,15 @@ namespace Infrastructure.AI.Audit;
 /// record is already in the chain, so a pass first looks for every held line in the chain (from the day before the oldest
 /// file on) and only removes those it finds. The correlation id is not unique to a record (an attempt and its outcome share
 /// it), so the match is on the whole line, timestamp included. A pass stops at the first append that fails, and the next
-/// pass retries from there.
+/// pass retries from there. A file that cannot be read (another account owns it, another process holds it open) is left
+/// for the next pass and the files after it go ahead; a file that reads but is not a record is set aside as
+/// <c>.unreadable</c>, so neither stops the queue.
+/// </para>
+/// <para>
+/// <strong>Who can add records.</strong> Replay appends whatever record a held file contains, so anything that can write
+/// the pending folder can add a record to the trail, just as anything that can write the trail's own folder can append a
+/// linked line to it (the chain's hashes are not keyed). Both folders are made owner-only; keep both out of reach of
+/// anything but the application's own account.
 /// </para>
 /// <para>
 /// <strong>Order.</strong> The chain is in append order. A replayed record keeps its own <c>timestamp</c> and
@@ -67,6 +77,9 @@ public sealed partial class JsonlComplianceAuditTrail
 
     private readonly string _pendingFolder;
 
+    /// <summary>Makes the unique part of a held file's name. Replaced only by tests that need to predict the name.</summary>
+    internal Func<Guid> NewHeldId { get; init; } = Guid.NewGuid;
+
     /// <summary>Gets the folder that holds records not yet appended to the trail.</summary>
     public string PendingLocation => _pendingFolder;
 
@@ -81,19 +94,19 @@ public sealed partial class JsonlComplianceAuditTrail
         if (!Directory.Exists(_pendingFolder))
             return PendingRecordsReplay.Nothing;
 
-        var replayLock = TryLockPending();
+        var (replayLock, busy) = TryLockPending();
         if (replayLock is null)
-            return new PendingRecordsReplay(0, 0, 0, HeldFiles().Count, Skipped: true);
+            return new PendingRecordsReplay(0, 0, 0, HeldFiles().Count, SkippedBecause: busy);
 
         await using (replayLock.ConfigureAwait(false))
         {
             var (held, setAside) = ReadHeld();
             if (held.Count == 0)
-                return new PendingRecordsReplay(0, 0, setAside, 0, Skipped: false);
+                return new PendingRecordsReplay(0, 0, setAside, HeldFiles().Count, SkippedBecause: null);
 
             var inTrail = await AlreadyInTrailAsync(held, cancellationToken).ConfigureAwait(false);
             var (written, alreadyInTrail) = await AppendHeldAsync(held, inTrail, cancellationToken).ConfigureAwait(false);
-            return new PendingRecordsReplay(written, alreadyInTrail, setAside, HeldFiles().Count, Skipped: false);
+            return new PendingRecordsReplay(written, alreadyInTrail, setAside, HeldFiles().Count, SkippedBecause: null);
         }
     }
 
@@ -124,11 +137,11 @@ public sealed partial class JsonlComplianceAuditTrail
 
     private Result WritePending(string payload)
     {
+        var name = string.Create(CultureInfo.InvariantCulture, $"{_clock.GetUtcNow().UtcTicks:D19}-{NewHeldId():N}");
+        var temporary = Path.Combine(_pendingFolder, name + TemporaryExtension);
         try
         {
             OwnerOnlyDirectoryHelper.Create(_pendingFolder, _logger);
-            var name = string.Create(CultureInfo.InvariantCulture, $"{_clock.GetUtcNow().UtcTicks:D19}-{Guid.NewGuid():N}");
-            var temporary = Path.Combine(_pendingFolder, name + TemporaryExtension);
 
             // Flushed to disk under a temporary name, then renamed: replay never reads a half-written record.
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -142,20 +155,36 @@ public sealed partial class JsonlComplianceAuditTrail
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            DeleteQuietly(temporary); // A half-written record is no record, and nothing else would ever remove it.
             return Result.Fail(ex.Message);
         }
     }
 
-    private FileStream? TryLockPending()
+    private static void DeleteQuietly(string path)
     {
         try
         {
-            return new FileStream(
-                Path.Combine(_pendingFolder, ReplayLockName), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null; // Another pass holds it, here or in another process.
+            // Left behind; replay never reads a .tmp.
+        }
+    }
+
+    /// <summary>The replay lock, or why it could not be taken: usually another pass holds it, here or elsewhere.</summary>
+    private (FileStream? Lock, string? Busy) TryLockPending()
+    {
+        try
+        {
+            var path = Path.Combine(_pendingFolder, ReplayLockName);
+            return (new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None), null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A sharing violation and a read-only volume are both an IOException, so the reason goes back to be logged
+            // instead of every failure being taken for "busy".
+            return (null, ex.Message);
         }
     }
 
@@ -171,23 +200,37 @@ public sealed partial class JsonlComplianceAuditTrail
         var setAside = 0;
         foreach (var path in HeldFiles())
         {
-            var payload = File.ReadAllText(path, Encoding.UTF8);
-            if (ActionOf(payload) is not null)
+            try
             {
-                held.Add(new HeldRecord(path, payload, HeldOn(path)));
-                continue;
+                if (ReadOne(path) is { } record)
+                    held.Add(record);
+                else
+                    setAside++;
             }
-
-            // Not a record the chain would accept: keeping it in the queue would stop every record after it.
-            File.Move(path, Path.ChangeExtension(path, SetAsideExtension), overwrite: false);
-            setAside++;
-            CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Lost);
-            _logger.LogCritical(
-                "Held compliance record {PendingFile} is not a record and was set aside as {SetAsideExtension}; it is not in the trail.",
-                path, SetAsideExtension);
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A file this pass cannot touch must not hold back the others; it is tried again next pass.
+                _logger.LogWarning(ex, "Held compliance record {PendingFile} could not be read; it is left for the next pass.", path);
+            }
         }
 
         return (held, setAside);
+    }
+
+    /// <summary>The held record in <paramref name="path"/>, or null once a file that is no record has been set aside.</summary>
+    private HeldRecord? ReadOne(string path)
+    {
+        var payload = File.ReadAllText(path, Encoding.UTF8);
+        if (ActionOf(payload) is { } action)
+            return new HeldRecord(path, payload, HeldOn(path), action);
+
+        // Not a record the chain would accept: keeping it in the queue would stop every record after it.
+        File.Move(path, Path.ChangeExtension(path, SetAsideExtension), overwrite: false);
+        CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Lost);
+        _logger.LogCritical(
+            "Held compliance record {PendingFile} is not a record and was set aside as {SetAsideExtension}; it is not in the trail.",
+            path, SetAsideExtension);
+        return null;
     }
 
     private async Task<HashSet<string>> AlreadyInTrailAsync(List<HeldRecord> held, CancellationToken cancellationToken)
@@ -234,7 +277,7 @@ public sealed partial class JsonlComplianceAuditTrail
             // Removed only after the append: a crash in between leaves a file the next pass finds in the trail.
             written++;
             ComplianceMetrics.AuditRecordsReplayed.Add(1,
-                new KeyValuePair<string, object?>(ComplianceConventions.Action, ActionOf(record.Payload)));
+                new KeyValuePair<string, object?>(ComplianceConventions.Action, KnownAction(record.Action)));
             Remove(record.FilePath);
         }
 
@@ -256,8 +299,14 @@ public sealed partial class JsonlComplianceAuditTrail
 
     private static void CountFailure(string action, string outcome) =>
         ComplianceMetrics.AuditWriteFailures.Add(1,
-            new KeyValuePair<string, object?>(ComplianceConventions.Action, action),
+            new KeyValuePair<string, object?>(ComplianceConventions.Action, KnownAction(action)),
             new KeyValuePair<string, object?>(ComplianceConventions.Outcome, outcome));
+
+    /// <summary>The action as a metric tag: one of the three requests, so file content can never add a time series.</summary>
+    private static string KnownAction(string action) =>
+        action is AuditedErasure.AuditAction or AuditedExport.AuditAction or AuditedDocumentRemoval.AuditAction
+            ? action
+            : UnknownAction;
 
     /// <summary>The record's action when <paramref name="payload"/> is one line the chain accepts, otherwise null.</summary>
     private static string? ActionOf(string payload)
@@ -297,5 +346,5 @@ public sealed partial class JsonlComplianceAuditTrail
             DateTimeStyles.None, out var day)
         || day >= from;
 
-    private sealed record HeldRecord(string FilePath, string Payload, DateOnly HeldOn);
+    private sealed record HeldRecord(string FilePath, string Payload, DateOnly HeldOn, string Action);
 }

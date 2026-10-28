@@ -8,6 +8,7 @@ using FluentAssertions;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Audit;
@@ -241,6 +242,74 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
+    public async Task ReplayPendingAsync_AHeldFileThatCannotBeOpened_IsLeftAndTheRestWritten()
+    {
+        BreakTheTrail();
+        using var trail = NewTrail();
+        await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+        await trail.RecordAsync(Entry("outcome"), ErasureActor.DataSubject, CancellationToken.None);
+        RepairTheTrail();
+        var oldest = HeldFiles()[0];
+
+        PendingRecordsReplay pass;
+        using (new FileStream(oldest, FileMode.Open, FileAccess.Read, FileShare.None)) // Another process holds it open.
+            pass = await trail.ReplayPendingAsync(CancellationToken.None);
+
+        pass.Written.Should().Be(1, "one file this pass cannot open must not hold back every record behind it");
+        pass.Remaining.Should().Be(1);
+        HeldFiles().Should().Equal(oldest);
+        TrailPhases().Should().Equal("outcome");
+    }
+
+    [Fact]
+    public async Task ReplayPendingAsync_TheReplayLockCannotBeMade_SkipsAndSaysWhy()
+    {
+        BreakTheTrail();
+        using var trail = NewTrail();
+        await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+        RepairTheTrail();
+        Directory.CreateDirectory(Path.Combine(Pending, ".replay.lock")); // Stands where the lock file must go.
+
+        var pass = await trail.ReplayPendingAsync(CancellationToken.None);
+
+        pass.Skipped.Should().BeTrue();
+        pass.SkippedBecause.Should().NotBeNullOrWhiteSpace("a lock that can never be taken must be visible, not read as busy");
+        pass.Remaining.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RecordAsync_AHoldThatFailsAfterItsTemporaryFile_LeavesNoTemporaryFile()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var id = Guid.NewGuid();
+        BreakTheTrail();
+        using var trail = new JsonlComplianceAuditTrail(
+            new TestConfig.StaticOptionsMonitor<AppConfig>(new AppConfig { AI = new() { Erasure = new() { AuditStoragePath = _root } } }),
+            clock, _pseudonyms, NullLogger<JsonlComplianceAuditTrail>.Instance) { NewHeldId = () => id };
+        // A folder takes the held file's own name, so the rename after the flush fails.
+        Directory.CreateDirectory(Path.Combine(Pending, $"{clock.GetUtcNow().UtcTicks:D19}-{id:N}.pending"));
+
+        var result = await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+
+        result.Errors.Single().Should().Contain("could not be held");
+        Directory.GetFiles(Pending, "*.tmp").Should().BeEmpty("nothing would ever read or remove a half-held record");
+    }
+
+    [Fact]
+    public async Task ReplayPendingAsync_AHeldRecordWithAnUnknownAction_IsCountedUnderUnknown()
+    {
+        var actions = CaptureTagValues(ComplianceConventions.AuditRecordsReplayed, ComplianceConventions.Action);
+        Directory.CreateDirectory(Pending);
+        File.WriteAllText(Path.Combine(Pending, "0000000000000000000-planted.pending"), "{\"action\":\"made-up-42\"}");
+        using var trail = NewTrail();
+
+        await trail.ReplayPendingAsync(CancellationToken.None);
+
+        lock (actions)
+            actions.Should().Contain("unknown").And.NotContain("made-up-42", "a file's content must never mint a metric series");
+    }
+
+    [Fact]
     public async Task ReplayPendingAsync_NothingWasEverHeld_DoesNothing()
     {
         using var trail = NewTrail();
@@ -268,14 +337,18 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
                 "operators alert on this counter; the request it records is never refused");
     }
 
-    private static List<string> CaptureFailureOutcomes()
+    private static List<string> CaptureFailureOutcomes() =>
+        CaptureTagValues(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+
+    /// <summary>Every value of <paramref name="tagKey"/> measured on the named counter from now on. Lock the list to read it.</summary>
+    private static List<string> CaptureTagValues(string instrumentName, string tagKey)
     {
-        var outcomes = new List<string>();
+        var values = new List<string>();
         var listener = new MeterListener
         {
             InstrumentPublished = (instrument, l) =>
             {
-                if (instrument.Name == ComplianceConventions.AuditWriteFailures)
+                if (instrument.Name == instrumentName)
                     l.EnableMeasurementEvents(instrument);
             },
         };
@@ -283,12 +356,12 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
         {
             foreach (var tag in tags)
             {
-                if (tag.Key == ComplianceConventions.Outcome)
-                    lock (outcomes)
-                        outcomes.Add((string)tag.Value!);
+                if (tag.Key == tagKey)
+                    lock (values)
+                        values.Add((string)tag.Value!);
             }
         });
         listener.Start();
-        return outcomes;
+        return values;
     }
 }

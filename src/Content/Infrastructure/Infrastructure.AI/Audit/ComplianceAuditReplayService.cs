@@ -92,7 +92,12 @@ public sealed class ComplianceAuditReplayService : BackgroundService
                 "Wrote {Written} held compliance record(s) to {AuditLocation}; {AlreadyInTrail} were already there.",
                 pass.Written, trail.AuditLocation, pass.AlreadyInTrail);
 
-        if (pass.Remaining > 0 && !pass.Skipped)
+        if (pass.Skipped && pass.Remaining > 0)
+            _logger.LogWarning(
+                "Replay of {Remaining} held compliance record(s) in {PendingLocation} skipped: {Reason}. Once is another " +
+                "host's pass; every minute means the folder cannot be locked.",
+                pass.Remaining, trail.PendingLocation, pass.SkippedBecause);
+        else if (pass.Remaining > 0)
             _logger.LogWarning(
                 "{Remaining} compliance record(s) are still held in {PendingLocation}, not yet in the trail.",
                 pass.Remaining, trail.PendingLocation);
