@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -602,8 +600,7 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
     private static string ScopeDirectoryName(string scopeId, string paramName)
     {
         SanitizeSessionSegment(scopeId, paramName);
-        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(scopeId)));
-        return $"{LegacyScopeDirectoryName(scopeId).ToLowerInvariant()}+{hash[..32]}";
+        return $"{LegacyScopeDirectoryName(scopeId).ToLowerInvariant()}+{Sha256HexPrefixHelper.Compute(scopeId, 32)}";
     }
 
     /// <summary>

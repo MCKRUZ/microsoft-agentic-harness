@@ -78,6 +78,7 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
         IReadOnlyList<string> allConversationIds, PlanRunTraces planRuns)
     {
         var root = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.StoragePath;
+        var legacyFolders = LegacyFolderNames(root);
         foreach (var scopeId in allConversationIds.Concat(planRuns.ToolResultScopeIds).Distinct(StringComparer.Ordinal))
         {
             string folderName;
@@ -90,11 +91,13 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
                 continue;
             }
 
-            foreach (var scopeDirectory in new[] { Path.Combine(root, folderName), LegacyScopeDirectory(root, scopeId) })
+            // The old folder is opened by the name stored on disk, which the lookup found by comparing with case.
+            string[] names = legacyFolders.TryGetValue(LegacyScopeDirectoryName(scopeId), out var storedLegacyName)
+                ? [folderName, storedLegacyName]
+                : [folderName];
+            foreach (var name in names)
             {
-                if (scopeDirectory is null)
-                    continue;
-
+                var scopeDirectory = Path.Combine(root, name);
                 var directory = Path.Combine(scopeDirectory, "tool-results");
                 if (Directory.Exists(directory))
                     yield return (scopeId, scopeDirectory, directory);
@@ -103,23 +106,22 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
     }
 
     /// <summary>
-    /// The folder the store named <paramref name="scopeId"/> before #928, if one exists whose stored name is exactly that
-    /// name, compared with case; see <see cref="SubjectSpillDirectories"/>.
+    /// The names of the folders under <paramref name="root"/> as stored on disk, compared with case, for finding a folder
+    /// written before #928; see <see cref="SubjectSpillDirectories"/>.
     /// </summary>
+    /// <remarks>
+    /// Listed once per erasure or export rather than once per id, and compared here in memory, with case, on every OS: on
+    /// Windows and macOS the file system itself would match a folder created under another id's case.
+    /// </remarks>
     /// <param name="root">The storage root.</param>
-    /// <param name="scopeId">An id that has passed the segment check.</param>
-    /// <returns>The old folder's path, or <see langword="null"/> when there is none.</returns>
-    private static string? LegacyScopeDirectory(string root, string scopeId)
-    {
-        if (!Directory.Exists(root))
-            return null;
-
-        // The pattern holds no wildcard ([A-Za-z0-9_.~-] only), so this lists at most the folder the name opens; on a
-        // case-insensitive file system that folder may have been created under another id's case.
-        var legacyName = LegacyScopeDirectoryName(scopeId);
-        return Directory.EnumerateDirectories(root, legacyName)
-            .FirstOrDefault(path => string.Equals(Path.GetFileName(path), legacyName, StringComparison.Ordinal));
-    }
+    /// <returns>The folder names, compared ordinally.</returns>
+    private static HashSet<string> LegacyFolderNames(string root) =>
+        Directory.Exists(root)
+            ? Directory.EnumerateDirectories(root)
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .ToHashSet(StringComparer.Ordinal)
+            : [];
 
     private static void TryDeleteIfEmpty(string directory)
     {
