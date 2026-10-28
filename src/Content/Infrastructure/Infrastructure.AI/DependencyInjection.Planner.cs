@@ -130,11 +130,11 @@ public static partial class DependencyInjection
         services.TryAddSingleton<IRunDispatchQueue, InMemoryRunDispatchQueue>();
 
         // Run records name their owner, so erasure removes the person's finished ones and the export copies them (#926).
-        // The live ones erasure keeps are counted through the store too, so the receipt can say one was kept; a
-        // replacement store that cannot count them resolves to nothing and is not asked.
+        // What erasure keeps is counted through the store too, so the receipt can say a record was kept; IRunJobStore
+        // includes the count, so a replacement store answers it as well.
         services.AddPersonalDataEraser<IRunJobStore>();
         services.AddPersonalDataExporter<IRunJobStore>();
-        services.TryAddSingleton<ILiveRunSource>(sp => (sp.GetRequiredService<IRunJobStore>() as ILiveRunSource)!);
+        services.TryAddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
 
         // Singleton for the same reason: the run publishes from the dispatcher and the watcher reads
         // from a request, so a scoped broker would give each side its own instance and every stream

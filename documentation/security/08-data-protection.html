@@ -975,12 +975,16 @@
                         capability envelope it runs under. A finished run is dropped
                         <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
                         the person's finished runs in every tenant at once, and releases what else is kept under their
-                        ids (progress bookkeeping, an evaluation's report). A run still queued, running or waiting for an
-                        approval is kept. Removing a running run's record would let a second run start on the same
-                        workflow while the first is still executing, and removing a parked one would strand the approvals
-                        it waits on. When one is kept, the receipt gets a <code>Skipped</code> line, "workflow and
-                        evaluation runs still in progress", and is <code>Partial</code>, telling the person to run erasure
-                        again once it has ended. The stopped planned tasks above are usually ended by then. A run that
+                        ids (progress bookkeeping, an evaluation's report); if one of those cannot be released, the
+                        store's line is <code>Failed</code>. A run still queued, running or waiting for an approval is
+                        kept. Removing a running run's record would let a second run start on the same workflow while the
+                        first is still executing, and removing a parked one would strand the approvals it waits on. Once
+                        every store has run, the coordinator counts every record still held for the person, so a run
+                        that ended meanwhile is counted too. When any is, the receipt gets a <code>Skipped</code> line,
+                        "workflow and evaluation runs still held", and is <code>Partial</code>, telling the person to run
+                        erasure again once it has ended. A queued or parked run is not stopped: it goes on after the
+                        request, as a planned task on another host does. The stopped planned tasks above are usually
+                        ended by then. A run that
                         stays parked is failed after <code>MaxParkedRunDuration</code>, unless that is switched off, and
                         then dropped an hour later. The store is single-host, like the run substrate it belongs to.
                     </p>
@@ -1145,7 +1149,10 @@
                             (<code>InMemoryBundleRunJobStore</code>). Each holds the caller's id, the conversation id and
                             the messages they sent, until <code>BundleExecution:RunRecordTtl</code> (30 minutes) after the
                             run ends. It is not erased, exported or listed on the receipt. The inventory guard does not see
-                            it, because it is held only in memory and neither erases nor exports.
+                            it, because it is held only in memory and neither erases nor exports. Nor is the evaluation
+                            submission store (<code>InMemoryEvalRunSubmissionStore</code>), which keeps an evaluation run's
+                            dataset names and report under the run's id: erasure releases it with the run record, but the
+                            person's copy does not include it.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,

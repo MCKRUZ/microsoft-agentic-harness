@@ -84,7 +84,7 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public async Task TheRunStore_IsAskedForTheLiveRunsItKept()
+    public async Task TheRunStore_IsAskedForTheRunRecordsItKept()
     {
         // #926: the run store keeps a person's live runs through erasure; without this the receipt would read Full while it
         // still held a record naming them.
@@ -101,12 +101,12 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
 
         var coordinator = scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>()
             .Should().BeOfType<PersonalDataErasureCoordinator>().Subject;
-        var liveRuns = typeof(PersonalDataErasureCoordinator)
-            .GetField("_liveRuns", BindingFlags.NonPublic | BindingFlags.Instance)!
+        var keptRuns = typeof(PersonalDataErasureCoordinator)
+            .GetField("_keptRuns", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(coordinator);
 
-        liveRuns.Should().NotBeNull().And.BeSameAs(scope.ServiceProvider.GetRequiredService<IRunJobStore>(),
-            "the coordinator must count the live runs of the store the host actually runs");
+        keptRuns.Should().NotBeNull().And.BeSameAs(scope.ServiceProvider.GetRequiredService<IRunJobStore>(),
+            "the coordinator must count the run records of the store the host actually runs");
     }
 
     private static IReadOnlyList<IPersonalDataEraser> ReceivedErasers(PersonalDataErasureCoordinator coordinator) =>

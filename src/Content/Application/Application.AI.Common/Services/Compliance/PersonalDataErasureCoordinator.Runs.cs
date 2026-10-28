@@ -6,37 +6,38 @@ namespace Application.AI.Common.Services.Compliance;
 
 /// <summary>
 /// The run store's part in a request (#926): it erases the person's finished workflow and evaluation runs and keeps the
-/// live ones, so the receipt must say when one was kept.
+/// live ones, so the receipt must say when a record was kept.
 /// </summary>
 public sealed partial class PersonalDataErasureCoordinator
 {
-    private const string LiveRunsStore = "workflow and evaluation runs still in progress";
-    private const string LiveRunsReason =
-        "a workflow or evaluation run was still queued, running or waiting for an approval; its run record was kept until it ends, so run erasure again";
+    private const string KeptRunsStore = "workflow and evaluation runs still held";
+    private const string KeptRunsReason =
+        "a workflow or evaluation run had not ended when its store was erased, so its run record was kept; run erasure again once it has ended";
 
     /// <summary>
-    /// Lists the person's runs that had not ended when the run store was erased. A line of its own, added after every
-    /// stage, so it neither holds a stage back nor keeps the journal: nothing else is found through a run record. A failure
-    /// to count is its own failed line, since the deletes are already done.
+    /// Lists the person's run records the store still holds once every stage has run. Counting every record, not only the
+    /// live ones, covers a run that ended after the store was erased: its record is not live, but it is still held. A line
+    /// of its own, added after the stages, so it neither holds a stage back nor keeps the journal: nothing else is found
+    /// through a run record. A failure to count is its own failed line, since the deletes are already done.
     /// </summary>
-    private async Task NoteRunsStillLiveAsync(string ownerId, List<StoreErasureOutcome> outcomes)
+    private async Task NoteRunsKeptAsync(string ownerId, List<StoreErasureOutcome> outcomes)
     {
-        if (_liveRuns is null)
+        if (_keptRuns is null)
             return;
 
-        int live;
+        int kept;
         try
         {
-            live = await _liveRuns.CountLiveRunsAsync(ownerId, CancellationToken.None);
+            kept = await _keptRuns.CountRunsKeptAsync(ownerId, CancellationToken.None);
         }
         catch (Exception ex)
         {
-            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for runs still in progress.");
-            outcomes.Add(new StoreErasureOutcome(LiveRunsStore, StoreErasureStatus.Failed, 0, FailedReason));
+            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for run records still held.");
+            outcomes.Add(new StoreErasureOutcome(KeptRunsStore, StoreErasureStatus.Failed, 0, FailedReason));
             return;
         }
 
-        if (live > 0)
-            outcomes.Add(new StoreErasureOutcome(LiveRunsStore, StoreErasureStatus.Skipped, 0, LiveRunsReason));
+        if (kept > 0)
+            outcomes.Add(new StoreErasureOutcome(KeptRunsStore, StoreErasureStatus.Skipped, 0, KeptRunsReason));
     }
 }

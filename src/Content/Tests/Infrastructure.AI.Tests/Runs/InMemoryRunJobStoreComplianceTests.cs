@@ -88,7 +88,7 @@ public sealed class InMemoryRunJobStoreComplianceTests
 
         removed.Should().Be(0);
         sut.Get("live", Subject, null).Should().NotBeNull();
-        (await sut.CountLiveRunsAsync(Subject, CancellationToken.None)).Should().Be(1,
+        (await sut.CountRunsKeptAsync(Subject, CancellationToken.None)).Should().Be(1,
             "the receipt must be told a run of the subject's was kept");
         _listener.Released.Should().BeEmpty("nothing was removed, so nothing keyed by the run may be released");
     }
@@ -111,15 +111,36 @@ public sealed class InMemoryRunJobStoreComplianceTests
     }
 
     [Fact]
-    public async Task CountLiveRunsAsync_FinishedOrOtherOwnersRuns_AreNotCounted()
+    public async Task CountRunsKeptAsync_EveryRecordOfTheOwner_IsCountedWhateverItsStatusAndNoOneElses()
     {
+        // A run live when the store was erased may have ended before the receipt asks: its record is still held.
         var sut = BuildSut();
         var finished = Run("finished", Subject);
         Admit(sut, finished);
         Finish(sut, finished);
+        Admit(sut, Run("queued", Subject.ToUpperInvariant(), tenantId: "tenant-b"));
         Admit(sut, Run("theirs", "bob-oid"));
 
-        (await sut.CountLiveRunsAsync(Subject, CancellationToken.None)).Should().Be(0);
+        (await sut.CountRunsKeptAsync(Subject, CancellationToken.None)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EraseSubjectAsync_AHolderFailsToRelease_ThrowsAfterTellingEveryOther()
+    {
+        // The records are gone, so a holder that kept its entry (an evaluation's report) has nothing left that leads to
+        // it; the receipt must say the store failed rather than read erased.
+        var after = new RecordingListener();
+        var sut = new InMemoryRunJobStore(
+            new StaticOptionsMonitor<AppConfig>(new AppConfig()), _time, [new ThrowingListener(), after],
+            NullLogger<InMemoryRunJobStore>.Instance);
+        var mine = Run("mine", Subject);
+        Admit(sut, mine);
+        Finish(sut, mine);
+
+        var erase = () => sut.EraseSubjectAsync(SubjectNamed(Subject), CancellationToken.None);
+
+        await erase.Should().ThrowAsync<InvalidOperationException>();
+        after.Released.Should().Equal(["mine"], "one holder failing must not stop the rest being told");
     }
 
     [Fact]
@@ -138,6 +159,11 @@ public sealed class InMemoryRunJobStoreComplianceTests
         exported.Should().AllSatisfy(e => e.GetProperty("targetId").GetString().Should().NotBeNullOrEmpty());
         exported.Single(e => e.GetProperty("jobId").GetString() == "finished")
             .GetProperty("status").GetString().Should().Be(nameof(RunStatus.Succeeded), "statuses are exported by name");
+    }
+
+    private sealed class ThrowingListener : IRunReclaimListener
+    {
+        public void OnRunsReclaimed(IReadOnlyList<string> jobIds) => throw new InvalidOperationException("holder broke");
     }
 
     private sealed class RecordingListener : IRunReclaimListener

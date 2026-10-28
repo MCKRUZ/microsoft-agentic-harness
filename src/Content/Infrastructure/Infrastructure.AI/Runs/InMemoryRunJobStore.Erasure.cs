@@ -6,7 +6,7 @@ using Domain.Common.Compliance;
 namespace Infrastructure.AI.Runs;
 
 /// <summary>Right-to-erasure (#926): the person's finished runs.</summary>
-public sealed partial class InMemoryRunJobStore : IPersonalDataEraser, ILiveRunSource
+public sealed partial class InMemoryRunJobStore : IPersonalDataEraser
 {
     /// <inheritdoc/>
     public string ErasureStoreName => "workflow and evaluation runs";
@@ -31,10 +31,12 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser, ILiveRunS
     /// still executing it, so a second run could share its plan; removing a parked one would strand the approvals it waits
     /// on, which only the cancel path withdraws; and a queued one is a run its caller is still waiting on. Erasure stops
     /// the person's planned tasks before any store is asked (#907), so a workflow run in this process has usually ended by
-    /// now. What is kept is counted by <see cref="CountLiveRunsAsync"/>, and the receipt says to run erasure again.
+    /// now. What is kept is counted by <see cref="CountRunsKeptAsync"/>, and the receipt says to run erasure again.
     /// </para>
     /// <para>
-    /// Every holder of state under a removed run's id is told, as for the sweep, so nothing keyed by it is stranded.
+    /// Every holder of state under a removed run's id is told, as for the sweep, so nothing keyed by it is stranded. One
+    /// that fails makes the erasure throw once all have been told, so the receipt says this store failed rather than
+    /// reading erased while, for example, an evaluation's report is still held under the removed run's id.
     /// </para>
     /// </remarks>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
@@ -56,15 +58,17 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser, ILiveRunS
             }
         }
 
-        RunReclaimNotifier.Notify(_reclaimListeners, removed, _logger);
+        if (!RunReclaimNotifier.Notify(_reclaimListeners, removed, _logger))
+            throw new InvalidOperationException("A holder of run-scoped state could not release the erased runs.");
+
         return Task.FromResult(removed.Count);
     }
 
     /// <inheritdoc/>
-    public Task<int> CountLiveRunsAsync(string ownerId, CancellationToken cancellationToken)
+    public Task<int> CountRunsKeptAsync(string ownerId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
-        return Task.FromResult(OwnedBy(ownerId).Count(r => !r.IsTerminal));
+        return Task.FromResult(OwnedBy(ownerId).Count);
     }
 
     /// <summary>A snapshot of every run <paramref name="ownerId"/> owns, in every tenant, each read under its lock.</summary>

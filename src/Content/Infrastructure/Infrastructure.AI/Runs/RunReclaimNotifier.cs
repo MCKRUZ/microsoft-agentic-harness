@@ -18,11 +18,13 @@ internal static class RunReclaimNotifier
     /// <param name="listeners">Every holder of run-scoped state.</param>
     /// <param name="jobIds">The runs whose records were removed; nothing is called when empty.</param>
     /// <param name="logger">Logger for a listener that fails.</param>
-    public static void Notify(IReadOnlyList<IRunReclaimListener> listeners, IReadOnlyList<string> jobIds, ILogger logger)
+    /// <returns>Whether every listener released without throwing.</returns>
+    public static bool Notify(IReadOnlyList<IRunReclaimListener> listeners, IReadOnlyList<string> jobIds, ILogger logger)
     {
         if (jobIds.Count == 0)
-            return;
+            return true;
 
+        var allReleased = true;
         foreach (var listener in listeners)
         {
             try
@@ -31,6 +33,7 @@ internal static class RunReclaimNotifier
             }
             catch (Exception ex)
             {
+                allReleased = false;
                 logger.LogError(
                     ex,
                     "{Listener} failed to release state for {Count} reclaimed run(s); its entries for "
@@ -39,5 +42,7 @@ internal static class RunReclaimNotifier
                     jobIds.Count);
             }
         }
+
+        return allReleased;
     }
 }
