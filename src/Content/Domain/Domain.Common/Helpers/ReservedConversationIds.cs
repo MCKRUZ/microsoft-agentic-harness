@@ -23,9 +23,7 @@ namespace Domain.Common.Helpers;
 /// The rule closes shapes, not knowledge: a caller who learns another person's server-minted id (a job id, say) and
 /// names a conversation after it is not stopped here. Those ids are random and are only shown to their owner. Since the
 /// personal-data export (#902) reads those stores through the caller's conversation ids, such a caller's export would
-/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion. On a
-/// case-insensitive filesystem (Windows, default macOS) the tool-result store also treats ids that differ only in case
-/// as one directory, which widens the same knowledge-based gap to a case variant of the id (#936).
+/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion.
 /// </para>
 /// </remarks>
 public static class ReservedConversationIds
