@@ -151,6 +151,8 @@ Partitioned per caller by stable id, falling back to remote IP (the only disting
 
 The stream policy is concurrency rather than rate on purpose: a streamed run executes inline on its connection for the whole conversation, so a request-rate limiter that counts *starts* cannot bound it.
 
+The compliance endpoints carry no named policy. `ComplianceRateLimits.Create()` (shared with AgentHub, #1003) is this host's `GlobalLimiter`: five self-service erasure or export requests an hour per caller, thirty operator requests an hour per operator, and at most two personal-data copies assembled at once per host. Every other path passes through it. A refused request answers `429`, as the contract says. Before #1003 the host left the framework default, `503`.
+
 ## Project Structure
 
 ```
@@ -247,6 +249,10 @@ A conversation is created on first use and owned by the caller that first used i
 someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,
 so the endpoint cannot be used to enumerate other callers' conversation ids. Ownership itself is
 enforced inside `IConversationStore`, never re-derived here.
+
+### Compliance (`AppConfig:AI:Erasure`)
+
+The shared compliance API reads the same section AgentHub does, from this host's own configuration. `OperatorTenantIds` (default empty) lists the tenants whose operators may erase, copy, or remove documents for someone else; empty turns the three operator endpoints off. `SubjectReferenceKey` (unset by default) keys the pseudonymous subject reference in the compliance audit trail. Self-service needs neither. A request erases or copies only this host's stores, so a deployment that also runs AgentHub sends each person's request to both.
 
 ### Direct tool invocation (`AppConfig:AI:DirectToolInvocation`)
 

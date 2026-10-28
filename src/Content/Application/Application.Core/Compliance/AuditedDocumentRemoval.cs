@@ -18,7 +18,8 @@ namespace Application.Core.Compliance;
 /// <remarks>
 /// <para>
 /// <strong>What the record holds.</strong> Who asked (an operator, or the document age limit), the document id, the receipt's request id, its completeness,
-/// whether the id matched anything, and per-store counts. A document id is a hash of where the document came from, not a person's identity, so it is kept: an
+/// whether the id matched anything, per-store counts, and the host whose stores the removal reached (#1003), also stamped on
+/// the receipt. A document id is a hash of where the document came from, not a person's identity, so it is kept: an
 /// audit record that could not say which document went would prove little.
 /// </para>
 /// <para>

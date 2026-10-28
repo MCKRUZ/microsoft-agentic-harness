@@ -20,7 +20,8 @@ namespace Application.Core.Compliance;
 /// <para>
 /// <strong>What the record holds.</strong> Who asked (<see cref="ErasureActor"/>, shared with erasure because the same
 /// people may ask), a pseudonymous subject reference from <see cref="IErasureSubjectReference"/>, the copy's request id,
-/// whether it is complete, and each store's status and record count. Never the subject's id and never any of the data.
+/// whether it is complete, each store's status and record count, and the host that made the copy (#1003), which is also
+/// stamped on the copy itself (<see cref="PersonalDataExport.Host"/>). Never the subject's id and never any of the data.
 /// </para>
 /// <para>
 /// <strong>Two records per request</strong>, an <see cref="AuditOutcome.Attempted"/> one before anything is read and an

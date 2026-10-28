@@ -1089,7 +1089,10 @@
                             persist and whatever its agents' tools store. It serves the compliance API at
                             <code>/api/compliance/*</code>, authenticated with its own audience. Its anonymous development
                             mode makes every caller one person, so the API refuses self-service and operator requests there,
-                            as AgentHub does under its sign-in bypass.</li>
+                            as AgentHub does under its sign-in bypass. Until #990 lands, its receipt does not cover bundle run
+                            records: they hold the run's messages and outcome in memory for
+                            <code>AppConfig:AI:BundleExecution:RunRecordTtl</code> (30 minutes) after the run ends, and no
+                            store line lists them.</li>
                         <li><strong>FoundryHost</strong> keeps each agent session's transcript under
                             <code>$HOME/.checkpoints</code>. Its planner database, tool results and compliance audit go
                             under <code>$HOME/agent-state</code>. <strong>It serves no erasure or export endpoint</strong>
@@ -1250,8 +1253,9 @@
                         after, paired by a correlation id, with the action <code>right_to_erasure</code>. The record is
                         meant to prove the erasure happened without keeping the identity it erased: it holds who asked
                         (an operator by a keyed reference in the compliance trail and by id in the log line; a person
-                        erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
-                        and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
+                        erasing themselves only as <code>data-subject</code>), the host that handled it (<code>host</code>,
+                        #1003; export and document-removal records carry it too), per-store counts, the receipt's request
+                        id, and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
                         <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
                         the key can recompute it from an id and find that person's erasure, and no one without the key can
                         reverse it. Without a key, no reference is recorded. A missing key, a broken audit sink or a
