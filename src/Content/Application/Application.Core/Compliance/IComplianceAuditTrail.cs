@@ -23,9 +23,11 @@ namespace Application.Core.Compliance;
 /// named operator as a keyed reference (<see cref="ErasureActor.Operator"/>), as the other audit trails record approvers.
 /// </para>
 /// <para>
-/// <strong>Failures are returned.</strong> A record that cannot be written (a busy chain, a full disk) comes back as a
-/// failed <see cref="Result"/>; the callers log it and carry on, because a broken trail must never refuse a person their
-/// request.
+/// <strong>Expected failures are returned.</strong> A record that cannot be written (a busy chain, a full disk, a folder
+/// it may not write) comes back as a failed <see cref="Result"/>, never <see langword="null"/>. Anything unexpected, such
+/// as a trail disposed while the host shuts down, may still throw, so a caller must catch as well:
+/// <c>ComplianceRecords</c> does both, logs the failure and carries on, because a broken trail must never refuse a person
+/// their request.
 /// </para>
 /// <para>
 /// <strong>Replacing it.</strong> The shipped trail is also registered as an <c>IVerifiableAuditChain</c>, so scheduled

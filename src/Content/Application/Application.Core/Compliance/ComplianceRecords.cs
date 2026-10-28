@@ -1,5 +1,6 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
+using Domain.Common;
 using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
 
@@ -14,7 +15,8 @@ namespace Application.Core.Compliance;
 /// <remarks>
 /// Each write is attempted whatever happened to the other, never cancelled by the caller (a request that started must leave
 /// its outcome even when it is abandoned part-way), and never throws: a broken destination is logged, and must not refuse a
-/// person their request. Exceptions are logged with their message withheld, since a store's message can name the person.
+/// person their request. An exception is logged with its message withheld, since a store's message can name the person. A
+/// failed result is logged with its reason, which the trail writes about its own folder and never about the person.
 /// </remarks>
 internal static class ComplianceRecords
 {
@@ -32,7 +34,8 @@ internal static class ComplianceRecords
         var phase = entry.Metadata?.GetValueOrDefault("phase");
         try
         {
-            var kept = await trail.RecordAsync(entry, actor, CancellationToken.None);
+            var kept = await trail.RecordAsync(entry, actor, CancellationToken.None)
+                ?? Result.Fail($"{trail.GetType().Name} returned no result, which IComplianceAuditTrail does not allow.");
             if (!kept.IsSuccess)
                 logger.LogError(
                     "Failed to keep the {Phase} of {RequestKind} {CorrelationId} in the compliance audit trail: {Reason}",

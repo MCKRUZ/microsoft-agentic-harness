@@ -6,14 +6,14 @@ using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.EraseMyData;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
-using Domain.Common;
 using FluentAssertions;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
 using Xunit;
@@ -295,6 +295,20 @@ public sealed class AuditedErasureTests
         result.IsSuccess.Should().BeTrue();
         _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
         _records.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task EraseAsync_ComplianceTrailReturnsNoResult_LogsTheBrokenContractAndStillErases()
+    {
+        // A replacement trail that breaks the contract must read as that in the log, not as an anonymous null reference.
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Result)null!);
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "returned no result").Should().BeTrue();
     }
 
     [Fact]

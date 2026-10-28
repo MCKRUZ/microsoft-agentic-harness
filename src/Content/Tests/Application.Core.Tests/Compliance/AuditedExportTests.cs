@@ -4,14 +4,14 @@ using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Services.Compliance;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.ExportMyData;
+using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
-using Domain.Common;
 using FluentAssertions;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
 using Xunit;
@@ -184,6 +184,19 @@ public sealed class AuditedExportTests
         result.IsSuccess.Should().BeTrue("a broken compliance trail must not refuse a person their copy");
         _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
         _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExportAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndTheCopyIsMade()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+
+        var result = await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
     }
 
     [Fact]

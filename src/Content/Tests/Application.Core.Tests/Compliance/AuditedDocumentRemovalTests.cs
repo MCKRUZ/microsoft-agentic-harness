@@ -3,8 +3,8 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
-using Domain.Common.Models;
 using Domain.Common;
+using Domain.Common.Models;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -263,6 +263,19 @@ public sealed class AuditedDocumentRemovalTests
         result.IsSuccess.Should().BeTrue("a broken compliance trail must not stop a removal");
         _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
         _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RemoveAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndRemoves()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
     }
 
     [Fact]
