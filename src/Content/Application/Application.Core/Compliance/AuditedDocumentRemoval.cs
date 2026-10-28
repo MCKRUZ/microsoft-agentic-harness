@@ -227,31 +227,7 @@ public sealed class AuditedDocumentRemoval
 
     private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Writes one record to the compliance audit trail and to the audit sink, never cancelled by the caller: a removal
-    /// that started must leave its outcome even when the request is abandoned part-way. Each write is attempted whatever
-    /// happened to the other.
-    /// </summary>
-    private async Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor)
-    {
-        try
-        {
-            await _trail.RecordAsync(entry, actor, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to keep the {Phase} of document removal {CorrelationId} in the compliance audit trail.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-
-        try
-        {
-            await _auditSink.RecordAsync(entry, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to record the {Phase} of document removal {CorrelationId}.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-    }
+    /// <summary>Writes one record to the compliance audit trail and to the audit sink; see <see cref="ComplianceRecords"/>.</summary>
+    private Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor) =>
+        ComplianceRecords.WriteAsync(_trail, _auditSink, entry, actor, _logger, "document removal");
 }

@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Audit;
 using Application.Core.Compliance;
 using Domain.AI.Audit;
+using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Models;
@@ -51,13 +52,12 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
     private readonly string _folder;
     private readonly HashChainedJsonlWriter _chain;
     private readonly IAuditPseudonymizer _pseudonymizer;
-    private readonly ILogger<JsonlComplianceAuditTrail> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="JsonlComplianceAuditTrail"/> class.</summary>
     /// <param name="config">Application configuration providing the trail's folder and the archive.</param>
     /// <param name="timeProvider">Decides which day-file a record is appended to.</param>
     /// <param name="pseudonymizer">Records a named operator as a keyed reference.</param>
-    /// <param name="logger">Logger for write failures.</param>
+    /// <param name="logger">Logger the chain writer reports its failures through.</param>
     public JsonlComplianceAuditTrail(
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
@@ -74,7 +74,6 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
         _folder = chain.Segments.Folder;
         _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _pseudonymizer = pseudonymizer;
-        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -84,22 +83,14 @@ public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiab
     public string AuditLocation => _folder;
 
     /// <inheritdoc />
-    public async Task RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
+    public Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(actor);
 
+        // The writer logs its own failures; the caller logs the returned reason once more, with the request it belongs to.
         var recorded = entry with { ExecutorId = RecordedExecutor(actor) };
-        var json = JsonSerializer.Serialize(recorded, SerializeOptions);
-        var result = await _chain.AppendAsync(json, cancellationToken).ConfigureAwait(false);
-        if (result.IsSuccess)
-            return;
-
-        var reason = string.Join("; ", result.Errors);
-        _logger.LogError(
-            "Failed to append the {Action} record {CorrelationId} to the compliance audit trail: {Reason}",
-            entry.Action, entry.CorrelationId, reason);
-        throw new IOException($"Failed to append the {entry.Action} record to the compliance audit trail: {reason}");
+        return _chain.AppendAsync(JsonSerializer.Serialize(recorded, SerializeOptions), cancellationToken);
     }
 
     /// <inheritdoc />

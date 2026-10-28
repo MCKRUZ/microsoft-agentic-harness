@@ -128,15 +128,16 @@ public sealed class JsonlComplianceAuditTrailTests : IDisposable
     }
 
     [Fact]
-    public async Task RecordAsync_TheChainCannotBeWritten_Throws()
+    public async Task RecordAsync_TheChainCannotBeWritten_ReturnsAFailure()
     {
-        // A file where the day folder should be: every append fails. The callers rely on a throw to log the loss.
+        // A file where the day folder should be: every append fails. The callers log the returned reason.
         Directory.CreateDirectory(_root);
         File.WriteAllText(Folder, "not a folder");
         using var trail = NewTrail();
 
-        var write = () => trail.RecordAsync(Entry("attempt", AuditOutcome.Attempted), ErasureActor.DataSubject, CancellationToken.None);
+        var result = await trail.RecordAsync(Entry("attempt", AuditOutcome.Attempted), ErasureActor.DataSubject, CancellationToken.None);
 
-        await write.Should().ThrowAsync<IOException>();
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().NotBeEmpty();
     }
 }

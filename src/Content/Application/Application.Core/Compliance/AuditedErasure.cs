@@ -239,32 +239,7 @@ public sealed class AuditedErasure
 
     private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Writes one record to the compliance audit trail and to the audit sink, never cancelled by the caller: an erasure
-    /// that started must leave its outcome even when the request is abandoned part-way. Each write is attempted whatever
-    /// happened to the other.
-    /// </summary>
-    private async Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor)
-    {
-        try
-        {
-            await _trail.RecordAsync(entry, actor, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(MessageWithheldException.From(ex),
-                "Failed to keep the {Phase} of right-to-erasure {CorrelationId} in the compliance audit trail.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-
-        try
-        {
-            await _auditSink.RecordAsync(entry, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(MessageWithheldException.From(ex), "Failed to record the {Phase} of right-to-erasure {CorrelationId}.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-    }
+    /// <summary>Writes one record to the compliance audit trail and to the audit sink; see <see cref="ComplianceRecords"/>.</summary>
+    private Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor) =>
+        ComplianceRecords.WriteAsync(_trail, _auditSink, entry, actor, _logger, "right-to-erasure");
 }

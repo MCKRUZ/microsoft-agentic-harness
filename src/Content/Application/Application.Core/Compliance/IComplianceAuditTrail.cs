@@ -1,3 +1,4 @@
+using Domain.Common;
 using Domain.Common.Models;
 
 namespace Application.Core.Compliance;
@@ -22,8 +23,14 @@ namespace Application.Core.Compliance;
 /// named operator as a keyed reference (<see cref="ErasureActor.Operator"/>), as the other audit trails record approvers.
 /// </para>
 /// <para>
-/// <strong>Failures throw.</strong> A record that cannot be written raises an exception rather than returning quietly;
-/// the callers catch it, log it, and carry on, because a broken trail must never refuse a person their request.
+/// <strong>Failures are returned.</strong> A record that cannot be written (a busy chain, a full disk) comes back as a
+/// failed <see cref="Result"/>; the callers log it and carry on, because a broken trail must never refuse a person their
+/// request.
+/// </para>
+/// <para>
+/// <strong>Replacing it.</strong> The shipped trail is also registered as an <c>IVerifiableAuditChain</c>, so scheduled
+/// verification and the compliance report walk it. A replacement must implement that interface too, or provide its own
+/// verification and change that registration.
 /// </para>
 /// </remarks>
 public interface IComplianceAuditTrail
@@ -35,7 +42,6 @@ public interface IComplianceAuditTrail
     /// fixed name.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A task that completes once the record is written.</returns>
-    /// <exception cref="IOException">The record could not be written.</exception>
-    Task RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken);
+    /// <returns>Success once the record is written, or a failure saying why it was not.</returns>
+    Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken);
 }

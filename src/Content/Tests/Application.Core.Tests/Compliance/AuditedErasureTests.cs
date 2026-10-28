@@ -10,6 +10,7 @@ using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
+using Domain.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -43,7 +44,7 @@ public sealed class AuditedErasureTests
             .Returns(ValueTask.CompletedTask);
         _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync(Result.Success());
     }
 
     private HmacErasureSubjectReference Reference() =>
@@ -279,6 +280,21 @@ public sealed class AuditedErasureTests
         result.IsSuccess.Should().BeTrue("a broken compliance trail must not refuse a person their right to erasure");
         _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
         _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue("a record the trail lost must not vanish silently");
+    }
+
+    [Fact]
+    public async Task EraseAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndStillErases()
+    {
+        // A busy chain or a full disk comes back as a failed result, not an exception; it must still be logged.
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
+        _records.Should().HaveCount(2);
     }
 
     [Fact]

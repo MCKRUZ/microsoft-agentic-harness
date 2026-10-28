@@ -8,6 +8,7 @@ using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
+using Domain.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -42,7 +43,7 @@ public sealed class AuditedExportTests
             .Returns(ValueTask.CompletedTask);
         _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync(Result.Success());
     }
 
     private HmacErasureSubjectReference Reference() =>

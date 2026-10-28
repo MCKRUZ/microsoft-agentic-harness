@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Models;
+using Domain.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -36,7 +37,7 @@ public sealed class AuditedDocumentRemovalTests
             .Returns(ValueTask.CompletedTask);
         _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync(Result.Success());
     }
 
     private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _trail.Object, _clock, _logger);
