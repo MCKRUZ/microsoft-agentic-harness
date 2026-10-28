@@ -325,6 +325,15 @@ public static partial class DependencyInjection
         services.AddSingleton<InMemoryBundleHandleStore>();
         services.AddSingleton<IBundleHandleStore>(sp => sp.GetRequiredService<InMemoryBundleHandleStore>());
         services.AddSingleton<IBundleRunJobStore, InMemoryBundleRunJobStore>();
+
+        // Both name the caller, so erasure removes the person's (keeping what a run in flight uses, which the receipt
+        // lists) and their copy includes them (#990).
+        services.AddPersonalDataEraser<IBundleRunJobStore>();
+        services.AddPersonalDataExporter<IBundleRunJobStore>();
+        services.AddSingleton<Application.AI.Common.Interfaces.Compliance.IKeptRunSource>(sp => sp.GetRequiredService<IBundleRunJobStore>());
+        services.AddPersonalDataEraser<IBundleHandleStore>();
+        services.AddPersonalDataExporter<IBundleHandleStore>();
+        services.AddSingleton<Application.AI.Common.Interfaces.Compliance.IKeptRunSource>(sp => sp.GetRequiredService<IBundleHandleStore>());
         services.AddSingleton<IBundleRunDispatchQueue, InMemoryBundleRunDispatchQueue>();
 
         // The shared engine that drives a run to terminal under its envelope + overlay. Both the background

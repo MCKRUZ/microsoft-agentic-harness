@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Compliance;
@@ -84,10 +85,10 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public async Task TheRunStore_IsAskedForTheRunRecordsItKept()
+    public async Task EveryResolvedStoreThatKeepsRuns_IsOneTheCoordinatorAsks()
     {
-        // #926: the run store keeps a person's live runs through erasure; without this the receipt would read Full while it
-        // still held a record naming them.
+        // #926, #990: the run stores keep a person's runs in flight through erasure; a store the coordinator does not ask
+        // would let the receipt read Full while it still held a record naming them.
         var (services, _) = CompositionRootTestHost.ComposeServices(new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
@@ -101,12 +102,31 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
 
         var coordinator = scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>()
             .Should().BeOfType<PersonalDataErasureCoordinator>().Subject;
-        var keptRuns = typeof(PersonalDataErasureCoordinator)
+        var asked = (IReadOnlyList<IKeptRunSource>)typeof(PersonalDataErasureCoordinator)
             .GetField("_keptRuns", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(coordinator);
+            .GetValue(coordinator)!;
 
-        keptRuns.Should().NotBeNull().And.BeSameAs(scope.ServiceProvider.GetRequiredService<IRunJobStore>(),
-            "the coordinator must count the run records of the store the host actually runs");
+        // Every store contract the host resolves whose instance keeps runs, found the way the eraser check above finds
+        // erasers, so a store that learns to keep runs later is held to this without being named here.
+        var keeping = services
+            .Where(d => !d.IsKeyedService && d.ServiceType.IsInterface && !d.ServiceType.ContainsGenericParameters
+                && d.ServiceType != typeof(IKeptRunSource) && !NotStoreContracts.Contains(d.ServiceType))
+            .Select(d => d.ServiceType)
+            .Where(t => KeptRunTypes.Value.Any(t.IsAssignableFrom))
+            .Distinct()
+            .Select(contract => (Contract: contract, Instance: scope.ServiceProvider.GetService(contract)))
+            .Where(r => r.Instance is IKeptRunSource)
+            .ToList();
+
+        keeping.Where(r => !asked.Any(a => ReferenceEquals(a, r.Instance)))
+            .Select(r => $"{r.Contract.Name} -> {r.Instance!.GetType().Name}")
+            .Should().BeEmpty("a store the host uses that keeps runs through erasure must be one the coordinator counts; register it as an IKeptRunSource");
+        keeping.Select(r => r.Instance).Distinct().Should().HaveCount(3,
+            "a floor: the workflow run store, the bundle run store and the staged-bundle store")
+            .And.Contain(scope.ServiceProvider.GetRequiredService<IRunJobStore>())
+            .And.Contain(scope.ServiceProvider.GetRequiredService<IBundleRunJobStore>())
+            .And.Contain(scope.ServiceProvider.GetRequiredService<IBundleHandleStore>());
+        asked.Should().OnlyHaveUniqueItems("one store is one receipt line");
     }
 
     private static IReadOnlyList<IPersonalDataEraser> ReceivedErasers(PersonalDataErasureCoordinator coordinator) =>
@@ -119,5 +139,12 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
             || (a.GetName().Name ?? "").StartsWith("Application.", StringComparison.Ordinal))
         .SelectMany(a => a.GetTypes())
         .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(IPersonalDataEraser).IsAssignableFrom(t))
+        .ToList());
+
+    private static readonly Lazy<IReadOnlyList<Type>> KeptRunTypes = new(() => AppDomain.CurrentDomain.GetAssemblies()
+        .Where(a => !a.IsDynamic && (a.GetName().Name ?? "").StartsWith("Infrastructure.", StringComparison.Ordinal)
+            || (a.GetName().Name ?? "").StartsWith("Application.", StringComparison.Ordinal))
+        .SelectMany(a => a.GetTypes())
+        .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(IKeptRunSource).IsAssignableFrom(t))
         .ToList());
 }

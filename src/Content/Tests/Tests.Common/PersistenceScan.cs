@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.Metadata;
@@ -49,6 +50,10 @@ public static class PersistenceScan
     /// Every member of a non-production assembly it calls, as <c>Type::Member</c>, persistence or not; for guards that ask
     /// about one specific call, such as how SQLite connections are opened.
     /// </param>
+    /// <param name="Declared">
+    /// The type itself and every type nested in it, each with the fields that hold its state; for guards that ask what a
+    /// type keeps in memory, which no call shows (#990).
+    /// </param>
     public sealed record TypeFacts(
         string Assembly,
         string Name,
@@ -57,7 +62,38 @@ public static class PersistenceScan
         IReadOnlySet<string> Callees,
         IReadOnlySet<string> Supertypes,
         IReadOnlyDictionary<string, IReadOnlyList<object?>> Attributes,
-        IReadOnlySet<string> ExternalCalls);
+        IReadOnlySet<string> ExternalCalls,
+        IReadOnlyList<DeclaredType> Declared);
+
+    /// <summary>One type as compiled, nested or not, with the fields it declares.</summary>
+    /// <param name="Name">
+    /// Its namespace-qualified name, nested types joined with <c>+</c> (<c>Ns.Store+Entry</c>), the form a field signature
+    /// names it by.
+    /// </param>
+    /// <param name="IsRecord">Whether it is a record, a value whose fields describe one thing rather than keep many.</param>
+    /// <param name="IsCompilerGenerated">
+    /// Whether the compiler emitted it (a lambda's closure, an iterator's or async method's state machine), whose fields
+    /// live only as long as one call.
+    /// </param>
+    /// <param name="Fields">Its fields, constants left out.</param>
+    public sealed record DeclaredType(string Name, bool IsRecord, bool IsCompilerGenerated, IReadOnlyList<FieldShape> Fields);
+
+    /// <summary>One field, and the type it holds.</summary>
+    /// <param name="Name">Its name; for an auto-property's backing field, the property's name.</param>
+    /// <param name="IsBackingField">Whether the compiler emitted it for an auto-property.</param>
+    /// <param name="Type">The type its signature names.</param>
+    public sealed record FieldShape(string Name, bool IsBackingField, TypeShape Type);
+
+    /// <summary>A type as a signature names it, with its generic arguments.</summary>
+    /// <param name="Assembly">The assembly that declares it; empty for a built-in type or a generic parameter.</param>
+    /// <param name="Name">Its namespace-qualified name, nested types joined with <c>+</c>; generic parameters as <c>!</c>.</param>
+    /// <param name="Arguments">Its generic arguments, or an array's element type.</param>
+    /// <param name="IsArray">Whether it is an array, whose element is its one argument.</param>
+    public sealed record TypeShape(string Assembly, string Name, IReadOnlyList<TypeShape> Arguments, bool IsArray)
+    {
+        /// <summary>This type and every type named inside it, depth first.</summary>
+        public IEnumerable<TypeShape> SelfAndArguments() => Arguments.SelectMany(a => a.SelfAndArguments()).Prepend(this);
+    }
 
     /// <summary>
     /// Storage SDK assemblies: any call into one of these, or deriving from one of its types, is persistence.
@@ -181,6 +217,8 @@ public static class PersistenceScan
                 if (definition.GetDeclaringType().IsNil)
                     AddDeclaration(reader, self, definition, builder);
 
+                builder.Declared.Add(Shape(reader, self, handle, definition));
+
                 foreach (var methodHandle in definition.GetMethods())
                     AddCalls(pe, reader, self, production, methodHandle, builder);
             }
@@ -188,8 +226,86 @@ public static class PersistenceScan
 
         return builders.ToDictionary(
             b => b.Key,
-            b => new TypeFacts(b.Value.Assembly, b.Value.Name, b.Value.IsInterface, b.Value.Primitives, b.Value.Callees, b.Value.Supertypes, b.Value.Attributes, b.Value.ExternalCalls),
+            b => new TypeFacts(b.Value.Assembly, b.Value.Name, b.Value.IsInterface, b.Value.Primitives, b.Value.Callees, b.Value.Supertypes, b.Value.Attributes, b.Value.ExternalCalls, b.Value.Declared),
             StringComparer.Ordinal);
+    }
+
+    private static DeclaredType Shape(MetadataReader reader, string self, TypeDefinitionHandle handle, TypeDefinition definition)
+    {
+        var provider = new ShapeProvider(self);
+        var fields = definition.GetFields()
+            .Select(reader.GetFieldDefinition)
+            .Where(f => (f.Attributes & FieldAttributes.Literal) == 0)
+            .Select(f =>
+            {
+                var name = reader.GetString(f.Name);
+                var backing = name.StartsWith('<') && name.EndsWith(">k__BackingField", StringComparison.Ordinal);
+                return new FieldShape(backing ? name[1..name.IndexOf('>')] : name, backing, f.DecodeSignature(provider, null));
+            })
+            .ToList();
+
+        // Every record, class or struct, is compiled with a PrintMembers method; nothing else declares one.
+        var isRecord = definition.GetMethods().Any(m => reader.GetString(reader.GetMethodDefinition(m).Name) == "PrintMembers");
+        var name = NestedName(reader, handle);
+        return new DeclaredType(name, isRecord, reader.GetString(definition.Name).StartsWith('<'), fields);
+    }
+
+    /// <summary>A type definition's name with its declaring types, joined with <c>+</c> as a signature names it.</summary>
+    private static string NestedName(MetadataReader reader, TypeDefinitionHandle handle)
+    {
+        var definition = reader.GetTypeDefinition(handle);
+        if (!definition.GetDeclaringType().IsNil)
+            return NestedName(reader, definition.GetDeclaringType()) + "+" + reader.GetString(definition.Name);
+
+        var ns = reader.GetString(definition.Namespace);
+        var name = reader.GetString(definition.Name);
+        return string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+    }
+
+    private static (string Assembly, string Name) NestedReferenceName(MetadataReader reader, TypeReferenceHandle handle, string self)
+    {
+        var reference = reader.GetTypeReference(handle);
+        var scope = reference.ResolutionScope;
+        if (scope.Kind == HandleKind.TypeReference)
+        {
+            var outer = NestedReferenceName(reader, (TypeReferenceHandle)scope, self);
+            return (outer.Assembly, outer.Name + "+" + reader.GetString(reference.Name));
+        }
+
+        var assembly = scope.Kind == HandleKind.AssemblyReference
+            ? reader.GetString(reader.GetAssemblyReference((AssemblyReferenceHandle)scope).Name)
+            : self;
+        var ns = reader.GetString(reference.Namespace);
+        var name = reader.GetString(reference.Name);
+        return (assembly, string.IsNullOrEmpty(ns) ? name : ns + "." + name);
+    }
+
+    /// <summary>Decodes a field signature into the types it names, without loading the assemblies that define them.</summary>
+    private sealed class ShapeProvider(string self) : ISignatureTypeProvider<TypeShape, object?>
+    {
+        private static TypeShape Leaf(string assembly, string name) => new(assembly, name, [], false);
+
+        public TypeShape GetPrimitiveType(PrimitiveTypeCode typeCode) => Leaf("", "System." + typeCode);
+        public TypeShape GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind) =>
+            Leaf(self, NestedName(reader, handle));
+        public TypeShape GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
+        {
+            var (assembly, name) = NestedReferenceName(reader, handle, self);
+            return Leaf(assembly, name);
+        }
+        public TypeShape GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind) =>
+            reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
+        public TypeShape GetSZArrayType(TypeShape elementType) => new("", "[]", [elementType], true);
+        public TypeShape GetArrayType(TypeShape elementType, ArrayShape shape) => new("", "[]", [elementType], true);
+        public TypeShape GetByReferenceType(TypeShape elementType) => elementType;
+        public TypeShape GetPointerType(TypeShape elementType) => elementType;
+        public TypeShape GetPinnedType(TypeShape elementType) => elementType;
+        public TypeShape GetModifiedType(TypeShape modifier, TypeShape unmodifiedType, bool isRequired) => unmodifiedType;
+        public TypeShape GetGenericInstantiation(TypeShape genericType, ImmutableArray<TypeShape> typeArguments) =>
+            genericType with { Arguments = typeArguments };
+        public TypeShape GetGenericTypeParameter(object? genericContext, int index) => Leaf("", "!" + index);
+        public TypeShape GetGenericMethodParameter(object? genericContext, int index) => Leaf("", "!!" + index);
+        public TypeShape GetFunctionPointerType(MethodSignature<TypeShape> signature) => Leaf("", "method*");
     }
 
     private sealed class Builder(string assembly, string name)
@@ -202,6 +318,7 @@ public static class PersistenceScan
         public HashSet<string> Supertypes { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, IReadOnlyList<object?>> Attributes { get; } = new(StringComparer.Ordinal);
         public HashSet<string> ExternalCalls { get; } = new(StringComparer.Ordinal);
+        public List<DeclaredType> Declared { get; } = [];
     }
 
     private static void AddDeclaration(MetadataReader reader, string self, TypeDefinition definition, Builder builder)

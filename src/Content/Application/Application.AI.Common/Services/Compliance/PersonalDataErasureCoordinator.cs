@@ -70,7 +70,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     private readonly IPlanRunTraceSource? _planRuns;
     private readonly IErasureJournal? _journal;
     private readonly IPlannedTaskCanceller? _runningTasks;
-    private readonly IKeptRunSource? _keptRuns;
+    private readonly IReadOnlyList<IKeptRunSource> _keptRuns;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -102,8 +102,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// <see langword="null"/> in a host without plans.
     /// </param>
     /// <param name="keptRuns">
-    /// Counts the person's workflow and evaluation run records still held after the run store's erasure, which keeps a
-    /// run until it ends (#926). <see langword="null"/> in a host without a run store.
+    /// Each counts the person's records a run store still holds after its erasure, which keeps a run until it ends: the
+    /// workflow and evaluation runs (#926) and the bundle API's runs and staged bundles (#990). Each gets its own receipt
+    /// line. <see langword="null"/> or empty in a host without a run store.
     /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
@@ -116,7 +117,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         IPlanRunTraceSource? planRuns = null,
         IErasureJournal? journal = null,
         IPlannedTaskCanceller? runningTasks = null,
-        IKeptRunSource? keptRuns = null)
+        IEnumerable<IKeptRunSource>? keptRuns = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -136,7 +137,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         _planRuns = planRuns;
         _journal = journal;
         _runningTasks = runningTasks;
-        _keptRuns = keptRuns;
+        // One instance registered twice (a substrate composed twice) is still one source, so one receipt line.
+        _keptRuns = keptRuns?.Distinct().ToList() ?? [];
     }
 
     /// <inheritdoc />

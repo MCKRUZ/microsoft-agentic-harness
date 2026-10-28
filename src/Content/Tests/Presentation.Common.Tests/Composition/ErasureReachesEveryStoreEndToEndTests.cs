@@ -1,5 +1,6 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -107,6 +108,21 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
                 return Task.CompletedTask;
             },
             (sp, p) => Task.FromResult(sp.GetRequiredService<IRunJobStore>().Get($"run-{p.Label}", p.OwnerId, null) is null ? 0 : 1)),
+        // #990: finished, so erasure may remove it, as above; a staged bundle no run holds, so erasure evicts it now.
+        ["InMemoryBundleRunJobStore"] = new(
+            (sp, p) =>
+            {
+                BundleStoreSeeds.SeedFinishedRun(sp, p.OwnerId, p.Label);
+                return Task.CompletedTask;
+            },
+            (sp, p) => Task.FromResult(sp.GetRequiredService<IBundleRunJobStore>().Get(BundleStoreSeeds.RunId(p.Label)) is null ? 0 : 1)),
+        ["InMemoryBundleHandleStore"] = new(
+            (sp, p) =>
+            {
+                BundleStoreSeeds.SeedStagedBundle(sp, _workingDir, p.OwnerId, p.Label);
+                return Task.CompletedTask;
+            },
+            (sp, p) => Task.FromResult(sp.GetRequiredService<IBundleHandleStore>().GetOwner(BundleStoreSeeds.HandleOf(p.Label)) is null ? 0 : 1)),
         ["EfScheduleStore"] = new(
             (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
             async (sp, p) => (await sp.GetRequiredService<IScheduleStore>().ListForOwnerAsync(p.OwnerId, null, CancellationToken.None)).Count),
@@ -136,7 +152,8 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         reached.Where(name => !Stores.ContainsKey(name)).Should().BeEmpty(
             "every store the coordinator reaches needs a seed and a check here; add an entry for the new store");
         reached.Should().Contain(["EfCoreConversationStore", "FileSystemToolResultStore", "EfCorePlanStateStore", "EfScheduleStore",
-            "EfCorePromptUsageStore", "FaissVectorStore", "SqliteFts5Store"],
+            "EfCorePromptUsageStore", "FaissVectorStore", "SqliteFts5Store", "InMemoryRunJobStore", "InMemoryBundleRunJobStore",
+            "InMemoryBundleHandleStore"],
             "a floor, so a composition that reaches fewer stores than this one configures cannot pass");
 
         // Labels unique to this run: the keyword index is a process-wide in-memory database other tests also write to.

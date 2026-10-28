@@ -1,5 +1,6 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -59,7 +60,7 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
     /// <summary>A person's seeded records, labelled so a copy can be searched for them.</summary>
     private sealed record Seeded(string OwnerId, string Label);
 
-    private static Dictionary<string, Func<IServiceProvider, Seeded, Task>> Seeds => new(StringComparer.Ordinal)
+    private Dictionary<string, Func<IServiceProvider, Seeded, Task>> Seeds => new(StringComparer.Ordinal)
     {
         ["EfCoreConversationStore"] = SeedConversationAsync,
         ["FileSystemConversationStore"] = SeedConversationAsync,
@@ -67,6 +68,17 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         ["InMemoryRunJobStore"] = (sp, p) =>
         {
             sp.GetRequiredService<IRunJobStore>().TryCreate(Run(p), int.MaxValue).Should().Be(RunAdmission.Accepted);
+            return Task.CompletedTask;
+        },
+        // #990: a bundle run with the person's message, and the bundle they staged.
+        ["InMemoryBundleRunJobStore"] = (sp, p) =>
+        {
+            BundleStoreSeeds.SeedFinishedRun(sp, p.OwnerId, p.Label);
+            return Task.CompletedTask;
+        },
+        ["InMemoryBundleHandleStore"] = (sp, p) =>
+        {
+            BundleStoreSeeds.SeedStagedBundle(sp, _workingDir, p.OwnerId, p.Label);
             return Task.CompletedTask;
         },
         ["KnowledgeGraphExporter"] = SeedGraphAsync,
@@ -115,7 +127,8 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         exporters.Where(name => !Seeds.ContainsKey(name)).Should().BeEmpty(
             "every store the export reads needs a seed here; add an entry for the new store");
         exporters.Should().Contain(["EfCoreConversationStore", "EfScheduleStore", "KnowledgeGraphExporter",
-            "FileSystemToolResultStore", "EfCorePlanStateStore", "FaissVectorStore", "SqliteFts5Store"],
+            "FileSystemToolResultStore", "EfCorePlanStateStore", "FaissVectorStore", "SqliteFts5Store", "InMemoryRunJobStore",
+            "InMemoryBundleRunJobStore", "InMemoryBundleHandleStore"],
             "a floor, so a composition that reads fewer stores than this one configures cannot pass");
 
         // Letters only: stores redact on write, and a run of digits in a label reads as a phone number. A redacted label
@@ -309,7 +322,7 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
         Version = 0,
     };
 
-    private static async Task SeedAsync(ServiceProvider provider, Seeded person, IEnumerable<string> exporters)
+    private async Task SeedAsync(ServiceProvider provider, Seeded person, IEnumerable<string> exporters)
     {
         await using var scope = provider.CreateAsyncScope();
         foreach (var name in exporters)

@@ -42,12 +42,13 @@ namespace Presentation.Common.Tests.Architecture;
 /// reflection, <c>dynamic</c>, configuration-only sinks or native code is not seen. The sibling rule above reaches the
 /// most common case (memory-only stores beside a durable one); the learnings and cross-session memory stores, which
 /// write through graph interfaces, are declared by hand for the same reason. A memory-only store with no declared
-/// sibling is held in the inventory only once it erases or exports: every type implementing <c>IPersonalDataEraser</c>
-/// or <c>IPersonalDataExporter</c> must carry the descriptor (#926, the run store). One that does neither, and calls no
-/// primitive, is still not seen.
+/// sibling is held in the inventory in two ways: every type implementing <c>IPersonalDataEraser</c> or
+/// <c>IPersonalDataExporter</c> must carry the descriptor (#926, the run store), and every type keeping a collection of
+/// records that name a person must too, whatever it calls (#990, the bundle run store; the rule and its own blind spots
+/// are in <c>EveryPersonalDataStoreIsDeclaredTests.InMemory.cs</c>).
 /// </para>
 /// </remarks>
-public sealed class EveryPersonalDataStoreIsDeclaredTests
+public sealed partial class EveryPersonalDataStoreIsDeclaredTests
 {
     private const string StoreAttribute = "Domain.Common.Compliance.PersonalDataStoreAttribute";
     private const string ChannelAttribute = "Domain.Common.Compliance.PersonalDataChannelAttribute";
