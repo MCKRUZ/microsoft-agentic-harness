@@ -52,4 +52,23 @@ public sealed class ErasureConfig
     /// receipts keep saying so. The default is a year.
     /// </summary>
     public TimeSpan JournalRetention { get; set; } = TimeSpan.FromDays(365);
+
+    /// <summary>
+    /// The folder of the compliance audit trail (#969): the hash-chained record of every erasure, data export and document
+    /// removal, kept as proof that each was handled. Relative to the working directory unless absolute. The day-files go in
+    /// a <c>compliance</c> folder inside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Kept for good, like the other audit trails, and archived with them when <c>AppConfig:AI:Audit:ArchivePath</c> is
+    /// set. Application logs are deleted after <c>Logging:Retention:RetainFor</c> (30 days by default), far too soon to
+    /// show, years later, that a person's request was carried out.
+    /// </para>
+    /// <para>
+    /// The records hold who asked (an operator as a keyed reference, a person erasing their own data as
+    /// <c>data-subject</c>), the subject reference when <see cref="SubjectReferenceKey"/> is set, the receipt id and
+    /// per-store counts. Never the person's id and never any of their data.
+    /// </para>
+    /// </remarks>
+    public string AuditStoragePath { get; set; } = ".agent-sessions/compliance";
 }

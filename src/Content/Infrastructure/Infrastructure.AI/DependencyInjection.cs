@@ -242,6 +242,13 @@ public static partial class DependencyInjection
         services.AddHostedService<DataAtRest.DataAtRestStartupCheck>();
         services.AddSingleton<IAuditSink, StructuredLogAuditSink>();
 
+        // The durable proof of every erasure, data export and document removal (#969). The log sink above keeps its line
+        // for operators' log tooling; that line is deleted with the logs, this record is kept with the other audit trails.
+        // RegisterAuditChainVerification adds it to scheduled verification.
+        services.TryAddSingleton(TimeProvider.System); // picks the trail's day-file
+        services.AddSingleton<Application.Core.Compliance.IComplianceAuditTrail, JsonlComplianceAuditTrail>();
+        services.AddRetainedPersonalData<Application.Core.Compliance.IComplianceAuditTrail>("compliance audit trail");
+
         // --- Skills and agents ---
 
         // Reader + parser + registry as one unit — see AddSkillDiscovery for why they must not be

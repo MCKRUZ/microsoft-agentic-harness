@@ -85,4 +85,21 @@ public sealed class ErasureSubjectReferenceTests
         new ErasureConfigValidator().Validate(new ErasureConfig { OperatorTenantIds = [tenantId] })
             .IsValid.Should().BeFalse();
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validator_BlankComplianceTrailFolder_IsRefused(string path)
+    {
+        // #969: without a folder, erasures, exports and removals would leave no durable proof at all.
+        new ErasureConfigValidator().Validate(new ErasureConfig { AuditStoragePath = path })
+            .Errors.Should().ContainSingle(e => e.PropertyName == nameof(ErasureConfig.AuditStoragePath));
+    }
+
+    [Fact]
+    public void ComplianceTrailFolder_DefaultsBesideTheOtherAuditTrails()
+    {
+        new ErasureConfig().AuditStoragePath.Should().Be(".agent-sessions/compliance",
+            "durable by default: a host that sets nothing still keeps the proof");
+    }
 }
