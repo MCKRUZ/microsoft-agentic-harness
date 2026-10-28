@@ -907,7 +907,7 @@
                         knowledge graph (nodes, edges, feedback weights, the vector and full-text content of linked
                         documents, and cross-session memory) through <code>DefaultErasureOrchestrator</code>, then every
                         store registered as an <code>IPersonalDataEraser</code>: the document indexes by owner,
-                        schedules, and, through the conversations and the planned tasks' model steps and runs, tool-result
+                        schedules, the person's finished workflow and evaluation run records, and, through the conversations and the planned tasks' model steps and runs, tool-result
                         spill files, prompt-usage records, token budgets, the call-once ledger and the observability
                         database. The conversations and the plans go next, and the token budgets and call-once ledger
                         last, for whichever of the two was actually erased. A store reached only through a conversation
@@ -968,6 +968,25 @@
                         keeps its plan as before, and the receipt says to run erasure again. The person's own run of a
                         shared plan is deliberately left running, because stopping it would stop everyone's runs of that
                         plan. It falls back to the same "run erasure again" line.
+                    </p>
+                    <p>
+                        Workflow and evaluation run records (<code>InMemoryRunJobStore</code>, #926) are held in process
+                        memory only, and each names the person who started the run, their tenant, the target and the
+                        capability envelope it runs under. A finished run is dropped
+                        <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
+                        the person's finished runs in every tenant at once, and releases what else is kept under their
+                        ids (progress bookkeeping, an evaluation's report). Those are released first, and if one cannot
+                        be, the records are kept so a retry can still reach it. A run still queued, running or waiting for an approval is
+                        kept. Removing a running run's record would let a second run start on the same workflow while the
+                        first is still executing, and removing a parked one would strand the approvals it waits on. Once
+                        every store has run, the coordinator counts every record still held for the person, so a run
+                        that ended meanwhile is counted too. When any is, the receipt gets a <code>Skipped</code> line,
+                        "workflow and evaluation runs still held", and is <code>Partial</code>, telling the person to run
+                        erasure again once it has ended. A queued or parked run is not stopped: it goes on after the
+                        request, as a planned task on another host does. The stopped planned tasks above are usually
+                        ended by then. A run that
+                        stays parked is failed after <code>MaxParkedRunDuration</code>, unless that is switched off, and
+                        then dropped an hour later. The store is single-host, like the run substrate it belongs to.
                     </p>
                     <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
@@ -1043,8 +1062,9 @@
                                     <code>Stores</code>: one line per store, with a status and, unless it was erased, a
                                     fixed reason. <code>Erased</code> (with the count removed), <code>Failed</code>,
                                     <code>Skipped</code> (held back: an earlier store failed, or the person's
-                                    conversations or planned tasks started or ran while the erasure was under way, or a
-                                    store was only partly erased), <code>NotSupported</code> (a store configured in this
+                                    conversations or planned tasks started or ran while the erasure was under way, or one
+                                    of their workflow or evaluation runs had not ended, or a store was only partly
+                                    erased), <code>NotSupported</code> (a store configured in this
                                     host that holds personal data but cannot erase one person's), and three for stores
                                     that cannot be searched for one person: <code>RetainedUntilExpiry</code> (each record is
                                     deleted within a period: log files, traces and the response cache by default, and stores
@@ -1123,6 +1143,16 @@
                             A cross-session memory backend that cannot delete (a remote one) makes the receipt
                             <code>Partial</code>, with the reason "cross-session memory purge is not supported by the
                             configured backend".
+                        </li>
+                        <li>
+                            <strong>Not yet in the inventory:</strong> the bundle API's in-memory run records
+                            (<code>InMemoryBundleRunJobStore</code>). Each holds the caller's id, the conversation id and
+                            the messages they sent, until <code>BundleExecution:RunRecordTtl</code> (30 minutes) after the
+                            run ends. It is not erased, exported or listed on the receipt. The inventory guard does not see
+                            it, because it is held only in memory and neither erases nor exports. Nor is the evaluation
+                            submission store (<code>InMemoryEvalRunSubmissionStore</code>), which keeps an evaluation run's
+                            dataset names and report under the run's id: erasure releases it with the run record, but the
+                            person's copy does not include it.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
@@ -1244,7 +1274,8 @@
                     </p>
                     <p>
                         <strong>What the copy holds.</strong> One section per store that can return a person's data:
-                        their conversations with every message, their schedules, and their knowledge-graph nodes and edges,
+                        their conversations with every message, their schedules, their workflow and evaluation run records
+                        (finished or still live), and their knowledge-graph nodes and edges,
                         including remembered facts the write-gate quarantined, which the product never shows them but which
                         are still theirs. A record with no owner is shared or global and is never included on its own, and
                         neither is an edge another person owns, even where it touches this person's node. An unowned edge
