@@ -265,6 +265,11 @@ internal static class FoundryHostBootstrap
         overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
         overrides["AppConfig__AI__Erasure__AuditStoragePath"] = $"{stateRoot}/compliance";
 
+        // The key the trails' person references are made with (#996), made on first use. Left in the working directory it
+        // was lost on every restart, and with it any way to match a reference written before the restart to one after.
+        // Its own folder: the key must sit outside every audit folder (AuditPseudonymKeyValidator).
+        overrides["AppConfig__AI__Audit__PseudonymKeyPath"] = $"{stateRoot}/keys/audit-pseudonym.key";
+
         // Per-session agent working state that also defaults under .agent-sessions/: offloaded tool
         // results (large outputs spilled to disk), subagent delegation records, and the inter-agent
         // mailbox. StoragePath is the .agent-sessions root itself (the store appends

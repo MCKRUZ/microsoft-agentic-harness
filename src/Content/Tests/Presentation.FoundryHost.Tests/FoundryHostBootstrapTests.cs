@@ -227,6 +227,7 @@ public sealed class FoundryHostBootstrapTests
         overrides["AppConfig__AI__Changes__EvidenceStoragePath"].Should().Be($"{root}/changes/evidence");
         overrides["AppConfig__AI__Egress__AuditStoragePath"].Should().Be($"{root}/egress");
         overrides["AppConfig__AI__Erasure__AuditStoragePath"].Should().Be($"{root}/compliance");
+        overrides["AppConfig__AI__Audit__PseudonymKeyPath"].Should().Be($"{root}/keys/audit-pseudonym.key");
         overrides["AppConfig__AI__ContextManagement__ToolResultStorage__StoragePath"].Should().Be(root);
         overrides["AppConfig__AI__Orchestration__Subagent__DelegationStoragePath"].Should().Be($"{root}/delegations");
         overrides["AppConfig__AI__Orchestration__Subagent__MailboxStoragePath"].Should().Be($"{root}/mailbox");

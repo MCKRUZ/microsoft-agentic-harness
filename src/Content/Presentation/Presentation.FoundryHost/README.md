@@ -24,9 +24,14 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   the harness to *not* re-persist it, so Foundry remains the single source of truth.
 - **Only `$HOME`/`/files` are guaranteed to persist** — *not* the container's app/publish
   directory. So the host re-roots the harness's per-session disk stores under `$HOME/agent-state`:
-  the planner database, the JSONL audit trails (drift, escalation, change proposals + evidence,
-  egress), offloaded tool results, subagent delegation records and mailbox, the embedded (Kuzu)
-  graph database, and file logs. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
+  the planner database, the JSONL audit trails (drift, governance, escalation, change proposals +
+  evidence, egress, and the compliance trail of erasures, exports and document removals, with its
+  folder of records held for replay), the audit pseudonym key (`keys/audit-pseudonym.key`; without
+  it every restart made a new key, so person references written before and after a restart could
+  not be matched), offloaded tool results, subagent delegation records and mailbox, the embedded
+  (Kuzu) graph database, and file logs. Setting `AppConfig:AI:Audit:PseudonymKey` from a secret
+  store replaces the key file and is still the right choice when more than one instance writes the
+  trails. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
   there is no on-disk index to root; they rebuild from ingested documents.)
 
 **Net effect:** out of the box, every conversation gets durable, idle-surviving memory with **zero

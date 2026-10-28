@@ -804,7 +804,9 @@
                         The key is <code>AppConfig:AI:Audit:PseudonymKey</code>. Set it from a secret store wherever more
                         than one instance writes the trails. Without one, a key file is made once at
                         <code>.agent-sessions/keys/audit-pseudonym.key</code> with access for the application's own account
-                        only, and read on every later start, so references stay the same across restarts. Startup refuses a
+                        only, and read on every later start, so references stay the same across restarts. FoundryHost puts
+                        it at <code>$HOME/agent-state/keys/audit-pseudonym.key</code>, beside the trails it roots there,
+                        because Foundry keeps only <code>$HOME</code> across idle and resume (#996). Startup refuses a
                         key file inside any audit folder or the archive, so the key never travels with the records it
                         protects, and warns at startup when an existing key file is readable by other accounts. Back the
                         key up: without it, references can no longer be recomputed. If the key file is lost while the trails
