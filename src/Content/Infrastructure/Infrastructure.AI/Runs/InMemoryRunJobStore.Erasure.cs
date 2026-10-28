@@ -34,34 +34,38 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser
     /// now. What is kept is counted by <see cref="CountRunsKeptAsync"/>, and the receipt says to run erasure again.
     /// </para>
     /// <para>
-    /// Every holder of state under a removed run's id is told, as for the sweep, so nothing keyed by it is stranded. One
-    /// that fails makes the erasure throw once all have been told, so the receipt says this store failed rather than
-    /// reading erased while, for example, an evaluation's report is still held under the removed run's id.
+    /// <strong>Every other holder releases first, and the records go only when all of them did.</strong> Progress
+    /// bookkeeping and an evaluation's report are kept under a run's id, and the record is the only thing that leads back
+    /// to them. Removing the records first would leave a holder that failed with nothing a retry could find. Instead a
+    /// failure keeps every record: <see cref="CountRunsKeptAsync"/> still counts them, so the receipt says to run erasure
+    /// again, and the retention sweep tells the holders again when the records expire. Nothing is thrown, because a
+    /// failure here must not hold back the person's conversations and plans, which nothing here leads to.
     /// </para>
     /// </remarks>
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
 
-        var removed = new List<string>();
-        foreach (var (jobId, entry) in _entries)
+        var finished = OwnedBy(subject.OwnerId).Where(r => r.IsTerminal).Select(r => r.JobId).ToList();
+        if (!RunReclaimNotifier.Notify(_reclaimListeners, finished, _logger))
+            return Task.FromResult(0);
+
+        var removed = 0;
+        foreach (var jobId in finished)
         {
-            // Decided and removed under the entry's lock, as the sweep does, so a run cannot be claimed or resumed between
-            // the check and the removal.
+            if (!_entries.TryGetValue(jobId, out var entry))
+                continue;
+
+            // Re-checked and removed under the entry's lock, as the sweep does. A finished run stays finished (nothing
+            // re-arms one), so this only guards against an entry that is already gone.
             lock (entry)
             {
-                if (!entry.Record.IsTerminal || !ScopeIdentity.AreSame(entry.Record.OwnerId, subject.OwnerId))
-                    continue;
-
-                if (_entries.TryRemove(jobId, out _))
-                    removed.Add(jobId);
+                if (entry.Record.IsTerminal && _entries.TryRemove(jobId, out _))
+                    removed++;
             }
         }
 
-        if (!RunReclaimNotifier.Notify(_reclaimListeners, removed, _logger))
-            throw new InvalidOperationException("A holder of run-scoped state could not release the erased runs.");
-
-        return Task.FromResult(removed.Count);
+        return Task.FromResult(removed);
     }
 
     /// <inheritdoc/>

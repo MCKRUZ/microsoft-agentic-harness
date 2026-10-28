@@ -975,8 +975,8 @@
                         capability envelope it runs under. A finished run is dropped
                         <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
                         the person's finished runs in every tenant at once, and releases what else is kept under their
-                        ids (progress bookkeeping, an evaluation's report); if one of those cannot be released, the
-                        store's line is <code>Failed</code>. A run still queued, running or waiting for an approval is
+                        ids (progress bookkeeping, an evaluation's report). Those are released first, and if one cannot
+                        be, the records are kept so a retry can still reach it. A run still queued, running or waiting for an approval is
                         kept. Removing a running run's record would let a second run start on the same workflow while the
                         first is still executing, and removing a parked one would strand the approvals it waits on. Once
                         every store has run, the coordinator counts every record still held for the person, so a run

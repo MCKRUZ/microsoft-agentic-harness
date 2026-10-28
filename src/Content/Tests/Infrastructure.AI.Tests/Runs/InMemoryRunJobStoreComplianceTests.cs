@@ -125,10 +125,11 @@ public sealed class InMemoryRunJobStoreComplianceTests
     }
 
     [Fact]
-    public async Task EraseSubjectAsync_AHolderFailsToRelease_ThrowsAfterTellingEveryOther()
+    public async Task EraseSubjectAsync_AHolderFailsToRelease_KeepsTheRecordsSoARetryCanFindThem()
     {
-        // The records are gone, so a holder that kept its entry (an evaluation's report) has nothing left that leads to
-        // it; the receipt must say the store failed rather than read erased.
+        // The record is the only way back to what a holder keeps under its id (an evaluation's report). Removing it after a
+        // failed release would strand that state with nothing a retry could find; keeping it means it is counted, so the
+        // receipt says to run erasure again, and the sweep tells the holders again when it expires.
         var after = new RecordingListener();
         var sut = new InMemoryRunJobStore(
             new StaticOptionsMonitor<AppConfig>(new AppConfig()), _time, [new ThrowingListener(), after],
@@ -137,9 +138,11 @@ public sealed class InMemoryRunJobStoreComplianceTests
         Admit(sut, mine);
         Finish(sut, mine);
 
-        var erase = () => sut.EraseSubjectAsync(SubjectNamed(Subject), CancellationToken.None);
+        var removed = await sut.EraseSubjectAsync(SubjectNamed(Subject), CancellationToken.None);
 
-        await erase.Should().ThrowAsync<InvalidOperationException>();
+        removed.Should().Be(0);
+        sut.Get("mine", Subject, null).Should().NotBeNull();
+        (await sut.CountRunsKeptAsync(Subject, CancellationToken.None)).Should().Be(1);
         after.Released.Should().Equal(["mine"], "one holder failing must not stop the rest being told");
     }
 

@@ -12,7 +12,7 @@ public sealed partial class PersonalDataErasureCoordinator
 {
     private const string KeptRunsStore = "workflow and evaluation runs still held";
     private const string KeptRunsReason =
-        "a workflow or evaluation run had not ended when its store was erased, so its run record was kept; run erasure again once it has ended";
+        "a run record of the person's was kept: a workflow or evaluation run still queued, running or waiting for an approval, one that ended or started while erasure ran, or one whose run-scoped state could not be released; run erasure again once the person's runs have ended";
 
     /// <summary>
     /// Lists the person's run records the store still holds once every stage has run. Counting every record, not only the

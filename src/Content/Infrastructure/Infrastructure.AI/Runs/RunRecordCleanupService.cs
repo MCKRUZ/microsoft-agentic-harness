@@ -128,7 +128,9 @@ internal sealed class RunRecordCleanupService : BackgroundService
             // A run's identifier keys more than its record. Reclaiming one without the other would
             // trade a bounded leak for an unbounded one — progress bookkeeping, and whatever each run
             // kind holds, would outlive every run the host ever accepted.
-            RunReclaimNotifier.Notify(_reclaimListeners, reclaimed, _logger);
+            // A holder that fails is logged and not retried: the records are already gone, so the sweep has nothing left to
+            // retry with. Erasure, which can keep its records, releases first instead.
+            _ = RunReclaimNotifier.Notify(_reclaimListeners, reclaimed, _logger);
 
             _logger.LogInformation(
                 "Run sweep reclaimed {Count} expired run record(s).", reclaimed.Count);
