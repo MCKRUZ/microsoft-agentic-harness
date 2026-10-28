@@ -45,6 +45,7 @@ public sealed class AuditArchivePathValidator : AbstractValidator<AIConfig>
         ("Changes:AuditStoragePath", config.Changes.AuditStoragePath),
         ("Egress:AuditStoragePath", config.Egress.AuditStoragePath),
         ("DriftDetection:AuditPath", config.DriftDetection.AuditPath),
+        ("Erasure:AuditStoragePath", config.Erasure.AuditStoragePath),
         ("Audit:ReceiptPath", config.Audit.ReceiptPath),
     ];
 

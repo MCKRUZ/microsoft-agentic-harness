@@ -3,12 +3,12 @@ using Domain.Common.Config;
 namespace Infrastructure.AI.Audit;
 
 /// <summary>
-/// Where each hash-chained audit log is stored: the one definition the five audit sinks write through and the audit
+/// Where each hash-chained audit log is stored: the one definition the six audit sinks write through and the audit
 /// archiver reads (#416), so the two cannot disagree about which files belong to which log.
 /// </summary>
 /// <remarks>
 /// A log's archive folder is named after its day folder (<see cref="DatedAuditSegments.ArchivedUnder"/>):
-/// <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c> and <c>drift-audit</c>. Renaming one of
+/// <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c>, <c>drift-audit</c> and <c>compliance</c>. Renaming one of
 /// those folders moves the log away from its archive, so they are fixed here.
 /// </remarks>
 public static class AuditChains
@@ -52,6 +52,20 @@ public static class AuditChains
         return new AuditChainLocation("drift", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
     }
 
+    /// <summary>
+    /// The compliance log (#969): every erasure, data export and document removal. Split by day from the start, like the
+    /// drift log, so it has no earlier single file.
+    /// </summary>
+    /// <param name="config">Application configuration.</param>
+    /// <param name="clock">Decides which day-file a record is appended to.</param>
+    /// <returns>The log's location.</returns>
+    public static AuditChainLocation Compliance(AppConfig config, TimeProvider clock)
+    {
+        // A fixed folder name inside the configured path, so the archive folder never takes its name from configuration.
+        var folder = Path.Combine(config.AI.Erasure.AuditStoragePath, "compliance");
+        return new AuditChainLocation("compliance", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
+    }
+
     /// <summary>Every log whose storage path is configured, in a fixed order.</summary>
     /// <param name="config">Application configuration.</param>
     /// <param name="clock">Decides which day-file a record is appended to.</param>
@@ -72,6 +86,8 @@ public static class AuditChains
             chains.Add(Egress(config, clock));
         if (!string.IsNullOrWhiteSpace(config.AI.DriftDetection.AuditPath))
             chains.Add(Drift(config, clock));
+        if (!string.IsNullOrWhiteSpace(config.AI.Erasure.AuditStoragePath))
+            chains.Add(Compliance(config, clock));
         return chains;
     }
 
