@@ -120,7 +120,22 @@ internal static class CompositionRootTestHost
             list.Add(new(key, connectionString ? $"Data Source={path}" : path));
         }
 
+        // The compliance trail (kept for good, so it would grow under the build output with every run) and the files
+        // written beside it once each and never removed. A trail per composition, so parallel ones never wait on one
+        // chain lock; the receipt folder and key per run.
+        AddUnlessChosen(list, "AppConfig:AI:Erasure:AuditStoragePath",
+            Path.Combine(IsolatedStateRoot.Root, $"erasure-audit-{Guid.NewGuid():N}"));
+        AddUnlessChosen(list, "AppConfig:AI:Audit:ReceiptPath", Path.Combine(IsolatedStateRoot.Root, "audit-verify"));
+        AddUnlessChosen(list, "AppConfig:AI:Audit:PseudonymKeyPath",
+            Path.Combine(IsolatedStateRoot.Root, "keys", "audit-pseudonym.key"));
+
         return list;
+    }
+
+    private static void AddUnlessChosen(List<KeyValuePair<string, string?>> settings, string key, string value)
+    {
+        if (!settings.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
+            settings.Add(new(key, value));
     }
 
     /// <summary>
