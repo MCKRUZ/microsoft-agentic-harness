@@ -5,7 +5,7 @@ record there, so the application's own account cannot rewrite history it has alr
 
 ## Why it exists
 
-Every audit log (governance, escalations, changes, egress, drift) is a hash chain stored one file per UTC day. The
+Every audit log (governance, escalations, changes, egress, drift, compliance) is a hash chain stored one file per UTC day. The
 hashes have no secret key. Anyone who controls the folder, including someone who has taken over the application's
 account, can rewrite the records and recompute every hash, and can rewrite the application's own "last verified"
 checkpoint to match. The application cannot catch that by itself.

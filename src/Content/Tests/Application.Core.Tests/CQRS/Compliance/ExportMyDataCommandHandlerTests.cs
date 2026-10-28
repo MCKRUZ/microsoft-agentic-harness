@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Core.Compliance;
+using Application.Core.Tests.Compliance;
 using Application.Core.CQRS.Compliance.ExportMyData;
 using Domain.Common;
 using Domain.Common.Compliance;
@@ -30,7 +31,7 @@ public sealed class ExportMyDataCommandHandlerTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         var audited = new AuditedExport(
-            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, TimeProvider.System,
+            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System,
             NullLogger<AuditedExport>.Instance);
         return new ExportMyDataCommandHandler(_scope.Object, audited, NullLogger<ExportMyDataCommandHandler>.Instance);
     }

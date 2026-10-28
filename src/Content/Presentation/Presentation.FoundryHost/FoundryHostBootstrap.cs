@@ -255,14 +255,15 @@ internal static class FoundryHostBootstrap
         overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
 
         // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
-        // (+ gate evidence), and egress decisions. Each is append-only forensic state worth
-        // preserving across resumes.
+        // (+ gate evidence), egress decisions, and the compliance record of erasures, exports and
+        // document removals. Each is append-only forensic state worth preserving across resumes.
         overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
         overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
         overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
         overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
         overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";
         overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
+        overrides["AppConfig__AI__Erasure__AuditStoragePath"] = $"{stateRoot}/compliance";
 
         // Per-session agent working state that also defaults under .agent-sessions/: offloaded tool
         // results (large outputs spilled to disk), subagent delegation records, and the inter-agent
