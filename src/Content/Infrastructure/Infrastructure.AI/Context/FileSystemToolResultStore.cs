@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -21,7 +23,7 @@ namespace Infrastructure.AI.Context;
 /// are returned inline without any disk I/O.
 /// </summary>
 [PersonalDataStore(
-    "Oversized tool output spilled to {ToolResultStorage:StoragePath}/{conversationOrRunId}/tool-results/ (default .agent-sessions), secret-redacted first. Deleted 7 days after last write; owner erasure removes the spills of the person's conversations and planned tasks, though deleting one conversation does not, and their copy of their data includes the same spills.",
+    "Oversized tool output spilled to {ToolResultStorage:StoragePath}/{conversation or run id, lower-cased, plus a hash of the exact id}/tool-results/ (default .agent-sessions), secret-redacted first, so ids that differ only by case never share a folder. Deleted 7 days after last write; owner erasure removes the spills of the person's conversations and planned tasks, though deleting one conversation does not, and their copy of their data includes the same spills. Spills written before #928 sit in a folder named after the id with its case kept, and erasure and the copy still find them; on Windows or macOS such a folder can hold the spills of ids that differ only by case, which cannot be told apart, until retention removes them.",
     PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.DocumentContent,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Configured,
@@ -119,7 +121,7 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
         // H-1: sessionId must be a single safe path segment. Path.GetFileName equality
         // alone is insufficient — it lets "." and ".." through (GetFileName(("..")) == "..")
         // which Path.Combine then resolves to a parent directory, escaping the storage root.
-        var safeSessionId = SanitizeSessionSegment(sessionId, nameof(sessionId));
+        var scopeDirectory = ScopeDirectoryName(sessionId, nameof(sessionId));
 
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var resultId = Guid.NewGuid().ToString("N");
@@ -294,7 +296,7 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
                 resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
         }
 
-        var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.txt");
+        var storagePath = Path.Combine(config.StoragePath, scopeDirectory, "tool-results", $"{resultId}.txt");
         var directory = Path.GetDirectoryName(storagePath)!;
         // Owner-only (#559, pairs with #527): this is the directory a spilled result's raw,
         // unredacted-since-#563 output lands in.
@@ -363,15 +365,17 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
         //   2. Durability: an in-memory index empties on every process restart, even though the file
         //      itself is still on disk — reconstructing the path means a restart no longer makes an
         //      already-spilled result unrecoverable.
-        // SanitizeSessionSegment applies to scopeId for the identical path-traversal reason it already
-        // applies to StoreIfLargeAsync's sessionId — this is the same path segment, read back.
+        // ScopeDirectoryName applies to scopeId for the identical path-traversal reason it already
+        // applies to StoreIfLargeAsync's sessionId — this is the same path segment, read back. It never
+        // falls back to the folder name used before #928: on Windows or macOS that folder may hold the
+        // spills of an id differing only by case, so a reference from before the upgrade is not found.
         // Residual gap accepted (found in /simplify's review): reconstructing from CurrentValue rather
         // than a path captured at write time means a same-process hot reload of StoragePath between a
         // spill and its retrieval would point this read at a different root than the write used. Not
         // fixed — StoragePath is not a value anyone realistically hot-reloads mid-process.
-        var safeScopeId = SanitizeSessionSegment(scopeId, nameof(scopeId));
+        var scopeDirectory = ScopeDirectoryName(scopeId, nameof(scopeId));
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
-        var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.txt");
+        var storagePath = Path.Combine(config.StoragePath, scopeDirectory, "tool-results", $"{resultId}.txt");
 
         _logger.LogDebug(
             "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId}",
@@ -390,11 +394,9 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
         // Keyed by the resolved storagePath, not by (scopeId, resultId) directly — a code-review finding
         // on the first cut of this fix: PruneExpiredAsync only ever has a raw file PATH in hand (from
         // Directory.EnumerateFiles), never the original pre-sanitization scopeId a (scopeId, resultId)
-        // key would need to evict the matching entry. A scope id containing ':' (PlanRunKeys.
-        // StepConversationId's "{runScope}:{stepId}" shape, admitted by AllowedCharset) is rewritten to
-        // '~' on disk by SanitizeSessionSegment, and that rewrite is one-directional by design — so
-        // reconstructing a (scopeId, resultId) cache key FROM a directory name can silently miss the
-        // real entry for any scope id that used a colon. storagePath has no such ambiguity: it is what
+        // key would need to evict the matching entry. ScopeDirectoryName lower-cases the id and appends a
+        // hash, which is one-directional by design — so reconstructing a (scopeId, resultId) cache key
+        // FROM a directory name is not possible. storagePath has no such ambiguity: it is what
         // both this method and StoreIfLargeAsync already compute deterministically from the same
         // sanitized segments, and it is exactly what PruneExpiredAsync's own sweep loop already holds
         // as `filePath` — see this method's remarks for why reconstructing a path deterministically,
@@ -567,9 +569,59 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
     }
 
     /// <summary>
-    /// Reduces <paramref name="sessionId"/> to a single safe path segment for use in
-    /// <see cref="Path.Combine(string, string)"/>, rejecting any value that could escape
-    /// the storage root via path traversal.
+    /// The name of the folder a scope's spills live in: the only mapping from a scope id to a folder, used by every write,
+    /// page read, erasure and export.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The conversation stores compare ids exactly, so <c>ticket-42</c> and <c>TICKET-42</c> are two conversations with
+    /// two owners, but Windows and default macOS treat two folder names that differ only by case as one folder (#928,
+    /// #936). The name is therefore the id lower-cased, so it reads the same under either comparison, followed by
+    /// <c>+</c> and the first 32 hex digits of the SHA-256 of the exact id, so ids that lower-case alike still get
+    /// different names. The name is at most 233 characters (a 200-character id, the separator, 32 digits), inside the
+    /// 255 a folder name may hold. Escaping each capital instead would be exact but could double a 200-character id
+    /// past that limit.
+    /// </para>
+    /// <para>
+    /// <c>+</c> is outside the id allowlist, so no name made here equals a name the store made before #928
+    /// (<see cref="LegacyScopeDirectoryName"/>); such folders receive no new writes and drain through retention.
+    /// </para>
+    /// </remarks>
+    /// <param name="scopeId">The conversation, model-step or run id.</param>
+    /// <returns>A single lower-case path segment, unique to <paramref name="scopeId"/> even ignoring case.</returns>
+    /// <exception cref="ArgumentException">The id is not a safe single segment.</exception>
+    /// <example>
+    /// Because the name no longer equals the id, an operator or a test locates a conversation's spills with
+    /// <c>Path.Combine(storagePath, FileSystemToolResultStore.ScopeDirectoryName(conversationId), "tool-results")</c>.
+    /// </example>
+    public static string ScopeDirectoryName(string scopeId) => ScopeDirectoryName(scopeId, nameof(scopeId));
+
+    /// <inheritdoc cref="ScopeDirectoryName(string)"/>
+    /// <param name="scopeId">The conversation, model-step or run id.</param>
+    /// <param name="paramName">The calling method's parameter name, reported if the id is refused.</param>
+    private static string ScopeDirectoryName(string scopeId, string paramName)
+    {
+        SanitizeSessionSegment(scopeId, paramName);
+        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(scopeId)));
+        return $"{LegacyScopeDirectoryName(scopeId).ToLowerInvariant()}+{hash[..32]}";
+    }
+
+    /// <summary>
+    /// The folder name the store gave <paramref name="scopeId"/> before #928: the id with <c>:</c> replaced by
+    /// <c>~</c>, case kept. Only erasure and export look for it, so spills written before the upgrade are not left
+    /// behind; see <see cref="SubjectSpillDirectories"/>.
+    /// </summary>
+    /// <remarks>
+    /// Windows refuses <c>:</c> in a folder name, and <c>~</c> is outside the id allowlist, so the substitution is
+    /// one-to-one.
+    /// </remarks>
+    /// <param name="scopeId">An id that has already passed <see cref="SanitizeSessionSegment"/>.</param>
+    /// <returns>The old folder name.</returns>
+    private static string LegacyScopeDirectoryName(string scopeId) => scopeId.Replace(':', '~');
+
+    /// <summary>
+    /// Refuses any <paramref name="sessionId"/> that is not a single safe path segment, so no id can reach outside the
+    /// storage root. <see cref="ScopeDirectoryName(string)"/> applies it before making a name.
     /// </summary>
     /// <param name="sessionId">The caller-supplied session identifier.</param>
     /// <param name="paramName">
@@ -578,13 +630,12 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
     /// <see cref="RetrievePageAsync"/> (parameter <c>scopeId</c>); a hardcoded <c>nameof(sessionId)</c>
     /// would misreport the latter (a /code-review finding).
     /// </param>
-    /// <returns>The validated session identifier, guaranteed to be a single path segment.</returns>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="sessionId"/> contains a character outside the allowed
     /// segment charset, is a relative directory reference ("." or ".."), or has a trailing dot
     /// Windows would silently strip.
     /// </exception>
-    private static string SanitizeSessionSegment(string sessionId, string paramName)
+    private static void SanitizeSessionSegment(string sessionId, string paramName)
     {
         // /code-review finding: this method calls StorageSegmentSafety's three shape checks
         // INDIVIDUALLY rather than through the combined HasUnsafeShape — deliberately, not an
@@ -640,17 +691,8 @@ public sealed partial class FileSystemToolResultStore : IToolResultStore
                 "Session ID must not have a trailing dot.", paramName);
         }
 
-        // Correctness-review finding: ':' passes the charset above (needed for
-        // PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape — see AllowedSegmentCharset's
-        // remarks) but Windows refuses it as a directory-NAME character outside the single-letter
-        // drive-separator position the Path.IsPathRooted check above already excludes. Measured
-        // directly against this SDK: Directory.CreateDirectory("conv-1:5") throws IOException
-        // ("The directory name is invalid") on Windows, so every plan-step spill silently degraded to
-        // a plain truncation marker there — the exact platform this repo develops on. '~' can never
-        // appear in a value that already passed the charset check (it isn't in AllowedSegmentCharset),
-        // so this 1:1 substitution is unambiguous with no reverse mapping needed: the same scope id
-        // always encodes to the same directory name, on both the store and retrieve paths that both
-        // call this method, and the substitution changes neither length nor legality on either OS.
-        return sessionId.Replace(':', '~');
+        // ':' passes the charset above (needed for PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape) but
+        // Windows refuses it in a directory name: Directory.CreateDirectory("conv-1:5") throws there. Neither folder
+        // name keeps it; see LegacyScopeDirectoryName.
     }
 }
