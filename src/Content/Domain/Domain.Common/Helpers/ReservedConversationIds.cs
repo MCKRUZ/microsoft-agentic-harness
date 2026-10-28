@@ -23,7 +23,9 @@ namespace Domain.Common.Helpers;
 /// The rule closes shapes, not knowledge: a caller who learns another person's server-minted id (a job id, say) and
 /// names a conversation after it is not stopped here. Those ids are random and are only shown to their owner. Since the
 /// personal-data export (#902) reads those stores through the caller's conversation ids, such a caller's export would
-/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion.
+/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion. Tool-result
+/// spills written before #928 add a case variant of the id to that gap on Windows and macOS, until retention removes them;
+/// see <c>FileSystemToolResultStore</c>.
 /// </para>
 /// </remarks>
 public static class ReservedConversationIds
