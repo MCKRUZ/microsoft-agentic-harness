@@ -82,7 +82,11 @@ public static class PersistenceScan
     /// <param name="Name">Its name; for an auto-property's backing field, the property's name.</param>
     /// <param name="IsBackingField">Whether the compiler emitted it for an auto-property.</param>
     /// <param name="Type">The type its signature names.</param>
-    public sealed record FieldShape(string Name, bool IsBackingField, TypeShape Type);
+    /// <param name="IsReadOnly">
+    /// Whether only a constructor or initializer can set it: a <c>readonly</c> field, or a get-only or init-only
+    /// auto-property's backing field.
+    /// </param>
+    public sealed record FieldShape(string Name, bool IsBackingField, TypeShape Type, bool IsReadOnly = false);
 
     /// <summary>A type as a signature names it, with its generic arguments.</summary>
     /// <param name="Assembly">The assembly that declares it; empty for a built-in type or a generic parameter.</param>
@@ -240,7 +244,11 @@ public static class PersistenceScan
             {
                 var name = reader.GetString(f.Name);
                 var backing = name.StartsWith('<') && name.EndsWith(">k__BackingField", StringComparison.Ordinal);
-                return new FieldShape(backing ? name[1..name.IndexOf('>')] : name, backing, f.DecodeSignature(provider, null));
+                return new FieldShape(
+                    backing ? name[1..name.IndexOf('>')] : name,
+                    backing,
+                    f.DecodeSignature(provider, null),
+                    (f.Attributes & FieldAttributes.InitOnly) != 0);
             })
             .ToList();
 

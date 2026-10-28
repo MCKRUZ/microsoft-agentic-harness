@@ -121,7 +121,7 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
         keeping.Where(r => !asked.Any(a => ReferenceEquals(a, r.Instance)))
             .Select(r => $"{r.Contract.Name} -> {r.Instance!.GetType().Name}")
             .Should().BeEmpty("a store the host uses that keeps runs through erasure must be one the coordinator counts; register it as an IKeptRunSource");
-        keeping.Select(r => r.Instance).Distinct().Should().HaveCount(3,
+        keeping.Select(r => r.Instance).Distinct().Should().HaveCountGreaterThanOrEqualTo(3,
             "a floor: the workflow run store, the bundle run store and the staged-bundle store")
             .And.Contain(scope.ServiceProvider.GetRequiredService<IRunJobStore>())
             .And.Contain(scope.ServiceProvider.GetRequiredService<IBundleRunJobStore>())
@@ -134,17 +134,15 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
             .GetField("_erasers", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(coordinator)!;
 
-    private static readonly Lazy<IReadOnlyList<Type>> EraserTypes = new(() => AppDomain.CurrentDomain.GetAssemblies()
-        .Where(a => !a.IsDynamic && (a.GetName().Name ?? "").StartsWith("Infrastructure.", StringComparison.Ordinal)
-            || (a.GetName().Name ?? "").StartsWith("Application.", StringComparison.Ordinal))
-        .SelectMany(a => a.GetTypes())
-        .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(IPersonalDataEraser).IsAssignableFrom(t))
-        .ToList());
+    private static readonly Lazy<IReadOnlyList<Type>> EraserTypes = new(ProductionClassesImplementing<IPersonalDataEraser>);
 
-    private static readonly Lazy<IReadOnlyList<Type>> KeptRunTypes = new(() => AppDomain.CurrentDomain.GetAssemblies()
-        .Where(a => !a.IsDynamic && (a.GetName().Name ?? "").StartsWith("Infrastructure.", StringComparison.Ordinal)
-            || (a.GetName().Name ?? "").StartsWith("Application.", StringComparison.Ordinal))
+    private static readonly Lazy<IReadOnlyList<Type>> KeptRunTypes = new(ProductionClassesImplementing<IKeptRunSource>);
+
+    /// <summary>Every concrete class in a loaded, non-dynamic Application or Infrastructure assembly implementing <typeparamref name="T"/>.</summary>
+    private static IReadOnlyList<Type> ProductionClassesImplementing<T>() => AppDomain.CurrentDomain.GetAssemblies()
+        .Where(a => !a.IsDynamic && ((a.GetName().Name ?? "").StartsWith("Infrastructure.", StringComparison.Ordinal)
+            || (a.GetName().Name ?? "").StartsWith("Application.", StringComparison.Ordinal)))
         .SelectMany(a => a.GetTypes())
-        .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(IKeptRunSource).IsAssignableFrom(t))
-        .ToList());
+        .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(T).IsAssignableFrom(t))
+        .ToList();
 }

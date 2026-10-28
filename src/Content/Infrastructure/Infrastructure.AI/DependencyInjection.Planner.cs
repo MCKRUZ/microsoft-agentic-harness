@@ -150,8 +150,9 @@ public static partial class DependencyInjection
         // can execute, and the endpoints refuse unless evaluation is enabled.
         services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
 
-        // A submission records no owner, so the person's copy finds theirs through their run records (#991).
-        services.AddScoped<IPersonalDataExporter, EvalRunSubmissionExporter>();
+        // A submission records no owner, so the person's copy finds theirs through their run records (#991). TryAddEnumerable,
+        // so a substrate composed twice still puts one section in the copy.
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IPersonalDataExporter, EvalRunSubmissionExporter>());
 
         // The dataset name catalog. In Infrastructure because it reads directories, and registered
         // here rather than in the host that serves evaluation for the same reason as the store above:

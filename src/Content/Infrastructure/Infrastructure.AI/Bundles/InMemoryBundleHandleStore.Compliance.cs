@@ -28,7 +28,7 @@ public sealed partial class InMemoryBundleHandleStore : IPersonalDataEraser, IPe
 
     /// <inheritdoc />
     public string KeptRunsReason =>
-        "a bundle the person staged was kept because a run was still using it; it is removed when that run ends, so run erasure again once the person's bundle runs have ended";
+        "a bundle the person staged was kept: a run was still using it, and it is removed when that run ends, or it was staged while erasure ran; run erasure again once the person's bundle runs have ended";
 
     /// <inheritdoc />
     /// <remarks>
@@ -74,22 +74,29 @@ public sealed partial class InMemoryBundleHandleStore : IPersonalDataEraser, IPe
 
         IReadOnlyList<JsonElement> records = [.. OwnedBy(subject.OwnerId).Select(owned =>
         {
+            // The changing fields are read under the entry's lock and serialized after it, so a run starting or ending
+            // on the handle never waits behind the copy. The bundle and the owner never change.
+            DateTimeOffset expiresAt;
+            bool inUse;
             lock (owned.Entry)
             {
-                var bundle = owned.Entry.Bundle;
-                return JsonSerializer.SerializeToElement(new
-                {
-                    owned.Handle,
-                    owned.Entry.OwnerId,
-                    AgentId = bundle.Agent.Id,
-                    AgentName = bundle.Agent.Name,
-                    Skills = bundle.OwnedSkills.Select(s => s.Name).ToList(),
-                    Plugins = bundle.PluginManifests.Select(p => p.Name).ToList(),
-                    bundle.McpServerNames,
-                    owned.Entry.ExpiresAt,
-                    InUseByRun = owned.Entry.LeaseCount > 0,
-                }, ExportJson);
+                expiresAt = owned.Entry.ExpiresAt;
+                inUse = owned.Entry.LeaseCount > 0;
             }
+
+            var bundle = owned.Entry.Bundle;
+            return JsonSerializer.SerializeToElement(new
+            {
+                owned.Handle,
+                owned.Entry.OwnerId,
+                AgentId = bundle.Agent.Id,
+                AgentName = bundle.Agent.Name,
+                Skills = bundle.OwnedSkills.Select(s => s.Name).ToList(),
+                Plugins = bundle.PluginManifests.Select(p => p.Name).ToList(),
+                bundle.McpServerNames,
+                ExpiresAt = expiresAt,
+                InUseByRun = inUse,
+            }, ExportJson);
         })];
         return Task.FromResult(records);
     }

@@ -19,8 +19,9 @@ namespace Presentation.Common.Tests.Architecture;
 /// <strong>The rule, kept narrow so that what it flags is a store.</strong> A type is a holder when one of its own fields,
 /// or a field of a type nested in it, is a collection (or array) whose element names a person: a type with a field
 /// <c>OwnerId</c> or <c>UserId</c>, directly or through the types it holds. Left out, because none of them keeps many
-/// records past one call: records and auto-property backing fields (a value or a DTO, not a store), compiler-generated
-/// closures and state machines, and a single record held in a field rather than a collection of them. A holder must be
+/// records past one call: records (a value, not a store), a settable auto-property's collection (a data shape's member,
+/// such as an entity's navigation collection), compiler-generated closures and state machines, and a single record held
+/// in a field rather than a collection of them. A holder must be
 /// declared a store or channel, or listed in <see cref="HoldsOwnerRecordsWithoutStoringThem"/> with a reason, pinned to
 /// the fields the scan saw.
 /// </para>
@@ -73,6 +74,51 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
         ]);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TypesThatNameAPerson_AChildReachingAPersonOnlyThroughItsParent_IsFoundWhicheverFieldComesFirst(bool childrenFirst)
+    {
+        // A parent with an owner and a list of children, each child pointing back at its parent: the child names a person
+        // only through a type still being decided when the child is first reached.
+        static PersistenceScan.TypeShape Shape(string name, params PersistenceScan.TypeShape[] args) => new("A", name, args, false);
+        var children = new PersistenceScan.FieldShape("Children", true, Shape("System.Collections.Generic.List`1", Shape("Ns.Child")));
+        var owner = new PersistenceScan.FieldShape("OwnerId", true, new("", "System.String", [], false));
+        var parent = new PersistenceScan.DeclaredType("Ns.Parent", true, false, childrenFirst ? [children, owner] : [owner, children]);
+        var child = new PersistenceScan.DeclaredType("Ns.Child", true, false, [new("Parent", true, Shape("Ns.Parent"))]);
+
+        var found = TypesThatNameAPerson([("A/Ns.Child", child), ("A/Ns.Parent", parent)]);
+
+        found.Should().ContainKey("A/Ns.Child").WhoseValue.Should().Be("Ns.Parent.OwnerId");
+    }
+
+    [Theory]
+    [InlineData(false, false, true)] // a private field: what every shipped in-memory store uses
+    [InlineData(true, true, true)] // a get-only auto-property: a store may keep its records in one
+    [InlineData(true, false, false)] // a settable auto-property: an entity's navigation collection, filled by its builder
+    public void IsHeldCollection_DecidesByHowTheCollectionIsHeld(bool isBackingField, bool isReadOnly, bool expected)
+    {
+        var dictionary = new PersistenceScan.TypeShape("", "System.Collections.Concurrent.ConcurrentDictionary`2",
+            [new("", "System.String", [], false), new("A", "Ns.Record", [], false)], false);
+
+        IsHeldCollection(new PersistenceScan.FieldShape("Entries", isBackingField, dictionary, isReadOnly)).Should().Be(expected);
+    }
+
+    [Fact]
+    public void TypesThatNameAPerson_APersonTwoHoldersDeep_IsFoundWhateverOrderTheTypesAreVisitedIn()
+    {
+        // A store's private entry wrapping a record that wraps the owner-stamped one. The entry sorts first, so it is visited
+        // before what it holds is known; a single pass would miss it.
+        static PersistenceScan.TypeShape Shape(string name) => new("A", name, [], false);
+        var entry = new PersistenceScan.DeclaredType("Ns.Entry", false, false, [new("Record", true, Shape("Ns.Record"))]);
+        var record = new PersistenceScan.DeclaredType("Ns.Record", true, false, [new("Root", true, Shape("Ns.Root"))]);
+        var root = new PersistenceScan.DeclaredType("Ns.Root", true, false, [new("UserId", true, new("", "System.String", [], false))]);
+
+        var found = TypesThatNameAPerson([("A/Ns.Entry", entry), ("A/Ns.Record", record), ("A/Ns.Root", root)]);
+
+        found.Should().ContainKey("A/Ns.Entry").WhoseValue.Should().Be("Ns.Root.UserId");
+    }
+
     [Fact]
     public void EveryHolderExemption_StillMatchesWhatTheScanSees()
     {
@@ -98,20 +144,20 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
     private static IReadOnlyDictionary<string, SortedSet<string>> FindHolders()
     {
         var facts = Scanned.Value.Facts;
-        var declared = facts.Values
+        var namesAPerson = TypesThatNameAPerson(facts.Values
             .SelectMany(f => f.Declared.Select(d => (Key: f.Assembly + "/" + d.Name, Type: d)))
-            .ToDictionary(x => x.Key, x => x.Type, StringComparer.Ordinal);
-        var names = new Dictionary<string, string?>(StringComparer.Ordinal);
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToList());
 
         var holders = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
         foreach (var (key, type) in facts.Where(f => !f.Value.IsInterface))
         {
             foreach (var owner in type.Declared.Where(d => d is { IsRecord: false, IsCompilerGenerated: false }))
             {
-                foreach (var field in owner.Fields.Where(f => !f.IsBackingField && IsCollection(f.Type)))
+                foreach (var field in owner.Fields.Where(IsHeldCollection))
                 {
                     var path = field.Type.SelfAndArguments().Skip(1)
-                        .Select(t => NamesAPerson(t, declared, names))
+                        .Select(t => namesAPerson.GetValueOrDefault(KeyOf(t)))
                         .FirstOrDefault(p => p is not null);
                     if (path is null)
                         continue;
@@ -126,31 +172,56 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
         return holders;
     }
 
+    /// <summary>
+    /// Whether a field is a collection the type itself keeps. A get-only auto-property counts, since a store may keep its
+    /// records in one. A settable one does not: that is a data shape's member, such as an entity's navigation collection,
+    /// filled by whoever builds it.
+    /// </summary>
+    private static bool IsHeldCollection(PersistenceScan.FieldShape field) =>
+        (!field.IsBackingField || field.IsReadOnly) && IsCollection(field.Type);
+
     private static bool IsCollection(PersistenceScan.TypeShape type) =>
         type.IsArray || (type.Arguments.Count > 0 && CollectionNamespaces.Any(ns => type.Name.StartsWith(ns, StringComparison.Ordinal)));
 
-    /// <summary>
-    /// The field path by which a production type names a person, such as <c>Ns.Record.OwnerId</c>, or null when it does
-    /// not; through the types its fields hold, so a store's private entry wrapping a record is seen.
-    /// </summary>
-    private static string? NamesAPerson(
-        PersistenceScan.TypeShape shape,
-        IReadOnlyDictionary<string, PersistenceScan.DeclaredType> declared,
-        Dictionary<string, string?> memo)
-    {
-        var key = shape.Assembly + "/" + shape.Name;
-        if (memo.TryGetValue(key, out var known))
-            return known;
-        if (!declared.TryGetValue(key, out var type))
-            return null;
+    private static string KeyOf(PersistenceScan.TypeShape type) => type.Assembly + "/" + type.Name;
 
-        memo[key] = null; // A type that holds itself (a tree node) is decided by its other fields.
-        var path = type.Fields
-            .Select(f => PersonFields.Contains(f.Name) && f.Type.Name == "System.String"
-                ? $"{type.Name}.{f.Name}"
-                : f.Type.SelfAndArguments().Select(t => NamesAPerson(t, declared, memo)).FirstOrDefault(p => p is not null))
-            .FirstOrDefault(p => p is not null);
-        memo[key] = path;
-        return path;
+    /// <summary>
+    /// Every production type that names a person, with the field path that does, such as <c>Ns.Record.OwnerId</c>: one
+    /// with an <c>OwnerId</c> or <c>UserId</c> string field, or one holding such a type in any field, so a store's private
+    /// entry wrapping a record is seen.
+    /// </summary>
+    /// <remarks>
+    /// Found as a fixed point rather than by recursing with a memo: a type that reaches a person only through a type still
+    /// being decided (a child that refers back to its parent) would otherwise be recorded as naming nobody, depending on
+    /// field order. Here a type is added once any type it holds is known to name a person, and the pass repeats until
+    /// nothing is added. The types are visited in key order, so each one's path is the same on every run.
+    /// </remarks>
+    private static Dictionary<string, string> TypesThatNameAPerson(IReadOnlyList<(string Key, PersistenceScan.DeclaredType Type)> declared)
+    {
+        var paths = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (key, type) in declared)
+        {
+            if (type.Fields.FirstOrDefault(f => PersonFields.Contains(f.Name) && f.Type.Name == "System.String") is { } field)
+                paths[key] = $"{type.Name}.{field.Name}";
+        }
+
+        for (var added = true; added;)
+        {
+            added = false;
+            foreach (var (key, type) in declared.Where(d => !paths.ContainsKey(d.Key)))
+            {
+                var path = type.Fields
+                    .SelectMany(f => f.Type.SelfAndArguments())
+                    .Select(t => paths.GetValueOrDefault(KeyOf(t)))
+                    .FirstOrDefault(p => p is not null);
+                if (path is null)
+                    continue;
+
+                paths[key] = path;
+                added = true;
+            }
+        }
+
+        return paths;
     }
 }

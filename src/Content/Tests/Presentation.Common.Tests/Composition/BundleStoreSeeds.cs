@@ -18,6 +18,9 @@ internal static class BundleStoreSeeds
     /// <summary>The handle the seeded bundle is stored under.</summary>
     public static string HandleOf(string label) => $"bundle-{label}";
 
+    /// <summary>The folder the seeded bundle is extracted to under <paramref name="root"/>.</summary>
+    public static string FolderOf(string root, string label) => Path.Combine(root, "staged", label);
+
     /// <summary>Admits a run of <paramref name="label"/>'s bundle and finishes it, so erasure may remove it.</summary>
     public static void SeedFinishedRun(IServiceProvider sp, string ownerId, string label)
     {
@@ -41,7 +44,7 @@ internal static class BundleStoreSeeds
     /// <summary>Stages <paramref name="label"/>'s bundle in a folder of its own under <paramref name="root"/>.</summary>
     public static void SeedStagedBundle(IServiceProvider sp, string root, string ownerId, string label)
     {
-        var folder = Path.Combine(root, "staged", label);
+        var folder = FolderOf(root, label);
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "AGENT.md"), "# agent");
         sp.GetRequiredService<IBundleHandleStore>().Register(new StagedBundle
