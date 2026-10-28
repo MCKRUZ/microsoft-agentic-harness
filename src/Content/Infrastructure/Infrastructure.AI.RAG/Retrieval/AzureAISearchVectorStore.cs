@@ -67,6 +67,8 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
     public Task<int> EraseSubjectAsync(ErasureSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
+        if (!_indexConfigured)
+            return Task.FromResult(0);
         return AzureSearchOwnerErasure.DeleteByOwnerAsync(_searchClient, subject.OwnerId, _logger, cancellationToken);
     }
 
@@ -87,10 +89,13 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
         ExportSubject subject, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
+        if (!_indexConfigured)
+            return Task.FromResult<IReadOnlyList<System.Text.Json.JsonElement>>([]);
         return AzureSearchOwnerExport.ReadByOwnerAsync(_searchClient, subject.OwnerId, cancellationToken);
     }
 
     private readonly SearchClient _searchClient;
+    private readonly bool _indexConfigured;
     private readonly IEmbeddingService _embeddingService;
     private readonly ILogger<AzureAISearchVectorStore> _logger;
 
@@ -98,14 +103,22 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
     /// Initializes a new instance of the <see cref="AzureAISearchVectorStore"/> class.
     /// </summary>
     /// <param name="searchClient">The Azure Search client configured for the target index.</param>
+    /// <param name="indexConfigured">
+    /// Whether an index endpoint is configured (<c>AppConfig:AI:Rag:VectorStore:Endpoint</c>). When it is not, the client
+    /// points at a placeholder and the index has never held anything, so erasure, export and deletes report nothing
+    /// rather than failing on the placeholder (#1003): a failure there would hold every erasure <c>Partial</c> and keep the
+    /// person's conversations, in every host left on this default. Writes and searches still fail.
+    /// </param>
     /// <param name="embeddingService">The embedding service for query vectorization.</param>
     /// <param name="logger">The logger instance.</param>
     public AzureAISearchVectorStore(
         SearchClient searchClient,
+        bool indexConfigured,
         IEmbeddingService embeddingService,
         ILogger<AzureAISearchVectorStore> logger)
     {
         _searchClient = searchClient;
+        _indexConfigured = indexConfigured;
         _embeddingService = embeddingService;
         _logger = logger;
     }
@@ -213,6 +226,9 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
+        if (!_indexConfigured)
+            return 0;
+
         // Every page, not the first thousand chunks; any chunk that fails to delete throws, so a receipt never counts it.
         var deleted = await AzureSearchOwnerErasure.DeleteByDocumentAsync(
             _searchClient, documentId, _logger, cancellationToken);

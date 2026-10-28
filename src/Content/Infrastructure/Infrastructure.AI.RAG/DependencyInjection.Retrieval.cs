@@ -28,6 +28,7 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<IVectorStore>("azure_ai_search", (sp, _) =>
             new AzureAISearchVectorStore(
                 BuildSearchClient(sp),
+                IsSearchIndexConfigured(sp),
                 sp.GetRequiredService<IEmbeddingService>(),
                 sp.GetRequiredService<ILogger<AzureAISearchVectorStore>>()));
 
@@ -50,6 +51,7 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<IBm25Store>("azure_ai_search", (sp, _) =>
             new AzureAISearchBm25Store(
                 BuildSearchClient(sp),
+                IsSearchIndexConfigured(sp),
                 sp.GetRequiredService<ILogger<AzureAISearchBm25Store>>()));
 
         services.AddKeyedSingleton<IBm25Store>("faiss", (sp, _) =>
@@ -280,6 +282,13 @@ public static partial class DependencyInjection
     /// Falls back to a placeholder endpoint when not configured, allowing DI
     /// resolution to succeed for non-Azure providers.
     /// </summary>
+    /// <summary>
+    /// Whether the Azure AI Search index has an endpoint, read once with the client it goes with: an unconfigured index
+    /// holds nothing, so its stores erase and export nothing rather than fail on the placeholder (#1003).
+    /// </summary>
+    private static bool IsSearchIndexConfigured(IServiceProvider sp) =>
+        sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue.AI.Rag.VectorStore.IsConfigured;
+
     private static SearchClient BuildSearchClient(IServiceProvider sp)
     {
         var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
