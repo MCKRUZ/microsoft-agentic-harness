@@ -103,7 +103,10 @@ public sealed class ComplianceAuthorizationTests
 
         var response = await client.PostAsJsonAsync(path, new Dictionary<string, string> { [field] = value });
 
+        // Refused as a bypass, not merely for lacking a role: the gate must not depend on the anonymous principal never
+        // being granted one.
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("not available while sign-in is bypassed");
     }
 
     [Fact]

@@ -56,12 +56,18 @@ public static class ComplianceRateLimits
     private static readonly string[] ExportPaths = ["/api/compliance/export-my-data", "/api/compliance/exports"];
 
     /// <summary>
-    /// The compliance limiter: the per-caller windows chained with the host-wide export limit. Requests to any other path
+    /// The compliance limiter: the host-wide export limit chained with the per-caller windows. Requests to any other path
     /// pass through unlimited, so a host chains this with its own global limiter or uses it as the global limiter.
     /// </summary>
+    /// <remarks>
+    /// The host-wide limit goes first. A chained limiter returns the leases it already took when a later one refuses, and
+    /// a concurrency permit handed back is restored, but a fixed-window permit is not: with the window first, a person
+    /// turned away because the host was busy would still spend one of their hourly requests, and five tries at a busy
+    /// moment would lock them out for an hour without a copy being made.
+    /// </remarks>
     /// <returns>A new limiter.</returns>
     public static PartitionedRateLimiter<HttpContext> Create() =>
-        PartitionedRateLimiter.CreateChained(PerCaller(), HostWideExports());
+        PartitionedRateLimiter.CreateChained(HostWideExports(), PerCaller());
 
     private static PartitionedRateLimiter<HttpContext> PerCaller() =>
         PartitionedRateLimiter.Create<HttpContext, string>(context =>
