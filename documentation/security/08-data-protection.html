@@ -1414,18 +1414,37 @@
                         startup.
                     </p>
                     <p>
-                        To send nothing there, set
-                        <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code> to
-                        <code>false</code> in any source the host loads. FoundryHost then removes the
+                        To send nothing there, set the opt-out to <code>false</code>. FoundryHost then removes the
                         variable before anything reads it, so neither the harness nor the hosting layer exports to
                         Foundry's resource, and Foundry's portal shows no traces for the agent. The harness's exporter is
                         then yours to point at your own resource with <code>Enabled</code> and
-                        <code>ConnectionString</code>. The setting is read from the same configuration the host binds:
-                        appsettings, User Secrets and the environment always, and Key Vault and App Configuration in a
-                        Release build unless <code>DisableAzureConfigSources</code> is set. From App Configuration only
-                        unlabelled keys and keys labelled <code>API</code> are read, so an opt-out under any other
-                        label has no effect. What the telemetry may
-                        contain is governed by content capture and redaction, not by this switch.
+                        <code>ConnectionString</code>. What the telemetry may contain is governed by content capture and
+                        redaction, not by this switch.
+                    </p>
+                    <p id="foundry-telemetry-opt-out">
+                        This is the one description of where the opt-out can be set; the code and the startup message
+                        point here. FoundryHost reads it from the same configuration the host binds, and each source
+                        spells the setting differently:
+                    </p>
+                    <ul>
+                        <li><strong>appsettings or User Secrets (JSON):</strong>
+                            <code>"AppConfig": { "Observability": { "Exporters": { "AzureMonitor": { "EnableFromHostConnectionString": false } } } }</code></li>
+                        <li><strong>Environment variable:</strong>
+                            <code>AppConfig__Observability__Exporters__AzureMonitor__EnableFromHostConnectionString=false</code>
+                            (double underscores; a variable name containing <code>:</code> is not portable).</li>
+                        <li><strong>Azure Key Vault secret:</strong> named
+                            <code>AppConfig--Observability--Exporters--AzureMonitor--EnableFromHostConnectionString</code>
+                            with the value <code>false</code> (Key Vault does not allow <code>:</code> in a name; the
+                            loader maps <code>--</code> to it).</li>
+                        <li><strong>Azure App Configuration key:</strong>
+                            <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code>,
+                            unlabelled or labelled <code>API</code>. Keys under any other label are not read.</li>
+                    </ul>
+                    <p>
+                        Key Vault and App Configuration are read only in a Release build, only when the host has their
+                        address (<code>AzureKeyVaultUri</code>, <code>AzureAppConfigConnectionString</code>), and not when
+                        <code>DisableAzureConfigSources</code> is set. An opt-out placed in a source the host does not read
+                        has no effect, and FoundryHost's startup message says which way it went.
                     </p>
 
                     <h2 id="deployer-responsibilities">What the deploying organisation must do</h2>

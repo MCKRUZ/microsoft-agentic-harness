@@ -52,12 +52,12 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        // The telemetry opt-out is read from the full configuration (LoadAppConfig: appsettings, User Secrets, the
-        // environment and, where the host loads them, Key Vault and App Configuration), so a deployer who keeps settings
-        // in Key Vault is honoured. That is a second full load before the composition root's own: in a Release build
-        // with Key Vault configured it adds two Key Vault loads and one App Configuration fetch to cold start, and the
-        // throwaway configuration's file watchers on appsettings stay alive for the process (only its outer root is
-        // disposable). Both are accepted as the price of an opt-out that works from every source the host reads.
+        // The telemetry opt-out is read from the same full configuration the composition root binds (LoadAppConfig), so
+        // an opt-out kept in Key Vault is honoured; where it can be set is described once, in
+        // documentation/security/08-data-protection.html#foundry-telemetry-opt-out. This is a second full load before
+        // the composition root's own, so every Azure configuration source the host has configured is read again at cold
+        // start, and this throwaway configuration's appsettings file watchers live for the process (only its outer root
+        // is disposable). Accepted as the price of an opt-out that works wherever the host reads settings.
         var settings = AppConfigHelper.LoadAppConfig(typeof(Program).Assembly);
         (bool HostSupplied, bool UsedHostConnectionString) foundry;
         using (settings as IDisposable)

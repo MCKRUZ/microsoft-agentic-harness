@@ -31,12 +31,12 @@ public class AzureMonitorExporterConfig
     /// its own traces and logs to it, so a deployer who has not chosen Azure Monitor still exports to that resource.
     /// </para>
     /// <para>
-    /// Set this to <see langword="false"/> in any source the host loads (appsettings, User Secrets, the environment,
-    /// and in Release builds without <c>DisableAzureConfigSources</c>, Key Vault and App Configuration's unlabelled or
-    /// <c>API</c>-labelled keys) and FoundryHost removes the variable before anything reads it: nothing is exported to
-    /// Foundry's resource, and
+    /// Set this to <see langword="false"/> and FoundryHost removes the variable before anything reads it: nothing is
+    /// exported to Foundry's resource, and
     /// <see cref="Enabled"/> and <see cref="ConnectionString"/> are the deployer's own. Every other host ignores it
-    /// (#904).
+    /// (#904). Where it can be set, and how each source spells it (Key Vault and environment variables need a different
+    /// form of the name), is described once, in the security guide: <c>documentation/security/08-data-protection.html</c>,
+    /// section <c>#foundry-telemetry-opt-out</c>.
     /// </para>
     /// </remarks>
     public bool EnableFromHostConnectionString { get; set; } = true;
