@@ -38,6 +38,7 @@ public class AuditArchivePathValidatorTests
     [InlineData(".agent-sessions/changes", "Changes:AuditStoragePath")]
     [InlineData(".agent-sessions/egress", "Egress:AuditStoragePath")]
     [InlineData("data/audit/drift-audit", "DriftDetection:AuditPath")]
+    [InlineData(".agent-sessions/compliance/compliance", "Erasure:AuditStoragePath")]
     public void AnArchiveOverlappingALogFolder_IsRefused_NamingTheFolder(string archivePath, string overlapped)
     {
         var result = _validator.Validate(WithArchive(archivePath));

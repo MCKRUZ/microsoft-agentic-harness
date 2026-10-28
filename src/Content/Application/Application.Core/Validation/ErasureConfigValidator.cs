@@ -29,6 +29,10 @@ public sealed class ErasureConfigValidator : AbstractValidator<ErasureConfig>
             .Must(id => !string.IsNullOrWhiteSpace(id) && id == id.Trim())
             .WithMessage("OperatorTenantIds entries must be tenant ids with no surrounding whitespace.");
 
+        // Blank would leave erasures, exports and document removals with no durable proof at all (#969).
+        RuleFor(x => x.AuditStoragePath)
+            .NotEmpty().WithMessage("AuditStoragePath must name the compliance audit trail's folder.");
+
         RuleFor(x => x.JournalDatabasePath)
             .NotEmpty().WithMessage("JournalDatabasePath must name the erasure journal's database file.");
 

@@ -4,11 +4,13 @@ using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Services.Compliance;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.ExportMyData;
+using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
@@ -29,6 +31,8 @@ public sealed class AuditedExportTests
     private readonly Mock<IPersonalDataExport> _export = new();
     private readonly List<AuditEntry> _records = [];
     private readonly Mock<IAuditSink> _sink = new();
+    private readonly List<(AuditEntry Entry, ErasureActor Actor)> _kept = [];
+    private readonly Mock<IComplianceAuditTrail> _trail = new();
     private readonly CapturingLogger<AuditedExport> _logger = new();
     private readonly ErasureConfig _config = new() { SubjectReferenceKey = Key };
 
@@ -37,12 +41,15 @@ public sealed class AuditedExportTests
         _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
+            .ReturnsAsync(Result.Success());
     }
 
     private HmacErasureSubjectReference Reference() =>
         new(Mock.Of<IOptionsMonitor<ErasureConfig>>(m => m.CurrentValue == _config));
 
-    private AuditedExport Create() => new(_export.Object, Reference(), _sink.Object, TimeProvider.System, _logger);
+    private AuditedExport Create() => new(_export.Object, Reference(), _sink.Object, _trail.Object, TimeProvider.System, _logger);
 
     private static PersonalDataExport Copy() => new(
         "export-1",
@@ -140,6 +147,75 @@ public sealed class AuditedExportTests
         denied.FailureReason.Should().Be("sign-in is bypassed");
         denied.Action.Should().Be(AuditedExport.AuditAction);
         _export.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task ExportAsync_Succeeds_KeepsTheSameAttemptAndOutcomeInTheComplianceTrail()
+    {
+        // #969: the log line is deleted with the logs; the trail is the proof that outlives them.
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+        var actor = ErasureActor.Operator("operator-1");
+
+        await Create().ExportAsync(Subject, actor, "ExportSubjectDataCommand", CancellationToken.None);
+
+        _kept.Select(k => k.Entry).Should().Equal(_records, "the trail keeps exactly the records the audit sink receives");
+        _kept.Should().HaveCount(2).And.OnlyContain(k => k.Actor == actor);
+    }
+
+    [Fact]
+    public async Task ExportAsync_Fails_KeepsTheFailureInTheComplianceTrail()
+    {
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("boom"));
+
+        await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        _kept.Select(k => k.Entry.Outcome).Should().Equal(AuditOutcome.Attempted, AuditOutcome.Failure);
+    }
+
+    [Fact]
+    public async Task ExportAsync_ComplianceTrailThrows_TheCopyIsMadeAndTheAuditSinkStillWritten()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+
+        var result = await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a broken compliance trail must not refuse a person their copy");
+        _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
+        _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExportAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndTheCopyIsMade()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+
+        var result = await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
+    }
+
+    [Fact]
+    public async Task ExportAsync_AuditSinkThrows_StillKeepsBothRecordsInTheComplianceTrail()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>())).ThrowsAsync(new IOException("disk full"));
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+
+        await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        _kept.Should().HaveCount(2, "the trail is written whatever happened to the audit sink");
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_KeepsTheRefusalInTheComplianceTrail()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.DataSubject, "ExportMyDataCommand", "sign-in is bypassed");
+
+        _kept.Should().ContainSingle().Which.Entry.Outcome.Should().Be(AuditOutcome.Denied);
     }
 
     private IEnumerable<string> AllRecordedText() => _records.SelectMany(r =>

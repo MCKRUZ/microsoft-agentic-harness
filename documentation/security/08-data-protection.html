@@ -772,8 +772,9 @@
                     <ul>
                         <li>
                             <strong>People</strong> &mdash; approvers, the person who cancelled an escalation, a change
-                            reviewer, the caller behind a drift push or recalculation, and the caller behind a direct tool
-                            invocation &mdash; are recorded as a keyed reference,
+                            reviewer, the caller behind a drift push or recalculation, the caller behind a direct tool
+                            invocation, and the operator behind an erasure, a data export or a document removal &mdash; are
+                            recorded as a keyed reference,
                             <code>ref:{key id}:{HMAC}</code>, never by name or user id. Whoever holds the key can compute a
                             named person's reference and find every approval they gave; nobody without it can reverse a
                             reference or confirm a guess. This keeps the trail's purpose, recording who approved or denied
@@ -824,10 +825,10 @@
 
                     <h3 id="audit-archive-retention">The audit archive: why erasure does not reach it, and how long to keep it</h3>
                     <p>
-                        The audit trails (governance, escalation, change, egress and drift) are hash-chained, and the audit
+                        The audit trails (governance, escalation, change, egress, drift and compliance) are hash-chained, and the audit
                         archiver moves their finished days into write-once storage (<code>Presentation.AuditArchiver</code>,
                         #416). Removing one person's records from them would break the evidence they exist to provide, so
-                        erasure lists the five live trails on the receipt rather than editing them. The archive itself is
+                        erasure lists the six live trails on the receipt rather than editing them. The archive itself is
                         built only in the separate archiver host, so it gets no receipt line of its own. The basis is GDPR
                         Article 17(3): the
                         right to erasure does not apply where processing is necessary for compliance with a legal
@@ -976,17 +977,22 @@
                         <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
                         the person's finished runs in every tenant at once, and releases what else is kept under their
                         ids (progress bookkeeping, an evaluation's report). Those are released first, and if one cannot
-                        be, the records are kept so a retry can still reach it. A run still queued, running or waiting for an approval is
-                        kept. Removing a running run's record would let a second run start on the same workflow while the
-                        first is still executing, and removing a parked one would strand the approvals it waits on. Once
-                        every store has run, the coordinator counts every record still held for the person, so a run
-                        that ended meanwhile is counted too. When any is, the receipt gets a <code>Skipped</code> line,
-                        "workflow and evaluation runs still held", and is <code>Partial</code>, telling the person to run
-                        erasure again once it has ended. A queued or parked run is not stopped: it goes on after the
-                        request, as a planned task on another host does. The stopped planned tasks above are usually
-                        ended by then. A run that
-                        stays parked is failed after <code>MaxParkedRunDuration</code>, unless that is switched off, and
-                        then dropped an hour later. The store is single-host, like the run substrate it belongs to.
+                        be, the records are kept so a retry can still reach it. The store removes only finished runs: removing a
+                        running run's record would let a second run start on the same workflow while the first is still
+                        executing, and removing a parked one would strand the approvals it waits on. So before anything
+                        is read, erasure (#992) ends the person's live runs through the same cancel path an owner uses: a
+                        queued run is cancelled and never starts, a parked one is cancelled and its pending approvals are
+                        withdrawn (attributed to <code>system:personal-data-erasure</code>, not to the person), and an
+                        executing workflow is signalled to stop. Alongside the planned-task stop above, erasure then waits
+                        up to 30 seconds for runs still executing, cancelling any that parked or were queued meanwhile and
+                        signalling any that started; an executing evaluation cannot be signalled, so it is only waited
+                        for. The run store then
+                        removes the cancelled runs with the finished ones, in the same request. Once every store has
+                        run, the coordinator counts every record still held for the person, so a run that ended
+                        meanwhile is counted too. When any is (a run still executing after the wait, or one started
+                        meanwhile), the receipt gets a <code>Skipped</code> line, "workflow and evaluation runs still
+                        held", and is <code>Partial</code>, telling the person to run erasure again once it has ended. The
+                        store is single-host, like the run substrate it belongs to.
                     </p>
                     <p>
                         The bundle API keeps two more stores in process memory (#990). Its run records
@@ -1138,8 +1144,8 @@
                             </tr>
                             <tr>
                                 <td>Kept on purpose: removing a person would break tamper-evident evidence</td>
-                                <td>The governance, change, drift, egress and escalation audit trails, and the audit
-                                    archive</td>
+                                <td>The governance, change, drift, egress, escalation and compliance audit trails, and
+                                    the audit archive</td>
                             </tr>
                             <tr>
                                 <td>Erasure's own record of unfinished work</td>
@@ -1174,7 +1180,8 @@
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
-                            the audit archive, and the erasure audit records themselves, which sit in the logs.
+                            and the audit archive. The erasure, export and document-removal records are on it, as the
+                            compliance audit trail.
                         </li>
                         <li>
                             Self-service erasure is limited to 5 requests an hour per person; operator erasure to 30 an
@@ -1200,30 +1207,35 @@
                     <h3>The erasure audit record</h3>
                     <p>
                         Each request writes an <code>Attempted</code> record before anything is deleted and an outcome
-                        after, paired by a correlation id, through <code>IAuditSink</code>, with the action
-                        <code>right_to_erasure</code>. The record is meant to prove the erasure happened without keeping
-                        the identity it erased: it holds who asked (an operator by id; a person
+                        after, paired by a correlation id, with the action <code>right_to_erasure</code>. The record is
+                        meant to prove the erasure happened without keeping the identity it erased: it holds who asked
+                        (an operator by a keyed reference in the compliance trail and by id in the log line; a person
                         erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
                         and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
                         <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
                         the key can recompute it from an id and find that person's erasure, and no one without the key can
-                        reverse it. Without a key, no reference is recorded. A missing key or a broken audit sink never
-                        blocks an erasure. Log lines on the erasure path carry neither the person's id nor their
-                        conversation or memory ids.
+                        reverse it. Without a key, no reference is recorded. A missing key, a broken audit sink or a
+                        broken compliance trail never blocks an erasure: the failure is logged and the erasure goes on.
+                        Log lines on the erasure path carry neither the person's id nor their conversation or memory ids.
                     </p>
 
-                    <div class="callout callout-warn">
-                        <span class="callout-icon">!</span>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
                         <div class="callout-body">
-                            <div class="callout-title">By default the record is a log line</div>
+                            <div class="callout-title">Every record is kept in the compliance audit trail</div>
                             <p style="margin: 0">
-                                The only <code>IAuditSink</code> the harness registers is <code>StructuredLogAuditSink</code>,
-                                which writes the record as one Information-level log line. It is not one of the
-                                hash-chained audit trails, it is not archived, and it lasts only as long as the host's log
-                                destination keeps it: file logs are deleted after <code>Logging:Retention:RetainFor</code>,
-                                30 days by default. To keep erasure records as accountability evidence, send logs to a
-                                durable destination with a longer retention, or register a durable <code>IAuditSink</code>.
-                                Export records (<code>subject_access_export</code>) go the same way. Tracked in #969.
+                                Each record is written twice, independently (#969). <code>IComplianceAuditTrail</code> keeps
+                                it in the compliance audit trail: hash-chained JSONL day-files under
+                                <code>AppConfig:AI:Erasure:AuditStoragePath</code> (default
+                                <code>.agent-sessions/compliance</code>, day-files in its <code>compliance</code> folder),
+                                walked by scheduled chain verification and moved to the archive with the other trails when
+                                <code>AppConfig:AI:Audit:ArchivePath</code> is set. Nothing deletes it, and erasure lists it
+                                on every receipt as <code>RetainedByObligation</code> rather than erasing from it. The audit
+                                sink, <code>StructuredLogAuditSink</code> by default, also writes it as one log line for log
+                                tooling; that line is deleted with the logs after <code>Logging:Retention:RetainFor</code>,
+                                30 days by default. Export (<code>subject_access_export</code>) and document-removal
+                                (<code>document_removal</code>) records are kept the same way. Startup refuses an empty
+                                <code>AuditStoragePath</code>.
                             </p>
                         </div>
                     </div>
@@ -1379,7 +1391,8 @@
                         <strong>Audit.</strong> Each request writes an <code>Attempted</code> and an outcome record with the
                         action <code>subject_access_export</code>, in the same shape as erasure's: who asked, the
                         pseudonymous subject reference, the copy's request id, whether it is complete, and each store's
-                        status and record count. Never the person's id, and never anything the copy contains.
+                        status and record count. Never the person's id, and never anything the copy contains. Like
+                        erasure's, the records are kept in the compliance audit trail as well as written to the log.
                     </p>
 
                     <h2 id="data-classification-dlp">Data-classification DLP</h2>

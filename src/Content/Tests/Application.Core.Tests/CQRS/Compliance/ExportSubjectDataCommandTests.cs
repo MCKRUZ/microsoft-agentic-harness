@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.Core.Compliance;
+using Application.Core.Tests.Compliance;
 using Application.Core.CQRS.Compliance.ExportSubjectData;
 using Domain.Common.Compliance;
 using Domain.Common.Models;
@@ -27,7 +28,7 @@ public sealed class ExportSubjectDataCommandTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         return new ExportSubjectDataCommandHandler(new AuditedExport(
-            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, TimeProvider.System,
+            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System,
             NullLogger<AuditedExport>.Instance));
     }
 

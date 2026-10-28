@@ -6,11 +6,13 @@ using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.EraseMyData;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Models;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
@@ -30,6 +32,8 @@ public sealed class AuditedErasureTests
     private readonly Mock<IPersonalDataErasure> _erasure = new();
     private readonly List<AuditEntry> _records = [];
     private readonly Mock<IAuditSink> _sink = new();
+    private readonly List<(AuditEntry Entry, ErasureActor Actor)> _kept = [];
+    private readonly Mock<IComplianceAuditTrail> _trail = new();
     private readonly CapturingLogger<AuditedErasure> _logger = new();
     private readonly ErasureConfig _config = new() { SubjectReferenceKey = Key };
 
@@ -38,12 +42,15 @@ public sealed class AuditedErasureTests
         _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
+            .ReturnsAsync(Result.Success());
     }
 
     private HmacErasureSubjectReference Reference() =>
         new(Mock.Of<IOptionsMonitor<ErasureConfig>>(m => m.CurrentValue == _config));
 
-    private AuditedErasure Create() => new(_erasure.Object, Reference(), _sink.Object, TimeProvider.System, _logger);
+    private AuditedErasure Create() => new(_erasure.Object, Reference(), _sink.Object, _trail.Object, TimeProvider.System, _logger);
 
     private static ErasureReceipt Receipt() => new()
     {
@@ -236,6 +243,93 @@ public sealed class AuditedErasureTests
             new string('x', 100_000));
 
         _records.Should().ContainSingle().Which.Metadata!["subject_reference"].Should().Be(AuditedErasure.ReferenceInvalid);
+    }
+
+    [Fact]
+    public async Task EraseAsync_Succeeds_KeepsTheSameAttemptAndOutcomeInTheComplianceTrail()
+    {
+        // #969: the log line is deleted with the logs; the trail is the proof that outlives them.
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+        var actor = ErasureActor.Operator("operator-1");
+
+        await Create().EraseAsync(Subject, actor, "EraseSubjectDataCommand", CancellationToken.None);
+
+        _kept.Select(k => k.Entry).Should().Equal(_records, "the trail keeps exactly the records the audit sink receives");
+        _kept.Should().HaveCount(2).And.OnlyContain(k => k.Actor == actor, "the trail decides from the actor how to record them");
+    }
+
+    [Fact]
+    public async Task EraseAsync_StoreThrows_KeepsTheFailureInTheComplianceTrail()
+    {
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("boom"));
+
+        await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        _kept.Select(k => k.Entry.Outcome).Should().Equal(AuditOutcome.Attempted, AuditOutcome.Failure);
+    }
+
+    [Fact]
+    public async Task EraseAsync_ComplianceTrailThrows_ErasesAndStillWritesTheAuditSink()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a broken compliance trail must not refuse a person their right to erasure");
+        _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
+        _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue("a record the trail lost must not vanish silently");
+    }
+
+    [Fact]
+    public async Task EraseAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndStillErases()
+    {
+        // A busy chain or a full disk comes back as a failed result, not an exception; it must still be logged.
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
+        _records.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task EraseAsync_ComplianceTrailReturnsNoResult_LogsTheBrokenContractAndStillErases()
+    {
+        // A replacement trail that breaks the contract must read as that in the log, not as an anonymous null reference.
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Result)null!);
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "returned no result").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task EraseAsync_AuditSinkThrows_StillKeepsBothRecordsInTheComplianceTrail()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>())).ThrowsAsync(new IOException("disk full"));
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        _kept.Should().HaveCount(2, "the trail is written whatever happened to the audit sink");
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_KeepsTheRefusalInTheComplianceTrail()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.UnidentifiedOperator, "EraseSubjectDataCommand", "no identity", Subject);
+
+        var kept = _kept.Should().ContainSingle().Subject;
+        kept.Entry.Outcome.Should().Be(AuditOutcome.Denied);
+        kept.Actor.Should().Be(ErasureActor.UnidentifiedOperator);
     }
 
     private IEnumerable<string> AllRecordedText() => _records.SelectMany(r =>

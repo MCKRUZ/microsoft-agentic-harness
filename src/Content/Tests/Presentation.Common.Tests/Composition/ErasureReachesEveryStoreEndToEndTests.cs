@@ -214,6 +214,52 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
             $"{r.Key} must keep everyone else's"));
     }
 
+    [Fact]
+    public async Task LiveRuns_AreCancelledAndErasedInTheSameRequest_AndEveryoneElsesKeepRunning()
+    {
+        // #992. A queued run would start after the person is erased, and a parked one would hold every retry Partial, so
+        // erasure cancels both through the cancel path and the run store then removes them with the finished ones.
+        await using var provider = BuildProvider();
+        var runs = provider.GetRequiredService<IRunJobStore>();
+        var label = Guid.NewGuid().ToString("N")[..8];
+        foreach (var owner in new[] { Subject, Bystander })
+        {
+            Admit(runs, LiveRun($"queued-{owner}-{label}", owner));
+            var parked = LiveRun($"parked-{owner}-{label}", owner);
+            Admit(runs, parked);
+            runs.Update(parked with
+            {
+                Status = RunStatus.Blocked, ParkedAt = DateTimeOffset.UtcNow, AwaitingEscalationIds = [Guid.NewGuid()],
+            }).Should().BeTrue();
+        }
+
+        ErasureReceipt receipt;
+        await using (var scope = provider.CreateAsyncScope())
+            receipt = await scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>().EraseOwnerAsync(Subject, CancellationToken.None);
+
+        receipt.Stores.Should().NotContain(s => s.Status == Domain.Common.Compliance.StoreErasureStatus.Failed
+            || s.Status == Domain.Common.Compliance.StoreErasureStatus.Skipped,
+            "nothing of the subject's is still running, so no run record is kept and no retry is needed");
+        runs.Get($"queued-{Subject}-{label}", Subject, null).Should().BeNull();
+        runs.Get($"parked-{Subject}-{label}", Subject, null).Should().BeNull();
+        runs.Get($"queued-{Bystander}-{label}", Bystander, null)!.Status.Should().Be(RunStatus.Queued);
+        runs.Get($"parked-{Bystander}-{label}", Bystander, null)!.Status.Should().Be(RunStatus.Blocked);
+    }
+
+    private static void Admit(IRunJobStore runs, RunRecord run) =>
+        runs.TryCreate(run, int.MaxValue).Should().Be(RunAdmission.Accepted);
+
+    private static RunRecord LiveRun(string jobId, string ownerId) => new()
+    {
+        JobId = jobId,
+        Kind = RunKind.Workflow,
+        TargetId = Guid.NewGuid().ToString(),
+        OwnerId = ownerId,
+        Envelope = new CapabilityEnvelope(),
+        Status = RunStatus.Queued,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+
     /// <summary>A person's planned-task run: their plan, a model step's conversation id and the run's tool-result scope.</summary>
     private sealed record SeededRun(Seeded Person, string StepConversationId, string RunBudgetKey, string ToolResultScopeId);
 
