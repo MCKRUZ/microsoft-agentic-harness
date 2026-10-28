@@ -30,7 +30,7 @@ public sealed class EraseMyDataCommandHandlerTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         var erasure = new AuditedErasure(
-            _orchestrator.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, TimeProvider.System,
+            _orchestrator.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, Mock.Of<IComplianceAuditTrail>(), TimeProvider.System,
             NullLogger<AuditedErasure>.Instance);
         return new EraseMyDataCommandHandler(_scope.Object, erasure, NullLogger<EraseMyDataCommandHandler>.Instance);
     }

@@ -30,7 +30,7 @@ public sealed class ExportMyDataCommandHandlerTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         var audited = new AuditedExport(
-            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, TimeProvider.System,
+            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, Mock.Of<IComplianceAuditTrail>(), TimeProvider.System,
             NullLogger<AuditedExport>.Instance);
         return new ExportMyDataCommandHandler(_scope.Object, audited, NullLogger<ExportMyDataCommandHandler>.Instance);
     }

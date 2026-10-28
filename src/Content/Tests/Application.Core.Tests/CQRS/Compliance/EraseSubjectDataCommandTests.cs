@@ -27,7 +27,7 @@ public sealed class EraseSubjectDataCommandTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         return new EraseSubjectDataCommandHandler(new AuditedErasure(
-            _erasure.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, TimeProvider.System,
+            _erasure.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, Mock.Of<IComplianceAuditTrail>(), TimeProvider.System,
             NullLogger<AuditedErasure>.Instance));
     }
 

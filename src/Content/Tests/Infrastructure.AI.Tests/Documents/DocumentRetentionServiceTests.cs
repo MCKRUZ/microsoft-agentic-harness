@@ -213,6 +213,7 @@ public sealed class DocumentRetentionServiceTests : IDisposable
         services.AddSingleton<TimeProvider>(_clock);
         services.AddSingleton(_orchestrator.Object);
         services.AddSingleton<IAuditSink>(new CapturingSink(_records));
+        services.AddSingleton(Mock.Of<IComplianceAuditTrail>());
         services.AddSingleton<IDocumentLoadLedger>(Ledger(Origin));
         services.AddScoped<AuditedDocumentRemoval>();
         var provider = services.BuildServiceProvider();

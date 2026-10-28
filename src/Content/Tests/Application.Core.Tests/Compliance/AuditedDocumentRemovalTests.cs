@@ -5,6 +5,7 @@ using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Models;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Tests.Common;
 using Xunit;
@@ -24,6 +25,8 @@ public sealed class AuditedDocumentRemovalTests
     private readonly Microsoft.Extensions.Time.Testing.FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 23, 0, 0, 0, TimeSpan.Zero));
     private readonly List<AuditEntry> _records = [];
     private readonly Mock<IAuditSink> _sink = new();
+    private readonly List<(AuditEntry Entry, ErasureActor Actor)> _kept = [];
+    private readonly Mock<IComplianceAuditTrail> _trail = new();
     private readonly CapturingLogger<AuditedDocumentRemoval> _logger = new();
 
     public AuditedDocumentRemovalTests()
@@ -31,9 +34,12 @@ public sealed class AuditedDocumentRemovalTests
         _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
+            .Returns(Task.CompletedTask);
     }
 
-    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _clock, _logger);
+    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _trail.Object, _clock, _logger);
 
     [Fact]
     public async Task RemoveAsync_Complete_ForgetsTheLoadRecord_UpToWhenTheRemovalStarted()
@@ -220,4 +226,60 @@ public sealed class AuditedDocumentRemovalTests
     [InlineData(null, false)]
     public void IsDocumentId_AcceptsOnlySixteenUpperCaseHexDigits(string? documentId, bool expected) =>
         AuditedDocumentRemoval.IsDocumentId(documentId).Should().Be(expected);
+
+    [Fact]
+    public async Task RemoveAsync_Succeeds_KeepsTheSameAttemptAndOutcomeInTheComplianceTrail()
+    {
+        // #969: the log line is deleted with the logs; the trail is the proof that outlives them.
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Select(k => k.Entry).Should().Equal(_records, "the trail keeps exactly the records the audit sink receives");
+        _kept.Should().HaveCount(2).And.OnlyContain(k => k.Actor == ErasureActor.Retention);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_StoreFault_KeepsTheFailureInTheComplianceTrail()
+    {
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("boom"));
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Select(k => k.Entry.Outcome).Should().Equal(AuditOutcome.Attempted, AuditOutcome.Failure);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_ComplianceTrailThrows_RemovesAndStillWritesTheAuditSink()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a broken compliance trail must not stop a removal");
+        _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
+        _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RemoveAsync_AuditSinkThrows_StillKeepsBothRecordsInTheComplianceTrail()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>())).ThrowsAsync(new IOException("disk full"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Should().HaveCount(2, "the trail is written whatever happened to the audit sink");
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_KeepsTheRefusalInTheComplianceTrail()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.UnidentifiedOperator, "no identity", DocumentId);
+
+        _kept.Should().ContainSingle().Which.Entry.Outcome.Should().Be(AuditOutcome.Denied);
+    }
 }

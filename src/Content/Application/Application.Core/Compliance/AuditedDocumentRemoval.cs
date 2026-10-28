@@ -23,7 +23,9 @@ namespace Application.Core.Compliance;
 /// <para>
 /// <strong>Two records per request.</strong> An <see cref="AuditOutcome.Attempted"/> record before anything is removed and
 /// an outcome after, sharing one correlation id, so a request that dies part-way leaves a trace that it began. Writing a
-/// record is best-effort: a broken audit sink is logged and never stops the removal. Store faults are logged in full and
+/// record is best-effort: a broken audit sink is logged and never stops the removal. Each record goes to the
+/// <see cref="IComplianceAuditTrail"/>, which keeps it as proof for good (#969), and to the audit sink, whose default log
+/// line is deleted with the logs; the two writes are independent. Store faults are logged in full and
 /// surfaced as a fixed message, because store exceptions can carry connection strings and paths.
 /// </para>
 /// <para>
@@ -51,31 +53,36 @@ public sealed class AuditedDocumentRemoval
     private readonly IErasureOrchestrator _orchestrator;
     private readonly IDocumentLoadLedger _loadLedger;
     private readonly IAuditSink _auditSink;
+    private readonly IComplianceAuditTrail _trail;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedDocumentRemoval> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="AuditedDocumentRemoval"/> class.</summary>
     /// <param name="orchestrator">Removes the document from every store.</param>
     /// <param name="loadLedger">When each document was last loaded; a complete removal forgets the document there.</param>
-    /// <param name="auditSink">The audit trail the attempt and outcome are written to.</param>
+    /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
+    /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the removal was handled.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedDocumentRemoval(
         IErasureOrchestrator orchestrator,
         IDocumentLoadLedger loadLedger,
         IAuditSink auditSink,
+        IComplianceAuditTrail trail,
         TimeProvider timeProvider,
         ILogger<AuditedDocumentRemoval> logger)
     {
         ArgumentNullException.ThrowIfNull(orchestrator);
         ArgumentNullException.ThrowIfNull(loadLedger);
         ArgumentNullException.ThrowIfNull(auditSink);
+        ArgumentNullException.ThrowIfNull(trail);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _orchestrator = orchestrator;
         _loadLedger = loadLedger;
         _auditSink = auditSink;
+        _trail = trail;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -111,7 +118,7 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Attempted,
             Metadata = Metadata("attempt", actor, documentId, receipt: null),
         };
-        await RecordSafelyAsync(record);
+        await RecordSafelyAsync(record, actor);
 
         ErasureReceipt receipt;
         try
@@ -138,7 +145,7 @@ public sealed class AuditedDocumentRemoval
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
             Metadata = Metadata("outcome", actor, documentId, receipt),
-        });
+        }, actor);
 
         if (receipt.Completeness == ErasureCompleteness.Full)
             await ForgetLoadAsync(documentId, forgetLoadsUpTo);
@@ -183,7 +190,7 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Denied,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, IsDocumentId(documentId) ? documentId! : DocumentInvalid, receipt: null),
-        });
+        }, actor);
     }
 
     private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason) =>
@@ -193,7 +200,7 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, documentId, receipt: null),
-        });
+        }, actor);
 
     private static Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string documentId, ErasureReceipt? receipt)
@@ -221,11 +228,22 @@ public sealed class AuditedDocumentRemoval
     private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Writes one record, never cancelled by the caller: a removal that started must leave its outcome even when the
-    /// request is abandoned part-way.
+    /// Writes one record to the compliance audit trail and to the audit sink, never cancelled by the caller: a removal
+    /// that started must leave its outcome even when the request is abandoned part-way. Each write is attempted whatever
+    /// happened to the other.
     /// </summary>
-    private async Task RecordSafelyAsync(AuditEntry entry)
+    private async Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor)
     {
+        try
+        {
+            await _trail.RecordAsync(entry, actor, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to keep the {Phase} of document removal {CorrelationId} in the compliance audit trail.",
+                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
+        }
+
         try
         {
             await _auditSink.RecordAsync(entry, CancellationToken.None);

@@ -23,7 +23,9 @@ namespace Application.Core.Compliance;
 /// </para>
 /// <para>
 /// <strong>Two records per request</strong>, an <see cref="AuditOutcome.Attempted"/> one before anything is read and an
-/// outcome after, sharing a correlation id, so a request that dies part-way still leaves a trace that it began. Writing a
+/// outcome after, sharing a correlation id, so a request that dies part-way still leaves a trace that it began. Each
+/// record goes to the <see cref="IComplianceAuditTrail"/>, which keeps it as proof for good (#969), and to the audit
+/// sink, whose default log line is deleted with the logs; the two writes are independent. Writing a
 /// record is best-effort: a broken audit sink is logged and never refuses the person their copy. Store faults are logged
 /// with their message withheld and surfaced as a fixed message, since store exceptions can carry paths and connection
 /// strings.
@@ -46,31 +48,36 @@ public sealed class AuditedExport
     private readonly IPersonalDataExport _export;
     private readonly IErasureSubjectReference _subjectReference;
     private readonly IAuditSink _auditSink;
+    private readonly IComplianceAuditTrail _trail;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedExport> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="AuditedExport"/> class.</summary>
     /// <param name="export">Collects one person's data from every registered store.</param>
     /// <param name="subjectReference">Pseudonymises the subject for the audit record.</param>
-    /// <param name="auditSink">The audit trail the attempt and outcome are written to.</param>
+    /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
+    /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the export was handled.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for faults and audit-write failures.</param>
     public AuditedExport(
         IPersonalDataExport export,
         IErasureSubjectReference subjectReference,
         IAuditSink auditSink,
+        IComplianceAuditTrail trail,
         TimeProvider timeProvider,
         ILogger<AuditedExport> logger)
     {
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(subjectReference);
         ArgumentNullException.ThrowIfNull(auditSink);
+        ArgumentNullException.ThrowIfNull(trail);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _export = export;
         _subjectReference = subjectReference;
         _auditSink = auditSink;
+        _trail = trail;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -100,7 +107,7 @@ public sealed class AuditedExport
             Outcome = AuditOutcome.Attempted,
             Metadata = Metadata("attempt", actor, subjectReference, export: null),
         };
-        await RecordSafelyAsync(record);
+        await RecordSafelyAsync(record, actor);
 
         PersonalDataExport export;
         try
@@ -128,7 +135,7 @@ public sealed class AuditedExport
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
             Metadata = Metadata("outcome", actor, subjectReference, export),
-        });
+        }, actor);
 
         return Result<PersonalDataExport>.Success(export);
     }
@@ -159,7 +166,7 @@ public sealed class AuditedExport
             Outcome = AuditOutcome.Denied,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, subjectReference, export: null),
-        });
+        }, actor);
     }
 
     /// <summary>The subject's reference, or <see cref="AuditedErasure.ReferenceUnavailable"/> when the key is unusable.</summary>
@@ -184,7 +191,7 @@ public sealed class AuditedExport
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, subjectReference, export: null),
-        });
+        }, actor);
 
     private static Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string? subjectReference, PersonalDataExport? export)
@@ -207,9 +214,23 @@ public sealed class AuditedExport
         return metadata;
     }
 
-    /// <summary>Writes one record, never cancelled by the caller, so a request abandoned part-way still leaves its outcome.</summary>
-    private async Task RecordSafelyAsync(AuditEntry entry)
+    /// <summary>
+    /// Writes one record to the compliance audit trail and to the audit sink, never cancelled by the caller, so a request
+    /// abandoned part-way still leaves its outcome. Each write is attempted whatever happened to the other.
+    /// </summary>
+    private async Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor)
     {
+        try
+        {
+            await _trail.RecordAsync(entry, actor, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(MessageWithheldException.From(ex),
+                "Failed to keep the {Phase} of personal-data export {CorrelationId} in the compliance audit trail.",
+                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
+        }
+
         try
         {
             await _auditSink.RecordAsync(entry, CancellationToken.None);
