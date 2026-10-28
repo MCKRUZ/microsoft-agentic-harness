@@ -57,7 +57,8 @@ public static class ComplianceRateLimits
 
     /// <summary>
     /// The compliance limiter: the host-wide export limit chained with the per-caller windows. Requests to any other path
-    /// pass through unlimited, so a host chains this with its own global limiter or uses it as the global limiter.
+    /// pass through unlimited, so a host uses it as the global limiter or chains it <em>first</em>, ahead of its own:
+    /// a host window placed before it that also matched these paths would spend its permit on every refusal here.
     /// </summary>
     /// <remarks>
     /// The host-wide limit goes first. A chained limiter returns the leases it already took when a later one refuses, and

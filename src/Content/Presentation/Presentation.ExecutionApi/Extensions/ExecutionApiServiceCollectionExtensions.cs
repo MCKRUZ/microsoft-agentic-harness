@@ -73,7 +73,8 @@ public static class ExecutionApiServiceCollectionExtensions
     /// (<c>ComplianceRateLimits</c>) limits only the compliance paths. An authorized caller may issue unlimited invocations of a
     /// fast tool, four at a time. That is the lesser exposure — a fast tool returns its thread
     /// immediately, so the cost is throughput rather than capacity — but it is not nothing, and
-    /// chaining a fixed window with this concurrency limiter is the obvious follow-up.
+    /// chaining a fixed window with this concurrency limiter is the obvious follow-up, with the concurrency
+    /// limiter first so a refused invocation does not spend a window permit (see <c>ComplianceRateLimits.Create</c>).
     /// </para>
     /// </remarks>
     public const string InvokeRateLimitPolicy = "tools-invoke";

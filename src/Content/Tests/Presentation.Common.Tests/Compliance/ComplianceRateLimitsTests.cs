@@ -75,6 +75,35 @@ public sealed class ComplianceRateLimitsTests
     }
 
     [Fact]
+    public async Task AnExportRefusedByThePersonsWindow_GivesItsExportSlotBack()
+    {
+        // The host-wide limit runs first and takes a slot before the person's window is asked; when the window refuses,
+        // the slot must come back on both acquire paths the middleware uses, or one person over their allowance could
+        // hold every slot and stop everyone else's copies.
+        using var limiter = ComplianceRateLimits.Create();
+        var held = new List<RateLimitLease>();
+        for (var i = 0; i < ComplianceRateLimits.SelfServicePerHour; i++)
+        {
+            // Each copy finishes before the next starts, so only the person's window is spent.
+            Acquired(limiter, Post("/api/compliance/export-my-data", "dave"), held).Should().BeTrue();
+            held[^1].Dispose();
+        }
+
+        for (var i = 0; i < ComplianceRateLimits.ConcurrentExportLimit + 1; i++)
+        {
+            Acquired(limiter, Post("/api/compliance/export-my-data", "dave"), held).Should().BeFalse();
+            var waited = await limiter.AcquireAsync(Post("/api/compliance/export-my-data", "dave"));
+            held.Add(waited);
+            waited.IsAcquired.Should().BeFalse();
+        }
+
+        Enumerable.Range(0, ComplianceRateLimits.ConcurrentExportLimit)
+            .Select(i => Acquired(limiter, Post("/api/compliance/export-my-data", $"other-{i}"), held)).ToList()
+            .Should().AllBeEquivalentTo(true, "every refused request must have handed its slot back");
+        held.ForEach(l => l.Dispose());
+    }
+
+    [Fact]
     public void OtherPaths_AreNotLimited()
     {
         using var limiter = ComplianceRateLimits.Create();

@@ -349,8 +349,9 @@ public static class DependencyInjection
             });
 
             // The compliance endpoints' per-caller windows and host-wide export limit are shared with every host that
-            // mounts the compliance API (#1003), so they cannot differ between hosts.
-            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(perCaller, ComplianceRateLimits.Create());
+            // mounts the compliance API (#1003), so they cannot differ between hosts. First, so a request they refuse
+            // spends no fixed-window permit of the host's own.
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(ComplianceRateLimits.Create(), perCaller);
 
             // NOTE: SignalR agent-turn methods (SendMessage / RetryFromMessage / EditAndResubmit /
             // InvokeToolViaAgent) are NOT throttled here. UseRateLimiter is HTTP-request-scoped and
