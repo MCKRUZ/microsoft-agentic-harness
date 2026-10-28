@@ -12,11 +12,11 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// uses, ends them and withdraws their approvals, so the run store's eraser then removes them with the rest.
 /// </para>
 /// <para>
-/// <strong>Two calls, either side of stopping the person's planned tasks.</strong> <see cref="CancelPendingRunsAsync"/>
-/// comes first, so a queued workflow run cannot start a planned task after <see cref="IPlannedTaskCanceller"/> has looked
-/// for them. An executing workflow is not signalled here: the planned-task canceller signals it, filtered on the plan's
-/// owner, because the signal is by plan and would stop anyone's run of it. <see cref="WaitForRunsAsync"/> comes after,
-/// and waits a bounded time for what is still executing, cancelling anything that went back to waiting meanwhile.
+/// <strong>Two calls.</strong> <see cref="CancelRunsAsync"/> comes before the person's planned tasks are stopped, so a
+/// queued workflow run cannot start a planned task after <see cref="IPlannedTaskCanceller"/> has looked for them.
+/// <see cref="WaitForRunsAsync"/> runs alongside that stop, so the two bounded waits overlap rather than add up, and on
+/// every poll it cancels what is queued or parked and signals what is executing again, which reaches a run claimed after
+/// the planned-task canceller looked.
 /// </para>
 /// <para>
 /// Only the person's own runs are touched: they are selected by owner, as erasure selects everything else. A run that
@@ -25,14 +25,17 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// </remarks>
 public interface IOwnedRunCanceller
 {
-    /// <summary>Cancels every queued or parked run <paramref name="ownerId"/> owns, withdrawing its approvals.</summary>
+    /// <summary>
+    /// Cancels every queued or parked run <paramref name="ownerId"/> owns, withdrawing its approvals, and signals every
+    /// executing workflow of theirs to stop.
+    /// </summary>
     /// <param name="ownerId">The person, as their identity provider issued the id.</param>
     /// <returns>How many runs were cancelled.</returns>
-    Task<int> CancelPendingRunsAsync(string ownerId);
+    Task<int> CancelRunsAsync(string ownerId);
 
     /// <summary>
-    /// Waits a bounded time for the runs <paramref name="ownerId"/> has executing to end, cancelling on every poll any of
-    /// their runs that is queued or parked, including one queued or parked since <see cref="CancelPendingRunsAsync"/>.
+    /// Waits a bounded time for the runs <paramref name="ownerId"/> has executing to end, repeating
+    /// <see cref="CancelRunsAsync"/> on every poll for whatever of theirs is live then.
     /// </summary>
     /// <param name="ownerId">The person, as their identity provider issued the id.</param>
     /// <param name="cancellationToken">Cancels the wait, not the cancellations already made.</param>

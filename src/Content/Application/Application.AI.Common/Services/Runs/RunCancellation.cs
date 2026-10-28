@@ -32,10 +32,15 @@ namespace Application.AI.Common.Services.Runs;
 /// <strong>A run already executing is signalled, not rewritten, and only when the caller passes a registry.</strong> Its
 /// terminal state is owned by the dispatch in flight. A workflow is signalled through
 /// <see cref="IPlanRunCancellationRegistry"/>, which is keyed by plan, so the signal stops every run of that plan in this
-/// process. The workflow cancel command passes one, having checked the run belongs to the workflow it names. Erasure
-/// does not: it stops the person's executing workflows through the planned-task canceller (#907), which signals only
-/// plans the person owns, so a plan another caller also runs is not stopped on their behalf. An evaluation has no such
-/// signal and runs to its end.
+/// process. That reaches only the run's owner's work: a workflow run is admitted only against a plan its caller can
+/// write, which is a plan that caller owns, and admission allows one live run per workflow. The workflow cancel command
+/// and erasure pass one; the evaluation cancel command does not, since an evaluation has no such signal and runs to its
+/// end.
+/// </para>
+/// <para>
+/// <strong>Once the transition is made, the rest always runs.</strong> The run is terminal from that moment, so nothing
+/// will come back for its approvals: the parked-run ceiling looks only at parked runs. A progress broker that throws is
+/// therefore logged, not allowed to skip the withdrawal.
 /// </para>
 /// </remarks>
 public static class RunCancellation
@@ -80,11 +85,18 @@ public static class RunCancellation
 
         // Published here because nothing else will: no dispatch is going to run for this job, and the terminal event is
         // what ends a watcher's stream.
-        progress.Publish(
-            stopped.JobId,
-            RunProgressKind.RunFinished,
-            status: nameof(RunStatus.Cancelled),
-            detail: notice.Detail);
+        try
+        {
+            progress.Publish(
+                stopped.JobId,
+                RunProgressKind.RunFinished,
+                status: nameof(RunStatus.Cancelled),
+                detail: notice.Detail);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Run {JobId} was cancelled but its watchers could not be told.", stopped.JobId);
+        }
 
         var withdrawn = await ApprovalWithdrawal.WithdrawAsync(
             escalations,

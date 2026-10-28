@@ -123,7 +123,7 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
 
     private void RecordRunSteps()
     {
-        _liveRuns.Setup(c => c.CancelPendingRunsAsync(Owner)).Callback(() => _calls.Add("cancel runs")).ReturnsAsync(0);
+        _liveRuns.Setup(c => c.CancelRunsAsync(Owner)).Callback(() => _calls.Add("cancel runs")).ReturnsAsync(0);
         _liveRuns.Setup(c => c.WaitForRunsAsync(Owner, It.IsAny<CancellationToken>()))
             .Callback(() => _calls.Add("wait for runs"))
             .ReturnsAsync(0);
@@ -145,22 +145,48 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
     }
 
     [Fact]
-    public async Task EraseOwnerAsync_PendingRuns_AreCancelledBeforePlannedTasksAreStopped_AndWaitedForAfter()
+    public async Task EraseOwnerAsync_LiveRuns_AreCancelledBeforePlannedTasksAreStopped()
     {
-        // Cancelled first, so a queued workflow run claimed after the planned tasks were stopped cannot start one nothing
-        // stops; waited for after, because stopping the planned tasks is what signals the person's executing workflows.
+        // A queued workflow run claimed after the planned tasks were looked for would start one nothing stops.
         RecordRunSteps();
 
         await EraseAsync();
 
-        _calls.Should().ContainInOrder(["cancel runs", "stop planned tasks", "wait for runs"]);
+        _calls.Should().ContainInOrder(["cancel runs", "stop planned tasks"]);
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_WaitForRuns_RunsAlongsideThePlannedTaskStop()
+    {
+        // Each waits up to its own bound; one after the other, a workflow that ignored its signal would hold the request
+        // for both. The stop here completes only once the wait has started, so run in turn it times out first.
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overlapped = false;
+        _liveRuns.Setup(c => c.CancelRunsAsync(Owner)).ReturnsAsync(0);
+        _liveRuns.Setup(c => c.WaitForRunsAsync(Owner, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                waitStarted.TrySetResult();
+                return Task.FromResult(0);
+            });
+        _runningTasks.Setup(c => c.StopRunningTasksAsync(Owner, It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                overlapped = true;
+                return 0;
+            });
+
+        await EraseAsync();
+
+        overlapped.Should().BeTrue("the wait for runs must start while the planned-task stop is still waiting");
     }
 
     [Fact]
     public async Task EraseOwnerAsync_CancellingRunsThrows_StillErasesEveryStore()
     {
         // A fault here must not shield the rest of the person's data; what it failed to stop is still counted as kept.
-        _liveRuns.Setup(c => c.CancelPendingRunsAsync(Owner)).ThrowsAsync(new InvalidOperationException("secret connection string"));
+        _liveRuns.Setup(c => c.CancelRunsAsync(Owner)).ThrowsAsync(new InvalidOperationException("secret connection string"));
         _liveRuns.Setup(c => c.WaitForRunsAsync(Owner, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("secret connection string"));
         _keptRuns.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(1);

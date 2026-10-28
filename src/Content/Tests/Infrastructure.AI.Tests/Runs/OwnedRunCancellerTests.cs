@@ -1,8 +1,10 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Runs;
 using Domain.AI.Bundles;
+using Domain.AI.Planner;
 using Domain.AI.Runs;
 using Domain.Common;
 using Domain.Common.Config;
@@ -37,6 +39,7 @@ public sealed class OwnedRunCancellerTests
     private readonly AppConfig _config = new();
     private readonly Mock<IEscalationService> _escalations = new();
     private readonly Mock<IRunProgressBroker> _progress = new();
+    private readonly Mock<IPlanRunCancellationRegistry> _registry = new();
     private readonly InMemoryRunJobStore _store;
 
     public OwnedRunCancellerTests()
@@ -46,13 +49,13 @@ public sealed class OwnedRunCancellerTests
     }
 
     private OwnedRunCanceller Canceller(TimeSpan wait) => new(
-        _store, _progress.Object, _escalations.Object, _time, NullLogger<OwnedRunCanceller>.Instance, wait);
+        _store, _progress.Object, _escalations.Object, _registry.Object, _time, NullLogger<OwnedRunCanceller>.Instance, wait);
 
     /// <summary>Both halves, as erasure calls them, with nothing executing in between.</summary>
     private async Task<int> CancelAndWaitAsync(TimeSpan wait)
     {
         var canceller = Canceller(wait);
-        await canceller.CancelPendingRunsAsync(Subject);
+        await canceller.CancelRunsAsync(Subject);
         return await canceller.WaitForRunsAsync(Subject, CancellationToken.None);
     }
 
@@ -87,13 +90,13 @@ public sealed class OwnedRunCancellerTests
     private RunStatus StatusOf(string jobId, string ownerId) => _store.Get(jobId, ownerId, "acme")!.Status;
 
     [Fact]
-    public async Task CancelPendingRunsAsync_ParkedRun_IsCancelledAndItsApprovalsWithdrawnAsTheSystem()
+    public async Task CancelRunsAsync_ParkedRun_IsCancelledAndItsApprovalsWithdrawnAsTheSystem()
     {
         var first = Guid.NewGuid();
         var second = Guid.NewGuid();
         Admit("parked", Subject, RunStatus.Blocked, first, second);
 
-        var cancelled = await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        var cancelled = await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
 
         cancelled.Should().Be(1);
         StatusOf("parked", Subject).Should().Be(RunStatus.Cancelled);
@@ -107,11 +110,11 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
-    public async Task CancelPendingRunsAsync_QueuedRun_IsCancelledAndItsWatchersAreTold()
+    public async Task CancelRunsAsync_QueuedRun_IsCancelledAndItsWatchersAreTold()
     {
         Admit("queued", Subject);
 
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
 
         StatusOf("queued", Subject).Should().Be(RunStatus.Cancelled);
         _progress.Verify(p => p.Publish("queued", RunProgressKind.RunFinished, null, null,
@@ -120,7 +123,7 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
-    public async Task CancelPendingRunsAsync_QueuedRun_IsNeverStartedByTheDispatcher()
+    public async Task CancelRunsAsync_QueuedRun_IsNeverStartedByTheDispatcher()
     {
         // One dispatch at a time, so the bystander's run being executed proves the cancelled one was dequeued first.
         _config.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns = 1;
@@ -137,7 +140,7 @@ public sealed class OwnedRunCancellerTests
         await queue.EnqueueAsync("queued", CancellationToken.None);
         await queue.EnqueueAsync("sentinel", CancellationToken.None);
 
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
         using var cts = new CancellationTokenSource();
         await dispatcher.StartAsync(cts.Token);
         for (var attempt = 0; attempt < 200 && _store.Get("sentinel", Bystander, "acme")!.IsTerminal is false; attempt++)
@@ -150,14 +153,14 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
-    public async Task CancelPendingRunsAsync_AnotherPersonsRuns_AreLeftLive()
+    public async Task CancelRunsAsync_AnotherPersonsRuns_AreLeftLive()
     {
         var escalation = Guid.NewGuid();
         Admit("mine", Subject);
         Admit("theirs-queued", Bystander);
         Admit("theirs-parked", Bystander, RunStatus.Blocked, escalation);
 
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
 
         StatusOf("theirs-queued", Bystander).Should().Be(RunStatus.Queued);
         StatusOf("theirs-parked", Bystander).Should().Be(RunStatus.Blocked);
@@ -166,27 +169,42 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
-    public async Task CancelPendingRunsAsync_RunRecordedInAnotherCasing_IsStillThePersons()
+    public async Task CancelRunsAsync_RunRecordedInAnotherCasing_IsStillThePersons()
     {
         // A run a schedule started before #907 records its owner lower-cased; it is still the person's.
         Admit("lower", Subject.ToLowerInvariant());
 
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
 
         StatusOf("lower", Subject.ToLowerInvariant()).Should().Be(RunStatus.Cancelled);
     }
 
     [Fact]
-    public async Task WaitForRunsAsync_ExecutingRun_IsLeftToItsDispatchAndCountedAsStillLive()
+    public async Task CancelRunsAsync_ExecutingWorkflow_IsSignalledThroughItsPlanAndLeftToItsDispatch()
     {
-        // Its status belongs to the dispatch in flight; a workflow is signalled by the planned-task canceller, which filters
-        // on the plan's owner, so nothing here rewrites or signals it.
-        Admit("running", Subject, RunStatus.Running);
+        // Its status belongs to the dispatch in flight, so it is signalled rather than rewritten, and counted as live.
+        var running = Admit("running", Subject, RunStatus.Running);
 
         var stillLive = await CancelAndWaitAsync(TimeSpan.Zero);
 
         stillLive.Should().Be(1);
         StatusOf("running", Subject).Should().Be(RunStatus.Running);
+        _registry.Verify(r => r.TryCancel(new PlanId(Guid.Parse(running.TargetId))), Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task WaitForRunsAsync_WorkflowClaimedAfterTheWaitBegan_IsSignalled()
+    {
+        // A run queued after the first pass is claimed by an idle dispatcher within milliseconds, so it is executing, not
+        // queued, by the next poll; the planned-task canceller looked for runs before it existed.
+        var running = Admit("running", Subject, RunStatus.Running);
+        var waiting = Canceller(TimeSpan.FromSeconds(30)).WaitForRunsAsync(Subject, CancellationToken.None);
+        var late = Admit("late", Subject, RunStatus.Running);
+
+        _store.Update(running with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+        await AdvanceUntilDoneAsync(waiting);
+
+        _registry.Verify(r => r.TryCancel(new PlanId(Guid.Parse(late.TargetId))), Times.AtLeastOnce);
     }
 
     [Fact]
@@ -223,7 +241,7 @@ public sealed class OwnedRunCancellerTests
     public async Task WaitForRunsAsync_RunQueuedAfterThePendingRunsWereCancelled_IsCancelledToo()
     {
         // A schedule or a client can queue a run between the two halves, while the planned tasks are being stopped.
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
         Admit("late", Subject);
 
         var stillLive = await Canceller(TimeSpan.Zero).WaitForRunsAsync(Subject, CancellationToken.None);
@@ -257,17 +275,33 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
-    public async Task CancelPendingRunsAsync_OneRunCannotBeCancelled_TheRestAreStillCancelled()
+    public async Task CancelRunsAsync_OneRunCannotBeStopped_TheRestAreStillCancelled()
     {
         // A fault on one run must not leave the person's other runs going on after the erasure.
-        Admit("parked", Subject, RunStatus.Blocked, Guid.NewGuid());
+        Admit("running", Subject, RunStatus.Running);
         Admit("queued", Subject);
+        _registry.Setup(r => r.TryCancel(It.IsAny<PlanId>())).Throws(new InvalidOperationException("registry down"));
+
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
+
+        StatusOf("queued", Subject).Should().Be(RunStatus.Cancelled);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_WatchersCannotBeTold_TheApprovalsAreStillWithdrawn()
+    {
+        // The run is terminal once cancelled, so nothing later comes back for its approvals; a broker fault must not skip
+        // the withdrawal.
+        var escalation = Guid.NewGuid();
+        Admit("parked", Subject, RunStatus.Blocked, escalation);
         _progress.Setup(p => p.Publish("parked", It.IsAny<RunProgressKind>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<string?>(), It.IsAny<string?>())).Throws(new InvalidOperationException("broker down"));
 
-        await Canceller(TimeSpan.Zero).CancelPendingRunsAsync(Subject);
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject);
 
-        StatusOf("queued", Subject).Should().Be(RunStatus.Cancelled);
+        StatusOf("parked", Subject).Should().Be(RunStatus.Cancelled);
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            escalation, It.IsAny<string>(), OwnedRunCanceller.WithdrawnBy, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>Advances the fake clock in poll-sized steps until <paramref name="pending"/> completes.</summary>

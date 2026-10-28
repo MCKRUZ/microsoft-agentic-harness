@@ -981,10 +981,11 @@
                         executing, and removing a parked one would strand the approvals it waits on. So before anything
                         is read, erasure (#992) ends the person's live runs through the same cancel path an owner uses: a
                         queued run is cancelled and never starts, a parked one is cancelled and its pending approvals are
-                        withdrawn (attributed to <code>system:personal-data-erasure</code>, not to the person). An
-                        executing workflow of the person's own plan is stopped with their planned tasks, above. Erasure
-                        then waits up to 30 seconds for runs still executing, cancelling any that parked or were queued
-                        meanwhile; an executing evaluation cannot be signalled, so it is only waited for. The run store then
+                        withdrawn (attributed to <code>system:personal-data-erasure</code>, not to the person), and an
+                        executing workflow is signalled to stop. Alongside the planned-task stop above, erasure then waits
+                        up to 30 seconds for runs still executing, cancelling any that parked or were queued meanwhile and
+                        signalling any that started; an executing evaluation cannot be signalled, so it is only waited
+                        for. The run store then
                         removes the cancelled runs with the finished ones, in the same request. Once every store has
                         run, the coordinator counts every record still held for the person, so a run that ended
                         meanwhile is counted too. When any is (a run still executing after the wait, or one started

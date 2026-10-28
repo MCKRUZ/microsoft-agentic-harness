@@ -93,9 +93,7 @@ public sealed class CancelEvalRunCommandHandler
             _runStore,
             _progress,
             _escalations,
-
-            // Nothing to signal: an evaluation that has started runs to its end.
-            registry: null,
+            registry: null, // Nothing to signal: an evaluation that has started runs to its end.
             _logger,
             record,
             new RunCancellationNotice(

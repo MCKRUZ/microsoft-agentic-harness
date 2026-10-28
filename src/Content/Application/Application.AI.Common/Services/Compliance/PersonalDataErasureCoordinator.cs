@@ -159,14 +159,14 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         // #992: a queued run would start after the person is erased, and a parked one would keep the receipt Partial. First,
         // so a queued workflow run cannot start a planned task after the stop below has looked for them.
-        await CancelPendingRunsAsync(ownerId);
+        await CancelLiveRunsAsync(ownerId);
 
         // #907: a planned task already running would keep writing under the ids read below after their stores are cleared.
-        // This also signals the person's executing workflow runs, which are planned tasks of their own plans.
-        await StopRunningTasksAsync(ownerId, cancellationToken);
-
-        // #992: then a bounded wait for runs still executing, cancelling any that parked or were queued meanwhile.
-        await WaitForLiveRunsAsync(ownerId, cancellationToken);
+        // #992: alongside it, a bounded wait for runs still executing that re-cancels any that parked or were queued
+        // meanwhile. Together, so the two waits overlap rather than add up.
+        await Task.WhenAll(
+            StopRunningTasksAsync(ownerId, cancellationToken),
+            WaitForLiveRunsAsync(ownerId, cancellationToken));
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be

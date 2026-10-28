@@ -15,18 +15,18 @@ public sealed partial class PersonalDataErasureCoordinator
         "a run record of the person's was kept: a workflow or evaluation run that was still executing when erasure stopped waiting for it, one that ended or started while erasure ran, or one whose run-scoped state could not be released; run erasure again once the person's runs have ended";
 
     /// <summary>
-    /// Cancels the person's queued and parked runs through the path an owner's cancel takes, withdrawing their approvals.
-    /// A failure is logged and the request goes on: whatever was not cancelled is still held when
-    /// <see cref="NoteRunsKeptAsync"/> counts, so the receipt cannot read <c>Full</c> over it.
+    /// Cancels the person's queued and parked runs through the path an owner's cancel takes, withdrawing their approvals,
+    /// and signals their executing workflows. A failure is logged and the request goes on: whatever was not cancelled is
+    /// still held when <see cref="NoteRunsKeptAsync"/> counts, so the receipt cannot read <c>Full</c> over it.
     /// </summary>
-    private async Task CancelPendingRunsAsync(string ownerId)
+    private async Task CancelLiveRunsAsync(string ownerId)
     {
         if (_liveRuns is null)
             return;
 
         try
         {
-            await _liveRuns.CancelPendingRunsAsync(ownerId);
+            await _liveRuns.CancelRunsAsync(ownerId);
         }
         catch (Exception ex)
         {
@@ -35,8 +35,8 @@ public sealed partial class PersonalDataErasureCoordinator
     }
 
     /// <summary>
-    /// Waits a bounded time for the person's runs still executing, once their planned tasks have been signalled. A failure
-    /// is contained the same way as <see cref="CancelPendingRunsAsync"/>.
+    /// Waits a bounded time for the person's runs still executing, alongside the planned-task stop. A failure is contained
+    /// the same way as <see cref="CancelLiveRunsAsync"/>.
     /// </summary>
     private async Task WaitForLiveRunsAsync(string ownerId, CancellationToken cancellationToken)
     {
