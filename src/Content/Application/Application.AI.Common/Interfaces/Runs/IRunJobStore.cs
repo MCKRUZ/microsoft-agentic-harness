@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Runs;
 
 namespace Application.AI.Common.Interfaces.Runs;
@@ -25,8 +26,12 @@ namespace Application.AI.Common.Interfaces.Runs;
 /// read-then-write decisions. Deciding them in a handler and inserting afterwards leaves a window in
 /// which concurrent requests all observe the limit as unmet and all proceed.
 /// </para>
+/// <para>
+/// <strong>Run records name their owner</strong>, so the store also answers <see cref="IKeptRunSource"/>: an erasure
+/// receipt must say when a person's run record was kept (#926).
+/// </para>
 /// </remarks>
-public interface IRunJobStore
+public interface IRunJobStore : IKeptRunSource
 {
     /// <summary>
     /// Admits a newly accepted run, or refuses it, deciding and inserting as one atomic step.

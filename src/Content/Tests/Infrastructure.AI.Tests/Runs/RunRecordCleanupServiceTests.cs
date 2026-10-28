@@ -56,6 +56,9 @@ public sealed class RunRecordCleanupServiceTests
 
         public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
 
+        public Task<int> CountRunsKeptAsync(string ownerId, CancellationToken cancellationToken) =>
+            inner.CountRunsKeptAsync(ownerId, cancellationToken);
+
         public bool TryRepark(RunRecord parked) => inner.TryRepark(parked);
 
         public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>
@@ -98,7 +101,7 @@ public sealed class RunRecordCleanupServiceTests
         _config.AI.WorkflowSubmission.MaxParkedRunDuration = TimeSpan.FromHours(1);
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
-        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance));
         var progress = new InMemoryRunProgressBroker(monitor, _time);
 
         var escalation = Guid.NewGuid();
@@ -171,7 +174,7 @@ public sealed class RunRecordCleanupServiceTests
         _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
-        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance));
         var progress = new InMemoryRunProgressBroker(monitor, _time);
 
         store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
@@ -212,7 +215,7 @@ public sealed class RunRecordCleanupServiceTests
         _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
-        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance));
         var progress = new RecordingBroker(new InMemoryRunProgressBroker(monitor, _time));
 
         store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
@@ -277,7 +280,7 @@ public sealed class RunRecordCleanupServiceTests
         _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
-        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance));
 
         store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
         var claimed = store.TryBeginRun("finished", _time.GetUtcNow())!;

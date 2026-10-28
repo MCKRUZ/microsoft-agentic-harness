@@ -1,5 +1,6 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.Compliance;
+using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Compliance;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
@@ -80,6 +81,32 @@ public sealed class EveryErasableStoreReachesTheCoordinatorTests : IDisposable
         // A floor, so this cannot pass on a composition that resolved no erasable stores at all.
         resolvedErasers.Select(r => r.Instance).Distinct().Should().HaveCountGreaterThanOrEqualTo(6,
             "the default composition has conversations, budgets, spills, plans, schedules and the document indexes");
+    }
+
+    [Fact]
+    public async Task TheRunStore_IsAskedForTheRunRecordsItKept()
+    {
+        // #926: the run store keeps a person's live runs through erasure; without this the receipt would read Full while it
+        // still held a record naming them.
+        var (services, _) = CompositionRootTestHost.ComposeServices(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:AI:Schedules:DatabasePath"] = Path.Combine(_workingDir, "schedules.db"),
+            ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
+            ["AppConfig:AI:PromptUsage:ConnectionString"] = $"Data Source={Path.Combine(_workingDir, "prompt-usage.db")}",
+            ["AppConfig:AI:ContextManagement:ToolResultStorage:StoragePath"] = Path.Combine(_workingDir, "spills"),
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+
+        var coordinator = scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>()
+            .Should().BeOfType<PersonalDataErasureCoordinator>().Subject;
+        var keptRuns = typeof(PersonalDataErasureCoordinator)
+            .GetField("_keptRuns", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator);
+
+        keptRuns.Should().NotBeNull().And.BeSameAs(scope.ServiceProvider.GetRequiredService<IRunJobStore>(),
+            "the coordinator must count the run records of the store the host actually runs");
     }
 
     private static IReadOnlyList<IPersonalDataEraser> ReceivedErasers(PersonalDataErasureCoordinator coordinator) =>

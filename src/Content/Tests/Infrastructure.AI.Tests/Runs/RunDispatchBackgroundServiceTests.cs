@@ -94,7 +94,7 @@ public sealed class RunDispatchBackgroundServiceTests
             services.AddSingleton<IKnowledgeScopeWriter>(_scopeWriter);
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
-        var store = new InMemoryRunJobStore(monitor, _time);
+        var store = new InMemoryRunJobStore(monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance);
         var queue = new InMemoryRunDispatchQueue();
 
         var service = new RunDispatchBackgroundService(
