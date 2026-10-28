@@ -324,6 +324,19 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
+    public async Task RecordAsync_ADeploymentsOwnRequestKind_IsCountedUnderItsOwnName()
+    {
+        using var actions = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Action);
+        BreakTheTrail();
+        using var trail = NewTrail();
+
+        await trail.RecordAsync(Entry("attempt") with { Action = "rectification" }, ErasureActor.DataSubject, CancellationToken.None);
+
+        actions.Snapshot().Should().Contain("rectification",
+            "an action the code set is no planted file; folding it into unknown would hide a deployment's own failures");
+    }
+
+    [Fact]
     public async Task ReplayPendingAsync_NothingWasEverHeld_DoesNothing()
     {
         using var trail = NewTrail();

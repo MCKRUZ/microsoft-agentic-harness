@@ -14,7 +14,8 @@ public static class ComplianceConventions
 
     /// <summary>
     /// The request a record belongs to: <c>right_to_erasure</c>, <c>subject_access_export</c> or
-    /// <c>document_removal</c>. A fixed set, never a correlation id.
+    /// <c>document_removal</c>, or a request a deployment adds of its own. Always set from code, never a correlation id:
+    /// on a replayed record, read back from a held file, anything but the three shipped requests is <c>unknown</c>.
     /// </summary>
     public const string Action = "agent.compliance.action";
 
