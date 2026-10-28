@@ -816,6 +816,29 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>204</code></td>
                                 <td>Removes a schedule you own. <code>404</code> if it is not yours.</td>
                             </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Compliance</strong> — erase or copy a person's data held by <em>this host</em> (#1003). The same API AgentHub serves; a request covers only the host it is sent to, and every receipt and copy names that host in <code>host</code>. Send each person's request to every host that holds personal data. All are refused in anonymous mode, where every caller is one person. See <a href="../security/08-data-protection.html#one-host">the data-protection guide</a>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/erase-my-data</code></td>
+                                <td><code>200</code></td>
+                                <td>No body: erases the signed-in caller's runs, the conversations this host's agents wrote for them and the rest of their data here, and returns the receipt. Five an hour per caller. <code>403</code> for an application's own token.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/export-my-data</code></td>
+                                <td><code>200</code></td>
+                                <td>No body: a JSON copy of the caller's data here, with a manifest per store. Five an hour per caller; at most two copies assembled at once per host, the rest refused with <code>429</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/erasures</code><br><code>POST /api/compliance/exports</code></td>
+                                <td><code>200</code></td>
+                                <td>Body: <code>subjectId</code>. An operator erases or copies a named person. Needs <code>Harness.Compliance.EraseSubject</code> or <code>Harness.Compliance.ExportSubject</code> and a tenant listed in <code>AppConfig:AI:Erasure:OperatorTenantIds</code> (empty means off). Thirty an hour per operator.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/document-removals</code></td>
+                                <td><code>200</code></td>
+                                <td>Body: <code>documentId</code> (16 upper-case hex digits). Removes a document and what was drawn from it from this host's corpus. Needs <code>Harness.Compliance.RemoveDocument</code> and an allowed operator tenant.</td>
+                            </tr>
                         </tbody>
                     </table>
 

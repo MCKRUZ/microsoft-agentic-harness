@@ -1,9 +1,10 @@
 using Domain.Common.Config.AI;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
 
-namespace Presentation.AgentHub.Auth;
+namespace Presentation.Common.Compliance;
 
 /// <summary>An operator-only compliance action: the role it needs, and the words its refusals use.</summary>
 /// <param name="Role">The role the operator must hold.</param>
@@ -22,14 +23,14 @@ public sealed record OperatorRefusal(string Reason, IActionResult Response);
 /// <summary>
 /// Decides whether the signed-in caller may take an operator-only compliance action on someone else's data: erase them
 /// (#900), remove a document (#901) or export them (#902). One gate for all of them, so the rules cannot drift between
-/// actions.
+/// actions, and one for every host that mounts the compliance API, so they cannot drift between hosts either (#1003).
 /// </summary>
 /// <remarks>
 /// <para>
 /// The operator must hold the action's role, which no development identity carries, and sign in from a tenant listed in
 /// <c>AppConfig:AI:Erasure:OperatorTenantIds</c>; with that list empty, operator actions are off. The role alone is not
 /// enough because each organisation's administrator assigns roles in their own tenant, and these actions reach every
-/// tenant. Refused while sign-in is bypassed, for an application's own token (an operator action must name an accountable
+/// tenant. Refused while sign-in is bypassed (the host's <see cref="ComplianceApiMarker.SharedIdentitySchemes"/>), for an application's own token (an operator action must name an accountable
 /// person; see <see cref="Presentation.Common.Extensions.ClaimsPrincipalExtensions.IsApplicationOnly"/>), when no usable
 /// operator identity is present, and when the configuration loaded since startup is invalid.
 /// </para>
@@ -41,13 +42,17 @@ public sealed record OperatorRefusal(string Reason, IActionResult Response);
 public sealed class OperatorGate
 {
     private readonly IOptionsMonitor<ErasureConfig> _erasureConfig;
+    private readonly ComplianceApiMarker _api;
 
     /// <summary>Initializes a new instance of the <see cref="OperatorGate"/> class.</summary>
     /// <param name="erasureConfig">Which tenants' operators may take operator actions.</param>
-    public OperatorGate(IOptionsMonitor<ErasureConfig> erasureConfig)
+    /// <param name="api">The host's opt-in, which names the sign-in schemes every caller of which is the same person.</param>
+    public OperatorGate(IOptionsMonitor<ErasureConfig> erasureConfig, ComplianceApiMarker api)
     {
         ArgumentNullException.ThrowIfNull(erasureConfig);
+        ArgumentNullException.ThrowIfNull(api);
         _erasureConfig = erasureConfig;
+        _api = api;
     }
 
     /// <summary>Why the caller may not take <paramref name="action"/>, or <see langword="null"/> when they may.</summary>
@@ -61,7 +66,7 @@ public sealed class OperatorGate
         ArgumentNullException.ThrowIfNull(action);
 
         var user = controller.User;
-        if (AuthBypassPolicy.IsSharedSyntheticIdentity(user))
+        if (_api.IsSharedSyntheticIdentity(user))
             return new("sign-in is bypassed", controller.Problem(detail: action.BypassDetail, statusCode: StatusCodes.Status403Forbidden));
 
         // An operator action is recorded against the person who asked. An application's own token names no one: a

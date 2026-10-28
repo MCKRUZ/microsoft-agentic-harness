@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using Presentation.Common.Compliance;
 using Presentation.ExecutionApi.Services;
 using Presentation.ExecutionApi.Streaming;
 using Application.Common.Hosting;
@@ -20,8 +21,8 @@ using Microsoft.Extensions.Logging;
 namespace Presentation.ExecutionApi.Extensions;
 
 /// <summary>
-/// Host-specific service registration for <c>Presentation.ExecutionApi</c>: controllers, the fail-closed
-/// authentication scheme (its own audience), authorization, and per-path rate limiting. The cross-layer
+/// Host-specific service registration for <c>Presentation.ExecutionApi</c>: controllers (with the shared compliance API),
+/// the fail-closed authentication scheme (its own audience), authorization, and per-path rate limiting. The cross-layer
 /// wiring (MediatR handlers, bundle stores, background services) is composed separately by
 /// <c>Presentation.Common</c>'s <c>GetServices</c>, exactly as the other hosts do.
 /// </summary>
@@ -103,7 +104,11 @@ public static class ExecutionApiServiceCollectionExtensions
             .AddJsonOptions(options =>
                 // Serialize BundleRunStatus and friends as their names, not ordinals, so the poll contract
                 // is human-readable and stable against enum renumbering.
-                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()))
+            // Deliberate opt-in: this host's runs and the conversations its agents write live in its own stores, not
+            // AgentHub's, so a person's data here is erased and copied only by a request sent here (#1003). Anonymous
+            // mode makes every caller one synthetic person, so self-service and operator requests are refused under it.
+            .AddComplianceApi([AnonymousAuthenticationHandler.SchemeName]);
 
         var bundleConfig = configuration
             .GetSection("AppConfig:AI:BundleExecution")
@@ -140,6 +145,13 @@ public static class ExecutionApiServiceCollectionExtensions
 
         services.AddRateLimiter(options =>
         {
+            // The compliance endpoints carry no named policy: their per-caller windows and host-wide export limit are
+            // the ones every host that mounts the compliance API applies (#1003). Every other path passes through it.
+            options.GlobalLimiter = ComplianceRateLimits.Create();
+
+            // The published contract answers a refused request with 429; the framework default is 503.
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
             options.AddPolicy(DefaultRateLimitPolicy, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(ResolvePartitionKey(httpContext), _ =>
                     new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1) }));

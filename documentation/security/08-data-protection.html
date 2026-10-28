@@ -1047,6 +1047,62 @@
                         caller there.
                     </p>
 
+                    <h3 id="one-host">Each request covers the host it is sent to (#1003)</h3>
+                    <p>
+                        Erasure, document removal and export run inside one process and reach that process's stores
+                        only. Hosts never call one another. Most stores live inside their process: the workflow and
+                        evaluation run records in memory, and, by default, the conversation database, journal and plan
+                        database as files beside each host's own binaries. The document indexes are wherever the host's
+                        configuration puts them: FAISS and SQLite files, or an Azure AI Search index. An Azure AI Search
+                        index with no endpoint configured, the default for a host that sets nothing, has never held
+                        anything, so its two receipt lines read <code>Erased</code> with nothing removed, and its export
+                        line returns no records. Before #1003 they failed against the placeholder endpoint and held every
+                        such host's receipts <code>Partial</code>.
+                        A request sent to AgentHub therefore leaves the Execution API's copy of the same person's data
+                        alone, and the reverse. So every receipt and every copy names the host it covers in a
+                        <code>host</code> field, the host's application name such as <code>Presentation.AgentHub</code>
+                        or <code>Presentation.ExecutionApi</code>. Every audit record names it too. <code>Full</code> and
+                        <code>isComplete</code> speak for that host alone.
+                    </p>
+                    <p>
+                        <strong>A deployment must send each request to every host that holds personal data</strong>, and
+                        a person is erased everywhere only when every one of those hosts has returned a <code>Full</code>
+                        receipt. Both hosts that serve the compliance API serve it at the same paths, with the same roles,
+                        operator tenants (each host reads its own <code>AppConfig:AI:Erasure:OperatorTenantIds</code>),
+                        refusals and rate limits, because both mount the one implementation in
+                        <code>Presentation.Common.Compliance</code>. The rate limits and the two-copies-at-once export
+                        limit are per host. Where two hosts are pointed at one shared durable store, such as a shared
+                        conversation database, whichever host is asked first erases that store for both. Their in-memory
+                        stores still need a request each. A host scaled out to several instances keeps its in-memory
+                        stores per instance, and a request reaches only the instance that serves it. The shipped run
+                        and bundle stores are single-instance by design.
+                    </p>
+                    <p>
+                        The shipped hosts, and whether they hold personal data:
+                    </p>
+                    <ul>
+                        <li><strong>AgentHub</strong> holds conversations, memories and the knowledge graph, plans,
+                            schedules, documents people load, and the rest of the stores on this page. It serves the
+                            compliance API.</li>
+                        <li><strong>Execution API</strong> holds workflow, evaluation and bundle run records, and the
+                            conversations its agents write when a run names one. It also holds the plans its workflows
+                            persist and whatever its agents' tools store. It serves the compliance API at
+                            <code>/api/compliance/*</code>, authenticated with its own audience. Its anonymous development
+                            mode makes every caller one person, so the API refuses self-service and operator requests there,
+                            as AgentHub does under its sign-in bypass.</li>
+                        <li><strong>FoundryHost</strong> keeps each agent session's transcript under
+                            <code>$HOME/.checkpoints</code>. Its planner database, tool results and compliance audit go
+                            under <code>$HOME/agent-state</code>. <strong>It serves no erasure or export endpoint</strong>
+                            (it maps only <code>/responses</code>). A deployment that runs it holds personal data that none
+                            of these requests reaches. Clear that container's state by its own means until the gap is
+                            closed.</li>
+                        <li><strong>ConsoleUI</strong> and <strong>EvalRunner</strong> are run by hand, not deployed as
+                            services. They compose the same stores, so anything they write lands in their own working
+                            directory. They serve no endpoint, so clear their state directly. <strong>AuditArchiver</strong>
+                            only moves existing audit day-files into the archive, and <strong>LoggerUI</strong> only prints
+                            log pipes. Neither writes personal data of its own.</li>
+                    </ul>
+
                     <div class="callout callout-tip" id="erasure-receipt">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
@@ -1060,6 +1116,8 @@
                                 <li><code>RequestId</code> and <code>ScopeId</code> (the person's id, lower-cased and
                                     trimmed; returned to the caller and never logged), and the <code>RequestedAt</code> /
                                     <code>CompletedAt</code> window.</li>
+                                <li><code>Host</code>: the host whose stores the receipt covers (see
+                                    <a href="#one-host">each request covers the host it is sent to</a>).</li>
                                 <li><code>UnmatchedDocumentIds</code>: document ids drawn from the erased graph nodes that
                                     matched no row in any store.</li>
                                 <li>The knowledge graph's counts: nodes, edges, feedback weights, vector embeddings,
@@ -1269,7 +1327,9 @@
                         sign-in is bypassed (every caller is then one synthetic person, so the copy would hold everyone's
                         data) and for an application's own token. It is limited to five requests an hour per person, and
                         the host assembles at most two copies at once; a further request is refused with 429 rather than
-                        queued.
+                        queued. The copy holds only what the host it was sent to can find, and its <code>host</code> field
+                        says which host that is. Ask each host that holds personal data
+                        (<a href="#one-host">see above</a>).
                     </p>
                     <p>
                         <strong>For someone who cannot sign in.</strong> <code>POST /api/compliance/exports</code> with the

@@ -28,7 +28,7 @@ public sealed class ExportSubjectDataCommandTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         return new ExportSubjectDataCommandHandler(new AuditedExport(
-            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System,
+            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TestHostEnvironment.Instance, TimeProvider.System,
             NullLogger<AuditedExport>.Instance));
     }
 

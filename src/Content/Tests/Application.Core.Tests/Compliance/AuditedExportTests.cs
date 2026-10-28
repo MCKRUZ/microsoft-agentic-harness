@@ -49,7 +49,7 @@ public sealed class AuditedExportTests
     private HmacErasureSubjectReference Reference() =>
         new(Mock.Of<IOptionsMonitor<ErasureConfig>>(m => m.CurrentValue == _config));
 
-    private AuditedExport Create() => new(_export.Object, Reference(), _sink.Object, _trail.Object, TimeProvider.System, _logger);
+    private AuditedExport Create() => new(_export.Object, Reference(), _sink.Object, _trail.Object, TestHostEnvironment.Instance, TimeProvider.System, _logger);
 
     private static PersonalDataExport Copy() => new(
         "export-1",
@@ -73,7 +73,7 @@ public sealed class AuditedExportTests
 
         var result = await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
 
-        result.Value.Should().BeSameAs(copy);
+        result.Value.Should().Be(copy with { Host = TestHostEnvironment.Name });
         _records.Select(r => r.Metadata!["phase"]).Should().Equal("attempt", "outcome");
         _records.Select(r => r.CorrelationId).Distinct().Should().ContainSingle();
         _records.Should().OnlyContain(r => r.Action == AuditedExport.AuditAction);
@@ -85,6 +85,18 @@ public sealed class AuditedExportTests
         outcome.Metadata["complete"].Should().Be("false");
         outcome.Metadata["store.conversations"].Should().Be("Included:2");
         outcome.Metadata["store.plans"].Should().Be("NotExportable:0");
+    }
+
+    [Fact]
+    public async Task ExportAsync_Succeeds_TheCopyAndEveryRecordNameTheHostTheCopyCovers()
+    {
+        // #1003: a copy holds only what this process can find, so it must say which host it speaks for.
+        _export.Setup(e => e.ExportOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Copy());
+
+        var result = await Create().ExportAsync(Subject, ErasureActor.DataSubject, "ExportMyDataCommand", CancellationToken.None);
+
+        result.Value!.Host.Should().Be(TestHostEnvironment.Name);
+        _records.Should().HaveCount(2).And.OnlyContain(r => r.Metadata!["host"] == TestHostEnvironment.Name);
     }
 
     [Fact]

@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using Domain.Common.Models;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Compliance;
@@ -54,6 +55,7 @@ public sealed class AuditedDocumentRemoval
     private readonly IDocumentLoadLedger _loadLedger;
     private readonly IAuditSink _auditSink;
     private readonly IComplianceAuditTrail _trail;
+    private readonly string _host;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedDocumentRemoval> _logger;
 
@@ -62,6 +64,7 @@ public sealed class AuditedDocumentRemoval
     /// <param name="loadLedger">When each document was last loaded; a complete removal forgets the document there.</param>
     /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
     /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the removal was handled.</param>
+    /// <param name="hostEnvironment">Names the host the receipt covers (#1003): a removal reaches only this process's stores.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedDocumentRemoval(
@@ -69,6 +72,7 @@ public sealed class AuditedDocumentRemoval
         IDocumentLoadLedger loadLedger,
         IAuditSink auditSink,
         IComplianceAuditTrail trail,
+        IHostEnvironment hostEnvironment,
         TimeProvider timeProvider,
         ILogger<AuditedDocumentRemoval> logger)
     {
@@ -76,9 +80,11 @@ public sealed class AuditedDocumentRemoval
         ArgumentNullException.ThrowIfNull(loadLedger);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(trail);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _host = hostEnvironment.ApplicationName;
         _orchestrator = orchestrator;
         _loadLedger = loadLedger;
         _auditSink = auditSink;
@@ -123,7 +129,7 @@ public sealed class AuditedDocumentRemoval
         ErasureReceipt receipt;
         try
         {
-            receipt = await _orchestrator.RemoveDocumentAsync(documentId, cancellationToken);
+            receipt = await _orchestrator.RemoveDocumentAsync(documentId, cancellationToken) with { Host = _host };
         }
         catch (OperationCanceledException)
         {
@@ -202,13 +208,14 @@ public sealed class AuditedDocumentRemoval
             Metadata = Metadata("outcome", actor, documentId, receipt: null),
         }, actor);
 
-    private static Dictionary<string, string> Metadata(
+    private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string documentId, ErasureReceipt? receipt)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
             ["initiator"] = actor.Initiator,
+            ["host"] = _host,
             ["document_id"] = documentId,
         };
         if (receipt is null)

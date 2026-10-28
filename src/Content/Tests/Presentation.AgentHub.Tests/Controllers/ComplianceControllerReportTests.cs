@@ -14,7 +14,7 @@ using Xunit;
 namespace Presentation.AgentHub.Tests.Controllers;
 
 /// <summary>
-/// Tests for <see cref="ComplianceController"/>'s <c>GET /api/compliance/reports</c> endpoint
+/// Tests for <see cref="ComplianceReportsController"/>'s <c>GET /api/compliance/reports</c> endpoint
 /// (#696). This is cross-user, privileged observability data — the same posture as
 /// <c>SessionsController</c> — so it is gated with <see cref="SessionsController.ObserverRole"/>
 /// rather than the controller's own bare <c>[Authorize]</c>, which only requires authentication.
