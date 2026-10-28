@@ -91,7 +91,9 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
                 continue;
             }
 
-            // The old folder is opened by the name stored on disk, which the lookup found by comparing with case.
+            // The set compares with case, so the stored name it returns always equals the old name. Opening the folder by
+            // the stored name rather than the old one keeps that comparison the only guard: were the set ever to ignore
+            // case, it would return another id's folder on every OS, which the tests catch even on Linux.
             string[] names = legacyFolders.TryGetValue(LegacyScopeDirectoryName(scopeId), out var storedLegacyName)
                 ? [folderName, storedLegacyName]
                 : [folderName];
@@ -121,7 +123,7 @@ public sealed partial class FileSystemToolResultStore : IPersonalDataEraser
                 .Select(Path.GetFileName)
                 .OfType<string>()
                 .ToHashSet(StringComparer.Ordinal)
-            : [];
+            : new HashSet<string>(StringComparer.Ordinal);
 
     private static void TryDeleteIfEmpty(string directory)
     {

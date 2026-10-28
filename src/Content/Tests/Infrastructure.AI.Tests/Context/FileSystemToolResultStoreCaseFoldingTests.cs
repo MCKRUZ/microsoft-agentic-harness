@@ -188,6 +188,16 @@ public sealed class FileSystemToolResultStoreCaseFoldingTests : IDisposable
     }
 
     [Fact]
+    public async Task ExportSubjectAsync_OldFolderNamedForACaseVariant_IsNotInTheCopy()
+    {
+        PlantLegacySpill("ticket-42");
+
+        var records = await _sut.ExportSubjectAsync(new ExportSubject("attacker", ["TICKET-42"]), CancellationToken.None);
+
+        records.Should().BeEmpty("an old folder created for another id must not be disclosed to a case variant");
+    }
+
+    [Fact]
     public async Task RetrievePageAsync_ResultWrittenUnderTheOldName_IsNotFound()
     {
         // Reads do not fall back to the old name: on a case-insensitive file system that folder may hold another id's
