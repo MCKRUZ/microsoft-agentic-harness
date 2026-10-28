@@ -5,9 +5,11 @@ namespace Application.Core.Compliance;
 /// document age limit (#901).
 /// </summary>
 /// <remarks>
-/// Recorded in the erasure audit trail. A data subject is recorded only as <see cref="DataSubjectExecutor"/>, because
-/// their own id is exactly what the erasure removes; an operator is recorded by id, because operators are accountable
-/// staff and their identity is not the data being erased.
+/// A data subject is recorded only as <see cref="DataSubjectExecutor"/>, because their own id is exactly what the erasure
+/// removes. A named operator is accountable staff: the compliance audit trail, which is kept for good, records them as a
+/// keyed reference (#903), and the log line by id. Whether an actor is a named operator is decided by how it was made
+/// (<see cref="IsNamedOperator"/>), never by its id: an operator whose id happens to read <c>unidentified-operator</c> is
+/// still a named person.
 /// </remarks>
 public sealed record ErasureActor
 {
@@ -17,10 +19,11 @@ public sealed record ErasureActor
     /// <summary>The executor recorded when the document age limit removed a document.</summary>
     public const string RetentionExecutor = "retention";
 
-    private ErasureActor(string executorId, string initiator)
+    private ErasureActor(string executorId, string initiator, bool isNamedOperator = false)
     {
         ExecutorId = executorId;
         Initiator = initiator;
+        IsNamedOperator = isNamedOperator;
     }
 
     /// <summary>Gets the executor written to the audit record.</summary>
@@ -34,6 +37,12 @@ public sealed record ErasureActor
 
     /// <summary>Gets whether an operator, rather than the person themselves or a retention rule, asked for the erasure.</summary>
     public bool IsOperator => Initiator == "operator";
+
+    /// <summary>
+    /// Gets whether <see cref="ExecutorId"/> is a person's own id: true only for <see cref="Operator"/>, false for the fixed
+    /// names, <see cref="UnidentifiedOperator"/> included.
+    /// </summary>
+    public bool IsNamedOperator { get; }
 
     /// <summary>The person erasing their own data.</summary>
     public static ErasureActor DataSubject { get; } = new(DataSubjectExecutor, "data_subject");
@@ -52,6 +61,6 @@ public sealed record ErasureActor
     public static ErasureActor Operator(string operatorId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(operatorId);
-        return new ErasureActor(operatorId, "operator");
+        return new ErasureActor(operatorId, "operator", isNamedOperator: true);
     }
 }

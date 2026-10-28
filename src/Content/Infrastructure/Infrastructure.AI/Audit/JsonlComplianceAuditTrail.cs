@@ -132,9 +132,10 @@ public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, I
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();
 
-    // Only a named operator's id is a person's own id; the other actors are recorded under fixed names.
+    // Only a named operator's id is a person's own id; the other actors are recorded under fixed names. Decided by the
+    // actor's kind, not its id, so an operator whose id reads like a fixed name is still recorded as a reference.
     private string RecordedExecutor(ErasureActor actor) =>
-        actor.IsOperator && actor != ErasureActor.UnidentifiedOperator
+        actor.IsNamedOperator
             ? _pseudonymizer.Person(actor.ExecutorId)
             : actor.ExecutorId;
 }
