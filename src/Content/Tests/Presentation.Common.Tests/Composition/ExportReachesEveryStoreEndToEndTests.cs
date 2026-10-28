@@ -1,6 +1,9 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Bundles;
+using Application.AI.Common.Interfaces.Evaluation;
+using Application.AI.Common.Evaluation.Models;
+using Domain.AI.Evaluation;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -81,6 +84,19 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
             BundleStoreSeeds.SeedStagedBundle(sp, _workingDir, p.OwnerId, p.Label);
             return Task.CompletedTask;
         },
+        // #991: an evaluation run's submission names no owner; only its run record says it is the person's.
+        ["EvalRunSubmissionExporter"] = (sp, p) =>
+        {
+            sp.GetRequiredService<IRunJobStore>().TryCreate(Run(p) with { JobId = $"eval-{p.Label}", Kind = RunKind.Evaluation },
+                int.MaxValue).Should().Be(RunAdmission.Accepted);
+            sp.GetRequiredService<IEvalRunSubmissionStore>().Add(new EvalRunSubmission
+            {
+                JobId = $"eval-{p.Label}",
+                DatasetNames = [$"{p.Label} dataset"],
+                Options = new EvalRunOptions(),
+            });
+            return Task.CompletedTask;
+        },
         ["KnowledgeGraphExporter"] = SeedGraphAsync,
         ["FileSystemToolResultStore"] = SeedConversationSpillAsync,
         ["EfCorePlanStateStore"] = SeedPlannedTaskRunAsync,
@@ -128,7 +144,7 @@ public sealed class ExportReachesEveryStoreEndToEndTests : IDisposable
             "every store the export reads needs a seed here; add an entry for the new store");
         exporters.Should().Contain(["EfCoreConversationStore", "EfScheduleStore", "KnowledgeGraphExporter",
             "FileSystemToolResultStore", "EfCorePlanStateStore", "FaissVectorStore", "SqliteFts5Store", "InMemoryRunJobStore",
-            "InMemoryBundleRunJobStore", "InMemoryBundleHandleStore"],
+            "InMemoryBundleRunJobStore", "InMemoryBundleHandleStore", "EvalRunSubmissionExporter"],
             "a floor, so a composition that reads fewer stores than this one configures cannot pass");
 
         // Letters only: stores redact on write, and a run of digits in a label reads as a phone number. A redacted label

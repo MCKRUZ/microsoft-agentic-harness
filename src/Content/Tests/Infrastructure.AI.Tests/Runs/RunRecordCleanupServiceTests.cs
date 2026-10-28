@@ -63,6 +63,8 @@ public sealed class RunRecordCleanupServiceTests
 
         public string KeptRunsReason => inner.KeptRunsReason;
 
+        public IReadOnlyList<RunRecord> GetRunsOwnedBy(string ownerId) => inner.GetRunsOwnedBy(ownerId);
+
         public bool TryRepark(RunRecord parked) => inner.TryRepark(parked);
 
         public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>
