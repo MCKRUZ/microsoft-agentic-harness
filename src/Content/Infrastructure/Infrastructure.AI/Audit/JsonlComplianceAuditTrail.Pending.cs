@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -7,6 +8,7 @@ using Application.Core.Compliance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 
@@ -43,8 +45,9 @@ namespace Infrastructure.AI.Audit;
 /// file on) and only removes those it finds. The correlation id is not unique to a record (an attempt and its outcome share
 /// it), so the match is on the whole line, timestamp included. A pass stops at the first append that fails, and the next
 /// pass retries from there. A file that cannot be read (another account owns it, another process holds it open) is left
-/// for the next pass and the files after it go ahead; a file that reads but is not a record is set aside as
-/// <c>.unreadable</c>, so neither stops the queue.
+/// for the next pass and the files after it go ahead, and is counted once with outcome <c>stuck</c> and logged as an error
+/// once per process, not on every pass; a file that reads but is not a record is set aside as <c>.unreadable</c>, so
+/// neither stops the queue.
 /// </para>
 /// <para>
 /// <strong>Who can add records.</strong> Replay appends whatever record a held file contains, so anything that can write
@@ -76,6 +79,9 @@ public sealed partial class JsonlComplianceAuditTrail
     private static readonly SearchValues<char> FramingChars = SearchValues.Create("\t\n\r");
 
     private readonly string _pendingFolder;
+
+    /// <summary>Held files this process has already reported as stuck, so each is counted and logged once, not every pass.</summary>
+    private readonly ConcurrentDictionary<string, byte> _reportedStuck = new(StringComparer.Ordinal);
 
     /// <summary>Makes the unique part of a held file's name. Replaced only by tests that need to predict the name.</summary>
     internal Func<Guid> NewHeldId { get; init; } = Guid.NewGuid;
@@ -111,7 +117,7 @@ public sealed partial class JsonlComplianceAuditTrail
     }
 
     private static string PendingFolder(AppConfig config) =>
-        Path.Combine(config.AI.Erasure.AuditStoragePath, "compliance-pending");
+        Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.PendingFolderName);
 
     private Result Hold(string action, string payload, IReadOnlyList<string> reasons)
     {
@@ -210,15 +216,35 @@ public sealed partial class JsonlComplianceAuditTrail
                     held.Add(record);
                 else
                     setAside++;
+                _reportedStuck.TryRemove(path, out _); // Readable again: should it stick later, that is news once more.
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // A file this pass cannot touch must not hold back the others; it is tried again next pass.
-                _logger.LogWarning(ex, "Held compliance record {PendingFile} could not be read; it is left for the next pass.", path);
+                ReportStuck(path, ex);
             }
         }
 
         return (held, setAside);
+    }
+
+    /// <summary>
+    /// Counts and logs a held file no pass can open, once per file in this process: on every pass would say "stuck" every
+    /// minute and make the count a measure of time rather than of records not in the trail.
+    /// </summary>
+    private void ReportStuck(string path, Exception ex)
+    {
+        if (!_reportedStuck.TryAdd(path, 0))
+        {
+            _logger.LogDebug("Held compliance record {PendingFile} still cannot be opened.", path);
+            return;
+        }
+
+        CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Stuck);
+        _logger.LogError(ex,
+            "Held compliance record {PendingFile} cannot be opened, so it cannot be written to the trail; every pass retries " +
+            "it, and this is reported once. Give the application's account access to it.",
+            path);
     }
 
     /// <summary>The held record in <paramref name="path"/>, or null once a file that is no record has been set aside.</summary>

@@ -33,5 +33,12 @@ public static class ComplianceConventions
         /// back as a record. The record survives only in the error log line. Alert on this.
         /// </summary>
         public const string Lost = "lost";
+
+        /// <summary>
+        /// Held, but the held file cannot be opened (another account owns it, another process keeps it open), so replay
+        /// cannot write it. Counted once per file in each process, not on every pass, so the count is how many files are
+        /// stuck rather than how long. Alert on this as on <see cref="Lost"/>: the record is not in the trail.
+        /// </summary>
+        public const string Stuck = "stuck";
     }
 }

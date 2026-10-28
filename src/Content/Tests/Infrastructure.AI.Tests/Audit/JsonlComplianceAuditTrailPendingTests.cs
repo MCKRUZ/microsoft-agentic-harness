@@ -262,6 +262,26 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
+    public async Task ReplayPendingAsync_AHeldFileNoPassCanOpen_IsCountedStuckOnceNotEveryPass()
+    {
+        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        BreakTheTrail();
+        using var trail = NewTrail();
+        await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+        RepairTheTrail();
+
+        using (new FileStream(HeldFiles().Single(), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await trail.ReplayPendingAsync(CancellationToken.None);
+            await trail.ReplayPendingAsync(CancellationToken.None);
+            await trail.ReplayPendingAsync(CancellationToken.None);
+        }
+
+        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(1,
+            "a record that cannot reach the trail must alert, but once: counted every minute it would measure time, not records");
+    }
+
+    [Fact]
     public async Task ReplayPendingAsync_TheReplayLockCannotBeMade_SkipsAndSaysWhy()
     {
         BreakTheTrail();
