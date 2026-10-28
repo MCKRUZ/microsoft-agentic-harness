@@ -29,9 +29,11 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser
     /// <strong>Only finished runs, the same rule the retention sweep follows.</strong> A run still queued, running or
     /// parked on an approval is kept. Removing a running run's record would unlock its target while the dispatcher is
     /// still executing it, so a second run could share its plan; removing a parked one would strand the approvals it waits
-    /// on, which only the cancel path withdraws; and a queued one is a run its caller is still waiting on. Erasure stops
-    /// the person's planned tasks before any store is asked (#907), so a workflow run in this process has usually ended by
-    /// now. What is kept is counted by <see cref="CountRunsKeptAsync"/>, and the receipt says to run erasure again.
+    /// on, which only the cancel path withdraws; and a queued one would be a run nothing ever finishes. Erasure therefore
+    /// cancels the person's live runs through that path before any store is asked (#992), and stops their planned tasks
+    /// (#907), so by now a queued or parked run is cancelled and is removed here with the rest. What is still kept (a run
+    /// that did not stop in time, or one started meanwhile) is counted by <see cref="CountRunsKeptAsync"/>, and the
+    /// receipt says to run erasure again.
     /// </para>
     /// <para>
     /// <strong>Every other holder releases first, and the records go only when all of them did.</strong> Progress
@@ -73,6 +75,13 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         return Task.FromResult(OwnedBy(ownerId).Count);
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<RunRecord> GetLiveRunsOwnedBy(string ownerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        return [.. OwnedBy(ownerId).Where(r => !r.IsTerminal)];
     }
 
     /// <summary>A snapshot of every run <paramref name="ownerId"/> owns, in every tenant, each read under its lock.</summary>

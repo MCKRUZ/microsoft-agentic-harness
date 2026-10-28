@@ -1,0 +1,270 @@
+using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Runs;
+using Application.AI.Common.Services.Runs;
+using Domain.AI.Bundles;
+using Domain.AI.Planner;
+using Domain.AI.Runs;
+using Domain.Common;
+using Domain.Common.Config;
+using FluentAssertions;
+using Infrastructure.AI.Runs;
+using Infrastructure.AI.Tests.Runs.Support;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+using Moq;
+using Xunit;
+
+namespace Infrastructure.AI.Tests.Runs;
+
+/// <summary>
+/// Tests for <see cref="OwnedRunCanceller"/>, over the real run store (#992).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Erasure removes only finished runs, so a person's live runs have to be ended first or they outlive the erasure: a queued
+/// run starts afterwards and writes new personal data, and a parked one holds every retry <c>Partial</c> while its
+/// approvals sit in an approver's queue. These tests pin that a parked run is cancelled with its approvals withdrawn, that
+/// a queued one never starts, and that nobody else's run is touched.
+/// </para>
+/// </remarks>
+public sealed class OwnedRunCancellerTests
+{
+    private const string Subject = "Subject-Oid";
+    private const string Bystander = "bystander-oid";
+
+    private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 10, 28, 12, 0, 0, TimeSpan.Zero));
+    private readonly AppConfig _config = new();
+    private readonly Mock<IEscalationService> _escalations = new();
+    private readonly Mock<IPlanRunCancellationRegistry> _registry = new();
+    private readonly Mock<IRunProgressBroker> _progress = new();
+    private readonly InMemoryRunJobStore _store;
+
+    public OwnedRunCancellerTests()
+    {
+        _store = new InMemoryRunJobStore(
+            new StaticOptionsMonitor<AppConfig>(_config), _time, [], NullLogger<InMemoryRunJobStore>.Instance);
+    }
+
+    private OwnedRunCanceller Canceller(TimeSpan wait) => new(
+        _store, _progress.Object, _escalations.Object, _registry.Object, _time,
+        NullLogger<OwnedRunCanceller>.Instance, wait);
+
+    private RunRecord Admit(string jobId, string ownerId, RunStatus status = RunStatus.Queued, params Guid[] awaiting)
+    {
+        var record = new RunRecord
+        {
+            JobId = jobId,
+            Kind = RunKind.Workflow,
+            TargetId = Guid.NewGuid().ToString(),
+            OwnerId = ownerId,
+            TenantId = "acme",
+            Envelope = new CapabilityEnvelope(),
+            Status = RunStatus.Queued,
+            CreatedAt = _time.GetUtcNow(),
+        };
+        _store.TryCreate(record, int.MaxValue).Should().Be(RunAdmission.Accepted);
+
+        if (status == RunStatus.Running)
+            return _store.TryBeginRun(jobId, _time.GetUtcNow())!;
+
+        if (status == RunStatus.Blocked)
+        {
+            var parked = record with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow(), AwaitingEscalationIds = awaiting };
+            _store.Update(parked).Should().BeTrue();
+            return parked;
+        }
+
+        return record;
+    }
+
+    private RunStatus StatusOf(string jobId, string ownerId) => _store.Get(jobId, ownerId, "acme")!.Status;
+
+    [Fact]
+    public async Task CancelRunsAsync_ParkedRun_IsCancelledAndItsApprovalsWithdrawnAsTheSystem()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        Admit("parked", Subject, RunStatus.Blocked, first, second);
+
+        var stillLive = await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+
+        stillLive.Should().Be(0);
+        StatusOf("parked", Subject).Should().Be(RunStatus.Cancelled);
+        foreach (var escalation in new[] { first, second })
+        {
+            _escalations.Verify(e => e.CancelEscalationAsync(
+                escalation, It.IsAny<string>(), OwnedRunCanceller.WithdrawnBy, It.IsAny<CancellationToken>()), Times.Once,
+                "an approval that outlives its run is answerable by someone who cannot know it is moot, and naming the "
+                + "person in the retained escalation audit would record them in the act of erasing them");
+        }
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_QueuedRun_IsCancelledAndItsWatchersAreTold()
+    {
+        Admit("queued", Subject);
+
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+
+        StatusOf("queued", Subject).Should().Be(RunStatus.Cancelled);
+        _progress.Verify(p => p.Publish("queued", RunProgressKind.RunFinished, null, null,
+            nameof(RunStatus.Cancelled), It.IsAny<string>()), Times.Once,
+            "no dispatch will finish this run, so without the event a watcher's stream never ends");
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_QueuedRun_IsNeverStartedByTheDispatcher()
+    {
+        // One dispatch at a time, so the bystander's run being executed proves the cancelled one was dequeued first.
+        _config.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns = 1;
+        var executed = new List<string>();
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<IRunKindExecutor>(RunKind.Workflow, new RecordingExecutor(executed));
+        services.AddSingleton(Mock.Of<IKnowledgeScopeWriter>());
+        var queue = new InMemoryRunDispatchQueue();
+        var dispatcher = new RunDispatchBackgroundService(
+            queue, _store, _progress.Object, services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new StaticOptionsMonitor<AppConfig>(_config), _time, NullLogger<RunDispatchBackgroundService>.Instance);
+        Admit("queued", Subject);
+        Admit("sentinel", Bystander);
+        await queue.EnqueueAsync("queued", CancellationToken.None);
+        await queue.EnqueueAsync("sentinel", CancellationToken.None);
+
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        await dispatcher.StartAsync(cts.Token);
+        for (var attempt = 0; attempt < 200 && _store.Get("sentinel", Bystander, "acme")!.IsTerminal is false; attempt++)
+            await Task.Delay(10);
+        await cts.CancelAsync();
+        await dispatcher.StopAsync(CancellationToken.None);
+
+        StatusOf("sentinel", Bystander).Should().Be(RunStatus.Succeeded, "the dispatcher must have reached the queue");
+        executed.Should().Equal(["sentinel"], "a run erasure cancelled must never start after the person is erased");
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_AnotherPersonsRuns_AreLeftLive()
+    {
+        var escalation = Guid.NewGuid();
+        Admit("mine", Subject);
+        Admit("theirs-queued", Bystander);
+        Admit("theirs-parked", Bystander, RunStatus.Blocked, escalation);
+
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+
+        StatusOf("theirs-queued", Bystander).Should().Be(RunStatus.Queued);
+        StatusOf("theirs-parked", Bystander).Should().Be(RunStatus.Blocked);
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            escalation, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_RunRecordedInAnotherCasing_IsStillThePersons()
+    {
+        // A run a schedule started before #907 records its owner lower-cased; it is still the person's.
+        Admit("lower", Subject.ToLowerInvariant());
+
+        await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+
+        StatusOf("lower", Subject.ToLowerInvariant()).Should().Be(RunStatus.Cancelled);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_ExecutingWorkflow_IsSignalledThroughItsPlanAndCountedAsStillLive()
+    {
+        var running = Admit("running", Subject, RunStatus.Running);
+
+        var stillLive = await Canceller(TimeSpan.Zero).CancelRunsAsync(Subject, CancellationToken.None);
+
+        stillLive.Should().Be(1, "its status belongs to the dispatch in flight, so it ends only when that writes it");
+        StatusOf("running", Subject).Should().Be(RunStatus.Running);
+        _registry.Verify(r => r.TryCancel(new PlanId(Guid.Parse(running.TargetId))), Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_ExecutingRunEndsDuringTheWait_ReportsNothingStillLive()
+    {
+        // The workflow notices its signal only at a later checkpoint: here, by the second poll.
+        var running = Admit("running", Subject, RunStatus.Running);
+        var signals = 0;
+        _registry.Setup(r => r.TryCancel(It.IsAny<PlanId>()))
+            .Callback(() =>
+            {
+                if (++signals == 2)
+                    _store.Update(running with { Status = RunStatus.Cancelled, CompletedAt = _time.GetUtcNow() });
+            })
+            .Returns(true);
+
+        var stillLive = await AdvanceUntilDoneAsync(Canceller(TimeSpan.FromSeconds(30)).CancelRunsAsync(Subject, CancellationToken.None));
+
+        stillLive.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_ExecutingRunParksBeforeItStops_IsCancelledOnALaterPoll()
+    {
+        // The signal can land after the plan reached a gate: the run parks instead of stopping, and a single pass would
+        // leave it parked, holding its approval, through the erasure.
+        var escalation = Guid.NewGuid();
+        var running = Admit("running", Subject, RunStatus.Running);
+        _registry.Setup(r => r.TryCancel(It.IsAny<PlanId>()))
+            .Callback(() => _store.Update(running with
+            {
+                Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow(), AwaitingEscalationIds = [escalation],
+            }))
+            .Returns(true);
+
+        var stillLive = await AdvanceUntilDoneAsync(Canceller(TimeSpan.FromSeconds(30)).CancelRunsAsync(Subject, CancellationToken.None));
+
+        stillLive.Should().Be(0);
+        StatusOf("running", Subject).Should().Be(RunStatus.Cancelled);
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            escalation, It.IsAny<string>(), OwnedRunCanceller.WithdrawnBy, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_ExecutingRunNeverEnds_GivesUpAtTheBound()
+    {
+        Admit("running", Subject, RunStatus.Running);
+        var started = _time.GetUtcNow();
+
+        var stillLive = await AdvanceUntilDoneAsync(Canceller(TimeSpan.FromSeconds(5)).CancelRunsAsync(Subject, CancellationToken.None));
+
+        stillLive.Should().Be(1);
+        (_time.GetUtcNow() - started).Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(5),
+            "it waits out the bound before going on without a run that never ends");
+    }
+
+    [Fact]
+    public async Task CancelRunsAsync_NoLiveRuns_ReturnsAtOnce()
+    {
+        var stillLive = await Canceller(TimeSpan.FromSeconds(30)).CancelRunsAsync(Subject, CancellationToken.None);
+
+        stillLive.Should().Be(0);
+        _registry.Verify(r => r.TryCancel(It.IsAny<PlanId>()), Times.Never);
+    }
+
+    /// <summary>Advances the fake clock in poll-sized steps until <paramref name="pending"/> completes.</summary>
+    private async Task<int> AdvanceUntilDoneAsync(Task<int> pending)
+    {
+        for (var step = 0; step < 1_000 && !pending.IsCompleted; step++)
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(250));
+            await Task.Delay(1);
+        }
+
+        return await pending;
+    }
+
+    private sealed class RecordingExecutor(List<string> executed) : IRunKindExecutor
+    {
+        public Task<Result<RunCompletion>> ExecuteAsync(RunRecord record, CancellationToken cancellationToken)
+        {
+            executed.Add(record.JobId);
+            return Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded()));
+        }
+    }
+}

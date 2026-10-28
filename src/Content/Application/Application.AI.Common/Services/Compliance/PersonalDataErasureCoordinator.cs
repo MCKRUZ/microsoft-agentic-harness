@@ -71,6 +71,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     private readonly IErasureJournal? _journal;
     private readonly IPlannedTaskCanceller? _runningTasks;
     private readonly IKeptRunSource? _keptRuns;
+    private readonly IOwnedRunCanceller? _liveRuns;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -105,6 +106,11 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// Counts the person's workflow and evaluation run records still held after the run store's erasure, which keeps a
     /// run until it ends (#926). <see langword="null"/> in a host without a run store.
     /// </param>
+    /// <param name="liveRuns">
+    /// Cancels the person's workflow and evaluation runs that have not ended when the request starts, before anything is
+    /// read, so the run store's eraser can remove them with the rest (#992). <see langword="null"/> in a host without a run
+    /// store.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -116,7 +122,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         IPlanRunTraceSource? planRuns = null,
         IErasureJournal? journal = null,
         IPlannedTaskCanceller? runningTasks = null,
-        IKeptRunSource? keptRuns = null)
+        IKeptRunSource? keptRuns = null,
+        IOwnedRunCanceller? liveRuns = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -137,6 +144,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         _journal = journal;
         _runningTasks = runningTasks;
         _keptRuns = keptRuns;
+        _liveRuns = liveRuns;
     }
 
     /// <inheritdoc />
@@ -148,6 +156,10 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         // One request per person at a time (#907): overlapping ones could clear an id between another's read and record.
         using var turn = _journal is null ? null : await _journal.BeginRequestAsync(ownerId, cancellationToken);
+
+        // #992: a queued run would start after the person is erased, and a parked one would keep the receipt Partial. First,
+        // so a queued workflow run cannot start a planned task after the stop below has looked for them.
+        await CancelLiveRunsAsync(ownerId, cancellationToken);
 
         // #907: a planned task already running would keep writing under the ids read below after their stores are cleared.
         await StopRunningTasksAsync(ownerId, cancellationToken);

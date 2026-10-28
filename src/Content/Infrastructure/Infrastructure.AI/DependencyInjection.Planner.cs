@@ -8,6 +8,7 @@ using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.KnowledgeGraph;
+using Application.AI.Common.Services.Runs;
 using Domain.AI.Planner;
 using Domain.AI.Runs;
 using Domain.AI.Sandbox;
@@ -135,6 +136,10 @@ public static partial class DependencyInjection
         services.AddPersonalDataEraser<IRunJobStore>();
         services.AddPersonalDataExporter<IRunJobStore>();
         services.TryAddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
+
+        // Erasure cancels the person's live runs before the store erases the finished ones (#992), through the same cancel
+        // path an owner's cancel takes; singleton with the store and registry it acts through.
+        services.TryAddSingleton<IOwnedRunCanceller, OwnedRunCanceller>();
 
         // Singleton for the same reason: the run publishes from the dispatcher and the watcher reads
         // from a request, so a scoped broker would give each side its own instance and every stream
