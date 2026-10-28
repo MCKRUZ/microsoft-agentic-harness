@@ -30,6 +30,7 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
     private readonly string _tempDir;
     private readonly string _root;
     private readonly FileSystemToolResultStore _sut;
+    private readonly Dictionary<string, string> _scopeFolders = new(StringComparer.Ordinal);
 
     public FileSystemToolResultStoreErasureTests()
     {
@@ -69,7 +70,7 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
         await SpillAsync("run:step-1");
         await SpillAsync("conv-b");
         SpillFiles("conv-a").Should().HaveCount(2, "the seed must exist before erasing");
-        SpillFiles("run~step-1").Should().ContainSingle("a colon is stored as '~'");
+        SpillFiles("run:step-1").Should().ContainSingle();
 
         // A step id reaches erasure through the plan store's record of the subject's run, never as one of their own
         // conversations: an own conversation with a ':' id is withheld from this store (#907).
@@ -78,8 +79,8 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
             CancellationToken.None);
 
         removed.Should().Be(3);
-        Directory.Exists(Path.Combine(_root, "conv-a")).Should().BeFalse("an emptied conversation directory goes too");
-        Directory.Exists(Path.Combine(_root, "run~step-1")).Should().BeFalse();
+        Directory.Exists(_scopeFolders["conv-a"]).Should().BeFalse("an emptied conversation directory goes too");
+        Directory.Exists(_scopeFolders["run:step-1"]).Should().BeFalse();
         SpillFiles("conv-b").Should().ContainSingle("another conversation's spill must survive");
     }
 
@@ -130,7 +131,7 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
             CancellationToken.None);
 
         removed.Should().Be(2);
-        SpillFiles("plan-1~step-a").Should().BeEmpty();
+        SpillFiles("plan-1:step-a").Should().BeEmpty();
         SpillFiles("job-1").Should().BeEmpty();
         SpillFiles("job-2").Should().ContainSingle("another run's spill must survive");
     }
@@ -150,12 +151,14 @@ public sealed class FileSystemToolResultStoreErasureTests : IDisposable
     {
         var reference = await _sut.StoreIfLargeAsync(conversationId, "search", null, LargeOutput, scopeIsRetrievable: true);
         reference.IsPersistedToDisk.Should().BeTrue("the seed must actually spill");
+        // Taken from where the store wrote, never re-derived here: a copy of the naming rule would break in step with it.
+        _scopeFolders[conversationId] = Path.GetDirectoryName(Path.GetDirectoryName(reference.FullContentPath!))!;
         return reference;
     }
 
-    private string[] SpillFiles(string directoryName)
+    private string[] SpillFiles(string scopeId)
     {
-        var directory = Path.Combine(_root, directoryName, "tool-results");
+        var directory = Path.Combine(_scopeFolders[scopeId], "tool-results");
         return Directory.Exists(directory) ? Directory.GetFiles(directory) : [];
     }
 
