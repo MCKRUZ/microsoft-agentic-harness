@@ -94,8 +94,8 @@ public sealed class ComplianceAuditReplayService : BackgroundService
 
         if (pass.Skipped && pass.Remaining > 0)
             _logger.LogWarning(
-                "Replay of {Remaining} held compliance record(s) in {PendingLocation} skipped: {Reason}. Once is another " +
-                "host's pass; every minute means the folder cannot be locked.",
+                "Replay of {Remaining} held compliance record(s) in {PendingLocation} skipped: {Reason}. A sharing violation " +
+                "means another host's pass holds the folder; any other reason means it cannot be locked at all.",
                 pass.Remaining, trail.PendingLocation, pass.SkippedBecause);
         else if (pass.Remaining > 0)
             _logger.LogWarning(

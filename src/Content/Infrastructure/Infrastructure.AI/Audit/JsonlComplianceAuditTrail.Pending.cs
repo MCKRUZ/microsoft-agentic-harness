@@ -139,6 +139,7 @@ public sealed partial class JsonlComplianceAuditTrail
     {
         var name = string.Create(CultureInfo.InvariantCulture, $"{_clock.GetUtcNow().UtcTicks:D19}-{NewHeldId():N}");
         var temporary = Path.Combine(_pendingFolder, name + TemporaryExtension);
+        var created = false;
         try
         {
             OwnerOnlyDirectoryHelper.Create(_pendingFolder, _logger);
@@ -146,6 +147,7 @@ public sealed partial class JsonlComplianceAuditTrail
             // Flushed to disk under a temporary name, then renamed: replay never reads a half-written record.
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
+                created = true;
                 stream.Write(Encoding.UTF8.GetBytes(payload));
                 stream.Flush(flushToDisk: true);
             }
@@ -155,12 +157,14 @@ public sealed partial class JsonlComplianceAuditTrail
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            DeleteQuietly(temporary); // A half-written record is no record, and nothing else would ever remove it.
+            // A half-written record is no record, and nothing else would ever remove it. Only this call's own file, though.
+            if (created)
+                DeleteTemporary(temporary);
             return Result.Fail(ex.Message);
         }
     }
 
-    private static void DeleteQuietly(string path)
+    private void DeleteTemporary(string path)
     {
         try
         {
@@ -168,7 +172,7 @@ public sealed partial class JsonlComplianceAuditTrail
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Left behind; replay never reads a .tmp.
+            _logger.LogWarning(ex, "Could not remove {TemporaryFile}; replay never reads it, so it can be deleted by hand.", path);
         }
     }
 
@@ -225,12 +229,20 @@ public sealed partial class JsonlComplianceAuditTrail
             return new HeldRecord(path, payload, HeldOn(path), action);
 
         // Not a record the chain would accept: keeping it in the queue would stop every record after it.
-        File.Move(path, Path.ChangeExtension(path, SetAsideExtension), overwrite: false);
+        var setAsideAs = SetAsideName(path);
+        File.Move(path, setAsideAs, overwrite: false);
         CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Lost);
         _logger.LogCritical(
-            "Held compliance record {PendingFile} is not a record and was set aside as {SetAsideExtension}; it is not in the trail.",
-            path, SetAsideExtension);
+            "Held compliance record {PendingFile} is not a record and was set aside as {SetAsideFile}; it is not in the trail.",
+            path, setAsideAs);
         return null;
+    }
+
+    // An earlier file set aside under the same name (copied back to retry it, say) must not stop this one being set aside.
+    private static string SetAsideName(string path)
+    {
+        var name = Path.ChangeExtension(path, SetAsideExtension);
+        return File.Exists(name) ? Path.ChangeExtension(path, $".{Guid.NewGuid():N}{SetAsideExtension}") : name;
     }
 
     private async Task<HashSet<string>> AlreadyInTrailAsync(List<HeldRecord> held, CancellationToken cancellationToken)
@@ -299,10 +311,14 @@ public sealed partial class JsonlComplianceAuditTrail
 
     private static void CountFailure(string action, string outcome) =>
         ComplianceMetrics.AuditWriteFailures.Add(1,
-            new KeyValuePair<string, object?>(ComplianceConventions.Action, KnownAction(action)),
+            new KeyValuePair<string, object?>(ComplianceConventions.Action, action),
             new KeyValuePair<string, object?>(ComplianceConventions.Outcome, outcome));
 
-    /// <summary>The action as a metric tag: one of the three requests, so file content can never add a time series.</summary>
+    /// <summary>
+    /// A held file's action as a metric tag: one of the three shipped requests, so file content can never add a time series.
+    /// A failure counted as it happens is tagged with the entry's own action instead, which comes from code; a deployment
+    /// that adds a request of its own sees it there under its own name, and under <c>unknown</c> only once replayed.
+    /// </summary>
     private static string KnownAction(string action) =>
         action is AuditedErasure.AuditAction or AuditedExport.AuditAction or AuditedDocumentRemoval.AuditAction
             ? action

@@ -298,15 +298,29 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     [Fact]
     public async Task ReplayPendingAsync_AHeldRecordWithAnUnknownAction_IsCountedUnderUnknown()
     {
-        var actions = CaptureTagValues(ComplianceConventions.AuditRecordsReplayed, ComplianceConventions.Action);
+        using var actions = new TagCapture(ComplianceConventions.AuditRecordsReplayed, ComplianceConventions.Action);
         Directory.CreateDirectory(Pending);
         File.WriteAllText(Path.Combine(Pending, "0000000000000000000-planted.pending"), "{\"action\":\"made-up-42\"}");
         using var trail = NewTrail();
 
         await trail.ReplayPendingAsync(CancellationToken.None);
 
-        lock (actions)
-            actions.Should().Contain("unknown").And.NotContain("made-up-42", "a file's content must never mint a metric series");
+        actions.Snapshot().Should().Contain("unknown").And.NotContain("made-up-42", "a file's content must never mint a metric series");
+    }
+
+    [Fact]
+    public async Task ReplayPendingAsync_ANoRecordWhoseSetAsideNameIsTaken_IsStillSetAside()
+    {
+        Directory.CreateDirectory(Pending);
+        File.WriteAllText(Path.Combine(Pending, "0000000000000000000-torn.unreadable"), "set aside earlier");
+        File.WriteAllText(Path.Combine(Pending, "0000000000000000000-torn.pending"), "{\"action\":");
+        using var trail = NewTrail();
+
+        var pass = await trail.ReplayPendingAsync(CancellationToken.None);
+
+        pass.SetAside.Should().Be(1, "a copy of an earlier set-aside file must not keep this one in the queue for good");
+        HeldFiles().Should().BeEmpty();
+        File.ReadAllText(Path.Combine(Pending, "0000000000000000000-torn.unreadable")).Should().Be("set aside earlier");
     }
 
     [Fact]
@@ -323,7 +337,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     [Fact]
     public async Task RecordAsync_AHeldAndALostRecord_AreCountedByOutcome()
     {
-        var outcomes = CaptureFailureOutcomes();
+        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
         BreakTheTrail();
         using var trail = NewTrail();
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
@@ -332,36 +346,41 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
 
         await trail.RecordAsync(Entry("outcome"), ErasureActor.DataSubject, CancellationToken.None);
 
-        lock (outcomes)
-            outcomes.Should().Contain([ComplianceConventions.OutcomeValues.Pending, ComplianceConventions.OutcomeValues.Lost],
+        outcomes.Snapshot().Should().Contain([ComplianceConventions.OutcomeValues.Pending, ComplianceConventions.OutcomeValues.Lost],
                 "operators alert on this counter; the request it records is never refused");
     }
 
-    private static List<string> CaptureFailureOutcomes() =>
-        CaptureTagValues(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
-
-    /// <summary>Every value of <paramref name="tagKey"/> measured on the named counter from now on. Lock the list to read it.</summary>
-    private static List<string> CaptureTagValues(string instrumentName, string tagKey)
+    /// <summary>Every value of one tag measured on one counter while it is alive; disposed so listeners never pile up.</summary>
+    private sealed class TagCapture : IDisposable
     {
-        var values = new List<string>();
-        var listener = new MeterListener
+        private readonly List<string> _values = [];
+        private readonly MeterListener _listener = new();
+
+        public TagCapture(string instrumentName, string tagKey)
         {
-            InstrumentPublished = (instrument, l) =>
+            _listener.InstrumentPublished = (instrument, l) =>
             {
                 if (instrument.Name == instrumentName)
                     l.EnableMeasurementEvents(instrument);
-            },
-        };
-        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
-        {
-            foreach (var tag in tags)
+            };
+            _listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
             {
-                if (tag.Key == tagKey)
-                    lock (values)
-                        values.Add((string)tag.Value!);
-            }
-        });
-        listener.Start();
-        return values;
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == tagKey)
+                        lock (_values)
+                            _values.Add((string)tag.Value!);
+                }
+            });
+            _listener.Start();
+        }
+
+        public IReadOnlyList<string> Snapshot()
+        {
+            lock (_values)
+                return [.. _values];
+        }
+
+        public void Dispose() => _listener.Dispose();
     }
 }
