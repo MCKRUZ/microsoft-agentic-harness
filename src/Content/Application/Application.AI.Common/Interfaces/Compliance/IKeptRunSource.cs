@@ -8,9 +8,11 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// <para>
 /// The run store erases a person's finished runs but keeps every run still queued, running or waiting for an approval:
 /// removing a running run's record would unlock its target while the dispatcher is still executing it, and removing a
-/// parked one would strand the approvals it waits on. An eraser can only report how many records it removed, so the
-/// erasure coordinator asks this once every stage has run and, when any record is still held, lists it on the receipt and
-/// tells the person to run erasure again, as it does for a planned task still running.
+/// parked one would strand the approvals it waits on. Erasure cancels the person's queued and parked runs first
+/// (<see cref="IOwnedRunCanceller"/>, #992), so what is left is a run still executing when it stopped waiting, or one
+/// started meanwhile. An eraser can only report how many records it removed, so the erasure coordinator asks this once
+/// every stage has run and, when any record is still held, lists it on the receipt and tells the person to run erasure
+/// again, as it does for a planned task still running.
 /// </para>
 /// <para>
 /// <strong>Every record still held, not only the live ones.</strong> A run that was live when the store was erased and

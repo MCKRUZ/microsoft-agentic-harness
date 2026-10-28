@@ -979,17 +979,22 @@
                         <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
                         the person's finished runs in every tenant at once, and releases what else is kept under their
                         ids (progress bookkeeping, an evaluation's report). Those are released first, and if one cannot
-                        be, the records are kept so a retry can still reach it. A run still queued, running or waiting for an approval is
-                        kept. Removing a running run's record would let a second run start on the same workflow while the
-                        first is still executing, and removing a parked one would strand the approvals it waits on. Once
-                        every store has run, the coordinator counts every record still held for the person, so a run
-                        that ended meanwhile is counted too. When any is, the receipt gets a <code>Skipped</code> line,
-                        "workflow and evaluation runs still held", and is <code>Partial</code>, telling the person to run
-                        erasure again once it has ended. A queued or parked run is not stopped: it goes on after the
-                        request, as a planned task on another host does. The stopped planned tasks above are usually
-                        ended by then. A run that
-                        stays parked is failed after <code>MaxParkedRunDuration</code>, unless that is switched off, and
-                        then dropped an hour later. The store is single-host, like the run substrate it belongs to.
+                        be, the records are kept so a retry can still reach it. The store removes only finished runs: removing a
+                        running run's record would let a second run start on the same workflow while the first is still
+                        executing, and removing a parked one would strand the approvals it waits on. So before anything
+                        is read, erasure (#992) ends the person's live runs through the same cancel path an owner uses: a
+                        queued run is cancelled and never starts, a parked one is cancelled and its pending approvals are
+                        withdrawn (attributed to <code>system:personal-data-erasure</code>, not to the person), and an
+                        executing workflow is signalled to stop. Alongside the planned-task stop above, erasure then waits
+                        up to 30 seconds for runs still executing, cancelling any that parked or were queued meanwhile and
+                        signalling any that started; an executing evaluation cannot be signalled, so it is only waited
+                        for. The run store then
+                        removes the cancelled runs with the finished ones, in the same request. Once every store has
+                        run, the coordinator counts every record still held for the person, so a run that ended
+                        meanwhile is counted too. When any is (a run still executing after the wait, or one started
+                        meanwhile), the receipt gets a <code>Skipped</code> line, "workflow and evaluation runs still
+                        held", and is <code>Partial</code>, telling the person to run erasure again once it has ended. The
+                        store is single-host, like the run substrate it belongs to.
                     </p>
                     <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
