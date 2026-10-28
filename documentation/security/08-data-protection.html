@@ -907,7 +907,7 @@
                         knowledge graph (nodes, edges, feedback weights, the vector and full-text content of linked
                         documents, and cross-session memory) through <code>DefaultErasureOrchestrator</code>, then every
                         store registered as an <code>IPersonalDataEraser</code>: the document indexes by owner,
-                        schedules, the person's finished workflow and evaluation run records, and, through the conversations and the planned tasks' model steps and runs, tool-result
+                        schedules, the person's finished workflow, evaluation and bundle run records, the bundles they staged, and, through the conversations and the planned tasks' model steps and runs, tool-result
                         spill files, prompt-usage records, token budgets, the call-once ledger and the observability
                         database. The conversations and the plans go next, and the token budgets and call-once ledger
                         last, for whichever of the two was actually erased. A store reached only through a conversation
@@ -989,6 +989,23 @@
                         then dropped an hour later. The store is single-host, like the run substrate it belongs to.
                     </p>
                     <p>
+                        The bundle API keeps two more stores in process memory (#990). Its run records
+                        (<code>InMemoryBundleRunJobStore</code>) name the caller and hold the conversation id, the
+                        messages they sent and the agent's final answer, until <code>BundleExecution:RunRecordTtl</code>
+                        (30 minutes) after the run ends. Its staged-bundle handles (<code>InMemoryBundleHandleStore</code>)
+                        name who staged each bundle, until <code>BundleExecution:HandleTtl</code> (30 minutes) after the
+                        bundle was last used. Erasure removes the person's finished bundle runs, and keeps one still queued
+                        or running, as for workflow runs. It removes every bundle they staged and deletes its staging
+                        folder, except one a run is still reading, which goes when that run ends. A queued bundle run
+                        whose bundle was removed fails when it would have started, so it does not run after the person is
+                        erased. Each store's kept records get a <code>Skipped</code> line of their own, "bundle runs still
+                        held" or "staged bundles still held", and the receipt is <code>Partial</code>. Both are erased
+                        and copied only by a request served by the same process as the bundle API. The bundle API runs in
+                        <code>Presentation.ExecutionApi</code>, and erasure and export are served by the AgentHub host.
+                        When the two run separately, the bundle API's records are not reached, and they expire on their
+                        own within the periods above.
+                    </p>
+                    <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
                         erasers match that form. A scheduled run writes under its schedule's owner, so a schedule keeps
                         the owner as issued as well as lower-cased, and each fired run carries the issued form (#907). A
@@ -1063,7 +1080,8 @@
                                     fixed reason. <code>Erased</code> (with the count removed), <code>Failed</code>,
                                     <code>Skipped</code> (held back: an earlier store failed, or the person's
                                     conversations or planned tasks started or ran while the erasure was under way, or one
-                                    of their workflow or evaluation runs had not ended, or a store was only partly
+                                    of their workflow, evaluation or bundle runs had not ended, or a run was still
+                                    using a bundle they staged, or a store was only partly
                                     erased), <code>NotSupported</code> (a store configured in this
                                     host that holds personal data but cannot erase one person's), and three for stores
                                     that cannot be searched for one person: <code>RetainedUntilExpiry</code> (each record is
@@ -1145,14 +1163,14 @@
                             configured backend".
                         </li>
                         <li>
-                            <strong>Not yet in the inventory:</strong> the bundle API's in-memory run records
-                            (<code>InMemoryBundleRunJobStore</code>). Each holds the caller's id, the conversation id and
-                            the messages they sent, until <code>BundleExecution:RunRecordTtl</code> (30 minutes) after the
-                            run ends. It is not erased, exported or listed on the receipt. The inventory guard does not see
-                            it, because it is held only in memory and neither erases nor exports. Nor is the evaluation
-                            submission store (<code>InMemoryEvalRunSubmissionStore</code>), which keeps an evaluation run's
-                            dataset names and report under the run's id: erasure releases it with the run record, but the
-                            person's copy does not include it.
+                            <strong>In memory, outside the inventory guard's sight until #990.</strong> The guard found a
+                            store by the storage call it makes, and a store held only in memory makes none, so the bundle
+                            API's two stores were missed. It now also fails the build for any type that keeps a collection
+                            of records with an <code>OwnerId</code> or <code>UserId</code> field and is not declared. It
+                            still cannot see a store whose records carry no owner, such as one keyed only by a run or
+                            conversation id. Those are declared by hand. Two types it flags are listed as exceptions, each
+                            with its reason: a per-request buffer of graph nodes, and the AgentHub's record of open
+                            connections, which is dropped when a connection closes or has been idle for five minutes.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
@@ -1275,7 +1293,10 @@
                     <p>
                         <strong>What the copy holds.</strong> One section per store that can return a person's data:
                         their conversations with every message, their schedules, their workflow and evaluation run records
-                        (finished or still live), and their knowledge-graph nodes and edges,
+                        (finished or still live) with each evaluation's dataset names, options and report (#991), their
+                        bundle runs with the messages they sent and the agent's answers, the bundles they staged (which
+                        agent, skills and plugins, not where the host extracted them) (#990), and their knowledge-graph
+                        nodes and edges,
                         including remembered facts the write-gate quarantined, which the product never shows them but which
                         are still theirs. A record with no owner is shared or global and is never included on its own, and
                         neither is an edge another person owns, even where it touches this person's node. An unowned edge
