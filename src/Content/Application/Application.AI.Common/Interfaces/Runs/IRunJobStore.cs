@@ -117,6 +117,24 @@ public interface IRunJobStore : IKeptRunSource
     IReadOnlyList<RunRecord> GetParkedRuns();
 
     /// <summary>
+    /// Lists every run <paramref name="ownerId"/> owns that has not ended (queued, running or parked), in every tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists for erasure (#992), which must stop a person's live runs before it removes their records: a queued run would
+    /// otherwise start after the person was erased, and a parked one would hold every erasure retry <c>Partial</c>.
+    /// </para>
+    /// <para>
+    /// Takes no tenant and no caller, for the same reason erasure's own match does not: erasure is about the person, not
+    /// the tenant a run was started under. The owner is matched as every read here matches it, through the canonical
+    /// form, so a run recorded with different casing is still the person's. Nothing reached through a request may use it
+    /// to find runs: a caller is entitled only to the runs <see cref="Get"/> returns for its own identity.
+    /// </para>
+    /// </remarks>
+    /// <param name="ownerId">The person, in either the issued or the canonical form.</param>
+    IReadOnlyList<RunRecord> GetLiveRunsOwnedBy(string ownerId);
+
+    /// <summary>
     /// Atomically returns a parked run to the queue, handing the updated record to the caller that won
     /// and <see langword="null"/> to everyone else.
     /// </summary>

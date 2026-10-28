@@ -54,6 +54,8 @@ public sealed class RunRecordCleanupServiceTests
 
         public IReadOnlyList<RunRecord> GetParkedRuns() => inner.GetParkedRuns();
 
+        public IReadOnlyList<RunRecord> GetLiveRunsOwnedBy(string ownerId) => inner.GetLiveRunsOwnedBy(ownerId);
+
         public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
 
         public Task<int> CountRunsKeptAsync(string ownerId, CancellationToken cancellationToken) =>

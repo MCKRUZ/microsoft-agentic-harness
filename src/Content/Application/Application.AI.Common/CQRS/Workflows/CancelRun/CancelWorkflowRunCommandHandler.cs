@@ -1,7 +1,7 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
-using Domain.AI.Planner;
+using Application.AI.Common.Services.Runs;
 using Domain.AI.Runs;
 using Domain.Common;
 using Domain.Common.Config;
@@ -108,51 +108,27 @@ public sealed class CancelWorkflowRunCommandHandler
                 $"Run {request.JobId} has already finished and cannot be cancelled.");
         }
 
-        var stopped = _runStore.TryCancel(request.JobId, _time.GetUtcNow());
-        if (stopped is null)
-        {
-            // Executing, or it reached a terminal state between the read above and here. Either way its
-            // status belongs to the dispatch that holds it, so all that is left is to ask it to stop.
-            _cancellationRegistry.TryCancel(new PlanId(request.WorkflowId));
-
-            return Result<CancelWorkflowRunResult>.Success(new CancelWorkflowRunResult
-            {
-                StoppedImmediately = false,
-                WithdrawnApprovals = 0
-            });
-        }
-
-        // Published here because nothing else will: no dispatch is going to run for this job, and the
-        // terminal event is what ends a watcher's stream. Without it, anyone streaming a queued run
-        // holds the connection and a stream slot until they give up.
-        _progress.Publish(
-            stopped.JobId,
-            RunProgressKind.RunFinished,
-            status: nameof(RunStatus.Cancelled),
-            detail: "The run was cancelled by its owner.");
-
-        var withdrawn = await ApprovalWithdrawal.WithdrawAsync(
+        var outcome = await RunCancellation.CancelAsync(
+            _runStore,
+            _progress,
             _escalations,
+            _cancellationRegistry,
             _logger,
-            stopped,
-            "The run this approval was raised for was cancelled.",
+            record,
+            new RunCancellationNotice(
+                _time.GetUtcNow(),
+                "The run was cancelled by its owner.",
+                "The run this approval was raised for was cancelled.",
 
-            // The caller's approver-shaped identity where the host could establish one. This value
-            // lands beside approver names in the escalation audit, so an owner id would read
-            // differently from every other row there — still attributable, but not comparable.
-            request.CancellerApproverName ?? request.OwnerId,
-
-            // Deliberately NOT the request's token. The run is already cancelled by this point, so a
-            // caller that hangs up mid-withdrawal would leave the rest of its approvals pending with
-            // nothing to retry them — the parked-run ceiling only looks at parked runs, and this one is
-            // terminal. The same shape as a run being queued on its caller's abort token, which stranded
-            // workflows permanently.
-            CancellationToken.None).ConfigureAwait(false);
+                // The caller's approver-shaped identity where the host could establish one. This value lands beside
+                // approver names in the escalation audit, so an owner id would read differently from every other row
+                // there: still attributable, but not comparable.
+                request.CancellerApproverName ?? request.OwnerId)).ConfigureAwait(false);
 
         return Result<CancelWorkflowRunResult>.Success(new CancelWorkflowRunResult
         {
-            StoppedImmediately = true,
-            WithdrawnApprovals = withdrawn
+            StoppedImmediately = outcome.StoppedImmediately,
+            WithdrawnApprovals = outcome.WithdrawnApprovals
         });
     }
 

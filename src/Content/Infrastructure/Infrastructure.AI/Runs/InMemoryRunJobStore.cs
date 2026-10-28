@@ -36,12 +36,13 @@ namespace Infrastructure.AI.Runs;
 /// </para>
 /// <para>
 /// <strong>Holds personal data, and is erased by owner (#926).</strong> Each record names the person who started the
-/// run, their tenant, the target and the capability envelope it runs under. Erasure removes the person's finished runs
-/// and keeps the live ones (see <see cref="EraseSubjectAsync"/>); the person's copy includes all of them.
+/// run, their tenant, the target and the capability envelope it runs under. Erasure cancels the person's live runs first
+/// (#992), then removes the finished ones and keeps any that did not stop in time (see <see cref="EraseSubjectAsync"/>);
+/// the person's copy includes all of them.
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "In-memory workflow and evaluation run records: owner and tenant ids, the target id, the capability envelope, status, timestamps and the run's error message. Held in process memory only; a finished run is dropped WorkflowSubmission:RunRecordTtl (1 hour) after it ends, a live one is kept until it ends, and a run parked on an approval is failed after WorkflowSubmission:MaxParkedRunDuration, which can be switched off. Owner erasure removes the person's finished runs in every tenant and keeps live ones, which the receipt lists.",
+    "In-memory workflow and evaluation run records: owner and tenant ids, the target id, the capability envelope, status, timestamps and the run's error message. Held in process memory only; a finished run is dropped WorkflowSubmission:RunRecordTtl (1 hour) after it ends, a live one is kept until it ends, and a run parked on an approval is failed after WorkflowSubmission:MaxParkedRunDuration, which can be switched off. Owner erasure first cancels the person's queued and parked runs (withdrawing their approvals) and signals executing ones, then removes the person's finished runs in every tenant; a run still executing when erasure stops waiting is kept, which the receipt lists.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Owner,
     RetentionBasis.Volatile,
