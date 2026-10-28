@@ -32,13 +32,16 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   restart made a new key, so person references written before and after a restart could not be
   matched), the erasure journal (`erasure/`; without it an erasure that failed part-way cannot be
   finished), the conversation, document-ledger and schedule databases, workflow state
-  (`workflows/`), execution traces (`traces/`), prompt-usage records, offloaded tool results,
-  subagent delegation records and mailbox, the embedded (Kuzu) graph database, and file logs.
-  Stores that are off by default are rooted too, so turning one on lands it here. Three are not:
-  durable governance state, whose database must stay inside the application directory
-  (`GovernanceStatePaths` refuses any other), and skill-training checkpoints and the eval
-  dashboard's run reports, which the personal-data inventory records as holding no personal data. Setting `AppConfig:AI:Audit:PseudonymKey` from a secret store replaces the key
-  file and is still the right choice when more than one instance writes the trails. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
+  (`workflows/`), execution traces (`traces/`), offloaded tool results, subagent delegation
+  records and mailbox, the embedded (Kuzu) graph database, and file logs. Stores that are off by
+  default are rooted too, so turning one on lands it here. Four are not: durable governance state,
+  whose database must stay inside the application directory (`GovernanceStatePaths` refuses any
+  other); prompt usage, configured by a whole connection string an override would replace (point
+  `AppConfig:AI:PromptUsage:ConnectionString` at a path under `$HOME` yourself); and
+  skill-training checkpoints and the eval dashboard's run reports, which the personal-data
+  inventory records as holding no personal data. Setting `AppConfig:AI:Audit:PseudonymKey` from a
+  secret store replaces the key file and is still the right choice when more than one instance
+  writes the trails. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
   there is no on-disk index to root; they rebuild from ingested documents.)
 
 **Net effect:** out of the box, every conversation gets durable, idle-surviving memory with **zero

@@ -208,7 +208,8 @@ public sealed partial class JsonlComplianceAuditTrail
     {
         var held = new List<HeldRecord>();
         var setAside = 0;
-        foreach (var path in HeldFiles())
+        var files = HeldFiles();
+        foreach (var path in files)
         {
             try
             {
@@ -218,12 +219,21 @@ public sealed partial class JsonlComplianceAuditTrail
                     setAside++;
                 _reportedStuck.TryRemove(path, out _); // Readable again: should it stick later, that is news once more.
             }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Gone since the folder was listed (removed by hand, or by another host's pass): nothing is stuck.
+                _logger.LogDebug(ex, "Held compliance record {PendingFile} went away during the pass.", path);
+            }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // A file this pass cannot touch must not hold back the others; it is tried again next pass.
                 ReportStuck(path, ex);
             }
         }
+
+        // A file reported stuck and since removed by hand must not be remembered for the life of the process.
+        foreach (var gone in _reportedStuck.Keys.Except(files, StringComparer.Ordinal))
+            _reportedStuck.TryRemove(gone, out _);
 
         return (held, setAside);
     }
@@ -242,8 +252,8 @@ public sealed partial class JsonlComplianceAuditTrail
 
         CountFailure(UnknownAction, ComplianceConventions.OutcomeValues.Stuck);
         _logger.LogError(ex,
-            "Held compliance record {PendingFile} cannot be opened, so it cannot be written to the trail; every pass retries " +
-            "it, and this is reported once. Give the application's account access to it.",
+            "Held compliance record {PendingFile} cannot be read or set aside, so it cannot be written to the trail; every " +
+            "pass retries it, and this is reported once. Check that the application's account can read and rename it.",
             path);
     }
 

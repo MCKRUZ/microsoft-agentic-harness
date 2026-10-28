@@ -234,7 +234,8 @@ public sealed class FoundryHostBootstrapTests
         overrides["AppConfig__AI__Conversations__ConversationsPath"].Should().Be($"{root}/conversations/files");
         overrides["AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath"].Should().Be($"{root}/documents/documents.db");
         overrides["AppConfig__AI__Schedules__DatabasePath"].Should().Be($"{root}/schedules/schedules.db");
-        overrides["AppConfig__AI__PromptUsage__ConnectionString"].Should().Be($"Data Source={root}/prompt-usage/prompt-usage.db");
+        overrides.Should().NotContainKey("AppConfig__AI__PromptUsage__ConnectionString",
+            "an override would replace every option a deployer set in the connection string");
         overrides["AppConfig__Infrastructure__StateManagement__BasePath"].Should().Be($"{root}/workflows");
         overrides["AppConfig__MetaHarness__TraceDirectoryRoot"].Should().Be($"{root}/traces");
         overrides.Should().NotContainKey("AppConfig__AI__Governance__DurableState__DatabasePath",

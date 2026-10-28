@@ -114,10 +114,8 @@ internal static class CompositionRootTestHost
 
         foreach (var (key, file, connectionString) in OwnDatabases)
         {
-            if (list.Any(s => string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)))
-                continue;
             var path = Path.Combine(IsolatedStateRoot.Root, $"{file}-{Guid.NewGuid():N}.db");
-            list.Add(new(key, connectionString ? $"Data Source={path}" : path));
+            AddUnlessChosen(list, key, connectionString ? $"Data Source={path}" : path);
         }
 
         // The compliance trail (kept for good, so it would grow under the build output with every run) and the files

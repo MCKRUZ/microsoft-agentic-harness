@@ -303,9 +303,14 @@ internal static class FoundryHostBootstrap
 
     /// <summary>
     /// The SQLite and file stores that hold personal data or the erasure state that reaches it. Those switched off by
-    /// default (schedules, durable governance state, prompt usage, execution traces, the file conversation store) are
-    /// rooted too, so switching one on later lands it in the persistent location rather than the working directory.
+    /// default (schedules, execution traces, the file conversation store) are rooted too, so switching one on later lands
+    /// it in the persistent location rather than the working directory.
     /// </summary>
+    /// <remarks>
+    /// Not here: durable governance state, whose database <c>GovernanceStatePaths</c> confines to the application
+    /// directory, and prompt usage, configured by a whole connection string that an override would replace along with
+    /// every option a deployer set in it; set <c>AppConfig:AI:PromptUsage:ConnectionString</c> to a path under <c>$HOME</c>.
+    /// </remarks>
     private static void AddHomeRootedDataStorePaths(IDictionary<string, string> overrides, string stateRoot)
     {
         // Planner checkpoint/resume database (SQLite).
@@ -319,7 +324,6 @@ internal static class FoundryHostBootstrap
         overrides["AppConfig__AI__Conversations__ConversationsPath"] = $"{stateRoot}/conversations/files";
         overrides["AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath"] = $"{stateRoot}/documents/documents.db";
         overrides["AppConfig__AI__Schedules__DatabasePath"] = $"{stateRoot}/schedules/schedules.db";
-        overrides["AppConfig__AI__PromptUsage__ConnectionString"] = $"Data Source={stateRoot}/prompt-usage/prompt-usage.db";
         overrides["AppConfig__Infrastructure__StateManagement__BasePath"] = $"{stateRoot}/workflows";
         overrides["AppConfig__MetaHarness__TraceDirectoryRoot"] = $"{stateRoot}/traces";
     }

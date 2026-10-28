@@ -282,6 +282,28 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
+    public async Task ReplayPendingAsync_AStuckFileRemovedThenStuckAgain_IsReportedAgain()
+    {
+        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        BreakTheTrail();
+        using var trail = NewTrail();
+        await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
+        var held = HeldFiles().Single();
+        var line = File.ReadAllText(held);
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+            await trail.ReplayPendingAsync(CancellationToken.None);
+
+        File.Delete(held); // Removed by hand: the pass after must forget it.
+        await trail.ReplayPendingAsync(CancellationToken.None);
+        File.WriteAllText(held, line);
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+            await trail.ReplayPendingAsync(CancellationToken.None);
+
+        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(2,
+            "a file the process forgot once it was gone is news again when it sticks again");
+    }
+
+    [Fact]
     public async Task ReplayPendingAsync_TheReplayLockCannotBeMade_SkipsAndSaysWhy()
     {
         BreakTheTrail();

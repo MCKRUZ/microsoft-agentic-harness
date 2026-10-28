@@ -19,7 +19,9 @@ public sealed record ErasureActor
     /// <summary>The executor recorded when the document age limit removed a document.</summary>
     public const string RetentionExecutor = "retention";
 
-    private ErasureActor(string executorId, string initiator, bool isNamedOperator = false)
+    // No default for isNamedOperator: every factory states it, so a new one cannot record a person's id in plain text by
+    // forgetting to.
+    private ErasureActor(string executorId, string initiator, bool isNamedOperator)
     {
         ExecutorId = executorId;
         Initiator = initiator;
@@ -45,15 +47,15 @@ public sealed record ErasureActor
     public bool IsNamedOperator { get; }
 
     /// <summary>The person erasing their own data.</summary>
-    public static ErasureActor DataSubject { get; } = new(DataSubjectExecutor, "data_subject");
+    public static ErasureActor DataSubject { get; } = new(DataSubjectExecutor, "data_subject", isNamedOperator: false);
 
     /// <summary>
     /// An operator request refused because the caller carried no usable identity; recorded so the attempt is still visible.
     /// </summary>
-    public static ErasureActor UnidentifiedOperator { get; } = new("unidentified-operator", "operator");
+    public static ErasureActor UnidentifiedOperator { get; } = new("unidentified-operator", "operator", isNamedOperator: false);
 
     /// <summary>The document age limit removing a document no one has loaded for the configured period.</summary>
-    public static ErasureActor Retention { get; } = new(RetentionExecutor, "retention");
+    public static ErasureActor Retention { get; } = new(RetentionExecutor, "retention", isNamedOperator: false);
 
     /// <summary>An operator erasing someone else's data on their request.</summary>
     /// <param name="operatorId">The operator's id, from their authenticated identity.</param>
