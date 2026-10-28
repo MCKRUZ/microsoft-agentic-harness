@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Runs;
+using Domain.Common.Compliance;
 using Domain.Common.Config;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Runs;
@@ -32,8 +34,20 @@ namespace Infrastructure.AI.Runs;
 /// nothing measurable against what it gates. Held while the per-entry locks are taken, never the
 /// reverse, so the two cannot deadlock.
 /// </para>
+/// <para>
+/// <strong>Holds personal data, and is erased by owner (#926).</strong> Each record names the person who started the
+/// run, their tenant, the target and the capability envelope it runs under. Erasure removes the person's finished runs
+/// and keeps the live ones (see <see cref="EraseSubjectAsync"/>); the person's copy includes all of them.
+/// </para>
 /// </remarks>
-public sealed class InMemoryRunJobStore : IRunJobStore
+[PersonalDataStore(
+    "In-memory workflow and evaluation run records: owner and tenant ids, the target id, the capability envelope, status, timestamps and the run's error message. Held in process memory only; a finished run is dropped WorkflowSubmission:RunRecordTtl (1 hour) after it ends, a live one is kept until it ends, and a run parked on an approval is failed after WorkflowSubmission:MaxParkedRunDuration, which can be switched off. Owner erasure removes the person's finished runs in every tenant and keeps live ones, which the receipt lists.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
+public sealed partial class InMemoryRunJobStore : IRunJobStore
 {
     private sealed class Entry(RunRecord record, DateTimeOffset expiresAt)
     {
@@ -45,15 +59,32 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     private readonly Lock _admission = new();
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
+    private readonly IReadOnlyList<IRunReclaimListener> _reclaimListeners;
+    private readonly ILogger<InMemoryRunJobStore> _logger;
 
     /// <summary>Initializes the store with the host's retention configuration and clock.</summary>
-    public InMemoryRunJobStore(IOptionsMonitor<AppConfig> config, TimeProvider time)
+    /// <param name="config">Supplies the retention period for finished runs.</param>
+    /// <param name="time">Stamps and ages the records.</param>
+    /// <param name="reclaimListeners">
+    /// Every holder of run-scoped state, told when erasure removes a run so it releases what it keeps under the run's id,
+    /// as the retention sweep does.
+    /// </param>
+    /// <param name="logger">Logger for a listener that fails to release.</param>
+    public InMemoryRunJobStore(
+        IOptionsMonitor<AppConfig> config,
+        TimeProvider time,
+        IEnumerable<IRunReclaimListener> reclaimListeners,
+        ILogger<InMemoryRunJobStore> logger)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
+        ArgumentNullException.ThrowIfNull(reclaimListeners);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _config = config;
         _time = time;
+        _reclaimListeners = [.. reclaimListeners];
+        _logger = logger;
     }
 
     private TimeSpan Ttl => _config.CurrentValue.AI.WorkflowSubmission.RunRecordTtl;

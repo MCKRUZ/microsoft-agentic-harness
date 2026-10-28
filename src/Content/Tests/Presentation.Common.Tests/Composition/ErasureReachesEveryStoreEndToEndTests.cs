@@ -96,6 +96,17 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
                 return await db.PlanGraphs.CountAsync(g => g.Id == p.PlanId.Value)
                     + await db.PlanSteps.CountAsync(s => s.PlanGraphId == p.PlanId.Value);
             }),
+        ["InMemoryRunJobStore"] = new(
+            (sp, p) =>
+            {
+                // Finished, so erasure may remove it: a live run is kept on purpose (#926).
+                var runs = sp.GetRequiredService<IRunJobStore>();
+                var run = FinishedRun(p) with { Status = RunStatus.Queued, CompletedAt = null };
+                runs.TryCreate(run, int.MaxValue).Should().Be(RunAdmission.Accepted);
+                runs.Update(FinishedRun(p)).Should().BeTrue();
+                return Task.CompletedTask;
+            },
+            (sp, p) => Task.FromResult(sp.GetRequiredService<IRunJobStore>().Get($"run-{p.Label}", p.OwnerId, null) is null ? 0 : 1)),
         ["EfScheduleStore"] = new(
             (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
             async (sp, p) => (await sp.GetRequiredService<IScheduleStore>().ListForOwnerAsync(p.OwnerId, null, CancellationToken.None)).Count),
@@ -381,6 +392,18 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
             Configuration = new PlanConfiguration { MaxParallelSteps = 4, PlanTimeout = TimeSpan.FromMinutes(10) },
         };
     }
+
+    private static RunRecord FinishedRun(Seeded p) => new()
+    {
+        JobId = $"run-{p.Label}",
+        Kind = RunKind.Workflow,
+        TargetId = $"target-{p.Label}",
+        OwnerId = p.OwnerId,
+        Envelope = new CapabilityEnvelope(),
+        Status = RunStatus.Succeeded,
+        CreatedAt = DateTimeOffset.UtcNow,
+        CompletedAt = DateTimeOffset.UtcNow,
+    };
 
     private static ScheduleRecord Schedule(Seeded p) => new()
     {

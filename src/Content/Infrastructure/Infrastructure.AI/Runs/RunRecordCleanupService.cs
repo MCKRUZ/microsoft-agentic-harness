@@ -128,7 +128,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
             // A run's identifier keys more than its record. Reclaiming one without the other would
             // trade a bounded leak for an unbounded one — progress bookkeeping, and whatever each run
             // kind holds, would outlive every run the host ever accepted.
-            NotifyReclaimed(reclaimed);
+            RunReclaimNotifier.Notify(_reclaimListeners, reclaimed, _logger);
 
             _logger.LogInformation(
                 "Run sweep reclaimed {Count} expired run record(s).", reclaimed.Count);
@@ -138,35 +138,6 @@ internal sealed class RunRecordCleanupService : BackgroundService
             // A failed sweep must not take the service down: the next tick would never come, and the
             // retention window would stop being honoured for the life of the process.
             _logger.LogError(ex, "Run record sweep failed; will retry on the next interval.");
-        }
-    }
-
-    /// <summary>
-    /// Tells every holder of run-scoped state that these runs are gone.
-    /// </summary>
-    /// <remarks>
-    /// Each listener is guarded separately. One that throws must not stop the rest from being told:
-    /// the records are already gone by this point, so a listener skipped here holds its entries for
-    /// the life of the process with nothing that will ever come back for them — which is the
-    /// unbounded leak this call exists to prevent, reintroduced by a fault in an unrelated holder.
-    /// </remarks>
-    private void NotifyReclaimed(IReadOnlyList<string> reclaimed)
-    {
-        foreach (var listener in _reclaimListeners)
-        {
-            try
-            {
-                listener.OnRunsReclaimed(reclaimed);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "{Listener} failed to release state for {Count} reclaimed run(s); its entries for "
-                    + "those runs will not be recovered.",
-                    listener.GetType().Name,
-                    reclaimed.Count);
-            }
         }
     }
 
