@@ -35,12 +35,13 @@ namespace Application.AI.Common.Services.Runs;
 /// so it does not leave the rest running.
 /// </para>
 /// <para>
-/// <strong>Bounded, and on whatever is executing at each poll.</strong> An executing evaluation cannot be signalled and
-/// a workflow stops only at its next checkpoint, so the wait gives up after <see cref="DefaultWait"/>, as the
-/// planned-task canceller does, and alongside it, so the two do not add up. A run that starts executing during the wait
-/// (claimed from the queue before it could be cancelled) is signalled and waited for too, within the same fixed
-/// deadline, so it cannot stretch the wait out; if it has not ended by then it is kept, and the receipt says to run
-/// erasure again.
+/// <strong>Bounded, and on whatever of the person's is live at each poll.</strong> An executing evaluation cannot be
+/// signalled and a workflow stops only at its next checkpoint, so the wait gives up after <see cref="DefaultWait"/>, as
+/// the planned-task canceller does, and alongside it, so the two do not add up. The wait goes on while any of the
+/// person's runs is live, not only while one executes: a run that starts executing during the wait (claimed from the
+/// queue before it could be cancelled) is signalled and waited for, and one that parks or is queued after a poll's stop
+/// is cancelled on the next. All of this falls within the same fixed deadline, so nothing stretches the wait out; a run
+/// still live by then is kept, and the receipt says to run erasure again.
 /// </para>
 /// </remarks>
 public sealed class OwnedRunCanceller : IOwnedRunCanceller
@@ -124,8 +125,10 @@ public sealed class OwnedRunCanceller : IOwnedRunCanceller
             live = _store.GetLiveRunsOwnedBy(ownerId);
             // Re-read every poll: a run that was queued when the wait began and was claimed by a dispatcher before it
             // could be cancelled is executing now, and erasure must wait for it too, or it could write the person's
-            // data after their stores were cleared. The deadline is fixed, so a late start cannot stretch the wait.
-            if (!live.Any(r => r.Status == RunStatus.Running) || _time.GetUtcNow() >= deadline)
+            // data after their stores were cleared. Go on while anything of theirs is live, not only while something
+            // executes: a run that parked or was queued after the stop above is cancelled on the next poll. The deadline
+            // is fixed, so neither a late start nor a run that cannot be stopped stretches the wait.
+            if (live.Count == 0 || _time.GetUtcNow() >= deadline)
                 break;
 
             await Task.Delay(PollEvery, _time, cancellationToken).ConfigureAwait(false);
