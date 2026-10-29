@@ -65,14 +65,14 @@ internal static class FoundryHostErasure
         if (graphProvider is not ("in_memory" or "managed_code"))
             yield return $"The knowledge graph store (AppConfig:AI:Rag:GraphRag:GraphProvider = {graphProvider})";
 
-        if (rag.GraphDatabase.Enabled && !string.Equals(rag.GraphDatabase.Provider, "kuzu", StringComparison.OrdinalIgnoreCase))
+        // Compared as the keyed registrations resolve them, ordinally, so the notice describes the store that is built.
+        if (rag.GraphDatabase.Enabled && rag.GraphDatabase.Provider != "kuzu")
             yield return $"The graph database (AppConfig:AI:Rag:GraphDatabase:Provider = {rag.GraphDatabase.Provider})";
 
         // Fails closed: only the in-process FAISS index, or an Azure index with no endpoint (which holds nothing), stays in
         // the session; any other provider, including one a consumer adds, is named.
         var vectorProvider = rag.VectorStore.Provider;
-        var inSession = string.Equals(vectorProvider, "faiss", StringComparison.OrdinalIgnoreCase)
-            || (string.Equals(vectorProvider, "azure_ai_search", StringComparison.OrdinalIgnoreCase) && !rag.VectorStore.IsConfigured);
+        var inSession = vectorProvider == "faiss" || (vectorProvider == "azure_ai_search" && !rag.VectorStore.IsConfigured);
         if (!inSession)
             yield return $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
 

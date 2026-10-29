@@ -402,7 +402,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
     /// <summary>
     /// Runs one later stage when <paramref name="mayRun"/>; otherwise records each of its stores as held back, so a retry
-    /// still finds them. Returns whether every store in the stage ran and succeeded.
+    /// still finds them. A store with no backend configured is listed as such either way and never asked. Returns whether
+    /// every store in the stage ran and erased, which is what tells the caller the stage's lead is gone: an unconfigured
+    /// store erased nothing, so it does not count.
     /// </summary>
     private async Task<bool> RunStageAsync(
         ErasureStage stage, bool mayRun, List<StoreErasureOutcome> outcomes, ErasureSubject subject,
@@ -411,10 +413,11 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         var allErased = mayRun;
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == stage))
         {
-            var outcome = mayRun || NotConfigured(eraser) is not null
+            // Read once, so a store whose configuration changes mid-request is never asked while its stage is held back.
+            var outcome = NotConfigured(eraser) ?? (mayRun
                 ? await EraseAsync(eraser, subject, cancellationToken)
-                : new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason);
-            allErased &= outcome.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotConfigured;
+                : new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason));
+            allErased &= outcome.Status == StoreErasureStatus.Erased;
             outcomes.Add(outcome);
         }
 

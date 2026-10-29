@@ -279,6 +279,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         StoreErasureStatus.RetainedByObligation => ExportStatus.RetainedByObligation,
         StoreErasureStatus.RetainedAsBusinessContent => ExportStatus.RetainedAsBusinessContent,
         StoreErasureStatus.RetainedIndefinitely => ExportStatus.RetainedUnsearchable,
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Only a retained store's line is mapped here."),
+        // Any other status a retained store reports reads as data left out: the copy stays honest without failing.
+        _ => ExportStatus.RetainedUnsearchable,
     };
 }

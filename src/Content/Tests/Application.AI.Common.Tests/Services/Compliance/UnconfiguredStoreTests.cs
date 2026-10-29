@@ -95,6 +95,29 @@ public sealed class UnconfiguredStoreTests
     }
 
     [Fact]
+    public async Task Erasure_AnUnconfiguredConversationStore_DoesNotCountAsTheConversationsBeingGone()
+    {
+        // The person has a conversation, but the stage that would delete it has no backend. Its line says so, and what the
+        // surviving conversation leads to is held back, as for any lead that was not deleted.
+        var conversations = new Mock<IConversationStore>();
+        conversations.SetupSequence(c => c.ListAsync(Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new ConversationRecord("c-1", "agent", Owner, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, [])])
+            .ReturnsAsync([new ConversationRecord("c-1", "agent", Owner, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, [])]);
+        var reached = Eraser("reached through conversations", ErasureStage.AfterConversations);
+        reached.SetupGet(e => e.ErasureReach).Returns(ErasureReach.Owner);
+
+        var receipt = await Coordinator(conversations.Object, null,
+                UnconfiguredEraser(ErasureStage.Conversations, "conversations").Object, reached.Object)
+            .EraseOwnerAsync(Owner, CancellationToken.None);
+
+        receipt.Stores.Should().ContainSingle(s => s.Store == "conversations")
+            .Which.Status.Should().Be(StoreErasureStatus.NotConfigured);
+        receipt.Stores.Should().ContainSingle(s => s.Store == "reached through conversations")
+            .Which.Status.Should().Be(StoreErasureStatus.Skipped);
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
+    }
+
+    [Fact]
     public async Task Erasure_AnUnconfiguredStore_LetsTheRequestClearItsJournal()
     {
         // The journal keeps the ids a request read until every store has erased them; an unconfigured store counts as done,

@@ -1,6 +1,7 @@
 using Domain.Common.Config;
 using Domain.Common.Config.Cache;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Presentation.FoundryHost;
 using Tests.Common;
@@ -58,6 +59,20 @@ public sealed class FoundryHostErasureTests
 
         warnings.Should().ContainSingle().Which.Message.Should().Contain(named)
             .And.Contain("no owner").And.Contain("cannot be erased or copied for one person");
+    }
+
+    [Fact]
+    public void Describe_TheShippedStandaloneContainer_AsTheBootstrapBindsIt_WarnsOfNothing()
+    {
+        // Driven through the real bootstrap overrides with no promotion variables, so the notice is checked against what a
+        // standalone container actually binds, not a hand-written configuration.
+        var overrides = FoundryHostBootstrap.BuildConfigOverrides(name => name == "HOME" ? "/home/agent" : null);
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(overrides.ToDictionary(o => o.Key.Replace("__", ":"), o => (string?)o.Value))
+            .Build()
+            .GetSection("AppConfig").Get<AppConfig>()!;
+
+        FoundryHostErasure.Describe(config).Should().ContainSingle().Which.Level.Should().Be(LogLevel.Information);
     }
 
     [Fact]
