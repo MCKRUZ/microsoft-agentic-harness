@@ -251,19 +251,8 @@ internal static class FoundryHostBootstrap
 
         var stateRoot = $"{home.TrimEnd('/')}/{StateRootSubdirectory}";
 
-        // Planner checkpoint/resume database (SQLite).
-        overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
-
-        // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
-        // (+ gate evidence), egress decisions, and the compliance record of erasures, exports and
-        // document removals. Each is append-only forensic state worth preserving across resumes.
-        overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
-        overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
-        overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
-        overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
-        overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";
-        overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
-        overrides["AppConfig__AI__Erasure__AuditStoragePath"] = $"{stateRoot}/compliance";
+        AddHomeRootedAuditPaths(overrides, stateRoot);
+        AddHomeRootedDataStorePaths(overrides, stateRoot);
 
         // Per-session agent working state that also defaults under .agent-sessions/: offloaded tool
         // results (large outputs spilled to disk), subagent delegation records, and the inter-agent
@@ -281,6 +270,63 @@ internal static class FoundryHostBootstrap
 
         // File logs.
         overrides["AppConfig__Logging__LogsBasePath"] = $"{stateRoot}/logs";
+    }
+
+    /// <summary>
+    /// The audit trails and everything that keeps them checkable: the JSONL trails, the verification checkpoints, and the
+    /// key their person references are made with. Each is lost on every restart if left in the working directory, and each
+    /// loss breaks something the trails promise.
+    /// </summary>
+    private static void AddHomeRootedAuditPaths(IDictionary<string, string> overrides, string stateRoot)
+    {
+        // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
+        // (+ gate evidence), egress decisions, and the compliance record of erasures, exports and
+        // document removals. Each is append-only forensic state worth preserving across resumes.
+        overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
+        overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
+        overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
+        overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
+        overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";
+        overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
+        // The folder the compliance trail keeps its own two in: {stateRoot}/compliance and {stateRoot}/compliance-pending.
+        overrides["AppConfig__AI__Erasure__AuditStoragePath"] = stateRoot;
+
+        // Verification checkpoints: lost at a restart, the next pass has nothing to hold a chain to, so a chain cut off
+        // while the container was down verifies as intact.
+        overrides["AppConfig__AI__Audit__ReceiptPath"] = $"{stateRoot}/audit-verify";
+
+        // The key the trails' person references are made with (#996), made on first use. Left in the working directory it
+        // was lost on every restart, and with it any way to match a reference written before the restart to one after.
+        // Its own folder: the key must sit outside every audit folder (AuditPseudonymKeyValidator).
+        overrides["AppConfig__AI__Audit__PseudonymKeyPath"] = $"{stateRoot}/keys/audit-pseudonym.key";
+    }
+
+    /// <summary>
+    /// The SQLite and file stores that hold personal data or the erasure state that reaches it. Those switched off by
+    /// default (schedules, execution traces, the file conversation store) are rooted too, so switching one on later lands
+    /// it in the persistent location rather than the working directory.
+    /// </summary>
+    /// <remarks>
+    /// Not here: durable governance state, whose database <c>GovernanceStatePaths</c> confines to the application
+    /// directory, and prompt usage, configured by a whole connection string that an override would replace along with
+    /// every option a deployer set in it; set <c>AppConfig:AI:PromptUsage:ConnectionString</c> to
+    /// <c>Data Source=$HOME/agent-state/prompt-usage.db</c> (the folder must exist; SQLite does not create it).
+    /// </remarks>
+    private static void AddHomeRootedDataStorePaths(IDictionary<string, string> overrides, string stateRoot)
+    {
+        // Planner checkpoint/resume database (SQLite).
+        overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
+
+        // The erasure journal: an erasure that fails part-way is retried from it. Lost at a restart, the retry no longer
+        // knows which ids the request read, and a half-finished erasure cannot be completed.
+        overrides["AppConfig__AI__Erasure__JournalDatabasePath"] = $"{stateRoot}/erasure/erasure-journal.db";
+
+        overrides["AppConfig__AI__Conversations__DatabasePath"] = $"{stateRoot}/conversations/conversations.db";
+        overrides["AppConfig__AI__Conversations__ConversationsPath"] = $"{stateRoot}/conversations/files";
+        overrides["AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath"] = $"{stateRoot}/documents/documents.db";
+        overrides["AppConfig__AI__Schedules__DatabasePath"] = $"{stateRoot}/schedules/schedules.db";
+        overrides["AppConfig__Infrastructure__StateManagement__BasePath"] = $"{stateRoot}/workflows";
+        overrides["AppConfig__MetaHarness__TraceDirectoryRoot"] = $"{stateRoot}/traces";
     }
 
     /// <summary>

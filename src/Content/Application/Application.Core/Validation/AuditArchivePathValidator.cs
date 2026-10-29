@@ -45,9 +45,18 @@ public sealed class AuditArchivePathValidator : AbstractValidator<AIConfig>
         ("Changes:AuditStoragePath", config.Changes.AuditStoragePath),
         ("Egress:AuditStoragePath", config.Egress.AuditStoragePath),
         ("DriftDetection:AuditPath", config.DriftDetection.AuditPath),
-        ("Erasure:AuditStoragePath", config.Erasure.AuditStoragePath),
+        // The compliance trail's own two folders, not the folder they sit in: that one is shared (.agent-sessions by default,
+        // FoundryHost's state root) and holds the pseudonym key's folder among others.
+        ("Erasure:AuditStoragePath", ErasureFolder(config, ErasureConfig.TrailFolderName)),
+        ("Erasure:AuditStoragePath", ErasureFolder(config, ErasureConfig.PendingFolderName)),
         ("Audit:ReceiptPath", config.Audit.ReceiptPath),
     ];
+
+    // Blank stays blank, so an unset path is skipped like the others (ErasureConfigValidator refuses it).
+    private static string ErasureFolder(AIConfig config, string folder) =>
+        string.IsNullOrWhiteSpace(config.Erasure.AuditStoragePath)
+            ? string.Empty
+            : Path.Combine(config.Erasure.AuditStoragePath, folder);
 
     /// <summary>Whether two normalized paths are the same, or one is inside the other.</summary>
     internal static bool Overlaps(string first, string second) =>
