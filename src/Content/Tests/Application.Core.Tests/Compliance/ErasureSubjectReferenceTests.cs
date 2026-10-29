@@ -99,7 +99,9 @@ public sealed class ErasureSubjectReferenceTests
     [Fact]
     public void ComplianceTrailFolder_DefaultsBesideTheOtherAuditTrails()
     {
-        new ErasureConfig().AuditStoragePath.Should().Be(".agent-sessions/compliance",
+        // The trail goes in a fixed compliance folder inside this one, so the default names the folder that holds it:
+        // .agent-sessions/compliance, beside .agent-sessions/governance and the rest, not .agent-sessions/compliance/compliance.
+        new ErasureConfig().AuditStoragePath.Should().Be(".agent-sessions",
             "durable by default: a host that sets nothing still keeps the proof");
     }
 }

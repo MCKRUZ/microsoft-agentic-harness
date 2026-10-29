@@ -1,4 +1,5 @@
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 
 namespace Infrastructure.AI.Audit;
 
@@ -62,7 +63,7 @@ public static class AuditChains
     public static AuditChainLocation Compliance(AppConfig config, TimeProvider clock)
     {
         // A fixed folder name inside the configured path, so the archive folder never takes its name from configuration.
-        var folder = Path.Combine(config.AI.Erasure.AuditStoragePath, "compliance");
+        var folder = Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.TrailFolderName);
         return new AuditChainLocation("compliance", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
     }
 

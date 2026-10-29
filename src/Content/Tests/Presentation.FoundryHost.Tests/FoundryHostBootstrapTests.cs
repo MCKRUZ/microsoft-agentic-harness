@@ -226,7 +226,20 @@ public sealed class FoundryHostBootstrapTests
         overrides["AppConfig__AI__Changes__AuditStoragePath"].Should().Be($"{root}/changes");
         overrides["AppConfig__AI__Changes__EvidenceStoragePath"].Should().Be($"{root}/changes/evidence");
         overrides["AppConfig__AI__Egress__AuditStoragePath"].Should().Be($"{root}/egress");
-        overrides["AppConfig__AI__Erasure__AuditStoragePath"].Should().Be($"{root}/compliance");
+        overrides["AppConfig__AI__Erasure__AuditStoragePath"].Should().Be(root, "the trail adds its own compliance folder");
+        overrides["AppConfig__AI__Audit__PseudonymKeyPath"].Should().Be($"{root}/keys/audit-pseudonym.key");
+        overrides["AppConfig__AI__Audit__ReceiptPath"].Should().Be($"{root}/audit-verify");
+        overrides["AppConfig__AI__Erasure__JournalDatabasePath"].Should().Be($"{root}/erasure/erasure-journal.db");
+        overrides["AppConfig__AI__Conversations__DatabasePath"].Should().Be($"{root}/conversations/conversations.db");
+        overrides["AppConfig__AI__Conversations__ConversationsPath"].Should().Be($"{root}/conversations/files");
+        overrides["AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath"].Should().Be($"{root}/documents/documents.db");
+        overrides["AppConfig__AI__Schedules__DatabasePath"].Should().Be($"{root}/schedules/schedules.db");
+        overrides.Should().NotContainKey("AppConfig__AI__PromptUsage__ConnectionString",
+            "an override would replace every option a deployer set in the connection string");
+        overrides["AppConfig__Infrastructure__StateManagement__BasePath"].Should().Be($"{root}/workflows");
+        overrides["AppConfig__MetaHarness__TraceDirectoryRoot"].Should().Be($"{root}/traces");
+        overrides.Should().NotContainKey("AppConfig__AI__Governance__DurableState__DatabasePath",
+            "GovernanceStatePaths refuses a governance-state database outside the application directory");
         overrides["AppConfig__AI__ContextManagement__ToolResultStorage__StoragePath"].Should().Be(root);
         overrides["AppConfig__AI__Orchestration__Subagent__DelegationStoragePath"].Should().Be($"{root}/delegations");
         overrides["AppConfig__AI__Orchestration__Subagent__MailboxStoragePath"].Should().Be($"{root}/mailbox");
