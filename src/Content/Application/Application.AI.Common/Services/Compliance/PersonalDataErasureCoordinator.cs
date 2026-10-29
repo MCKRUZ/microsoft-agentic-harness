@@ -134,8 +134,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         ArgumentNullException.ThrowIfNull(logger);
 
         _graph = graph;
-        // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser.
-        _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser. A substrate
+        // composed twice registers each store twice: one store is still erased once, on one line (#1004).
+        _erasers = PersonalDataRegistrations.DistinctErasers(erasers);
         _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;

@@ -837,7 +837,7 @@ The agent runs with exactly one tool: file_system.</code></pre>
                             <tr>
                                 <td><code>POST /api/compliance/document-removals</code></td>
                                 <td><code>200</code></td>
-                                <td>Body: <code>documentId</code> (16 upper-case hex digits). Removes a document and what was drawn from it from this host's corpus. Needs <code>Harness.Compliance.RemoveDocument</code> and an allowed operator tenant.</td>
+                                <td>Body: <code>documentId</code> (16 upper-case hex digits). Removes a document and what was drawn from it from this host's corpus. Needs <code>Harness.Compliance.RemoveDocument</code> and an allowed operator tenant. A document index this host has not configured is listed in <code>stores</code> as <code>NotConfigured</code>, not asked, and leaves the receipt <code>Full</code>.</td>
                             </tr>
                         </tbody>
                     </table>

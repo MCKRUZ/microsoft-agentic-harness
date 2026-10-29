@@ -1187,7 +1187,9 @@ paths:
         "200":
           description: >-
             The request ran. Check `completeness`: `Partial` names what was kept and why, and the
-            receipt covers this host only.
+            receipt covers this host only. The chunk counts are `vectorEmbeddingsDeleted` and
+            `bm25DocumentsDeleted`; `stores` lists only a document index this host has not configured,
+            as `NotConfigured`, which was not asked and leaves the receipt `Full`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErasureReceipt" }
