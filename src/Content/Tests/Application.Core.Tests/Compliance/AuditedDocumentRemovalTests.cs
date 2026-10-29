@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
+using Domain.Common.Compliance;
 using Domain.Common.Models;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -138,6 +139,20 @@ public sealed class AuditedDocumentRemovalTests
         outcome.Metadata["graph.feedback_weights"].Should().Be("1");
         outcome.Metadata["graph.vector_embeddings"].Should().Be("4");
         outcome.Metadata["graph.bm25_documents"].Should().Be("5");
+    }
+
+    [Fact]
+    public async Task RemoveAsync_AChunkStoreNotConfigured_IsNamedInTheOutcomeRecord()
+    {
+        // #1011: a store this host never configured is a line of its own, so the record does not read "0 removed" for it.
+        const string Index = "document index (Azure AI Search vectors)";
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Receipt() with { Stores = [new StoreErasureOutcome(Index, StoreErasureStatus.NotConfigured, 0)] });
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        _records[1].Metadata!["store." + Index].Should().Be("NotConfigured:0");
+        _records[1].Metadata["completeness"].Should().Be("Full");
     }
 
     [Fact]

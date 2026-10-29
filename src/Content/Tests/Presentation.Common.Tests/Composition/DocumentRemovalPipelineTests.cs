@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.RemoveDocument;
 using Domain.Common;
+using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common.Compliance;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Data.Sqlite;
@@ -70,13 +72,32 @@ public sealed class DocumentRemovalPipelineTests : IDisposable
         auditLines.Should().ContainSingle(m => m.Contains("phase=outcome") && m.Contains("matched=false"));
     }
 
-    private ServiceProvider BuildProvider() => CompositionRootTestHost.BuildProvider(
+    [Fact]
+    public async Task TheShippedAzureIndexWithNoEndpoint_IsNamedAsNotConfigured_InTheReceiptAndTheRecord()
+    {
+        // #1011, against the stores the host actually resolves: a decorator over either one that hid whether it was
+        // configured would put "0 removed" back on the receipt, which a test of the bare store cannot see.
+        await using var provider = BuildProvider(vectorStore: "azure_ai_search");
+        await using var scope = provider.CreateAsyncScope();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
+            new RemoveDocumentCommand { DocumentId = "0123456789ABCDEF", OperatorId = Operator });
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.Completeness.Should().Be(ErasureCompleteness.Full, "an index with no backend has held nothing");
+        result.Value.Stores.Should().HaveCount(2).And.OnlyContain(s =>
+            s.Status == StoreErasureStatus.NotConfigured && s.Store.StartsWith("document index (Azure AI Search", StringComparison.Ordinal));
+        _logs.Messages.Should().ContainSingle(m => m.Contains("phase=outcome") && m.Contains("NotConfigured:0"),
+            "the audit record names the store too, so it does not read as a search that found nothing");
+    }
+
+    private ServiceProvider BuildProvider(string vectorStore = "faiss") => CompositionRootTestHost.BuildProvider(
         new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
             ["AppConfig:AI:Schedules:DatabasePath"] = Path.Combine(_workingDir, "schedules.db"),
             ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
-            ["AppConfig:AI:Rag:VectorStore:Provider"] = "faiss",
+            ["AppConfig:AI:Rag:VectorStore:Provider"] = vectorStore,
         },
         (services, _) => services.AddSingleton<ILoggerProvider>(_logs));
 

@@ -53,7 +53,8 @@ public record ErasureReceipt
     /// non-empty list is the receipt's honest detail that content the graph manifest points
     /// at was not found where the stores looked — instead of silently counting those
     /// documents as purged. Empty when every submitted document matched rows or no
-    /// vector/BM25 store is configured. Defaults to empty so pre-existing construction sites
+    /// vector/BM25 store is configured; a store registered with no backend counts as not
+    /// configured and is not asked (#1011). Defaults to empty so pre-existing construction sites
     /// remain valid.
     /// </summary>
     public IReadOnlyList<string> UnmatchedDocumentIds { get; init; } = [];
@@ -86,8 +87,12 @@ public record ErasureReceipt
     /// document indexes, and the stores found through the subject's conversations (#900). A store that failed, or was
     /// held back so a retry can still find what depends on it, makes <see cref="Completeness"/>
     /// <see cref="ErasureCompleteness.Partial"/>. Stores that hold no record of who their data belongs to cannot be
-    /// searched for one person and are not listed here; the personal-data inventory records them. Defaults to empty so
-    /// pre-existing construction sites remain valid.
+    /// searched for one person and are not listed here; the personal-data inventory records them. A receipt straight from
+    /// the knowledge-graph erasure, and every document removal, lists only the chunk stores this host has not configured,
+    /// as <see cref="StoreErasureStatus.NotConfigured"/> (#1011), so a store that was never asked does not read as one that
+    /// searched and found nothing; the counts of the stores that were asked are <see cref="VectorEmbeddingsDeleted"/> and
+    /// <see cref="Bm25DocumentsDeleted"/>, and the erasure coordinator replaces the list with its own lines. Defaults to
+    /// empty so pre-existing construction sites remain valid.
     /// </summary>
     public IReadOnlyList<StoreErasureOutcome> Stores { get; init; } = [];
 
