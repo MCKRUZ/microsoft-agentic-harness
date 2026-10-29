@@ -86,8 +86,11 @@ public record ErasureReceipt
     /// document indexes, and the stores found through the subject's conversations (#900). A store that failed, or was
     /// held back so a retry can still find what depends on it, makes <see cref="Completeness"/>
     /// <see cref="ErasureCompleteness.Partial"/>. Stores that hold no record of who their data belongs to cannot be
-    /// searched for one person and are not listed here; the personal-data inventory records them. Defaults to empty so
-    /// pre-existing construction sites remain valid.
+    /// searched for one person and are not listed here; the personal-data inventory records them. On a document removal
+    /// it lists only the chunk stores this host has not configured, as <see cref="StoreErasureStatus.NotConfigured"/>
+    /// (#1011), so a store that was never asked does not read as one that searched and found nothing; the counts of the
+    /// stores that were asked are <see cref="VectorEmbeddingsDeleted"/> and <see cref="Bm25DocumentsDeleted"/>. Defaults to
+    /// empty so pre-existing construction sites remain valid.
     /// </summary>
     public IReadOnlyList<StoreErasureOutcome> Stores { get; init; } = [];
 

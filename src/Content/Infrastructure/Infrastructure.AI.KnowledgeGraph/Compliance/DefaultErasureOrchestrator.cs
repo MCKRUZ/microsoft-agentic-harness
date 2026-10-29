@@ -1,10 +1,12 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
+using Domain.Common.Compliance;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.Compliance;
@@ -193,6 +195,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         var requestedAt = _timeProvider.GetUtcNow();
         var requestId = Guid.NewGuid().ToString();
         var partialReasons = new List<string>();
+        var notConfigured = new List<StoreErasureOutcome>();
         var knowledge = GraphRemoval.None;
         var corpus = GraphRemoval.None;
         var communitiesDeleted = 0;
@@ -217,11 +220,11 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
                 + (edgeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByEdgeIdsAsync(edgeIds, cancellationToken) : 0);
 
             vectorDeleted = await DeleteChunksAsync(
-                "vector store", _vectorStore is null ? null : ct => _vectorStore.DeleteFromAllCollectionsAsync(documentId, ct),
-                partialReasons, cancellationToken);
+                "vector store", _vectorStore, ct => _vectorStore!.DeleteFromAllCollectionsAsync(documentId, ct),
+                partialReasons, notConfigured, cancellationToken);
             bm25Deleted = await DeleteChunksAsync(
-                "full-text store", _bm25Store is null ? null : ct => _bm25Store.DeleteFromAllCollectionsAsync(documentId, ct),
-                partialReasons, cancellationToken);
+                "full-text store", _bm25Store, ct => _bm25Store!.DeleteFromAllCollectionsAsync(documentId, ct),
+                partialReasons, notConfigured, cancellationToken);
         }
         finally
         {
@@ -259,6 +262,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             UnmatchedDocumentIds = matchedNothing ? [documentId] : [],
             Completeness = partialReasons.Count == 0 ? ErasureCompleteness.Full : ErasureCompleteness.Partial,
             CompletenessReason = partialReasons.Count == 0 ? null : string.Join("; ", partialReasons),
+            Stores = notConfigured,
         };
 
         _logger.LogInformation(
@@ -275,11 +279,25 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     /// Deletes the document's chunks from one store, reporting a failure on the receipt instead of losing what the graph
     /// steps already did.
     /// </summary>
+    /// <summary>
+    /// Deletes the document's chunks from one chunk store. A store this host has not configured is never asked (#1011): it
+    /// has held nothing, so it is a <see cref="StoreErasureStatus.NotConfigured"/> line on the receipt instead of a count of
+    /// zero that reads like a search that found nothing. It leaves completeness alone, as on an owner's erasure.
+    /// </summary>
     private async Task<int> DeleteChunksAsync(
-        string store, Func<CancellationToken, Task<int>>? delete, List<string> partialReasons, CancellationToken cancellationToken)
+        string label, object? store, Func<CancellationToken, Task<int>> delete, List<string> partialReasons,
+        List<StoreErasureOutcome> notConfigured, CancellationToken cancellationToken)
     {
-        if (delete is null)
+        if (store is null)
             return 0;
+
+        if (store is IConfigurablePersonalDataStore { IsConfigured: false })
+        {
+            notConfigured.Add(new StoreErasureOutcome(
+                store is IPersonalDataEraser eraser ? eraser.ErasureStoreName : label,
+                StoreErasureStatus.NotConfigured, 0, IConfigurablePersonalDataStore.NotConfiguredReason));
+            return 0;
+        }
 
         try
         {
@@ -287,8 +305,8 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Document removal could not delete the document's chunks from the {Store}.", store);
-            partialReasons.Add($"the {store} could not delete the document's chunks");
+            _logger.LogError(ex, "Document removal could not delete the document's chunks from the {Store}.", label);
+            partialReasons.Add($"the {label} could not delete the document's chunks");
             return 0;
         }
     }

@@ -692,7 +692,11 @@
                             An edge records only one source, so a relationship another document also asserts goes too, until
                             that document is loaded again. A document id is derived from where the document came from, so
                             this reaches every tenant and collection it was loaded into; it runs system-scoped, a store that
-                            cannot delete the chunks makes the result Partial, and every removal is audited.
+                            cannot delete the chunks makes the result Partial, and every removal is audited. A chunk store
+                            the host has not configured, such as an Azure AI Search index with no endpoint, is not asked: the
+                            receipt's <code>stores</code> and the audit record name it as <code>NotConfigured</code> rather
+                            than a count of 0 that reads like a search that found nothing, and the result stays
+                            <code>Full</code> (#1011).
                             Operators run it through <code>POST /api/compliance/document-removals</code> with the
                             document id in the body. It requires its own role,
                             <code>Harness.Compliance.RemoveDocument</code> (the erasure role does not grant it, nor it
