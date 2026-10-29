@@ -17,8 +17,9 @@ namespace Application.AI.Common.Services.Compliance;
 /// <para>
 /// A <see cref="NonErasableStore"/> is the exception: <c>AddPersonalDataEraser</c> builds a new stand-in on every
 /// resolution, so two registrations of one store that cannot erase are two instances. A stand-in carries only its store's
-/// type name and the stage it holds, so stand-ins are collapsed when both match: one replacement type standing in at two
-/// stages (behind a run store and a plan store) stays two lines, and the stage after each is still held back.
+/// type name and the stage it holds. Erasure collapses stand-ins when both match: one replacement type standing in at two
+/// stages (behind a run store and a plan store) stays two, so the stage after each is still held back. The export has no
+/// stages, so it collapses them by name, and such a type is one line of the copy's manifest.
 /// </para>
 /// </remarks>
 internal static class PersonalDataRegistrations
@@ -28,10 +29,17 @@ internal static class PersonalDataRegistrations
     /// registered twice is kept once, and stand-ins for one store that cannot erase are kept once.
     /// </summary>
     /// <param name="erasers">The erasers as the container resolved them, in registration order.</param>
+    /// <param name="keepEachStage">
+    /// Whether stand-ins with one name at different stages stay apart: erasure needs each stage held back, an export,
+    /// which has no stages, lists the store once.
+    /// </param>
     /// <returns>The distinct erasers, in the order each first appeared.</returns>
-    public static IReadOnlyList<IPersonalDataEraser> DistinctErasers(IEnumerable<IPersonalDataEraser?> erasers) =>
+    public static IReadOnlyList<IPersonalDataEraser> DistinctErasers(
+        IEnumerable<IPersonalDataEraser?> erasers, bool keepEachStage = true) =>
         erasers.OfType<IPersonalDataEraser>()
-            .DistinctBy(e => e is NonErasableStore standIn ? (standIn.ErasureStoreName, standIn.ErasureStage) : (object)e,
+            .DistinctBy(e => e is NonErasableStore standIn
+                    ? (standIn.ErasureStoreName, keepEachStage ? standIn.ErasureStage : ErasureStage.BeforeConversations)
+                    : (object)e,
                 StandInOrInstance.Instance)
             .ToList();
 

@@ -96,7 +96,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         // A forwarded registration yields null when the host's store cannot export or erase; see AddPersonalDataExporter.
         // A substrate composed twice registers each store twice: one store is still one section and one line (#1004).
         _exporters = PersonalDataRegistrations.DistinctExporters(exporters);
-        _erasers = PersonalDataRegistrations.DistinctErasers(erasers);
+        _erasers = PersonalDataRegistrations.DistinctErasers(erasers, keepEachStage: false);
         _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;

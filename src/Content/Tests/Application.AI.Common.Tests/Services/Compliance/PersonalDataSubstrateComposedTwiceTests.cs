@@ -138,6 +138,20 @@ public sealed class PersonalDataSubstrateComposedTwiceTests
         erasers.Select(e => e.ErasureStage).Should().Equal(ErasureStage.BeforeConversations, ErasureStage.PlannedTasks);
     }
 
+    [Fact]
+    public async Task ExportOwnerAsync_OneReplacementTypeAtTwoStages_IsOneManifestLine()
+    {
+        // The export has no stages: the two stand-ins erasure keeps apart are one store the copy leaves out.
+        var export = new PersonalDataExportCoordinator(
+            [], [new NonErasableStore("Replacement", ErasureStage.BeforeConversations),
+                new NonErasableStore("Replacement", ErasureStage.PlannedTasks)],
+            [], new AmbientRequestScope(), TimeProvider.System, NullLogger<PersonalDataExportCoordinator>.Instance);
+
+        var copy = await export.ExportOwnerAsync(Owner, CancellationToken.None);
+
+        copy.Manifest.Should().ContainSingle(m => m.Store == "Replacement");
+    }
+
     private static IErasureOrchestrator Graph()
     {
         var graph = new Mock<IErasureOrchestrator>();

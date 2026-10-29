@@ -18,7 +18,8 @@ namespace Infrastructure.AI.Tests.Runs;
 /// </summary>
 public sealed class PlanProgressRunBridgeTests
 {
-    private const string Output = "the step's output, which may quote the person's own words";
+    private const string OutputMarker = "OUT-7F3A";
+    private const string Output = OutputMarker + " the step's output, which may quote the person's own words";
 
     private readonly PlanId _plan = PlanId.New();
     private readonly InMemoryRunProgressBroker _broker = new(
@@ -54,7 +55,7 @@ public sealed class PlanProgressRunBridgeTests
         evt.Kind.Should().Be(RunProgressKind.StepCompleted);
         evt.Status.Should().Be(nameof(StepExecutionStatus.Completed));
         new[] { evt.StepId, evt.StepName, evt.Status, evt.Detail }
-            .Should().NotContain(field => field != null && field.Contains("person's own words"),
+            .Should().NotContain(field => field != null && field.Contains(OutputMarker),
                 "no part of a step's output may reach the feed, whole or quoted inside another field");
     }
 

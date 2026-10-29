@@ -286,7 +286,27 @@ public sealed class DocumentRemovalTests : IDisposable
 
         receipt.NodesDeleted.Should().Be(1);
         receipt.UnmatchedDocumentIds.Should().BeEmpty("a store that was not asked cannot have failed to find the document");
+        receipt.Stores.Should().HaveCount(2).And.OnlyContain(s => s.Status == StoreErasureStatus.NotConfigured,
+            "a caller of the graph erasure itself is told the indexes were not asked, as on a document removal");
         client.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task AnUnconfiguredChunkStore_IsNeverCalled_OnEitherPath()
+    {
+        // The skip is the orchestrator's, not the Azure store's own guard: a store that would reach a placeholder backend
+        // if asked must not be asked at all.
+        await _graph.AddNodesAsync([Node("owned", Chunk(Removed, 0)) with { OwnerId = "user-1" }]);
+        var vectors = new Mock<IVectorStore>(MockBehavior.Strict);
+        vectors.As<IConfigurablePersonalDataStore>().SetupGet(s => s.IsConfigured).Returns(false);
+        var sut = new DefaultErasureOrchestrator(
+            _graph, _feedback, vectors.Object, _audit.Object, TimeProvider.System,
+            NullLogger<DefaultErasureOrchestrator>.Instance, _bm25.Object, crossSessionMemory: null);
+
+        await sut.EraseByOwnerAsync("user-1");
+        await sut.RemoveDocumentAsync(Removed);
+
+        vectors.Verify(v => v.DeleteFromAllCollectionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
