@@ -62,6 +62,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         "the person had a conversation whose id is shaped like a planned task's; the conversation was erased, but what other stores hold under its id was kept, because those stores record no owner and the records may be another person's planned task";
     private const string UnreadableReason =
         "some stored conversations could not be read, so whether they are this person's is unknown; they and what they lead to were kept, so fix the store and run erasure again";
+    private const string NotConfiguredReason =
+        "this host is not configured to use the store, so it has never held anything and was not asked";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
@@ -199,7 +201,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         // A store that cannot erase at all will not succeed on a retry either, so it does not hold the conversations back.
         // A journal that could not be read does not either: what it held stays recorded for the next request.
         var beforeSucceeded = outcomes.All(o => o.Store is GraphStoreName or JournalReadStore
-            || o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported);
+            || o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported or StoreErasureStatus.NotConfigured);
 
         // Recorded before any lead is deleted; if it cannot be, no lead is deleted.
         var journalRecorded = beforeSucceeded && await RecordJournalAsync(ownerId, requestId, subject, outcomes);
@@ -450,6 +452,11 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         if (eraser is NonErasableStore)
             return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotSupported, 0, NonErasableStore.Reason);
 
+        // Never asked: a store with no backend configured has never held anything, and asking it would only fail on the
+        // placeholder it was built with (#1003).
+        if (eraser is IConfigurablePersonalDataStore { IsConfigured: false })
+            return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotConfigured, 0, NotConfiguredReason);
+
         try
         {
             return StoreErasureOutcome.Erased(
@@ -492,6 +499,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         StoreErasureStatus.RetainedUntilExpiry => false,
         StoreErasureStatus.RetainedByObligation => false,
         StoreErasureStatus.RetainedAsBusinessContent => false,
+        StoreErasureStatus.NotConfigured => false,
         StoreErasureStatus.Failed => true,
         StoreErasureStatus.Skipped => true,
         StoreErasureStatus.NotSupported => true,

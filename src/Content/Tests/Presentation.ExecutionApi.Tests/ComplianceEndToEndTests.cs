@@ -33,6 +33,11 @@ public sealed class ComplianceEndToEndTests
         receipt.GetProperty("host").GetString().Should().Be(Name,
             "the receipt speaks for this host only, and must say so");
         Statuses(receipt).Should().NotContain(["Failed", "Skipped"]);
+        // The shipped host has no Azure AI Search endpoint: its two lines say so, not "searched, found nothing".
+        receipt.GetProperty("stores").EnumerateArray()
+            .Where(s => s.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
+            .Select(s => s.GetProperty("status").GetString())
+            .Should().Equal("NotConfigured", "NotConfigured");
         (await StillHeldAsync(factory.Services, subject)).Should().Be((false, false));
         (await StillHeldAsync(factory.Services, bystander)).Should().Be((true, true));
     }
@@ -88,6 +93,9 @@ public sealed class ComplianceEndToEndTests
         JsonDocument.Parse(body).RootElement.GetProperty("host").GetString().Should().Be(Name,
             "the copy holds only what this host can find, and must say so");
         ManifestStatuses(body).Should().NotContain("Failed", "a store that failed would leave the copy short");
+        JsonDocument.Parse(body).RootElement.GetProperty("manifest").EnumerateArray()
+            .Where(m => m.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
+            .Should().ContainSingle().Which.GetProperty("status").GetString().Should().Be("NotApplicable");
         body.Should().Contain(subject.Message).And.Contain(subject.RunId);
         body.Should().NotContain(bystander.Message).And.NotContain(bystander.RunId).And.NotContain(bystander.OwnerId);
         (await StillHeldAsync(factory.Services, subject)).Should().Be((true, true), "a copy deletes nothing");

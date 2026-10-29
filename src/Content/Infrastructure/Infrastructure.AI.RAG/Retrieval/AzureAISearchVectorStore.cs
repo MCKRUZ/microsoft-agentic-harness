@@ -48,7 +48,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
     RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
-public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser, IPersonalDataExporter
+public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser, IPersonalDataExporter, IConfigurablePersonalDataStore
 {
     /// <inheritdoc />
     public string ErasureStoreName => "document index (Azure AI Search vectors)";
@@ -58,6 +58,10 @@ public sealed class AzureAISearchVectorStore : IVectorStore, IPersonalDataEraser
 
     /// <inheritdoc />
     public ErasureReach ErasureReach => ErasureReach.Owner;
+
+    /// <inheritdoc />
+    /// <remarks>False when no index endpoint is configured: the erasure and the export then list it without asking it.</remarks>
+    public bool IsConfigured => _indexConfigured;
 
     /// <inheritdoc />
     /// <remarks>

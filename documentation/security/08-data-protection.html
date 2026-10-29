@@ -1057,8 +1057,8 @@
                         database as files beside each host's own binaries. The document indexes are wherever the host's
                         configuration puts them: FAISS and SQLite files, or an Azure AI Search index. An Azure AI Search
                         index with no endpoint configured, the default for a host that sets nothing, has never held
-                        anything, so its two receipt lines read <code>Erased</code> with nothing removed, and its export
-                        line returns no records. Before #1003 they failed against the placeholder endpoint and held every
+                        anything, so its two receipt lines read <code>NotConfigured</code> and its export line
+                        <code>NotApplicable</code>, without either store being asked. Before #1003 they failed against the placeholder endpoint and held every
                         such host's receipts <code>Partial</code>.
                         A request sent to AgentHub therefore leaves the Execution API's copy of the same person's data
                         alone, and the reverse. So every receipt and every copy names the host it covers in a
@@ -1233,6 +1233,10 @@
                                     person that documents others loaded, and what was drawn from them, may mention them and
                                     are kept as the organisation's business content until it removes them; with the document
                                     age limit running, it adds how long.
+                                    <code>NotConfigured</code> is a store this host is wired with but not configured to use,
+                                    such as an Azure AI Search index with no endpoint: it has never held anything, so it is not
+                                    asked, and it does not make the receipt <code>Partial</code> (#1003). The copy lists the same
+                                    store as <code>NotApplicable</code>, with the same reason.
                                 </li>
                                 <li>
                                     <code>Completeness</code> and <code>CompletenessReason</code>. <code>Full</code> means

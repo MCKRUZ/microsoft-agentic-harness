@@ -1477,7 +1477,7 @@ components:
               status:
                 type: string
                 enum: [Erased, Failed, Skipped, NotSupported, RetainedIndefinitely, RetainedUntilExpiry,
-                       RetainedByObligation, RetainedAsBusinessContent]
+                       RetainedByObligation, RetainedAsBusinessContent, NotConfigured]
               itemsRemoved: { type: integer }
               reason: { type: string, nullable: true }
 

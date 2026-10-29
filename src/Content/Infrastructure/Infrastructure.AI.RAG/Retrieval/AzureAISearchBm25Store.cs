@@ -42,7 +42,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
     RetentionBasis.KeptByDesign,
     ErasureSupport.PurgeByOwner,
     ExportSupport.ByOwner)]
-public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser, IPersonalDataExporter
+public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser, IPersonalDataExporter, IConfigurablePersonalDataStore
 {
     private readonly SearchClient _searchClient;
     private readonly bool _indexConfigured;
@@ -56,6 +56,10 @@ public sealed class AzureAISearchBm25Store : IBm25Store, IPersonalDataEraser, IP
 
     /// <inheritdoc />
     public ErasureReach ErasureReach => ErasureReach.Owner;
+
+    /// <inheritdoc />
+    /// <remarks>False when no index endpoint is configured: the erasure and the export then list it without asking it.</remarks>
+    public bool IsConfigured => _indexConfigured;
 
     /// <inheritdoc />
     /// <remarks>
