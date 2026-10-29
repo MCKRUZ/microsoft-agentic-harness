@@ -53,7 +53,9 @@ public sealed class PlanProgressRunBridgeTests
         var evt = await watcher.ReadAllAsync(cts.Token).FirstAsync(cts.Token);
         evt.Kind.Should().Be(RunProgressKind.StepCompleted);
         evt.Status.Should().Be(nameof(StepExecutionStatus.Completed));
-        new[] { evt.StepId, evt.StepName, evt.Status, evt.Detail }.Should().NotContain(Output);
+        new[] { evt.StepId, evt.StepName, evt.Status, evt.Detail }
+            .Should().NotContain(field => field != null && field.Contains("person's own words"),
+                "no part of a step's output may reach the feed, whole or quoted inside another field");
     }
 
     [Fact]

@@ -220,10 +220,10 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
                 + (edgeIds.Count > 0 ? await _feedbackStore.DeleteWeightsByEdgeIdsAsync(edgeIds, cancellationToken) : 0);
 
             vectorDeleted = await DeleteChunksAsync(
-                "vector store", _vectorStore, ct => _vectorStore!.DeleteFromAllCollectionsAsync(documentId, ct),
+                "vector store", _vectorStore, (store, ct) => store.DeleteFromAllCollectionsAsync(documentId, ct),
                 partialReasons, notConfigured, cancellationToken);
             bm25Deleted = await DeleteChunksAsync(
-                "full-text store", _bm25Store, ct => _bm25Store!.DeleteFromAllCollectionsAsync(documentId, ct),
+                "full-text store", _bm25Store, (store, ct) => store.DeleteFromAllCollectionsAsync(documentId, ct),
                 partialReasons, notConfigured, cancellationToken);
         }
         finally
@@ -276,22 +276,20 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
     }
 
     /// <summary>
-    /// Deletes the document's chunks from one store, reporting a failure on the receipt instead of losing what the graph
-    /// steps already did.
+    /// Deletes the document's chunks from one chunk store, reporting a failure on the receipt instead of losing what the
+    /// graph steps already did. A store this host has not configured is never asked (#1011): it has held nothing, so it is
+    /// a <see cref="StoreErasureStatus.NotConfigured"/> line on the receipt instead of a count of zero that reads like a
+    /// search that found nothing. It leaves completeness alone, as on an owner's erasure.
     /// </summary>
-    /// <summary>
-    /// Deletes the document's chunks from one chunk store. A store this host has not configured is never asked (#1011): it
-    /// has held nothing, so it is a <see cref="StoreErasureStatus.NotConfigured"/> line on the receipt instead of a count of
-    /// zero that reads like a search that found nothing. It leaves completeness alone, as on an owner's erasure.
-    /// </summary>
-    private async Task<int> DeleteChunksAsync(
-        string label, object? store, Func<CancellationToken, Task<int>> delete, List<string> partialReasons,
+    private async Task<int> DeleteChunksAsync<TStore>(
+        string label, TStore? store, Func<TStore, CancellationToken, Task<int>> delete, List<string> partialReasons,
         List<StoreErasureOutcome> notConfigured, CancellationToken cancellationToken)
+        where TStore : class
     {
         if (store is null)
             return 0;
 
-        if (store is IConfigurablePersonalDataStore { IsConfigured: false })
+        if (!IsAsked(store))
         {
             notConfigured.Add(new StoreErasureOutcome(
                 store is IPersonalDataEraser eraser ? eraser.ErasureStoreName : label,
@@ -301,7 +299,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
 
         try
         {
-            return await delete(cancellationToken);
+            return await delete(store, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -310,6 +308,13 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             return 0;
         }
     }
+
+    /// <summary>
+    /// Whether a registered chunk store is one to ask: not one this host left without a backend (#1003), which has never
+    /// held anything and so can neither delete a document nor fail to find one.
+    /// </summary>
+    private static bool IsAsked(object? store) =>
+        store is not null and not IConfigurablePersonalDataStore { IsConfigured: false };
 
     private static IReadOnlyList<string> DeletedNodeIds(GraphRemoval knowledge, GraphRemoval corpus) =>
         knowledge.DeletedNodeIds.Concat(corpus.DeletedNodeIds).Distinct(StringComparer.Ordinal).ToList();
@@ -454,20 +459,23 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         var vectorChunksDeleted = 0;
         var bm25RowsDeleted = 0;
         var unmatchedDocumentIds = new List<string>();
+        // A store with no backend configured is not asked and cannot leave a document unmatched (#1011); an owner's
+        // receipt already names it NotConfigured through the store's own eraser line.
+        var askVectors = IsAsked(_vectorStore);
+        var askBm25 = IsAsked(_bm25Store);
         foreach (var documentId in documentIds)
         {
-            var vectorDeleted = _vectorStore is not null
-                ? await _vectorStore.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+            var vectorDeleted = askVectors
+                ? await _vectorStore!.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
                 : 0;
-            var bm25Deleted = _bm25Store is not null
-                ? await _bm25Store.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+            var bm25Deleted = askBm25
+                ? await _bm25Store!.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
                 : 0;
 
             vectorChunksDeleted += vectorDeleted;
             bm25RowsDeleted += bm25Deleted;
 
-            if ((_vectorStore is not null || _bm25Store is not null)
-                && vectorDeleted == 0 && bm25Deleted == 0)
+            if ((askVectors || askBm25) && vectorDeleted == 0 && bm25Deleted == 0)
             {
                 unmatchedDocumentIds.Add(documentId);
             }

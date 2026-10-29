@@ -53,7 +53,8 @@ public record ErasureReceipt
     /// non-empty list is the receipt's honest detail that content the graph manifest points
     /// at was not found where the stores looked — instead of silently counting those
     /// documents as purged. Empty when every submitted document matched rows or no
-    /// vector/BM25 store is configured. Defaults to empty so pre-existing construction sites
+    /// vector/BM25 store is configured; a store registered with no backend counts as not
+    /// configured and is not asked (#1011). Defaults to empty so pre-existing construction sites
     /// remain valid.
     /// </summary>
     public IReadOnlyList<string> UnmatchedDocumentIds { get; init; } = [];

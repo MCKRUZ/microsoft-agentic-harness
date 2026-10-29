@@ -123,6 +123,21 @@ public sealed class PersonalDataSubstrateComposedTwiceTests
         receipt.Stores.Select(s => s.Store).Should().Contain(["owned store", nameof(ReplacementStore), RetainedLine]);
     }
 
+    [Fact]
+    public void DistinctErasers_OneReplacementTypeAtTwoStages_KeepsBothStandIns()
+    {
+        // Behind a run store and a plan store, one replacement type is two stand-ins with one name. Collapsing them would
+        // drop the PlannedTasks one, and with it the hold-back of what the plan store leads to.
+        var erasers = PersonalDataRegistrations.DistinctErasers(
+        [
+            new NonErasableStore("Replacement", ErasureStage.BeforeConversations),
+            new NonErasableStore("Replacement", ErasureStage.PlannedTasks),
+            new NonErasableStore("Replacement", ErasureStage.BeforeConversations),
+        ]);
+
+        erasers.Select(e => e.ErasureStage).Should().Equal(ErasureStage.BeforeConversations, ErasureStage.PlannedTasks);
+    }
+
     private static IErasureOrchestrator Graph()
     {
         var graph = new Mock<IErasureOrchestrator>();

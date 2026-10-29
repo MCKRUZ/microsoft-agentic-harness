@@ -268,6 +268,28 @@ public sealed class DocumentRemovalTests : IDisposable
     }
 
     [Fact]
+    public async Task OwnerErasure_AnAzureIndexWithNoEndpoint_IsNeverAsked_AndLeavesNoDocumentUnmatched()
+    {
+        // The owner path's chunk purge had the same defect (#1011): every document the person's nodes cite came back
+        // "unmatched" from an index that has never held anything.
+        await _graph.AddNodesAsync([Node("owned", Chunk(Removed, 0)) with { OwnerId = "user-1" }]);
+        var client = new Mock<SearchClient>(MockBehavior.Strict);
+        var sut = new DefaultErasureOrchestrator(
+            _graph, _feedback,
+            new AzureAISearchVectorStore(client.Object, indexConfigured: false, Mock.Of<IEmbeddingService>(),
+                NullLogger<AzureAISearchVectorStore>.Instance),
+            _audit.Object, TimeProvider.System, NullLogger<DefaultErasureOrchestrator>.Instance,
+            new AzureAISearchBm25Store(client.Object, indexConfigured: false, NullLogger<AzureAISearchBm25Store>.Instance),
+            crossSessionMemory: null);
+
+        var receipt = await sut.EraseByOwnerAsync("user-1");
+
+        receipt.NodesDeleted.Should().Be(1);
+        receipt.UnmatchedDocumentIds.Should().BeEmpty("a store that was not asked cannot have failed to find the document");
+        client.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task ConfiguredChunkStores_AreNotListedAsStoreLines()
     {
         var receipt = await _sut.RemoveDocumentAsync(Removed);

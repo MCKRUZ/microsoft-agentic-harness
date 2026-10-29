@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Compliance;
+using Domain.Common.Compliance;
 
 namespace Application.AI.Common.Services.Compliance;
 
@@ -15,8 +16,9 @@ namespace Application.AI.Common.Services.Compliance;
 /// </para>
 /// <para>
 /// A <see cref="NonErasableStore"/> is the exception: <c>AddPersonalDataEraser</c> builds a new stand-in on every
-/// resolution, so two registrations of one store that cannot erase are two instances. A stand-in carries its store's type
-/// name and nothing else, so stand-ins are collapsed by that name.
+/// resolution, so two registrations of one store that cannot erase are two instances. A stand-in carries only its store's
+/// type name and the stage it holds, so stand-ins are collapsed when both match: one replacement type standing in at two
+/// stages (behind a run store and a plan store) stays two lines, and the stage after each is still held back.
 /// </para>
 /// </remarks>
 internal static class PersonalDataRegistrations
@@ -29,7 +31,8 @@ internal static class PersonalDataRegistrations
     /// <returns>The distinct erasers, in the order each first appeared.</returns>
     public static IReadOnlyList<IPersonalDataEraser> DistinctErasers(IEnumerable<IPersonalDataEraser?> erasers) =>
         erasers.OfType<IPersonalDataEraser>()
-            .DistinctBy(e => e is NonErasableStore standIn ? standIn.ErasureStoreName : (object)e, StandInNameOrInstance.Instance)
+            .DistinctBy(e => e is NonErasableStore standIn ? (standIn.ErasureStoreName, standIn.ErasureStage) : (object)e,
+                StandInOrInstance.Instance)
             .ToList();
 
     /// <summary>
@@ -41,15 +44,15 @@ internal static class PersonalDataRegistrations
     public static IReadOnlyList<IPersonalDataExporter> DistinctExporters(IEnumerable<IPersonalDataExporter?> exporters) =>
         exporters.OfType<IPersonalDataExporter>().Distinct<IPersonalDataExporter>(ReferenceEqualityComparer.Instance).ToList();
 
-    /// <summary>Compares a stand-in's store name by value and anything else by reference.</summary>
-    private sealed class StandInNameOrInstance : IEqualityComparer<object>
+    /// <summary>Compares a stand-in's store name and stage by value and anything else by reference.</summary>
+    private sealed class StandInOrInstance : IEqualityComparer<object>
     {
-        public static readonly StandInNameOrInstance Instance = new();
+        public static readonly StandInOrInstance Instance = new();
 
         public new bool Equals(object? x, object? y) =>
-            x is string a && y is string b ? string.Equals(a, b, StringComparison.Ordinal) : ReferenceEquals(x, y);
+            x is ValueTuple<string, ErasureStage> ? object.Equals(x, y) : ReferenceEquals(x, y);
 
         public int GetHashCode(object obj) =>
-            obj is string name ? StringComparer.Ordinal.GetHashCode(name) : ReferenceEqualityComparer.Instance.GetHashCode(obj);
+            obj is ValueTuple<string, ErasureStage> ? obj.GetHashCode() : ReferenceEqualityComparer.Instance.GetHashCode(obj);
     }
 }
