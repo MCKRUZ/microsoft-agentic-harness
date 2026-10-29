@@ -34,8 +34,8 @@ public interface IOwnedRunCanceller
     Task<int> CancelRunsAsync(string ownerId);
 
     /// <summary>
-    /// Waits a bounded time for the runs <paramref name="ownerId"/> has executing to end, repeating
-    /// <see cref="CancelRunsAsync"/> on every poll for whatever of theirs is live then.
+    /// Waits a bounded time until no run <paramref name="ownerId"/> owns is live, repeating <see cref="CancelRunsAsync"/>
+    /// on every poll for whatever of theirs is live then, so a run executing, newly parked or newly queued is still stopped.
     /// </summary>
     /// <param name="ownerId">The person, as their identity provider issued the id.</param>
     /// <param name="cancellationToken">Cancels the wait, not the cancellations already made.</param>
