@@ -60,8 +60,8 @@ runs on container protocol 2.0.0 and runs each request as the caller Foundry ver
 Neo4j or PostgreSQL knowledge graph and an Azure AI Search index record that caller as owner, so an erasure or export
 naming that id, sent to a host bound to the same store, reaches them. The observability database and Redis key nothing by
 person, and a provider the template does not ship may never write an owner; the host warns about those at startup. A
-request without the header (a local run) runs unscoped; one whose
-header names no usable user is refused with 401. The procedure, and what it does not cover (Foundry's own conversation
+request without the header runs unscoped off the platform, but in Foundry a `/responses` request without it is
+refused with 401, as is one whose header names no usable user. The procedure, and what it does not cover (Foundry's own conversation
 history, the audit trails deleted with the session, records with no owner), is in the
 [security guide](../../../../documentation/security/08-data-protection.html#foundry-erasure).
 

@@ -69,6 +69,13 @@ public sealed class FoundryHostErasureTests
         { "Provider = qdrant", c => c.AI.Rag.VectorStore.Provider = "qdrant" },
         { "GraphProvider = arangodb", c => c.AI.Rag.GraphRag.GraphProvider = "arangodb" },
         { "GraphDatabase:Provider = neo4j", c => c.AI.Rag.GraphDatabase.Provider = "neo4j" },
+        // Without the compliance decorator, edges are written with no owner, so owner erasure leaves them.
+        { "ComplianceEnabled is off", c =>
+            {
+                c.AI.Rag.GraphRag.GraphProvider = "neo4j";
+                c.AI.Rag.GraphRag.ComplianceEnabled = false;
+            }
+        },
     };
 
     [Theory]
@@ -78,10 +85,13 @@ public sealed class FoundryHostErasureTests
         var config = Standalone();
         share(config);
 
-        var warnings = FoundryHostErasure.Describe(config).Where(n => n.Level == LogLevel.Warning).ToList();
+        var notices = FoundryHostErasure.Describe(config);
+        var warnings = notices.Where(n => n.Level == LogLevel.Warning).ToList();
 
         warnings.Should().ContainSingle().Which.Message.Should().Contain(named)
             .And.Contain("no owner").And.Contain("cannot be erased or copied for one person");
+        notices.Should().NotContain(n => n.Level != LogLevel.Warning && n.Message.Contains("x-agent-user-id"),
+            "a store that may never record an owner must not also be promised that erasure reaches it");
     }
 
     [Fact]

@@ -57,6 +57,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     private static DefaultHttpContext Request(params string[] userIds)
     {
         var context = new DefaultHttpContext();
+        context.Request.Path = FoundryCallerIdentity.ProtocolPath;
         if (userIds.Length > 0)
             context.Request.Headers[PlatformHeaders.UserId] = userIds;
         return context;
@@ -74,7 +75,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     {
         string? seen = null;
 
-        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser), () =>
+        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser), hosted: true, () =>
         {
             seen = OwnerSeenByTheAgent();
             return Task.CompletedTask;
@@ -89,7 +90,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     {
         IReadOnlyList<Domain.AI.KnowledgeGraph.Models.GraphNode> owned = [];
 
-        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser), async () =>
+        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser), hosted: true, async () =>
         {
             await using var turn = _provider.CreateAsyncScope();
             await turn.ServiceProvider.GetRequiredService<IKnowledgeMemory>()
@@ -103,20 +104,55 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_WithNoHeader_RunsUnscopedAsBefore()
+    public async Task RunAsync_OffThePlatformWithNoHeader_RunsUnscopedAsBefore()
     {
         var ran = false;
         string? seen = "unset";
 
-        await FoundryRequestScope.RunAsync(_provider, Request(), () =>
+        await FoundryRequestScope.RunAsync(_provider, Request(), hosted: false, () =>
         {
             ran = true;
             seen = OwnerSeenByTheAgent();
             return Task.CompletedTask;
         });
 
-        ran.Should().BeTrue("a local run or the readiness probe carries no user and is still served");
+        ran.Should().BeTrue("a local run carries no user and is still served");
         seen.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunAsync_AHostedProtocolRequestWithNoHeader_IsRefusedRatherThanRunUnowned()
+    {
+        // In Foundry the platform stamps every protocol request, which its gateway authenticated: one without the id is an
+        // authenticated caller we cannot name, and running it would write records with no owner, which read as global.
+        var context = Request();
+        var ran = false;
+
+        await FoundryRequestScope.RunAsync(_provider, context, hosted: true, () =>
+        {
+            ran = true;
+            return Task.CompletedTask;
+        });
+
+        ran.Should().BeFalse();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+    }
+
+    [Fact]
+    public async Task RunAsync_AHostedReadinessProbe_IsServedUnscoped()
+    {
+        // The platform sends no user id to infrastructure endpoints, so refusing them would take the container down.
+        var context = Request();
+        context.Request.Path = "/readiness";
+        var ran = false;
+
+        await FoundryRequestScope.RunAsync(_provider, context, hosted: true, () =>
+        {
+            ran = true;
+            return Task.CompletedTask;
+        });
+
+        ran.Should().BeTrue();
     }
 
     public static TheoryData<string, Action<HttpContext>> OtherIdentityClaims => new()
@@ -134,12 +170,13 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     [MemberData(nameof(OtherIdentityClaims))]
     public async Task RunAsync_IdentityFromAnythingButThePlatformHeader_IsIgnored(string _, Action<HttpContext> claim)
     {
+        const bool hosted = false;
         // Foundry's gateway drops every caller header outside its allowlist, so only the platform's own header is trusted.
         var context = Request();
         claim(context);
         string? seen = "unset";
 
-        await FoundryRequestScope.RunAsync(_provider, context, () =>
+        await FoundryRequestScope.RunAsync(_provider, context, hosted, () =>
         {
             seen = OwnerSeenByTheAgent();
             return Task.CompletedTask;
@@ -153,6 +190,8 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
         new[] { FoundryUser, "someone-else" },
         new[] { "" },
         new[] { "   " },
+        // A blank copy beside a real id must not be dropped so that the other is silently chosen.
+        new[] { "", FoundryUser },
         // Ids an operator erasure would refuse to name, so their records could never be erased.
         new[] { " " + FoundryUser },
         new[] { new string('u', EraseSubjectDataCommandValidator.MaxSubjectIdLength + 1) },
@@ -162,11 +201,12 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     [MemberData(nameof(UnusableUserIds))]
     public async Task RunAsync_AHeaderThatNamesNoOneUsable_IsRefusedRatherThanRunUnowned(string[] userIds)
     {
+        const bool hosted = true;
         // A request that claims a user we cannot resolve would otherwise write records with no owner, which read as global.
         var context = Request(userIds);
         var ran = false;
 
-        await FoundryRequestScope.RunAsync(_provider, context, () =>
+        await FoundryRequestScope.RunAsync(_provider, context, hosted, () =>
         {
             ran = true;
             return Task.CompletedTask;
@@ -181,7 +221,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     {
         string? seen = null;
 
-        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser, FoundryUser), () =>
+        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser, FoundryUser), hosted: true, () =>
         {
             seen = OwnerSeenByTheAgent();
             return Task.CompletedTask;
@@ -196,7 +236,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
         var longest = new string('u', EraseSubjectDataCommandValidator.MaxSubjectIdLength);
         string? seen = null;
 
-        await FoundryRequestScope.RunAsync(_provider, Request(longest), () =>
+        await FoundryRequestScope.RunAsync(_provider, Request(longest), hosted: true, () =>
         {
             seen = OwnerSeenByTheAgent();
             return Task.CompletedTask;
@@ -226,6 +266,19 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
             RepoRoot.Combine("src", "Content", "Presentation", "Presentation.FoundryHost", "Program.cs")));
 
         code.Should().MatchRegex(
-            @"app\.App\.Use\(\(context,\s*next\)\s*=>\s*FoundryRequestScope\.RunAsync\(provider,\s*context,\s*\(\)\s*=>\s*next\(context\)\)\)");
+            @"var\s+hosted\s*=\s*FoundryEnvironment\.IsHosted;\s*app\.App\.Use\(\(context,\s*next\)\s*=>\s*FoundryRequestScope\.RunAsync\(provider,\s*context,\s*hosted,\s*\(\)\s*=>\s*next\(context\)\)\)");
+    }
+
+    [Fact]
+    public void Main_LeavesTheHostingOptionsThatWouldRunATurnOutsideItsRequestOff()
+    {
+        // ResilientBackground re-runs a recovered turn from a loop with no request, so with no owner; SteerableConversations
+        // runs a second caller's input inside the first caller's task, so as the first caller. Both are off by default,
+        // and enabling either needs the owner re-established from the persisted platform context first.
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(
+            RepoRoot.Combine("src", "Content", "Presentation", "Presentation.FoundryHost", "Program.cs")));
+
+        code.Should().MatchRegex(@"AddFoundryResponses\(agent,\s*new\s+FileSystemAgentSessionStore\(sessionStoreRoot\)\)");
+        code.Should().NotContain("ResilientBackground").And.NotContain("SteerableConversations");
     }
 }

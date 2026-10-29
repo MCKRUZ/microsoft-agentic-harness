@@ -1241,12 +1241,17 @@
                         <li><strong>The header is trusted only behind Foundry.</strong> If the container's port is ever
                             reachable without passing through Foundry, anyone can send the header and be taken for anyone.
                             Never publish port 8088.</li>
-                        <li><strong>No header:</strong> a local run, or the readiness probe. The request runs unscoped, as
-                            every request did before #1008, and what it writes carries no owner.</li>
-                        <li><strong>A header that names no one usable:</strong> sent twice with different values, blank,
-                            or an id an operator erasure would refuse to name (longer than 256 characters, or with surrounding
-                            whitespace). The request is refused with 401 instead of being run unowned, because a record with
-                            no owner reads as global. The same value sent twice is one caller.</li>
+                        <li><strong>No header, off the platform:</strong> a local run. The request runs unscoped, as every
+                            request did before #1008, and what it writes carries no owner.</li>
+                        <li><strong>No header, in Foundry</strong> (<code>FOUNDRY_HOSTING_ENVIRONMENT</code> set). A
+                            <code>/responses</code> request without it is refused with 401. The platform stamps every
+                            protocol request, and its gateway authenticated the caller, so a missing id is a caller we cannot
+                            name, not an anonymous one. The readiness probe never carries it and is served as before.</li>
+                        <li><strong>A header that names no one usable:</strong> sent twice with different values, blank
+                            (even beside a real value), or an id an operator erasure would refuse to name (longer than 256
+                            characters, or with surrounding whitespace). The request is refused with 401 instead of being run
+                            unowned, because a record with no owner reads as global. The same value sent twice is one
+                            caller.</li>
                         <li><strong>Nothing else establishes the caller.</strong> A bearer token, an <code>x-client-*</code>
                             header, or a principal set earlier in the pipeline is ignored.</li>
                     </ul>
@@ -1258,7 +1263,11 @@
                             during a request record that caller as owner, so owner erasure and export find them. That includes
                             what the request leaves running after it answers, which keeps the caller's scope. Two kinds of
                             record carry no owner: entities derived from ingested documents, and what work no request started
-                            writes, such as a scheduled job.</li>
+                            writes, such as a scheduled job. This needs <code>AppConfig:AI:Rag:GraphRag:ComplianceEnabled</code>
+                            (on by default): without it, edges are written with no owner, and FoundryHost warns about the
+                            store instead. The graph compares owners ignoring case. That is safe for the GUID and e-mail
+                            ids it was written for; Foundry documents its id only as opaque, so two ids differing only in
+                            case would be one owner there.</li>
                         <li><strong>Document index</strong> (Azure AI Search). A document ingested during a request is
                             stamped with that caller. Owner erasure deletes its chunks, and export copies them. The index is
                             still kept by design as business content, as for every other host.</li>
@@ -1290,6 +1299,11 @@
                             whole.</li>
                         <li><strong>Records with no owner stay.</strong> Those written by a request without the header, by
                             work no request started, or derived from documents are not found by any per-person request.</li>
+                        <li><strong>Two hosting options would break this.</strong> The Foundry hosting layer's
+                            <code>ResilientBackground</code> re-runs a recovered turn with no request behind it, so with no
+                            owner. <code>SteerableConversations</code> runs a second caller's input inside the first caller's
+                            running turn, so as the first caller. FoundryHost turns on neither, and a test keeps it that way.
+                            Before turning on either, re-establish the owner from the turn's persisted platform context.</li>
                         <li><strong>An application calling as itself is one owner.</strong> The id is the caller Foundry
                             resolved. If your application calls the agent under its own identity without naming the person it
                             acts for (the <code>x-ms-user-identity</code> delegation in <em>Multiplex multiple users in one

@@ -39,7 +39,7 @@ public sealed class FoundryRequestScopeTests
         var seen = new ReplayedToolCallSet?[2];
         var claimed = new bool[2];
 
-        Task Request(int i) => Task.Run(() => FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () =>
+        Task Request(int i) => Task.Run(() => FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), hosted: false, () =>
         {
             seen[i] = ReplayedToolCallScope.Current;
             claimed[i] = ReplayedToolCallScope.Current!.TryClaim("call_1");
@@ -63,7 +63,7 @@ public sealed class FoundryRequestScopeTests
         await using var provider = ProviderWithAdmissionPipeline();
         IToolCallAdmissionPipeline? armed = null;
 
-        await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () =>
+        await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), hosted: false, () =>
         {
             armed = ToolAdmissionAccessor.Current;
             return Task.CompletedTask;
@@ -80,7 +80,7 @@ public sealed class FoundryRequestScopeTests
         ReplayedToolCallScope.Current = outer;
         try
         {
-            await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () => Task.CompletedTask);
+            await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), hosted: false, () => Task.CompletedTask);
 
             ReplayedToolCallScope.Current.Should().BeSameAs(outer);
         }

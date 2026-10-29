@@ -95,7 +95,14 @@ internal static class FoundryHostErasure
         var graphProvider = rag.GraphRag.GraphProvider;
         var graphStore = $"The knowledge graph store (AppConfig:AI:Rag:GraphRag:GraphProvider = {graphProvider})";
         if (graphProvider is "neo4j" or "postgresql")
-            owned.Add(graphStore);
+        {
+            // The compliance decorator is what stamps the writing caller on the edges it writes.
+            if (rag.GraphRag.ComplianceEnabled)
+                owned.Add(graphStore);
+            else
+                unowned.Add((graphStore,
+                    "AppConfig:AI:Rag:GraphRag:ComplianceEnabled is off, so its edges are written with no owner"));
+        }
         else if (graphProvider is not ("in_memory" or "managed_code"))
             unowned.Add((graphStore, NotShipped));
 

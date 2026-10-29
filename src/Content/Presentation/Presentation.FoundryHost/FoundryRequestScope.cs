@@ -35,8 +35,9 @@ namespace Presentation.FoundryHost;
 /// (<see cref="FoundryCallerIdentity"/>) and handed to the same <see cref="KnowledgeScopeMiddleware"/> every web host
 /// mounts, so what the agent writes to a shared store carries that caller as owner. The middleware is invoked here
 /// rather than mounted, because its <see cref="IKnowledgeScopeWriter"/> lives in the harness's composition root, not in
-/// AgentHost's container. A request that names a user who cannot be resolved is refused with 401, never run unowned;
-/// one that names nobody runs unscoped, as before. The principal stays on <see cref="HttpContext.User"/> for the rest of
+/// AgentHost's container. A request that names a user who cannot be resolved is refused with 401, never run unowned, and
+/// so is a hosted protocol request that names nobody; off the platform, a request that names nobody runs unscoped, as
+/// before. The principal stays on <see cref="HttpContext.User"/> for the rest of
 /// the request, since it is who the request is from. The harness reads it only here; the Foundry hosting layer, which
 /// this host does not configure with any authentication or authorization, may also see it.
 /// </para>
@@ -48,8 +49,12 @@ internal static class FoundryRequestScope
     /// The harness's own composition root, which resolves the scoped admission pipeline and the knowledge-scope writer.
     /// </param>
     /// <param name="context">The inbound request, whose platform user-id header names the caller.</param>
+    /// <param name="hosted">
+    /// Whether the container runs in Foundry, where a protocol request without the header is refused rather than run
+    /// unscoped (<see cref="FoundryCallerIdentity"/>).
+    /// </param>
     /// <param name="next">The rest of the request pipeline.</param>
-    internal static async Task RunAsync(IServiceProvider provider, HttpContext context, Func<Task> next)
+    internal static async Task RunAsync(IServiceProvider provider, HttpContext context, bool hosted, Func<Task> next)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(context);
@@ -60,7 +65,7 @@ internal static class FoundryRequestScope
         var scopeWriter = requestScope.ServiceProvider.GetRequiredService<IKnowledgeScopeWriter>();
 
         // The platform header is the only identity this host has; whatever the request carried before is replaced.
-        context.User = FoundryCallerIdentity.FromRequest(context.Request);
+        context.User = FoundryCallerIdentity.FromRequest(context.Request, hosted);
         var knowledgeScope = new KnowledgeScopeMiddleware(_ => next());
 
         var previousClaims = ReplayedToolCallScope.Current;

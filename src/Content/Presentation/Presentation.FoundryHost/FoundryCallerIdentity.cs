@@ -25,21 +25,25 @@ namespace Presentation.FoundryHost;
 /// </para>
 /// <para>
 /// <strong>Nothing is chosen between values.</strong> Each value of the header becomes one <c>sub</c> claim, untrimmed:
-/// a header repeated with two different values, or a blank value, is an ambiguous or empty identity, which
-/// <c>GetUserIdOrNull</c> resolves to <see langword="null"/>, and the knowledge-scope middleware then refuses the request
-/// rather than run it unowned. The same value sent twice is one identity. <c>sub</c>, not <c>oid</c>, because the id is
-/// opaque: Foundry does not say it is an Entra object id.
+/// a header repeated with two different values is an ambiguous identity, which <c>GetUserIdOrNull</c> resolves to
+/// <see langword="null"/>, and the knowledge-scope middleware then refuses the request rather than run it unowned. The
+/// same value sent twice is one identity. <c>sub</c>, not <c>oid</c>, because the id is opaque: Foundry does not say it
+/// is an Entra object id.
 /// </para>
 /// <para>
-/// <strong>Only an id an erasure can name.</strong> An operator erasure or export refuses a subject id longer than
-/// <see cref="EraseSubjectDataCommandValidator.MaxSubjectIdLength"/> or with surrounding whitespace. A value either rule
-/// would refuse yields an authenticated principal with no identity, so the request is refused too: otherwise its records
-/// would carry an owner no erasure is allowed to name.
+/// <strong>Only an id an erasure can name.</strong> An operator erasure or export refuses a subject id that is blank,
+/// longer than <see cref="EraseSubjectDataCommandValidator.MaxSubjectIdLength"/>, or padded with whitespace. If any value
+/// breaks one of those rules, the principal is authenticated with no identity, so the request is refused too: otherwise
+/// its records would carry an owner no erasure is allowed to name, or a blank copy would be dropped and the other
+/// value silently chosen.
 /// </para>
 /// <para>
-/// <strong>No header, no identity.</strong> A request without the header (a local run, the readiness probe) gets an
-/// unauthenticated principal and runs unscoped, as every request did before #1008. No other header, including a bearer
-/// token or an <c>x-client-*</c> value, can establish who the caller is.
+/// <strong>A missing header.</strong> Off the platform (a local run) no request carries it, and every request gets an
+/// unauthenticated principal and runs unscoped, as before #1008. In a Foundry-hosted container
+/// (<see cref="FoundryEnvironment.IsHosted"/>) the platform puts it on every protocol request, and every such request was
+/// authenticated at the gateway, so a <c>/responses</c> request without it is treated as authenticated with no identity
+/// and refused, never run unowned. Other paths, such as the readiness probe, never carry it and stay anonymous. No other
+/// header, including a bearer token or an <c>x-client-*</c> value, can establish who the caller is.
 /// </para>
 /// </remarks>
 internal static class FoundryCallerIdentity
@@ -50,30 +54,39 @@ internal static class FoundryCallerIdentity
     /// <summary>The claim type each header value becomes.</summary>
     internal const string SubjectClaimType = "sub";
 
+    /// <summary>The protocol endpoint this host serves; every request to it carries the header when hosted.</summary>
+    internal const string ProtocolPath = "/responses";
+
     /// <summary>Builds the principal the request runs as from the platform's user-id header.</summary>
     /// <param name="request">The inbound request.</param>
+    /// <param name="hosted">Whether the container runs in Foundry (<see cref="FoundryEnvironment.IsHosted"/>).</param>
     /// <returns>
     /// An authenticated principal carrying one <c>sub</c> claim per header value; an authenticated principal with no
-    /// identity when a value could not be named by an erasure; or an unauthenticated principal when the header is absent.
+    /// identity when a value could not be named by an erasure, or when a hosted protocol request lacks the header; or an
+    /// unauthenticated principal when the header is absent otherwise.
     /// </returns>
-    internal static ClaimsPrincipal FromRequest(HttpRequest request)
+    internal static ClaimsPrincipal FromRequest(HttpRequest request, bool hosted)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var values = request.Headers[PlatformHeaders.UserId];
         if (values.Count == 0)
-            return new ClaimsPrincipal(new ClaimsIdentity());
+        {
+            return hosted && request.Path.StartsWithSegments(ProtocolPath, StringComparison.OrdinalIgnoreCase)
+                ? new ClaimsPrincipal(new ClaimsIdentity(AuthenticationType))
+                : new ClaimsPrincipal(new ClaimsIdentity());
+        }
 
         if (!values.All(IsNameableByErasure))
             return new ClaimsPrincipal(new ClaimsIdentity(AuthenticationType));
 
-        var claims = values.Select(value => new Claim(SubjectClaimType, value ?? string.Empty));
+        var claims = values.Select(value => new Claim(SubjectClaimType, value!));
         return new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationType));
     }
 
     /// <summary>Whether an operator erasure or export would accept <paramref name="value"/> as a subject id.</summary>
     private static bool IsNameableByErasure(string? value) =>
-        value is not null
+        !string.IsNullOrWhiteSpace(value)
         && value.Length <= EraseSubjectDataCommandValidator.MaxSubjectIdLength
         && value == value.Trim();
 }
