@@ -52,7 +52,8 @@ namespace Infrastructure.AI.Audit;
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
+public sealed partial class JsonlComplianceAuditTrail
+    : IComplianceAuditTrail, IComplianceAuditRecords, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     /// <summary>
     /// The longest an append made while a request is answered waits for the chain before the record is held for replay

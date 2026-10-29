@@ -36,8 +36,8 @@ namespace Application.Core.Compliance;
 /// </para>
 /// <para>
 /// <strong>Replacing it.</strong> The shipped trail is also registered as an <c>IVerifiableAuditChain</c>, so scheduled
-/// verification and the compliance report walk it. A replacement must implement that interface too, or provide its own
-/// verification and change that registration.
+/// verification and the compliance report walk it, and as an <see cref="IComplianceAuditRecords"/>, so the report can
+/// summarise its records (#1000). A replacement must implement both interfaces too, or change those registrations.
 /// </para>
 /// </remarks>
 public interface IComplianceAuditTrail

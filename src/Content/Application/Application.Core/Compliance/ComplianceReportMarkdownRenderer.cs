@@ -53,6 +53,8 @@ public static class ComplianceReportMarkdownRenderer
             sb.AppendLine();
         }
 
+        AppendComplianceRequests(sb, report.ComplianceRequests);
+
         sb.AppendLine("## Sessions");
         sb.AppendLine();
         sb.AppendLine(CultureInfo.InvariantCulture, $"- Total: {report.Sessions.TotalSessions}");
@@ -91,6 +93,39 @@ public static class ComplianceReportMarkdownRenderer
             r => $"{Format(r.CreatedAt)} — [{r.Source}] {r.Operation}");
 
         return sb.ToString();
+    }
+
+    // Counts and receipt ids only: the trail's executor, subject and document references stay in the trail (#1000).
+    private static void AppendComplianceRequests(StringBuilder sb, ComplianceRequestsSummary requests)
+    {
+        sb.AppendLine(CultureInfo.InvariantCulture, $"## Compliance requests ({requests.TotalRecords} records)");
+        sb.AppendLine();
+        if (requests.TotalRecords == 0)
+        {
+            sb.AppendLine("_None in this period._");
+        }
+        else
+        {
+            sb.AppendLine("| Request | Outcome | Records |");
+            sb.AppendLine("|---|---|---|");
+            foreach (var count in requests.Counts)
+                sb.AppendLine(CultureInfo.InvariantCulture, $"| {count.Action} | {count.Outcome} | {count.Count} |");
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"Receipts ({requests.Receipts.Count} of {requests.TotalReceipts}, most recent):");
+            foreach (var receipt in requests.Receipts)
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"- {Format(receipt.RecordedAt)} — {receipt.Action} `{receipt.ReceiptId}`: {receipt.Completeness}");
+        }
+
+        if (requests.HeldForReplay > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"{requests.HeldForReplay} record(s) are held for replay and not counted above yet.");
+        }
+
+        sb.AppendLine();
     }
 
     private static void AppendSection<T>(

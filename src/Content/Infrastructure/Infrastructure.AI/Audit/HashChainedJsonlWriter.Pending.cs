@@ -18,6 +18,9 @@ public sealed partial class HashChainedJsonlWriter
     /// <summary>Gets the folder this writer holds records it could not append in, or <see langword="null"/> when it has none.</summary>
     public string? PendingLocation => _pending?.Folder;
 
+    /// <summary>Gets how many records are held for replay now; zero for a writer with no pending folder.</summary>
+    public int HeldRecordCount => _pending?.CountHeld() ?? 0;
+
     /// <summary>Gets the pending store, for tests that replace its seams.</summary>
     internal PendingAuditRecords? Pending => _pending;
 

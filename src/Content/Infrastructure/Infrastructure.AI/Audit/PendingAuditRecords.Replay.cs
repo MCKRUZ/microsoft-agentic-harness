@@ -45,6 +45,21 @@ public sealed partial class PendingAuditRecords
         }
     }
 
+    /// <summary>How many records are held now; zero when the folder does not exist or cannot be listed.</summary>
+    /// <returns>The number of held files.</returns>
+    public int CountHeld()
+    {
+        try
+        {
+            return Directory.Exists(Folder) ? HeldFiles().Count : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not count the held {AuditChain} audit records in {PendingLocation}.", _chainName, Folder);
+            return 0;
+        }
+    }
+
     /// <summary>The replay lock, or why it could not be taken: usually another pass holds it, here or elsewhere.</summary>
     private (FileStream? Lock, string? Busy) TryLockPending()
     {

@@ -33,6 +33,7 @@ public sealed class ComplianceReportMarkdownRendererTests
         EscalationEvents = [],
         DriftFindings = [],
         ChainIntegrity = [],
+        ComplianceRequests = ComplianceRequestsSummary.Empty,
         Warnings = warnings ?? [],
     };
 
@@ -55,6 +56,36 @@ public sealed class ComplianceReportMarkdownRendererTests
 
         markdown.Should().Contain("Warnings — this report is incomplete");
         markdown.Should().Contain("Failed to read safety events: database unavailable");
+    }
+
+    [Fact]
+    public void Render_TheComplianceTrailsRequests_ShowsCountsReceiptsAndWhatIsStillHeld()
+    {
+        var report = EmptyReport() with
+        {
+            ComplianceRequests = new ComplianceRequestsSummary
+            {
+                TotalRecords = 2,
+                Counts = [new ComplianceRequestCount { Action = "right_to_erasure", Outcome = "Success", Count = 1 },
+                          new ComplianceRequestCount { Action = "right_to_erasure", Outcome = "Attempted", Count = 1 }],
+                Receipts = [new ComplianceRequestReceipt { Action = "right_to_erasure", ReceiptId = "receipt-e1", Completeness = "Full", RecordedAt = Now }],
+                TotalReceipts = 1,
+                HeldForReplay = 3,
+            },
+        };
+
+        var markdown = ComplianceReportMarkdownRenderer.Render(report);
+
+        markdown.Should().Contain("## Compliance requests (2 records)");
+        markdown.Should().Contain("| right_to_erasure | Success | 1 |");
+        markdown.Should().Contain("right_to_erasure `receipt-e1`: Full");
+        markdown.Should().Contain("3 record(s) are held for replay");
+    }
+
+    [Fact]
+    public void Render_NoComplianceRequests_SaysSo()
+    {
+        ComplianceReportMarkdownRenderer.Render(EmptyReport()).Should().Contain("## Compliance requests (0 records)");
     }
 
     [Fact]

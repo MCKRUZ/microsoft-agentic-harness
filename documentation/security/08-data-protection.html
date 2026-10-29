@@ -1419,7 +1419,10 @@
                                 tooling; that line is deleted with the logs after <code>Logging:Retention:RetainFor</code>,
                                 30 days by default. Export (<code>subject_access_export</code>) and document-removal
                                 (<code>document_removal</code>) records are kept the same way. Startup refuses an empty
-                                <code>AuditStoragePath</code>.
+                                <code>AuditStoragePath</code>. The compliance report summarises the trail for its period:
+                                counts by request and outcome, and each finished request's receipt id, with no operator,
+                                subject or document reference (#1000); records still held for replay are named in its
+                                warnings.
                             </p>
                         </div>
                     </div>
