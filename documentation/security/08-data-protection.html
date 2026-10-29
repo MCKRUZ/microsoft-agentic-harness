@@ -1362,8 +1362,10 @@
                             time (five minutes by default). One type it cannot see is listed by hand: the workflow
                             progress feed, keyed by run id, which buffers events only for an open watcher and never a
                             step's output (#1005). Both exceptions whose reason rests on what their records carry are
-                            pinned to every field of those records and to every caller that fills them, so a field added
-                            later fails the build until someone re-reads it.
+                            pinned to every field of those records and to every type that calls them directly, so a field
+                            or a direct caller added later fails the build until someone re-reads it. Text that reaches
+                            those callers from further up (cancellation notices, a run's caller-safe failure message) is
+                            not pinned; the exemption names the contracts it relies on instead.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,

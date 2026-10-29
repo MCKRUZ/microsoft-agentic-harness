@@ -6,7 +6,7 @@ namespace Presentation.Common.Tests.Architecture;
 
 /// <summary>
 /// The field-by-field half of the in-memory rule (#1005): an exemption whose reason rests on what a holder's records carry
-/// is pinned to every field of those records and to every caller that fills them.
+/// is pinned to every field of those records and to every type that calls the holder's contract directly.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -15,6 +15,12 @@ namespace Presentation.Common.Tests.Architecture;
 /// text or a tool result, changes none of it, so the exemption would go on excusing data its reason never looked at. Here
 /// the reviewed types' every field is listed, and so is every production type that calls the holder's contract, because a
 /// new caller can put something new into a field whose shape did not change (a progress event's free-text detail).
+/// </para>
+/// <para>
+/// <strong>What the caller half cannot see.</strong> Only direct calls are listed. Text that reaches a direct caller from
+/// further up is outside the pin: the cancellation notices <c>RunCancellation</c> is handed by its own callers, and the
+/// executors' failure messages <c>RunDispatchBackgroundService</c> publishes as a run's ending. Those are caller-safe by
+/// their own contracts, which an exemption reason relying on them must name, as the broker's does.
 /// </para>
 /// <para>
 /// <strong>And the holders the rule cannot see.</strong> A store keyed by a run id, with no owner field on its records, is

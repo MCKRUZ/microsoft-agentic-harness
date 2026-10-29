@@ -56,7 +56,9 @@ internal static class HoldsOwnerRecordsWithoutStoringThem
                 "Workflow progress for whoever is watching a run, keyed by run id (#1005). Each RunProgressEvent carries " +
                 "the run id, a sequence number, the kind, the time, the step id and name, a status, and a detail: the " +
                 "plan's name, the step's type, or how the run ended, as the run record's caller-safe error or a fixed " +
-                "phrase. PlanProgressRunBridge drops a step's output summary (PlanProgressRunBridgeTests); no event " +
+                "phrase (the cancellation notices RunCancellation's callers pass, and the executors' caller-safe failure " +
+                "messages, are text reaching the pinned callers from further up, and are not pinned themselves). " +
+                "PlanProgressRunBridge drops a step's output summary (PlanProgressRunBridgeTests); no event " +
                 "carries step output, prompts or tool arguments. All of it repeats the run store and the plan store, which " +
                 "erase and export it. Events are buffered only for an open watcher (publishing to none buffers nothing) " +
                 "and leave with its subscription; the per-caller stream count, keyed tenant|owner, is removed when it " +
@@ -66,8 +68,9 @@ internal static class HoldsOwnerRecordsWithoutStoringThem
 
     /// <summary>
     /// For an exemption whose reason rests on what a holder's records carry: every field of the types the reason was
-    /// checked against, and every production caller of the holder's contract, which can put something new in a field
-    /// whose shape did not change (#1005). Keyed by the holder's scan key.
+    /// checked against, and every production type that calls the holder's contract directly, which can put something new
+    /// in a field whose shape did not change (#1005). What reaches a direct caller from further up is not pinned; see the
+    /// field-by-field guard's remarks. Keyed by the holder's scan key.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, Review> ReviewedFieldByField =
         new Dictionary<string, Review>(StringComparer.Ordinal)
