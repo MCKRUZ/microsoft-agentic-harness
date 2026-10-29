@@ -20,7 +20,9 @@ namespace Infrastructure.AI.Documents;
 /// </para>
 /// <para>
 /// A document is checked again just before it is removed, so one loaded again since the list was read is kept. A removal
-/// that ends <c>Partial</c> keeps its load record and is tried again on the next sweep. At most
+/// that ends <c>Partial</c> keeps its load record and is tried again on the next sweep; a retry is recorded in the
+/// compliance audit trail only when it ends differently from the last recorded attempt (#998,
+/// <see cref="DocumentRemovalRetries"/>), so the trail grows with requests rather than with sweeps. At most
 /// <see cref="MaxDocumentsPerSweep"/> documents are removed per sweep, oldest first, so switching the limit on over a large
 /// corpus spreads the work over several sweeps.
 /// </para>
@@ -40,6 +42,9 @@ internal sealed class DocumentRetentionService : PeriodicSweepService
     private readonly IDocumentLoadLedger _ledger;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _timeProvider;
+
+    /// <summary>What was last recorded for each document still being retried; lives as long as the service.</summary>
+    private readonly DocumentRemovalRetries _retries = new();
 
     /// <summary>Initializes a new <see cref="DocumentRetentionService"/>.</summary>
     /// <param name="scopes">Opens the scope each sweep's removals run in.</param>
@@ -89,6 +94,7 @@ internal sealed class DocumentRetentionService : PeriodicSweepService
 
         var cutoff = _timeProvider.GetUtcNow() - gracePeriod;
         var expired = await _ledger.ListLoadedBeforeAsync(cutoff, MaxDocumentsPerSweep, cancellationToken);
+        _retries.KeepOnly(expired); // A document no longer listed was removed, or loaded again.
         if (expired.Count == 0)
             return 0;
 
@@ -102,7 +108,7 @@ internal sealed class DocumentRetentionService : PeriodicSweepService
                 continue;
 
             // The load judged is the bound: a load recorded after it keeps the record.
-            var result = await removal.RemoveAsync(documentId, ErasureActor.Retention, cancellationToken, lastLoaded);
+            var result = await removal.RemoveAsync(documentId, ErasureActor.Retention, cancellationToken, lastLoaded, _retries);
             if (result.IsSuccess && result.Value!.Completeness == ErasureCompleteness.Full)
                 removed++;
         }

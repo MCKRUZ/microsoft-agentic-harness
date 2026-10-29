@@ -31,6 +31,11 @@ namespace Application.Core.Compliance;
 /// surfaced as a fixed message, because store exceptions can carry connection strings and paths.
 /// </para>
 /// <para>
+/// <strong>Retries by the age limit (#998).</strong> The age limit retries a <c>Partial</c> removal every sweep. A retry is
+/// recorded only when it ends differently from the last recorded attempt, as a pair written once it ends and naming the
+/// first attempt under <c>retry_of</c>; see <see cref="DocumentRemovalRetries"/>.
+/// </para>
+/// <para>
 /// <strong>The load record.</strong> A complete removal forgets the document in <see cref="IDocumentLoadLedger"/>, so the
 /// document age limit does not reach for it again; a <c>Partial</c> one keeps it, so the age limit tries again. Only a
 /// record no later than the load the caller decided on is forgotten, so a document loaded again meanwhile keeps its new
@@ -106,9 +111,18 @@ public sealed class AuditedDocumentRemoval
     /// The latest load the caller decided to remove; the document age limit passes the load time it judged. A load recorded
     /// after it keeps its record. When omitted, the moment the removal starts.
     /// </param>
+    /// <param name="retries">
+    /// What the document age limit last recorded for each document it is retrying (#998), so a retry that ends as the last
+    /// recorded attempt did writes nothing; see <see cref="DocumentRemovalRetries"/>. Null, as for an operator's removal,
+    /// records every attempt.
+    /// </param>
     /// <returns>The receipt, or a scrubbed failure when a fault stopped the request.</returns>
     public async Task<Result<ErasureReceipt>> RemoveAsync(
-        string documentId, ErasureActor actor, CancellationToken cancellationToken, DateTimeOffset? loadedNoLaterThan = null)
+        string documentId,
+        ErasureActor actor,
+        CancellationToken cancellationToken,
+        DateTimeOffset? loadedNoLaterThan = null,
+        DocumentRemovalRetries? retries = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
         ArgumentNullException.ThrowIfNull(actor);
@@ -125,7 +139,9 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Attempted,
             Metadata = Metadata("attempt", actor, documentId, receipt: null),
         };
-        await RecordSafelyAsync(record, actor);
+        var retry = new Retry(retries, retries?.Previous(documentId, forgetLoadsUpTo), documentId, forgetLoadsUpTo);
+        if (retry.Of is null)
+            await RecordSafelyAsync(record, actor);
 
         ErasureReceipt receipt;
         try
@@ -134,25 +150,25 @@ public sealed class AuditedDocumentRemoval
         }
         catch (OperationCanceledException)
         {
-            await RecordFailureAsync(record, actor, documentId, "cancelled");
+            await RecordFailureAsync(record, actor, documentId, "cancelled", retry);
             throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Document removal {CorrelationId} failed for document {DocumentId}.", correlationId, documentId);
-            await RecordFailureAsync(record, actor, documentId, ex.GetType().Name);
+            await RecordFailureAsync(record, actor, documentId, ex.GetType().Name, retry);
             return Result<ErasureReceipt>.Fail(FailedMessage);
         }
 
         _logger.LogInformation(
             "Document removal {CorrelationId} completed for document {DocumentId}: receipt {RequestId}, completeness {Completeness}.",
             correlationId, documentId, receipt.RequestId, receipt.Completeness);
-        await RecordSafelyAsync(record with
+        await RecordOutcomeAsync(record, record with
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
             Metadata = Metadata("outcome", actor, documentId, receipt),
-        }, actor);
+        }, actor, retry, DocumentRemovalRetries.OutcomeOf(receipt), receipt.Completeness == ErasureCompleteness.Full);
 
         if (receipt.Completeness == ErasureCompleteness.Full)
             await ForgetLoadAsync(documentId, forgetLoadsUpTo);
@@ -200,14 +216,43 @@ public sealed class AuditedDocumentRemoval
         }, actor);
     }
 
-    private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason) =>
-        RecordSafelyAsync(attempt with
+    private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason, Retry retry) =>
+        RecordOutcomeAsync(attempt, attempt with
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, documentId, receipt: null),
-        }, actor);
+        }, actor, retry, DocumentRemovalRetries.FailedOutcome(reason), fullyRemoved: false);
+
+    /// <summary>
+    /// Records <paramref name="outcome"/>, and for a retry first its deferred <paramref name="attempt"/>, unless the retry
+    /// ended as the last recorded attempt did (#998); then tells the retries what was recorded.
+    /// </summary>
+    private async Task RecordOutcomeAsync(
+        AuditEntry attempt, AuditEntry outcome, ErasureActor actor, Retry retry, string? endedWith, bool fullyRemoved)
+    {
+        if (retry.Of is { } previous)
+        {
+            if (endedWith is not null && endedWith == previous.Outcome)
+            {
+                _logger.LogDebug(
+                    "Retry of document removal {RetryOf} ended as the last recorded attempt did; nothing new is recorded.",
+                    previous.RetryOf);
+                return;
+            }
+
+            await RecordSafelyAsync(attempt with { Metadata = DocumentRemovalRetries.MarkRetry(attempt.Metadata, previous.RetryOf) }, actor);
+            outcome = outcome with { Metadata = DocumentRemovalRetries.MarkRetry(outcome.Metadata, previous.RetryOf) };
+        }
+
+        await RecordSafelyAsync(outcome, actor);
+        retry.Retries?.Recorded(retry.DocumentId, retry.Load, retry.Of?.RetryOf ?? attempt.CorrelationId, endedWith, fullyRemoved);
+    }
+
+    /// <summary>The retries this removal is tracked in, if any, and what they last recorded for it.</summary>
+    private sealed record Retry(
+        DocumentRemovalRetries? Retries, DocumentRemovalRetries.Tried? Of, string DocumentId, DateTimeOffset Load);
 
     private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string documentId, ErasureReceipt? receipt)

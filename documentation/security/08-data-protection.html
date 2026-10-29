@@ -716,7 +716,12 @@
                             embedding error, also deleted that earlier copy; clean-up now runs only once this load's own
                             writes have started.) A removal forgets the record only up to the load it judged, so a document
                             loaded again meanwhile keeps its new time. A removal that ends Partial keeps the record and is
-                            tried again on the next sweep; at most 200 documents go per sweep, oldest first.
+                            tried again on the next sweep; at most 200 documents go per sweep, oldest first. A retry is
+                            written to the compliance trail only when it ends differently from the last recorded attempt
+                            (completed, other stores failing, a different failure, or anything removed), as a pair naming
+                            the first attempt under <code>retry_of</code>, so the trail grows with requests rather than
+                            with sweeps (#998). A retry that dies part-way leaves the first attempt and last outcome, both
+                            still true; after a restart the first retry of each document is recorded once more.
                         </li>
                         <li>
                             <strong>The load record is one process's file, so the age limit refuses shared stores.</strong>
