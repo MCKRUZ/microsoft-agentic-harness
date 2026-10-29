@@ -132,10 +132,11 @@ public static partial class DependencyInjection
 
         // Run records name their owner, so erasure removes the person's finished ones and the export copies them (#926).
         // What erasure keeps is counted through the store too, so the receipt can say a record was kept; IRunJobStore
-        // includes the count, so a replacement store answers it as well.
+        // includes the count, so a replacement store answers it as well. One of several kept-run sources (the bundle stores
+        // add theirs), so not TryAdd; the coordinator counts an instance registered twice once.
         services.AddPersonalDataEraser<IRunJobStore>();
         services.AddPersonalDataExporter<IRunJobStore>();
-        services.TryAddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
+        services.AddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
 
         // Erasure cancels the person's live runs before the store erases the finished ones (#992), through the same cancel
         // path an owner's cancel takes. A plain registration, like the planned-task canceller's, so one registered
@@ -154,6 +155,10 @@ public static partial class DependencyInjection
         // Being registered is not being reachable: without a RunKind.Evaluation executor no eval run
         // can execute, and the endpoints refuse unless evaluation is enabled.
         services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
+
+        // A submission records no owner, so the person's copy finds theirs through their run records (#991). TryAddEnumerable,
+        // so a substrate composed twice still puts one section in the copy.
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IPersonalDataExporter, EvalRunSubmissionExporter>());
 
         // The dataset name catalog. In Infrastructure because it reads directories, and registered
         // here rather than in the host that serves evaluation for the same reason as the store above:

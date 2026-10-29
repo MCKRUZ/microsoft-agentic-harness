@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Interfaces.Evaluation;
 using Domain.AI.Evaluation;
+using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Runs;
 
@@ -23,7 +24,19 @@ namespace Infrastructure.AI.Runs;
 /// its own would put two schedules in charge of one run's memory, and the two would disagree: the
 /// shorter one silently strips the report off a run the caller can still read.
 /// </para>
+/// <para>
+/// <strong>Personal data, reached through the run (#991).</strong> A submission records no owner: the run record does.
+/// Erasure therefore releases it with the record (the run store's erasure tells <c>EvalSubmissionReclaimListener</c>), and
+/// the person's copy reads it by the ids of their runs (<c>EvalRunSubmissionExporter</c>), so neither needs an owner here.
+/// </para>
 /// </remarks>
+[PersonalDataStore(
+    "In-memory evaluation run submissions, under the run's job id: the dataset names, the run options and, once the run ends, the report with each case's model output, scores and errors. Records no owner; the run record names the person. Released when that record is removed, WorkflowSubmission:RunRecordTtl (1 hour) after the run ends or by the run store's owner erasure, and never on its own clock. The person's copy includes the submissions of their runs, found through their run records.",
+    PersonalDataCategories.ConversationContent | PersonalDataCategories.DiagnosticText,
+    PersonalDataKey.Unkeyed,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed class InMemoryEvalRunSubmissionStore : IEvalRunSubmissionStore
 {
     private readonly ConcurrentDictionary<string, EvalRunSubmission> _submissions =

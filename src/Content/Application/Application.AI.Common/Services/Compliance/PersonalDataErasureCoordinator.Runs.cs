@@ -5,15 +5,11 @@ using Microsoft.Extensions.Logging;
 namespace Application.AI.Common.Services.Compliance;
 
 /// <summary>
-/// The run store's part in a request: the person's live workflow and evaluation runs are cancelled first (#992), the store
-/// then erases the finished ones (#926), and the receipt says when a record was still kept.
+/// The run stores' part in a request: the person's live workflow and evaluation runs are cancelled first (#992), each
+/// store then erases the finished ones (#926, #990), and the receipt says, per store, when a record was still kept.
 /// </summary>
 public sealed partial class PersonalDataErasureCoordinator
 {
-    private const string KeptRunsStore = "workflow and evaluation runs still held";
-    private const string KeptRunsReason =
-        "a run record of the person's was kept: a workflow or evaluation run that was still executing when erasure stopped waiting for it, one that ended or started while erasure ran, or one whose run-scoped state could not be released; run erasure again once the person's runs have ended";
-
     /// <summary>
     /// Cancels the person's queued and parked runs through the path an owner's cancel takes, withdrawing their approvals,
     /// and signals their executing workflows. A failure is logged and the request goes on: whatever was not cancelled is
@@ -56,29 +52,30 @@ public sealed partial class PersonalDataErasureCoordinator
     }
 
     /// <summary>
-    /// Lists the person's run records the store still holds once every stage has run. Counting every record, not only the
-    /// live ones, covers a run that ended after the store was erased: its record is not live, but it is still held. A line
-    /// of its own, added after the stages, so it neither holds a stage back nor keeps the journal: nothing else is found
-    /// through a run record. A failure to count is its own failed line, since the deletes are already done.
+    /// Lists, for each source, the person's records it still holds once every stage has run. Counting every record, not
+    /// only the live ones, covers a run that ended after the store was erased: its record is not live, but it is still
+    /// held. A line of its own per source, added after the stages, so it neither holds a stage back nor keeps the journal:
+    /// nothing else is found through a run record. A failure to count is that source's failed line, since the deletes are
+    /// already done, and does not stop the other sources being asked.
     /// </summary>
     private async Task NoteRunsKeptAsync(string ownerId, List<StoreErasureOutcome> outcomes)
     {
-        if (_keptRuns is null)
-            return;
-
-        int kept;
-        try
+        foreach (var source in _keptRuns)
         {
-            kept = await _keptRuns.CountRunsKeptAsync(ownerId, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for run records still held.");
-            outcomes.Add(new StoreErasureOutcome(KeptRunsStore, StoreErasureStatus.Failed, 0, FailedReason));
-            return;
-        }
+            int kept;
+            try
+            {
+                kept = await source.CountRunsKeptAsync(ownerId, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(MessageWithheldException.From(ex), "Erasure could not check for run records still held.");
+                outcomes.Add(new StoreErasureOutcome(source.KeptRunsStoreName, StoreErasureStatus.Failed, 0, FailedReason));
+                continue;
+            }
 
-        if (kept > 0)
-            outcomes.Add(new StoreErasureOutcome(KeptRunsStore, StoreErasureStatus.Skipped, 0, KeptRunsReason));
+            if (kept > 0)
+                outcomes.Add(new StoreErasureOutcome(source.KeptRunsStoreName, StoreErasureStatus.Skipped, 0, source.KeptRunsReason));
+        }
     }
 }

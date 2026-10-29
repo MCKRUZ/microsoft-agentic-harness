@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Compliance;
+using Domain.AI.Runs;
 using Domain.Common.Compliance;
 
 namespace Infrastructure.AI.Runs;
@@ -29,5 +30,12 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataExporter
         IReadOnlyList<JsonElement> records =
             [.. OwnedBy(subject.OwnerId).Select(r => JsonSerializer.SerializeToElement(r, ExportJson))];
         return Task.FromResult(records);
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<RunRecord> GetRunsOwnedBy(string ownerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        return OwnedBy(ownerId);
     }
 }

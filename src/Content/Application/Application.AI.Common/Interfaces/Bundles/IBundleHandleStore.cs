@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Bundles;
 
 namespace Application.AI.Common.Interfaces.Bundles;
@@ -25,8 +26,13 @@ namespace Application.AI.Common.Interfaces.Bundles;
 /// restart, but a restart also loses the in-memory job records that reference them, so the two stay
 /// consistent (an orphaned directory left by a crash is swept by the same pass on the next start).
 /// </para>
+/// <para>
+/// <strong>A handle names who staged it</strong>, so the store also answers <see cref="IKeptRunSource"/> (#990): erasure
+/// removes a person's handles, a handle a run still holds a lease on stays until that run releases it, and the receipt
+/// must say when one was kept. Part of this contract, so a store that replaces the shipped one has to answer it too.
+/// </para>
 /// </remarks>
-public interface IBundleHandleStore
+public interface IBundleHandleStore : IKeptRunSource
 {
     /// <summary>
     /// Registers a freshly staged bundle under an owning caller and returns the opaque handle used to run or
