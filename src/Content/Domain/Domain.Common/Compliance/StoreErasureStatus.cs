@@ -51,4 +51,11 @@ public enum StoreErasureStatus
     /// not a store failing to find the subject.
     /// </summary>
     RetainedAsBusinessContent,
+
+    /// <summary>
+    /// A store this host is wired with but not configured to use, such as an Azure AI Search index with no endpoint
+    /// (#1003). It has never held anything, so it is not asked; the line says so rather than reading as a search that
+    /// found nothing. It does not make the receipt <c>Partial</c> and does not hold later stages back.
+    /// </summary>
+    NotConfigured,
 }

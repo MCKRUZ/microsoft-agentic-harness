@@ -31,7 +31,7 @@ public sealed class ExportMyDataCommandHandlerTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         var audited = new AuditedExport(
-            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System,
+            _export.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TestHostEnvironment.Instance, TimeProvider.System,
             NullLogger<AuditedExport>.Instance);
         return new ExportMyDataCommandHandler(_scope.Object, audited, NullLogger<ExportMyDataCommandHandler>.Instance);
     }
@@ -45,7 +45,7 @@ public sealed class ExportMyDataCommandHandlerTests
 
         var result = await CreateHandler().Handle(new ExportMyDataCommand(), CancellationToken.None);
 
-        result.Value.Should().BeSameAs(copy);
+        result.Value.Should().Be(copy with { Host = TestHostEnvironment.Name });
         _export.Verify(e => e.ExportOwnerAsync(It.IsNotIn("user-1"), It.IsAny<CancellationToken>()), Times.Never);
     }
 

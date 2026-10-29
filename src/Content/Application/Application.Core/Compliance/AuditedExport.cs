@@ -6,6 +6,7 @@ using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.Common;
 using Domain.Common.Compliance;
 using Domain.Common.Models;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Compliance;
@@ -19,7 +20,8 @@ namespace Application.Core.Compliance;
 /// <para>
 /// <strong>What the record holds.</strong> Who asked (<see cref="ErasureActor"/>, shared with erasure because the same
 /// people may ask), a pseudonymous subject reference from <see cref="IErasureSubjectReference"/>, the copy's request id,
-/// whether it is complete, and each store's status and record count. Never the subject's id and never any of the data.
+/// whether it is complete, each store's status and record count, and the host that made the copy (#1003), which is also
+/// stamped on the copy itself (<see cref="PersonalDataExport.Host"/>). Never the subject's id and never any of the data.
 /// </para>
 /// <para>
 /// <strong>Two records per request</strong>, an <see cref="AuditOutcome.Attempted"/> one before anything is read and an
@@ -49,6 +51,7 @@ public sealed class AuditedExport
     private readonly IErasureSubjectReference _subjectReference;
     private readonly IAuditSink _auditSink;
     private readonly IComplianceAuditTrail _trail;
+    private readonly string _host;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedExport> _logger;
 
@@ -57,6 +60,7 @@ public sealed class AuditedExport
     /// <param name="subjectReference">Pseudonymises the subject for the audit record.</param>
     /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
     /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the export was handled.</param>
+    /// <param name="hostEnvironment">Names the host the copy covers (#1003): an export reads only this process's stores.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for faults and audit-write failures.</param>
     public AuditedExport(
@@ -64,6 +68,7 @@ public sealed class AuditedExport
         IErasureSubjectReference subjectReference,
         IAuditSink auditSink,
         IComplianceAuditTrail trail,
+        IHostEnvironment hostEnvironment,
         TimeProvider timeProvider,
         ILogger<AuditedExport> logger)
     {
@@ -71,9 +76,11 @@ public sealed class AuditedExport
         ArgumentNullException.ThrowIfNull(subjectReference);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(trail);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _host = hostEnvironment.ApplicationName;
         _export = export;
         _subjectReference = subjectReference;
         _auditSink = auditSink;
@@ -112,7 +119,7 @@ public sealed class AuditedExport
         PersonalDataExport export;
         try
         {
-            export = await _export.ExportOwnerAsync(subjectId, cancellationToken);
+            export = await _export.ExportOwnerAsync(subjectId, cancellationToken) with { Host = _host };
         }
         catch (OperationCanceledException)
         {
@@ -193,13 +200,14 @@ public sealed class AuditedExport
             Metadata = Metadata("outcome", actor, subjectReference, export: null),
         }, actor);
 
-    private static Dictionary<string, string> Metadata(
+    private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string? subjectReference, PersonalDataExport? export)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
             ["initiator"] = actor.Initiator,
+            ["host"] = _host,
         };
         if (subjectReference is not null)
             metadata["subject_reference"] = subjectReference;

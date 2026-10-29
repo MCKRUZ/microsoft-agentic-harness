@@ -50,7 +50,7 @@ public sealed class AuditedErasureTests
     private HmacErasureSubjectReference Reference() =>
         new(Mock.Of<IOptionsMonitor<ErasureConfig>>(m => m.CurrentValue == _config));
 
-    private AuditedErasure Create() => new(_erasure.Object, Reference(), _sink.Object, _trail.Object, TimeProvider.System, _logger);
+    private AuditedErasure Create() => new(_erasure.Object, Reference(), _sink.Object, _trail.Object, TestHostEnvironment.Instance, TimeProvider.System, _logger);
 
     private static ErasureReceipt Receipt() => new()
     {
@@ -109,6 +109,27 @@ public sealed class AuditedErasureTests
         outcome.Metadata["completeness"].Should().Be("Full");
         outcome.Metadata["graph.nodes"].Should().Be("3");
         outcome.Metadata["store.conversations"].Should().Be("Erased:5");
+    }
+
+    [Fact]
+    public async Task EraseAsync_Succeeds_TheReceiptAndEveryRecordNameTheHostTheErasureCovered()
+    {
+        // #1003: an erasure reaches only this process's stores, so a receipt reading Full without naming its host would
+        // read as the person erased everywhere while another host still holds their data.
+        _erasure.Setup(e => e.EraseOwnerAsync(Subject, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().EraseAsync(Subject, ErasureActor.DataSubject, "EraseMyDataCommand", CancellationToken.None);
+
+        result.Value!.Host.Should().Be(TestHostEnvironment.Name);
+        _records.Should().HaveCount(2).And.OnlyContain(r => r.Metadata!["host"] == TestHostEnvironment.Name);
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_NamesTheHostThatRefused()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.DataSubject, "EraseMyDataCommand", "sign-in is bypassed");
+
+        _records.Should().ContainSingle().Which.Metadata!["host"].Should().Be(TestHostEnvironment.Name);
     }
 
     [Fact]

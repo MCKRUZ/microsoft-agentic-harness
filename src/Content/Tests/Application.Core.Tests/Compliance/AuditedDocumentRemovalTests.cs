@@ -40,7 +40,7 @@ public sealed class AuditedDocumentRemovalTests
             .ReturnsAsync(Result.Success());
     }
 
-    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _trail.Object, _clock, _logger);
+    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _trail.Object, TestHostEnvironment.Instance, _clock, _logger);
 
     [Fact]
     public async Task RemoveAsync_Complete_ForgetsTheLoadRecord_UpToWhenTheRemovalStarted()
@@ -50,6 +50,18 @@ public sealed class AuditedDocumentRemovalTests
         await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
 
         _ledger.Verify(l => l.ForgetAsync(DocumentId, _clock.GetUtcNow(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_TheReceiptAndEveryRecordNameTheHostTheRemovalCovered()
+    {
+        // #1003: a removal reaches only this process's document indexes and graph.
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        result.Value!.Host.Should().Be(TestHostEnvironment.Name);
+        _records.Should().HaveCount(2).And.OnlyContain(r => r.Metadata!["host"] == TestHostEnvironment.Name);
     }
 
     [Fact]

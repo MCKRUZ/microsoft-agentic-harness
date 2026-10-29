@@ -142,6 +142,7 @@ public sealed partial class PersonalDataErasureCoordinator
         var stores = _erasers.Select(e => e.ErasureStoreName).ToHashSet(StringComparer.Ordinal);
         return outcomes
             .Where(o => stores.Contains(o.Store))
-            .All(o => o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported);
+            .All(o => o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported
+                or StoreErasureStatus.NotConfigured);
     }
 }

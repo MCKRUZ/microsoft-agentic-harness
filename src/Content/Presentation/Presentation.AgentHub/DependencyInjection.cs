@@ -29,6 +29,7 @@ using Presentation.AgentHub.Telemetry;
 using Domain.Common.Config;
 using Presentation.Common.AgentRegistry;
 using Presentation.Common.ChangeProposals;
+using Presentation.Common.Compliance;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
 using Presentation.Common.Governance;
@@ -42,12 +43,6 @@ namespace Presentation.AgentHub;
 /// </summary>
 public static class DependencyInjection
 {
-    /// <summary>
-    /// How many personal-data exports (#902) the host assembles at once. Each holds one person's whole data in memory and
-    /// reads the whole knowledge graph's edges, so a few are allowed and the rest are refused with 429.
-    /// </summary>
-    public const int ConcurrentExportLimit = 2;
-
     /// <summary>
     /// Registers all AgentHub-specific services: Azure AD authentication with
     /// SignalR token extraction, SignalR hub, CORS, rate limiting, and config binding.
@@ -90,7 +85,11 @@ public static class DependencyInjection
             .AddAgentRegistryApi()
             // Deliberate opt-in: AgentHub also owns the ISkillMetadataRegistry singleton live
             // conversation turns resolve skills from (issue #709).
-            .AddSkillRegistryApi();
+            .AddSkillRegistryApi()
+            // Deliberate opt-in: AgentHub's own stores hold the conversations, memories, plans and documents of the
+            // people who use it, so they must be erasable and exportable here (#1003). Its two sign-in bypass schemes
+            // make every caller one synthetic person, so self-service and operator requests are refused under them.
+            .AddComplianceApi(AuthBypassPolicy.SharedIdentitySchemes);
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the
@@ -178,10 +177,6 @@ public static class DependencyInjection
 
         services.AddAuthorization();
 
-        // One gate for every operator action on someone else's data (erasure, document removal, export), so the role,
-        // tenant and bypass rules cannot drift between them.
-        services.AddSingleton<OperatorGate>();
-
         services.AddSingleton<KnowledgeScopeHubFilter>();
         services.AddSingleton<HubRateLimitFilter>();
 
@@ -238,98 +233,6 @@ public static class DependencyInjection
                     {
                         PermitLimit = 10,
                         Window = TimeSpan.FromMinutes(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                    });
-                }
-
-                // Right-to-erasure is destructive, irreversible, and store-heavy; cap it hard per
-                // authenticated user so a compromised or misused token cannot spam deletions. Runs
-                // after auth + KnowledgeScopeMiddleware, so User is populated; partition on the caller's
-                // object id (falling back to IP for the unauthenticated case the [Authorize] gate rejects).
-                if (HttpMethods.IsPost(context.Request.Method) &&
-                    context.Request.Path.StartsWithSegments("/api/compliance/erase-my-data"))
-                {
-                    var partitionKey = context.User.GetUserIdOrNull()
-                        ?? context.Connection.RemoteIpAddress?.ToString()
-                        ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter($"erase:{partitionKey}", _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 5,
-                        Window = TimeSpan.FromHours(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                    });
-                }
-
-                // A copy of one's own data (#902) reads every store the person's data lives in and returns all of it
-                // in one response: the same per-user cap as self-service erasure, in its own partition, so a stolen
-                // token cannot be used to pull a person's data over and over or to load every store on demand.
-                if (HttpMethods.IsPost(context.Request.Method) &&
-                    context.Request.Path.StartsWithSegments("/api/compliance/export-my-data"))
-                {
-                    var partitionKey = context.User.GetUserIdOrNull()
-                        ?? context.Connection.RemoteIpAddress?.ToString()
-                        ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter($"export:{partitionKey}", _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 5,
-                        Window = TimeSpan.FromHours(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                    });
-                }
-
-                // Operator erasure (#900) deletes another person's data, and every request, refused or not,
-                // writes an audit record; cap it per authenticated caller so a token without the role cannot
-                // flood the audit trail and one with it cannot sweep through people faster than a human
-                // working a request queue would. Its own partition, so an operator's own self-service
-                // erasure does not spend this allowance.
-                if (HttpMethods.IsPost(context.Request.Method) &&
-                    context.Request.Path.StartsWithSegments("/api/compliance/erasures"))
-                {
-                    var operatorKey = context.User.GetUserIdOrNull()
-                        ?? context.Connection.RemoteIpAddress?.ToString()
-                        ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter($"erase-subject:{operatorKey}", _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 30,
-                        Window = TimeSpan.FromHours(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                    });
-                }
-
-                // Operator export (#902) hands one person's whole data to someone else, and writes an audit record per
-                // request, refused or not: the same per-operator cap as operator erasure, in its own partition, so an
-                // operator's own copy of their data does not spend this allowance.
-                if (HttpMethods.IsPost(context.Request.Method) &&
-                    context.Request.Path.StartsWithSegments("/api/compliance/exports"))
-                {
-                    var operatorKey = context.User.GetUserIdOrNull()
-                        ?? context.Connection.RemoteIpAddress?.ToString()
-                        ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter($"export-subject:{operatorKey}", _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 30,
-                        Window = TimeSpan.FromHours(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                    });
-                }
-
-                // Document removal (#901) deletes content across every tenant and writes an audit record per request,
-                // refused or not: the same per-operator cap as operator erasure, in its own partition.
-                if (HttpMethods.IsPost(context.Request.Method) &&
-                    context.Request.Path.StartsWithSegments("/api/compliance/document-removals"))
-                {
-                    var operatorKey = context.User.GetUserIdOrNull()
-                        ?? context.Connection.RemoteIpAddress?.ToString()
-                        ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter($"remove-document:{operatorKey}", _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 30,
-                        Window = TimeSpan.FromHours(1),
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0,
                     });
@@ -445,23 +348,10 @@ public static class DependencyInjection
                 return RateLimitPartition.GetNoLimiter("none");
             });
 
-            // A copy of one's own data (#902) holds that person's whole data in memory while it is assembled, and reads
-            // every edge of the knowledge graph to find theirs. The per-person cap above does not stop several people
-            // exporting at once, so the host as a whole runs only a few at a time; the rest are refused with 429 at once
-            // rather than queued, since each can run for minutes.
-            // An operator's copy of someone else's data holds the same whole data, so it shares the same host-wide budget.
-            var hostWide = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-                HttpMethods.IsPost(context.Request.Method)
-                && (context.Request.Path.StartsWithSegments("/api/compliance/export-my-data")
-                    || context.Request.Path.StartsWithSegments("/api/compliance/exports"))
-                    ? RateLimitPartition.GetConcurrencyLimiter("export:host", _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = ConcurrentExportLimit,
-                        QueueLimit = 0,
-                    })
-                    : RateLimitPartition.GetNoLimiter("none"));
-
-            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(perCaller, hostWide);
+            // The compliance endpoints' per-caller windows and host-wide export limit are shared with every host that
+            // mounts the compliance API (#1003), so they cannot differ between hosts. First, so a request they refuse
+            // spends no fixed-window permit of the host's own.
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(ComplianceRateLimits.Create(), perCaller);
 
             // NOTE: SignalR agent-turn methods (SendMessage / RetryFromMessage / EditAndResubmit /
             // InvokeToolViaAgent) are NOT throttled here. UseRateLimiter is HTTP-request-scoped and

@@ -28,4 +28,12 @@ public sealed record PersonalDataExport(
 {
     /// <summary>Whether every store that can hold the person's data returned it.</summary>
     public bool IsComplete => Manifest.All(m => !m.LeavesDataOut);
+
+    /// <summary>
+    /// The host process this copy covers, such as <c>Presentation.AgentHub</c> or <c>Presentation.ExecutionApi</c>
+    /// (#1003). A copy holds only what the process that made it can find, so <see cref="IsComplete"/> speaks for that host
+    /// alone: a deployment that runs several hosts holding personal data sends the request to each. Set by the request path
+    /// that hands the copy out; <see langword="null"/> on a copy taken straight from the export services.
+    /// </summary>
+    public string? Host { get; init; }
 }

@@ -1009,9 +1009,17 @@
                         erased. Each store's kept records get a <code>Skipped</code> line of their own, "bundle runs still
                         held" or "staged bundles still held", and the receipt is <code>Partial</code>. Both are erased
                         and copied only by a request served by the same process as the bundle API. The bundle API runs in
-                        <code>Presentation.ExecutionApi</code>, and erasure and export are served by the AgentHub host.
-                        When the two run separately, the bundle API's records are not reached, and they expire on their
-                        own within the periods above.
+                        <code>Presentation.ExecutionApi</code>, which serves erasure and export for its own stores (#1003),
+                        so send the request there as well as to AgentHub (<a href="#one-host">each request covers the host it
+                        is sent to</a>).
+                    </p>
+                    <p>
+                        <strong>Replacing a run store.</strong> Each run store's "still held" count is registered with
+                        <code>AddSingleton&lt;IKeptRunSource&gt;</code>, not <code>TryAdd</code>, and forwards to the
+                        store's own service (<code>IRunJobStore</code>, <code>IBundleRunJobStore</code>,
+                        <code>IBundleHandleStore</code>). If you wrap one in a decorator, register the decorator in place
+                        of the store as that service, so the shipped registration reaches it. Do not add another
+                        <code>IKeptRunSource</code> for it, or every receipt shows two kept lines for the one store.
                     </p>
                     <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
@@ -1066,6 +1074,168 @@
                         caller there.
                     </p>
 
+                    <h3 id="one-host">Each request covers the host it is sent to (#1003)</h3>
+                    <p>
+                        Erasure, document removal and export run inside one process and reach that process's stores
+                        only. Hosts never call one another. Most stores live inside their process: the workflow and
+                        evaluation run records in memory, and, by default, the conversation database, journal and plan
+                        database as files beside each host's own binaries. The document indexes are wherever the host's
+                        configuration puts them: FAISS and SQLite files, or an Azure AI Search index. An Azure AI Search
+                        index with no endpoint configured, the default for a host that sets nothing, has never held
+                        anything, so its two receipt lines read <code>NotConfigured</code> and its export line
+                        <code>NotApplicable</code>, without either store being asked. Before #1003 they failed against the placeholder endpoint and held every
+                        such host's receipts <code>Partial</code>.
+                        A request sent to AgentHub therefore leaves the Execution API's copy of the same person's data
+                        alone, and the reverse. So every receipt and every copy names the host it covers in a
+                        <code>host</code> field, the host's application name such as <code>Presentation.AgentHub</code>
+                        or <code>Presentation.ExecutionApi</code>. Every audit record names it too. <code>Full</code> and
+                        <code>isComplete</code> speak for that host alone.
+                    </p>
+                    <p>
+                        <strong>A deployment must send each request to every host that holds personal data</strong>, and
+                        a person is erased everywhere only when every one of those hosts has returned a <code>Full</code>
+                        receipt. Both hosts that serve the compliance API serve it at the same paths, with the same roles,
+                        operator tenants (each host reads its own <code>AppConfig:AI:Erasure:OperatorTenantIds</code>),
+                        refusals and rate limits, because both mount the one implementation in
+                        <code>Presentation.Common.Compliance</code>. The rate limits and the two-copies-at-once export
+                        limit are per host. Where two hosts are pointed at one shared durable store, such as a shared
+                        conversation database, whichever host is asked first erases that store for both. Their in-memory
+                        stores still need a request each. A host scaled out to several instances keeps its in-memory
+                        stores per instance, and a request reaches only the instance that serves it. The shipped run
+                        and bundle stores are single-instance by design.
+                    </p>
+                    <p>
+                        The shipped hosts, and whether they hold personal data:
+                    </p>
+                    <ul>
+                        <li><strong>AgentHub</strong> holds conversations, memories and the knowledge graph, plans,
+                            schedules, documents people load, and the rest of the stores on this page. It serves the
+                            compliance API.</li>
+                        <li><strong>Execution API</strong> holds workflow, evaluation and bundle run records, and the
+                            conversations its agents write when a run names one. It also holds the plans its workflows
+                            persist and whatever its agents' tools store. It serves the compliance API at
+                            <code>/api/compliance/*</code>, authenticated with its own audience. Its anonymous development
+                            mode makes every caller one person, so the API refuses self-service and operator requests there,
+                            as AgentHub does under its sign-in bypass. Its receipt lists the bundle runs and staged bundles
+                            it keeps in memory (#990).</li>
+                        <li><strong>FoundryHost</strong> keeps each Foundry session's state in that session's own
+                            <code>$HOME</code>. It serves no erasure or export endpoint. You erase and export its data
+                            through Foundry's session API instead
+                            (<a href="#foundry-erasure">see below</a>).</li>
+                        <li><strong>ConsoleUI</strong> and <strong>EvalRunner</strong> are run by hand, not deployed as
+                            services. They compose the same stores, so anything they write lands in their own working
+                            directory. They serve no endpoint, so clear their state directly. <strong>AuditArchiver</strong>
+                            only moves existing audit day-files into the archive, and <strong>LoggerUI</strong> only prints
+                            log pipes. Neither writes personal data of its own.</li>
+                    </ul>
+
+                    <h3 id="foundry-erasure">Erasing and exporting FoundryHost's data: delete or copy the Foundry session</h3>
+                    <p>
+                        FoundryHost cannot serve these endpoints, and it does not need to. Callers reach a hosted agent only
+                        through its Foundry endpoint. The documented routes are the protocols
+                        (<code>.../endpoint/protocols/openai/responses</code>, <code>.../endpoint/protocols/invocations</code>)
+                        and the sessions API (Microsoft Learn, <em>Manage hosted agent sessions</em>). The container serves
+                        <code>POST /responses</code> or <code>POST /invocations</code> and <code>GET /readiness</code>
+                        (<em>Hosted agent runtime contract</em>). Neither page documents a route to any other container path,
+                        so we infer that <code>/api/compliance/*</code> would not be reachable. Every call also lands in one
+                        session's sandbox.
+                        A session is "a stateful, isolated sandbox tied to a single logical workload (for example, one
+                        user's chat)", with its own persistent <code>$HOME</code> (<em>Manage hosted agent sessions</em>).
+                        FoundryHost keeps what it writes in that <code>$HOME</code>, with two exceptions, both off by
+                        default. Durable governance state stays in the application directory, on the sandbox's ephemeral
+                        root disk. Prompt usage goes wherever its connection string points
+                        (<code>src/Content/Presentation/Presentation.FoundryHost/README.md</code>). The rest is:
+                    </p>
+                    <ul>
+                        <li>the agent session store, under <code>$HOME/.checkpoints</code>;</li>
+                        <li>the planner, conversation, document-ledger, schedule and erasure-journal databases;</li>
+                        <li>workflow state, execution traces, offloaded tool results, and subagent delegations and
+                            mailbox;</li>
+                        <li>the embedded Kuzu graph, file logs and the audit trails, all under
+                            <code>$HOME/agent-state</code>.</li>
+                    </ul>
+                    <p>
+                        An erasure run inside the container could reach only the one session the request landed in.
+                        Deleting the session reaches all of it.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Find the person's sessions.</strong> Each session belongs to one isolation key.
+                            <ul>
+                                <li>With the default Entra isolation source, the key is the caller's Microsoft Entra
+                                    identity, and the list call returns only the caller's own sessions.</li>
+                                <li>With the header source, the key is whatever your application sent in
+                                    <code>x-ms-user-isolation-key</code>.</li>
+                            </ul>
+                            An operator who holds the Foundry User role on the project sees and deletes every session on
+                            the agent. Listing is
+                            <code>GET .../agents/{agent}/endpoint/sessions</code>. If your application calls the agent on
+                            people's behalf under its own identity, it must record which sessions are whose: FoundryHost
+                            cannot tell you.
+                        </li>
+                        <li>
+                            <strong>Erase.</strong> <code>DELETE .../agents/{agent}/endpoint/sessions/{id}</code>, sent with
+                            the session's isolation key, "terminates the sandbox and releases its resources". The platform
+                            otherwise "retains <code>$HOME</code> state for 30 days unless you delete the session"
+                            (<em>Customer-managed keys in Microsoft Foundry</em>), so deleting the session is what removes
+                            the <code>$HOME</code> above. A session nobody deletes goes after 30 days of inactivity.
+                        </li>
+                        <li>
+                            <strong>Export.</strong> The session files API lists and downloads what is under
+                            <code>$HOME</code>: <code>GET .../sessions/{id}/files?path=...</code> and
+                            <code>GET .../sessions/{id}/files/content?path=...</code>. Copy <code>agent-state</code> and
+                            <code>.checkpoints</code>. They are the host's own storage formats (SQLite, JSONL, framework
+                            session files), not the JSON copy the other hosts return.
+                        </li>
+                    </ul>
+                    <p>
+                        <strong>Only when a session is one person's.</strong> Deleting or copying a session is a per-person
+                        erasure or copy only if nobody else's data is in it. That holds for the default Entra isolation
+                        source, where each caller has their own sessions. It does not hold in two cases. The first is a
+                        header isolation key shared by several people, such as a tenant id. The second is several users
+                        multiplexed into one session (Microsoft Learn, <em>Multiplex multiple users in one hosted agent
+                        session</em>). FoundryHost does not separate users inside a session. In those deployments, copying a
+                        session hands the requester the other people's data, and deleting it erases theirs too. Use one
+                        isolation key per person if you need either right per person.
+                    </p>
+                    <p>
+                        <strong>What deleting a session does not cover.</strong>
+                    </p>
+                    <ul>
+                        <li>The conversation history Foundry itself stores for the Responses protocol is kept apart from
+                            the session. Delete it through Foundry's conversations API.</li>
+                        <li>The session's audit trails, including the compliance trail, are inside <code>$HOME</code>.
+                            Deleting the session deletes them too, so the proof they hold goes with it. A deployment that
+                            must keep that proof archives the trails first (see
+                            <a href="#audit-archive-retention">the audit archive</a>).</li>
+                        <li>
+                            A store promoted to an external service is shared by every session: an external knowledge
+                            graph (<code>GRAPH_PROVIDER</code>, or <code>AppConfig:AI:Rag:GraphRag:GraphProvider</code>), a
+                            graph database other than the embedded Kuzu, any document index other than the in-process FAISS
+                            one (Azure AI Search through <code>AZURE_SEARCH_ENDPOINT</code>, say), Redis
+                            (<code>REDIS_ENDPOINT</code>), or the observability database
+                            (<code>AppConfig:Observability:PostgresConnectionString</code>).
+                            <ul>
+                                <li>FoundryHost sets no knowledge scope, so what it writes there carries no owner. Neither
+                                    session deletion nor any per-person request can find one person's records there.</li>
+                                <li>FoundryHost names each such store in a warning at startup
+                                    (<code>FoundryHostErasure</code>).</li>
+                                <li>Keep personal data out of those stores, or clear them as a whole.</li>
+                            </ul>
+                        </li>
+                        <li>Telemetry that has left the container: the Foundry hosting layer's traces and logs, and the
+                            harness's own Azure Monitor or OTLP export, sit in the Application Insights resource or collector
+                            they were sent to, under its own retention (see <a href="#foundry-telemetry">telemetry export</a>
+                            for turning that off).</li>
+                    </ul>
+                    <p>
+                        <strong>A way to per-person ownership.</strong> On container protocol 2.0.0, Foundry passes each
+                        request a verified per-user id, <code>x-agent-user-id</code> (<em>Hosted agent runtime
+                        contract</em>). FoundryHost declares the Responses protocol at 1.0.0 and does not read that header
+                        today. Upgrading, and owning records by that id, would let shared stores be erased per person. It
+                        would not change the routing above.
+                    </p>
+
                     <div class="callout callout-tip" id="erasure-receipt">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
@@ -1079,6 +1249,8 @@
                                 <li><code>RequestId</code> and <code>ScopeId</code> (the person's id, lower-cased and
                                     trimmed; returned to the caller and never logged), and the <code>RequestedAt</code> /
                                     <code>CompletedAt</code> window.</li>
+                                <li><code>Host</code>: the host whose stores the receipt covers (see
+                                    <a href="#one-host">each request covers the host it is sent to</a>).</li>
                                 <li><code>UnmatchedDocumentIds</code>: document ids drawn from the erased graph nodes that
                                     matched no row in any store.</li>
                                 <li>The knowledge graph's counts: nodes, edges, feedback weights, vector embeddings,
@@ -1105,6 +1277,10 @@
                                     person that documents others loaded, and what was drawn from them, may mention them and
                                     are kept as the organisation's business content until it removes them; with the document
                                     age limit running, it adds how long.
+                                    <code>NotConfigured</code> is a store this host is wired with but not configured to use,
+                                    such as an Azure AI Search index with no endpoint: it has never held anything, so it is not
+                                    asked, and it does not make the receipt <code>Partial</code> (#1003). The copy lists the same
+                                    store as <code>NotApplicable</code>, with the same reason.
                                 </li>
                                 <li>
                                     <code>Completeness</code> and <code>CompletenessReason</code>. <code>Full</code> means
@@ -1212,8 +1388,9 @@
                         after, paired by a correlation id, with the action <code>right_to_erasure</code>. The record is
                         meant to prove the erasure happened without keeping the identity it erased: it holds who asked
                         (an operator by a keyed reference in the compliance trail and by id in the log line; a person
-                        erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
-                        and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
+                        erasing themselves only as <code>data-subject</code>), the host that handled it (<code>host</code>,
+                        #1003; export and document-removal records carry it too), per-store counts, the receipt's request
+                        id, and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
                         <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
                         the key can recompute it from an id and find that person's erasure, and no one without the key can
                         reverse it. Without a key, no reference is recorded. A missing key, a broken audit sink or a
@@ -1327,7 +1504,9 @@
                         sign-in is bypassed (every caller is then one synthetic person, so the copy would hold everyone's
                         data) and for an application's own token. It is limited to five requests an hour per person, and
                         the host assembles at most two copies at once; a further request is refused with 429 rather than
-                        queued.
+                        queued. The copy holds only what the host it was sent to can find, and its <code>host</code> field
+                        says which host that is. Ask each host that holds personal data
+                        (<a href="#one-host">see above</a>).
                     </p>
                     <p>
                         <strong>For someone who cannot sign in.</strong> <code>POST /api/compliance/exports</code> with the

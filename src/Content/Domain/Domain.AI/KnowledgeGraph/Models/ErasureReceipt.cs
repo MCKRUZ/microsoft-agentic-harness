@@ -90,4 +90,13 @@ public record ErasureReceipt
     /// pre-existing construction sites remain valid.
     /// </summary>
     public IReadOnlyList<StoreErasureOutcome> Stores { get; init; } = [];
+
+    /// <summary>
+    /// The host process this receipt covers, such as <c>Presentation.AgentHub</c> or <c>Presentation.ExecutionApi</c>
+    /// (#1003). An erasure reaches only the stores of the process that ran it, so <see cref="Completeness"/> speaks for
+    /// that host alone: a deployment that runs several hosts holding personal data sends the request to each, and a person
+    /// is erased everywhere only when every host's receipt reads <see cref="ErasureCompleteness.Full"/>. Set by the request
+    /// path that hands the receipt out; <see langword="null"/> on a receipt taken straight from the erasure services.
+    /// </summary>
+    public string? Host { get; init; }
 }

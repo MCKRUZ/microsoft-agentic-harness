@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Presentation.Common.Compliance;
 using Presentation.AgentHub.Controllers;
 using Xunit;
 

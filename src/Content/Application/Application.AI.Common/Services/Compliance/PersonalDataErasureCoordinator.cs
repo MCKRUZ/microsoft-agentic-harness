@@ -201,7 +201,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         // A store that cannot erase at all will not succeed on a retry either, so it does not hold the conversations back.
         // A journal that could not be read does not either: what it held stays recorded for the next request.
         var beforeSucceeded = outcomes.All(o => o.Store is GraphStoreName or JournalReadStore
-            || o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported);
+            || o.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotSupported or StoreErasureStatus.NotConfigured);
 
         // Recorded before any lead is deleted; if it cannot be, no lead is deleted.
         var journalRecorded = beforeSucceeded && await RecordJournalAsync(ownerId, requestId, subject, outcomes);
@@ -383,6 +383,12 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         var mayRun = beforeSucceeded && (!partly || narrowed.AllConversationIds.Count > 0 || !narrowed.PlanRuns.IsEmpty);
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == ErasureStage.AfterConversations))
         {
+            if (NotConfigured(eraser) is { } notConfigured)
+            {
+                outcomes.Add(notConfigured);
+                continue;
+            }
+
             if (!mayRun || (partly && eraser.ErasureReach == ErasureReach.Owner))
             {
                 outcomes.Add(new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason));
@@ -398,7 +404,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
     /// <summary>
     /// Runs one later stage when <paramref name="mayRun"/>; otherwise records each of its stores as held back, so a retry
-    /// still finds them. Returns whether every store in the stage ran and succeeded.
+    /// still finds them. A store with no backend configured is listed as such either way and never asked. Returns whether
+    /// every store in the stage ran and erased, which is what tells the caller the stage's lead is gone: an unconfigured
+    /// store erased nothing, so it does not count.
     /// </summary>
     private async Task<bool> RunStageAsync(
         ErasureStage stage, bool mayRun, List<StoreErasureOutcome> outcomes, ErasureSubject subject,
@@ -407,15 +415,27 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         var allErased = mayRun;
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == stage))
         {
-            var outcome = mayRun
+            // Read once, so a store whose configuration changes mid-request is never asked while its stage is held back.
+            var outcome = NotConfigured(eraser) ?? (mayRun
                 ? await EraseAsync(eraser, subject, cancellationToken)
-                : new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason);
+                : new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason));
             allErased &= outcome.Status == StoreErasureStatus.Erased;
             outcomes.Add(outcome);
         }
 
         return allErased;
     }
+
+    /// <summary>
+    /// The line for a store this host has no backend configured for (#1003), or <see langword="null"/>. Such a store is
+    /// never asked, on any path: asking it would only fail on the placeholder it was built with, and listing it as held
+    /// back would say it keeps data. Checked before any hold-back decision, so it neither holds a stage back nor is held.
+    /// </summary>
+    private static StoreErasureOutcome? NotConfigured(IPersonalDataEraser eraser) =>
+        eraser is IConfigurablePersonalDataStore { IsConfigured: false }
+            ? new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotConfigured, 0,
+                IConfigurablePersonalDataStore.NotConfiguredReason)
+            : null;
 
     /// <summary>
     /// Erases the knowledge graph. Its own receipt is the base of the combined one; when it throws, an empty base is
@@ -451,6 +471,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     {
         if (eraser is NonErasableStore)
             return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotSupported, 0, NonErasableStore.Reason);
+
+        if (NotConfigured(eraser) is { } notConfigured)
+            return notConfigured;
 
         try
         {
@@ -494,6 +517,7 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         StoreErasureStatus.RetainedUntilExpiry => false,
         StoreErasureStatus.RetainedByObligation => false,
         StoreErasureStatus.RetainedAsBusinessContent => false,
+        StoreErasureStatus.NotConfigured => false,
         StoreErasureStatus.Failed => true,
         StoreErasureStatus.Skipped => true,
         StoreErasureStatus.NotSupported => true,

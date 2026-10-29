@@ -218,6 +218,14 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         IPersonalDataExporter exporter, ExportSubject subject, List<ExportManifestEntry> manifest,
         CancellationToken cancellationToken)
     {
+        // Never read: a store with no backend configured has never held anything (#1003).
+        if (exporter is IConfigurablePersonalDataStore { IsConfigured: false })
+        {
+            manifest.Add(new ExportManifestEntry(
+                exporter.ExportStoreName, ExportStatus.NotApplicable, 0, IConfigurablePersonalDataStore.NotConfiguredReason));
+            return null;
+        }
+
         try
         {
             var records = await exporter.ExportSubjectAsync(subject, cancellationToken);
@@ -236,7 +244,12 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     private void NameStoresThatDidNotExport(List<ExportManifestEntry> manifest)
     {
         foreach (var eraser in _erasers.Where(e => !IsExported(e)))
-            manifest.Add(NotExported(eraser.ErasureStoreName, eraser is NonErasableStore ? null : eraser.GetType()));
+        {
+            manifest.Add(eraser is IConfigurablePersonalDataStore { IsConfigured: false }
+                ? new ExportManifestEntry(
+                    eraser.ErasureStoreName, ExportStatus.NotApplicable, 0, IConfigurablePersonalDataStore.NotConfiguredReason)
+                : NotExported(eraser.ErasureStoreName, eraser is NonErasableStore ? null : eraser.GetType()));
+        }
 
         // Named unless it was actually read: a memory store that can export but was never registered as an exporter would
         // otherwise be left out of the copy without a line saying so.
@@ -265,6 +278,8 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         StoreErasureStatus.RetainedUntilExpiry => ExportStatus.RetainedUntilExpiry,
         StoreErasureStatus.RetainedByObligation => ExportStatus.RetainedByObligation,
         StoreErasureStatus.RetainedAsBusinessContent => ExportStatus.RetainedAsBusinessContent,
+        StoreErasureStatus.RetainedIndefinitely => ExportStatus.RetainedUnsearchable,
+        // Any other status a retained store reports reads as data left out: the copy stays honest without failing.
         _ => ExportStatus.RetainedUnsearchable,
     };
 }

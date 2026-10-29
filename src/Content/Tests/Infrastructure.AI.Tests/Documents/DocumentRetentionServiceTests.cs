@@ -13,6 +13,7 @@ using Infrastructure.AI.Tests.BackgroundServices;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -217,6 +218,8 @@ public sealed class DocumentRetentionServiceTests : IDisposable
             t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>())
                 == Task.FromResult(Domain.Common.Result.Success())));
         services.AddSingleton<IDocumentLoadLedger>(Ledger(Origin));
+        // A host always provides its environment; the removal names it on the receipt (#1003).
+        services.AddSingleton(Mock.Of<IHostEnvironment>(h => h.ApplicationName == "Retention.Tests"));
         services.AddScoped<AuditedDocumentRemoval>();
         var provider = services.BuildServiceProvider();
 

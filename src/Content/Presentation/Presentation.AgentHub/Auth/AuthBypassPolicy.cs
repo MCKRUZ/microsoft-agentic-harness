@@ -1,5 +1,3 @@
-using System.Security.Claims;
-
 namespace Presentation.AgentHub.Auth;
 
 /// <summary>
@@ -28,16 +26,12 @@ public static class AuthBypassPolicy
         GetBypassSchemeName(environment, configuration) is not null;
 
     /// <summary>
-    /// True when <paramref name="user"/> was signed in by one of the bypass handlers rather than by a real identity
-    /// provider. Every caller under a bypass is the same synthetic person, so an action scoped to "this caller" — such
-    /// as erasing one's own data (#900) — would act on everyone's data.
+    /// The bypass handlers' schemes. Every caller signed in by one of them is the same synthetic person, so an action
+    /// scoped to "this caller", such as erasing one's own data (#900), would act on everyone's data; the compliance API
+    /// refuses such callers (<see cref="Presentation.Common.Compliance.ComplianceApiMarker"/>).
     /// </summary>
-    public static bool IsSharedSyntheticIdentity(ClaimsPrincipal user)
-    {
-        ArgumentNullException.ThrowIfNull(user);
-        return user.Identities.Any(i =>
-            i.IsAuthenticated && i.AuthenticationType is DevAuthHandler.SchemeName or SelfHostedAuthHandler.SchemeName);
-    }
+    public static IReadOnlyList<string> SharedIdentitySchemes { get; } =
+        [DevAuthHandler.SchemeName, SelfHostedAuthHandler.SchemeName];
 
     /// <summary>
     /// The authentication scheme to register when sign-in is bypassed, or <c>null</c> when Entra

@@ -31,7 +31,7 @@ public sealed class EraseMyDataCommandHandlerTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         var erasure = new AuditedErasure(
-            _orchestrator.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System,
+            _orchestrator.Object, Mock.Of<IErasureSubjectReference>(), sink.Object, new AcceptingComplianceAuditTrail(), TestHostEnvironment.Instance, TimeProvider.System,
             NullLogger<AuditedErasure>.Instance);
         return new EraseMyDataCommandHandler(_scope.Object, erasure, NullLogger<EraseMyDataCommandHandler>.Instance);
     }
@@ -60,7 +60,7 @@ public sealed class EraseMyDataCommandHandlerTests
         var result = await CreateHandler().Handle(new EraseMyDataCommand(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeSameAs(receipt);
+        result.Value.Should().Be(receipt with { Host = TestHostEnvironment.Name });
         _orchestrator.Verify(o => o.EraseOwnerAsync("user-1", It.IsAny<CancellationToken>()), Times.Once);
         _records.Should().OnlyContain(r => r.ExecutorId == ErasureActor.DataSubjectExecutor);
     }

@@ -6,6 +6,7 @@ using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using Domain.Common.Models;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Compliance;
@@ -19,7 +20,12 @@ namespace Application.Core.Compliance;
 /// <strong>What the record holds.</strong> Who asked (<see cref="ErasureActor"/>), a pseudonymous subject reference from
 /// <see cref="IErasureSubjectReference"/> when a reference key is configured, the receipt's request id, its completeness,
 /// and per-store counts. Never the subject's id, never a node, memory key or conversation id: an audit trail that kept
-/// those would keep the person the erasure removed.
+/// those would keep the person the erasure removed. Every record also names the host that handled it (#1003), so a trail
+/// shared by several hosts says which host each erasure covered.
+/// </para>
+/// <para>
+/// <strong>One host.</strong> The erasure reaches only this process's stores, so the receipt is stamped with this host's
+/// name (<see cref="ErasureReceipt.Host"/>): its completeness says nothing about another host's copy of the person's data.
 /// </para>
 /// <para>
 /// <strong>Two records per request.</strong> An <see cref="AuditOutcome.Attempted"/> record before anything is deleted and
@@ -61,6 +67,7 @@ public sealed class AuditedErasure
     private readonly IErasureSubjectReference _subjectReference;
     private readonly IAuditSink _auditSink;
     private readonly IComplianceAuditTrail _trail;
+    private readonly string _host;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedErasure> _logger;
 
@@ -69,6 +76,7 @@ public sealed class AuditedErasure
     /// <param name="subjectReference">Pseudonymises the subject for the audit record.</param>
     /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
     /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the erasure was handled.</param>
+    /// <param name="hostEnvironment">Names the host the receipt covers (#1003): an erasure reaches only this process's stores.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedErasure(
@@ -76,6 +84,7 @@ public sealed class AuditedErasure
         IErasureSubjectReference subjectReference,
         IAuditSink auditSink,
         IComplianceAuditTrail trail,
+        IHostEnvironment hostEnvironment,
         TimeProvider timeProvider,
         ILogger<AuditedErasure> logger)
     {
@@ -83,9 +92,11 @@ public sealed class AuditedErasure
         ArgumentNullException.ThrowIfNull(subjectReference);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(trail);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _host = hostEnvironment.ApplicationName;
         _erasure = erasure;
         _subjectReference = subjectReference;
         _auditSink = auditSink;
@@ -124,7 +135,7 @@ public sealed class AuditedErasure
         ErasureReceipt receipt;
         try
         {
-            receipt = await _erasure.EraseOwnerAsync(subjectId, cancellationToken);
+            receipt = await _erasure.EraseOwnerAsync(subjectId, cancellationToken) with { Host = _host };
         }
         catch (OperationCanceledException)
         {
@@ -210,13 +221,14 @@ public sealed class AuditedErasure
             Metadata = Metadata("outcome", actor, subjectReference, receipt: null),
         }, actor);
 
-    private static Dictionary<string, string> Metadata(
+    private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string? subjectReference, ErasureReceipt? receipt)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
             ["initiator"] = actor.Initiator,
+            ["host"] = _host,
         };
         if (subjectReference is not null)
             metadata["subject_reference"] = subjectReference;

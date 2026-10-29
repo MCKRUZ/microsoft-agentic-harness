@@ -27,8 +27,8 @@ info:
     may invoke — each under a per-caller capability grant.
   description: |
     The Execution API is the harness's HTTP front door for **automation the host did not write**.
-    It exposes five families of operation, all sharing one authentication scheme, one owner-binding
-    rule, and one capability envelope:
+    It exposes six families of operation, all sharing one authentication scheme. The first five share
+    one owner-binding rule and one capability envelope:
 
     | Family | Routes | What it is for |
     |---|---|---|
@@ -37,6 +37,7 @@ info:
     | **Tools** | `/api/tools` | Discover which tool names *this* credential may invoke |
     | **Evals** | `/api/evals` | Run the host's evaluation suites and poll their reports (operator role) |
     | **Schedules** | `/api/schedules` | Run a stored workflow on a recurring cron schedule |
+    | **Compliance** | `/api/compliance` | Erase or copy a person's data held by **this host** (GDPR Art. 15, 17, 20) |
 
     Start with **Tools** if you are writing a workflow: a `ToolUse` step names a tool and an
     operation, and `GET /api/tools` is the authoritative answer to which names this host accepts
@@ -115,6 +116,26 @@ tags:
     description: >-
       Read-only discovery of the tools the calling credential may invoke. Distinct from AgentHub's
       `/api/mcp/tools`, which lists tools published by external MCP servers.
+  - name: Compliance
+    description: |
+      Erase, copy, or remove a document from what **this host** holds (#1003). The same API, at the
+      same paths and under the same rules, is served by AgentHub; both mount one shared implementation.
+
+      **Each request covers only the host it is sent to.** This host's run records and the
+      conversations its agents write live in its own stores, which AgentHub's requests never reach,
+      and the reverse. Every receipt and copy names the host it covers in `host`
+      (`Presentation.ExecutionApi` here), and its completeness speaks for this host alone. A deployment
+      must send each person's request to every host that holds personal data.
+
+      Self-service requests act on the signed-in caller only; nothing in the request names anyone
+      else. Operator requests need the endpoint's role **and** a sign-in from a tenant listed in
+      `AppConfig:AI:Erasure:OperatorTenantIds` (empty, the default, means off). An application's own
+      token may not ask for its own data, and may not act as an operator. Every request that reaches
+      an endpoint, refused or not, is written to the compliance audit trail. The anonymous development
+      mode (`Auth:AllowAnonymous`) makes every caller one synthetic person, so every compliance
+      request is refused under it with `403`.
+
+      These are not tools and never run inside an agent turn.
 
 paths:
   /api/bundles:
@@ -1085,6 +1106,158 @@ paths:
           description: The run has already reached a terminal state.
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /api/compliance/erase-my-data:
+    post:
+      tags: [Compliance]
+      operationId: eraseMyData
+      summary: Erase everything this host holds for the signed-in caller
+      description: |
+        Erases the caller's workflow and evaluation runs (live ones are cancelled first), the
+        conversations this host's agents wrote and what is filed under them, plans, schedules, memories, knowledge-graph content and loaded
+        documents **in this host's stores**, and returns a receipt of what each store removed. No
+        request body: the subject is always the caller. Up to five requests an hour per caller.
+
+        Erasure runs for up to ten minutes; it first waits up to 30 seconds for the caller's running
+        planned tasks and runs to stop.
+      responses:
+        "200":
+          description: >-
+            The request ran. Check `completeness`: `Partial` names what was kept and why, and the
+            receipt covers this host only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErasureReceipt" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: >-
+            Anonymous mode (every caller is one person), an application's own token, or no usable
+            user identity.
+        "429": { $ref: "#/components/responses/ComplianceRateLimited" }
+        "500": { $ref: "#/components/responses/ServerProblem" }
+
+  /api/compliance/erasures:
+    post:
+      tags: [Compliance]
+      operationId: eraseSubjectData
+      summary: Erase a named person's data from this host, on their request
+      description: |
+        For someone who cannot sign in to erase their own data. Requires the
+        `Harness.Compliance.EraseSubject` role and an allowed operator tenant. The person's id travels
+        in the body, never the URL; give it exactly as their identity provider issues it, since
+        conversations match their owner exactly. Up to thirty requests an hour per operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubjectRequest" }
+      responses:
+        "200":
+          description: >-
+            The request ran. Check `completeness`: `Partial` names what was kept and why, and the
+            receipt covers this host only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErasureReceipt" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: >-
+            Missing the role, a tenant not allowed to erase, operator erasure not configured, anonymous
+            mode, or an application's own token.
+        "429": { $ref: "#/components/responses/ComplianceRateLimited" }
+        "500": { $ref: "#/components/responses/ServerProblem" }
+        "503":
+          description: The erasure configuration loaded since startup is invalid.
+
+  /api/compliance/document-removals:
+    post:
+      tags: [Compliance]
+      operationId: removeDocument
+      summary: Remove a source document, and what was drawn from it, from this host's corpus
+      description: |
+        Requires the `Harness.Compliance.RemoveDocument` role and an allowed operator tenant. The
+        document's chunks leave every vector and full-text collection in this host; knowledge only it
+        produced leaves the knowledge graph. Up to thirty requests an hour per operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentRemovalRequest" }
+      responses:
+        "200":
+          description: >-
+            The request ran. Check `completeness`: `Partial` names what was kept and why, and the
+            receipt covers this host only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErasureReceipt" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: >-
+            Missing the role, a tenant not allowed, document removal not configured, anonymous mode,
+            or an application's own token.
+        "429": { $ref: "#/components/responses/ComplianceRateLimited" }
+        "500": { $ref: "#/components/responses/ServerProblem" }
+        "503":
+          description: The erasure configuration loaded since startup is invalid.
+
+  /api/compliance/export-my-data:
+    post:
+      tags: [Compliance]
+      operationId: exportMyData
+      summary: A copy of everything this host holds for the signed-in caller
+      description: |
+        Returns the copy at once as a JSON attachment (`Cache-Control: no-store`); it is never stored.
+        No request body: the subject is always the caller. Up to five requests an hour per caller, and
+        the host assembles at most two copies at once (self-service and operator together); a further
+        request is refused rather than queued.
+      responses:
+        "200":
+          description: The copy. Check `isComplete` and the manifest; the copy covers this host only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalDataExport" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: >-
+            Anonymous mode (every caller is one person), an application's own token, or no usable
+            user identity.
+        "429": { $ref: "#/components/responses/ComplianceRateLimited" }
+        "500": { $ref: "#/components/responses/ServerProblem" }
+
+  /api/compliance/exports:
+    post:
+      tags: [Compliance]
+      operationId: exportSubjectData
+      summary: A copy of a named person's data held by this host, on their request
+      description: |
+        Requires the `Harness.Compliance.ExportSubject` role (a separate grant from erasure) and an
+        allowed operator tenant. The person's id travels in the body; give it exactly as their identity
+        provider issues it, or the copy is empty while looking complete. Up to thirty requests an hour
+        per operator, within the same two-at-once host limit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubjectRequest" }
+      responses:
+        "200":
+          description: The copy. Check `isComplete` and the manifest; the copy covers this host only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalDataExport" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: >-
+            Missing the role, a tenant not allowed to export, operator export not configured, anonymous
+            mode, or an application's own token.
+        "429": { $ref: "#/components/responses/ComplianceRateLimited" }
+        "500": { $ref: "#/components/responses/ServerProblem" }
+        "503":
+          description: The operator configuration loaded since startup is invalid.
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1227,6 +1400,11 @@ components:
         delete. Each endpoint gets exactly one policy — a per-endpoint policy replaces the
         controller-wide one rather than stacking with it — so the stream endpoint is bounded only by
         its open-connection cap, not by a request rate.
+    ComplianceRateLimited:
+      description: >-
+        A compliance limit was reached: five self-service requests an hour per caller, or thirty
+        operator requests an hour per operator, each endpoint counted separately; or, for exports, the
+        host is already assembling two copies. Limits are per host.
     ServerProblem:
       description: >-
         An unexpected server error. The body is intentionally generic — the detail is in the host's
@@ -1240,6 +1418,109 @@ components:
             detail: An error occurred processing the request. See server logs for details.
 
   schemas:
+    SubjectRequest:
+      type: object
+      required: [subjectId]
+      properties:
+        subjectId:
+          type: string
+          maxLength: 256
+          description: The person's id exactly as their identity provider issues it, unpadded.
+
+    DocumentRemovalRequest:
+      type: object
+      required: [documentId]
+      properties:
+        documentId:
+          type: string
+          pattern: "^[0-9A-F]{16}$"
+          description: The document id as ingestion forms it, 16 upper-case hexadecimal digits.
+
+    ErasureReceipt:
+      type: object
+      description: >-
+        What each of this host's stores actually removed. Counts are what the stores report, never
+        requested counts.
+      required: [requestId, scopeId, requestedAt, completedAt, completeness, stores, host]
+      properties:
+        requestId: { type: string }
+        scopeId: { type: string, description: The person erased, lower-cased and trimmed. }
+        requestedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        host:
+          type: string
+          description: >-
+            The host whose stores this receipt covers, e.g. `Presentation.ExecutionApi`. Another host's
+            copy of the person's data is not covered.
+          example: Presentation.ExecutionApi
+        completeness:
+          type: string
+          enum: [Full, Partial]
+          description: >-
+            `Full`: every store in this host that can find the person erased them, and none keeps their
+            data with no end date other than the audit trails and the organisation's business content.
+        completenessReason: { type: string, nullable: true }
+        nodesDeleted: { type: integer }
+        edgesDeleted: { type: integer }
+        feedbackWeightsDeleted: { type: integer }
+        vectorEmbeddingsDeleted: { type: integer }
+        bm25DocumentsDeleted: { type: integer }
+        crossSessionMemoriesDeleted: { type: integer }
+        unmatchedDocumentIds: { type: array, items: { type: string } }
+        stores:
+          type: array
+          items:
+            type: object
+            required: [store, status, itemsRemoved]
+            properties:
+              store: { type: string }
+              status:
+                type: string
+                enum: [Erased, Failed, Skipped, NotSupported, RetainedIndefinitely, RetainedUntilExpiry,
+                       RetainedByObligation, RetainedAsBusinessContent, NotConfigured]
+              itemsRemoved: { type: integer }
+              reason: { type: string, nullable: true }
+
+    PersonalDataExport:
+      type: object
+      description: Everything this host's stores returned for the person, with a manifest line per store.
+      required: [requestId, generatedAt, manifest, sections, isComplete, host]
+      properties:
+        requestId: { type: string }
+        generatedAt: { type: string, format: date-time }
+        host:
+          type: string
+          description: The host whose stores this copy covers, e.g. `Presentation.ExecutionApi`.
+          example: Presentation.ExecutionApi
+        isComplete:
+          type: boolean
+          description: True only when no manifest line leaves data out. Speaks for this host only.
+        manifest:
+          type: array
+          items:
+            type: object
+            required: [store, status, records, leavesDataOut]
+            properties:
+              store: { type: string }
+              status:
+                type: string
+                enum: [Included, Failed, NotExportable, RetainedUnsearchable, RetainedUntilExpiry,
+                       RetainedByObligation, RetainedAsBusinessContent, NotApplicable]
+              records: { type: integer }
+              reason: { type: string, nullable: true }
+              leavesDataOut: { type: boolean }
+        sections:
+          type: array
+          items:
+            type: object
+            required: [store, records]
+            properties:
+              store: { type: string }
+              records:
+                type: array
+                description: Each record in the store's own JSON shape.
+                items: {}
+
     RegisterBundleResponse:
       type: object
       required: [handle, expiresAt]

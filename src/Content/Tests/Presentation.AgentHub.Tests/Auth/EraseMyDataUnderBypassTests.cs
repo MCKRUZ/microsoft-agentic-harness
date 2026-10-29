@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using FluentAssertions;
 using Presentation.AgentHub.Auth;
+using Presentation.Common.Compliance;
 using Xunit;
 
 namespace Presentation.AgentHub.Tests.Auth;
@@ -15,6 +16,9 @@ namespace Presentation.AgentHub.Tests.Auth;
 public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIntegrationFactory>
 {
     private readonly SelfHostedAuthIntegrationFactory _factory;
+
+    /// <summary>The schemes AgentHub mounts the compliance API with.</summary>
+    private static readonly ComplianceApiMarker AgentHubSchemes = new(AuthBypassPolicy.SharedIdentitySchemes);
 
     public EraseMyDataUnderBypassTests(SelfHostedAuthIntegrationFactory factory) => _factory = factory;
 
@@ -76,7 +80,7 @@ public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIn
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", "someone")], scheme));
 
-        AuthBypassPolicy.IsSharedSyntheticIdentity(user).Should().Be(expected);
+        AgentHubSchemes.IsSharedSyntheticIdentity(user).Should().Be(expected);
     }
 
     [Fact]
@@ -88,12 +92,12 @@ public sealed class EraseMyDataUnderBypassTests : IClassFixture<SelfHostedAuthIn
             new ClaimsIdentity([new Claim("oid", "dev-user")], "Dev"),
         ]);
 
-        AuthBypassPolicy.IsSharedSyntheticIdentity(user).Should().BeTrue();
+        AgentHubSchemes.IsSharedSyntheticIdentity(user).Should().BeTrue();
     }
 
     [Fact]
     public void IsSharedSyntheticIdentity_AnAnonymousPrincipal_IsNotShared()
     {
-        AuthBypassPolicy.IsSharedSyntheticIdentity(new ClaimsPrincipal(new ClaimsIdentity())).Should().BeFalse();
+        AgentHubSchemes.IsSharedSyntheticIdentity(new ClaimsPrincipal(new ClaimsIdentity())).Should().BeFalse();
     }
 }

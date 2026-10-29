@@ -135,10 +135,10 @@ public sealed class AzureSearchOwnerErasureTests
     }
 
     private AzureAISearchVectorStore VectorStore() =>
-        new(_client.Object, Mock.Of<IEmbeddingService>(), NullLogger<AzureAISearchVectorStore>.Instance);
+        new(_client.Object, indexConfigured: true, Mock.Of<IEmbeddingService>(), NullLogger<AzureAISearchVectorStore>.Instance);
 
     private AzureAISearchBm25Store Bm25Store() =>
-        new(_client.Object, NullLogger<AzureAISearchBm25Store>.Instance);
+        new(_client.Object, indexConfigured: true, NullLogger<AzureAISearchBm25Store>.Instance);
 
     /// <summary>Each search returns the next page; once they run out, the last one repeats.</summary>
     private void GivenSearchPages(params string[][] pages)

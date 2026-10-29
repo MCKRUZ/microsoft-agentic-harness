@@ -98,7 +98,7 @@ public sealed class WorkflowRunExecutionTests
     /// <remarks>
     /// Paced at an interval a real client could sustain. The endpoint permits 60 requests a minute per
     /// caller, and polling is the only way to learn a run's outcome, so a tight loop exhausts the
-    /// caller's whole budget in seconds and gets 503s that look like execution failures. A throttled
+    /// caller's whole budget in seconds and gets 429s that look like execution failures. A throttled
     /// poll is treated as "ask again", not as an outcome — the overall attempt budget is what bounds
     /// the wait.
     /// </remarks>
@@ -114,7 +114,7 @@ public sealed class WorkflowRunExecutionTests
             var response = await client.SendAsync(
                 Request(HttpMethod.Get, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, oid));
 
-            if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 last = "throttled";
                 continue;

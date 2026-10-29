@@ -64,6 +64,17 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  POST   /{id}/pause              → PauseScheduleCommand (versioned)    │ │
 │  │  POST   /{id}/resume             → ResumeScheduleCommand (versioned)   │ │
 │  │  DELETE /{id}                    → DeleteScheduleCommand               │ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  ComplianceController + ComplianceExportController  /api/compliance   │ │
+│  │    shared with AgentHub (Presentation.Common.Compliance, #1003)        │ │
+│  │                                                                        │ │
+│  │  POST   /erase-my-data           → EraseMyDataCommand      (the caller)│ │
+│  │  POST   /erasures                → EraseSubjectDataCommand  ← operator │ │
+│  │  POST   /document-removals       → RemoveDocumentCommand    ← operator │ │
+│  │  POST   /export-my-data          → ExportMyDataCommand     (the caller)│ │
+│  │  POST   /exports                 → ExportSubjectDataCommand ← operator │ │
+│  │    Covers THIS host's stores only; every receipt/copy names its host.  │ │
+│  │    Refused in anonymous mode (every caller is one synthetic person).   │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
@@ -139,6 +150,8 @@ Partitioned per caller by stable id, falling back to remote IP (the only disting
 | `bundles-stream` | **concurrency** | `MaxConcurrentStreamsPerCaller` (default 4), `QueueLimit = 0` |
 
 The stream policy is concurrency rather than rate on purpose: a streamed run executes inline on its connection for the whole conversation, so a request-rate limiter that counts *starts* cannot bound it.
+
+The compliance endpoints carry no named policy. `ComplianceRateLimits.Create()` (shared with AgentHub, #1003) is this host's `GlobalLimiter`: five self-service erasure or export requests an hour per caller, thirty operator requests an hour per operator, and at most two personal-data copies assembled at once per host. Every other path passes through it. A refused request answers `429`, as the contract says. Before #1003 the host left the framework default, `503`.
 
 ## Project Structure
 
@@ -236,6 +249,10 @@ A conversation is created on first use and owned by the caller that first used i
 someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,
 so the endpoint cannot be used to enumerate other callers' conversation ids. Ownership itself is
 enforced inside `IConversationStore`, never re-derived here.
+
+### Compliance (`AppConfig:AI:Erasure`)
+
+The shared compliance API reads the same section AgentHub does, from this host's own configuration. `OperatorTenantIds` (default empty) lists the tenants whose operators may erase, copy, or remove documents for someone else; empty turns the three operator endpoints off. `SubjectReferenceKey` (unset by default) keys the pseudonymous subject reference in the compliance audit trail. Self-service needs neither. A request erases or copies only this host's stores, so a deployment that also runs AgentHub sends each person's request to both.
 
 ### Direct tool invocation (`AppConfig:AI:DirectToolInvocation`)
 
@@ -451,8 +468,8 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
 4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
 
-The spec covers **all five route families this host serves** -- bundles, workflows, tool
-discovery, evals, and schedules -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
+The spec covers **all six route families this host serves** -- bundles, workflows, tool
+discovery, evals, schedules, and compliance (the shared erasure and export API, #1003) -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
 (W3--W6) went in over four PRs without a single spec entry, and the drift was only caught when
 someone went looking. If you add a route here, add it to the spec in the same change. A published
 contract that describes only part of the surface is worse than one that admits its gaps, because

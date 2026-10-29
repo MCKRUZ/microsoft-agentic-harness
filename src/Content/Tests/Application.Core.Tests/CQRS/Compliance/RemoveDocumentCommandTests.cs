@@ -31,7 +31,7 @@ public sealed class RemoveDocumentCommandTests
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
         return new RemoveDocumentCommandHandler(new AuditedDocumentRemoval(
-            _orchestrator.Object, Mock.Of<IDocumentLoadLedger>(), sink.Object, new AcceptingComplianceAuditTrail(), TimeProvider.System, NullLogger<AuditedDocumentRemoval>.Instance));
+            _orchestrator.Object, Mock.Of<IDocumentLoadLedger>(), sink.Object, new AcceptingComplianceAuditTrail(), TestHostEnvironment.Instance, TimeProvider.System, NullLogger<AuditedDocumentRemoval>.Instance));
     }
 
     [Fact]
