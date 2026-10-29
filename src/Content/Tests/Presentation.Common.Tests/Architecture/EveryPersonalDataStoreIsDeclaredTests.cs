@@ -42,12 +42,13 @@ namespace Presentation.Common.Tests.Architecture;
 /// reflection, <c>dynamic</c>, configuration-only sinks or native code is not seen. The sibling rule above reaches the
 /// most common case (memory-only stores beside a durable one); the learnings and cross-session memory stores, which
 /// write through graph interfaces, are declared by hand for the same reason. A memory-only store with no declared
-/// sibling is held in the inventory only once it erases or exports: every type implementing <c>IPersonalDataEraser</c>
-/// or <c>IPersonalDataExporter</c> must carry the descriptor (#926, the run store). One that does neither, and calls no
-/// primitive, is still not seen.
+/// sibling is held in the inventory in two ways: every type implementing <c>IPersonalDataEraser</c> or
+/// <c>IPersonalDataExporter</c> must carry the descriptor (#926, the run store), and every type keeping a collection of
+/// records that name a person must too, whatever it calls (#990, the bundle run store; the rule and its own blind spots
+/// are in <c>EveryPersonalDataStoreIsDeclaredTests.InMemory.cs</c>).
 /// </para>
 /// </remarks>
-public sealed class EveryPersonalDataStoreIsDeclaredTests
+public sealed partial class EveryPersonalDataStoreIsDeclaredTests
 {
     private const string StoreAttribute = "Domain.Common.Compliance.PersonalDataStoreAttribute";
     private const string ChannelAttribute = "Domain.Common.Compliance.PersonalDataChannelAttribute";
@@ -119,10 +120,11 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
     private const string EraserInterface = "Application.AI.Common.Interfaces.Compliance.IPersonalDataEraser";
 
     /// <summary>
-    /// Stores that say they purge by owner without implementing <c>IPersonalDataEraser</c> themselves, because the
-    /// knowledge-graph erasure (<c>DefaultErasureOrchestrator</c>) reaches them, with how it does.
+    /// Stores that say they purge by owner without implementing <c>IPersonalDataEraser</c> themselves, because another
+    /// store's erasure reaches them (the knowledge-graph erasure, <c>DefaultErasureOrchestrator</c>, or the run store's),
+    /// with how it does.
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> ErasedThroughKnowledgeGraph = new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, string> ErasedThroughAnotherStore = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["Infrastructure.AI.KnowledgeGraph.Neo4j.Neo4jGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
@@ -130,6 +132,7 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
         ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, deleted with the owner's nodes",
         ["Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore"] = "the orchestrator calls ICrossSessionMemoryStore.PurgeByOwnerAsync",
         ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "cross-session memory's purge deletes the owner's memory nodes from this backend",
+        ["Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"] = "the run store's erasure removes the person's finished runs and tells EvalSubmissionReclaimListener, which releases their submissions",
     };
 
     [Fact]
@@ -144,13 +147,13 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             .Where(s => s.Supertypes.Contains(EraserInterface) && !SaysPurge(s))
             .Select(s => s.Name);
         var sayingSoWithoutEraser = stores
-            .Where(s => SaysPurge(s) && !s.Supertypes.Contains(EraserInterface) && !ErasedThroughKnowledgeGraph.ContainsKey(s.Name))
+            .Where(s => SaysPurge(s) && !s.Supertypes.Contains(EraserInterface) && !ErasedThroughAnotherStore.ContainsKey(s.Name))
             .Select(s => s.Name);
 
         erasersNotSayingSo.Concat(sayingSoWithoutEraser).Should().BeEmpty(
             "a descriptor that says PurgeByOwner is what erasure, retention and export work plan against; it must be " +
             "true. A store implementing IPersonalDataEraser must say so, and one saying so must implement it or be " +
-            "reached through the knowledge-graph erasure (listed in ErasedThroughKnowledgeGraph)");
+            "reached through another store's erasure (listed in ErasedThroughAnotherStore)");
     }
 
     /// <summary>
@@ -163,6 +166,8 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
             "the stand-in AddPersonalDataEraser puts on the receipt for a declared store that cannot erase; it holds nothing",
         ["Infrastructure.AI.KnowledgeGraph.Compliance.KnowledgeGraphExporter"] =
             "reads the owner's nodes and edges through IKnowledgeGraphStore; the graph stores it reads are declared",
+        ["Infrastructure.AI.Runs.EvalRunSubmissionExporter"] =
+            "reads the submissions of the person's runs through IEvalRunSubmissionStore, by the ids IRunJobStore lists; both stores are declared",
     };
 
     [Fact]
@@ -193,11 +198,11 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
     }
 
     [Fact]
-    public void EveryStoreErasedThroughTheGraph_IsStillOne()
+    public void EveryStoreErasedThroughAnotherStore_IsStillOne()
     {
         var byName = Scanned.Value.Facts.Values.Where(f => f.Attributes.ContainsKey(StoreAttribute)).ToDictionary(f => f.Name);
 
-        ErasedThroughKnowledgeGraph.Keys
+        ErasedThroughAnotherStore.Keys
             .Where(name => !byName.TryGetValue(name, out var store)
                 || store.Supertypes.Contains(EraserInterface)
                 || store.Attributes[StoreAttribute] is not { Count: > ErasureArgument } args
@@ -223,6 +228,7 @@ public sealed class EveryPersonalDataStoreIsDeclaredTests
         ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, which KnowledgeGraphExporter reads with the owner's other nodes",
         ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "its only owner-stamped rows are cross-session memory nodes, which CrossSessionMemoryStore exports from this backend",
+        ["Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"] = "EvalRunSubmissionExporter reads the submissions of the person's runs, found through the run store's records",
     };
 
     /// <summary>

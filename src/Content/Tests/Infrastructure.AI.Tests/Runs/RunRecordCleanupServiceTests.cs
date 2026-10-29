@@ -61,6 +61,12 @@ public sealed class RunRecordCleanupServiceTests
         public Task<int> CountRunsKeptAsync(string ownerId, CancellationToken cancellationToken) =>
             inner.CountRunsKeptAsync(ownerId, cancellationToken);
 
+        public string KeptRunsStoreName => inner.KeptRunsStoreName;
+
+        public string KeptRunsReason => inner.KeptRunsReason;
+
+        public IReadOnlyList<RunRecord> GetRunsOwnedBy(string ownerId) => inner.GetRunsOwnedBy(ownerId);
+
         public bool TryRepark(RunRecord parked) => inner.TryRepark(parked);
 
         public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>

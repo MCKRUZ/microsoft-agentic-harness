@@ -13,7 +13,8 @@ namespace Application.AI.Common.Tests.Services.Compliance;
 /// <summary>
 /// The run records the run store kept, on the receipt (#926). The store erases the person's finished runs and keeps every
 /// run that has not ended, so a receipt that read <c>Full</c> while one was kept would tell the person their data is gone
-/// while a record naming them is still held.
+/// while a record naming them is still held. Several stores keep records this way (#990: the bundle runs and staged
+/// bundles too), and each must get its own line, so the person is told which kind was kept.
 /// </summary>
 public sealed class PersonalDataErasureCoordinatorKeptRunTests
 {
@@ -21,6 +22,8 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
     private const string KeptLine = "workflow and evaluation runs still held";
 
     private readonly Mock<IErasureOrchestrator> _graph = new();
+    private const string KeptReason = "a run of the person's was kept; run erasure again";
+
     private readonly Mock<IKeptRunSource> _keptRuns = new();
     private readonly Mock<IOwnedRunCanceller> _liveRuns = new();
     private readonly Mock<IPlannedTaskCanceller> _runningTasks = new();
@@ -28,6 +31,8 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
 
     public PersonalDataErasureCoordinatorKeptRunTests()
     {
+        _keptRuns.SetupGet(s => s.KeptRunsStoreName).Returns(KeptLine);
+        _keptRuns.SetupGet(s => s.KeptRunsReason).Returns(KeptReason);
         _graph.Setup(g => g.EraseByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ErasureReceipt
             {
@@ -53,7 +58,16 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
         return eraser.Object;
     }
 
-    private Task<ErasureReceipt> EraseAsync() =>
+    private static Mock<IKeptRunSource> KeptSource(string line, int kept)
+    {
+        var source = new Mock<IKeptRunSource>();
+        source.SetupGet(s => s.KeptRunsStoreName).Returns(line);
+        source.SetupGet(s => s.KeptRunsReason).Returns($"{line}: run erasure again");
+        source.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(kept);
+        return source;
+    }
+
+    private Task<ErasureReceipt> EraseAsync(params IKeptRunSource[] others) =>
         new PersonalDataErasureCoordinator(
                 _graph.Object,
                 [Eraser("workflow and evaluation runs", ErasureStage.BeforeConversations), Eraser("plans", ErasureStage.PlannedTasks)],
@@ -62,7 +76,7 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
                 TimeProvider.System,
                 NullLogger<PersonalDataErasureCoordinator>.Instance,
                 runningTasks: _runningTasks.Object,
-                keptRuns: _keptRuns.Object,
+                keptRuns: [_keptRuns.Object, .. others],
                 liveRuns: _liveRuns.Object)
             .EraseOwnerAsync(Owner, CancellationToken.None);
 
@@ -76,8 +90,9 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
         var receipt = await EraseAsync();
 
         receipt.Completeness.Should().Be(ErasureCompleteness.Partial);
-        receipt.Stores.Should().ContainSingle(s => s.Store == KeptLine)
-            .Which.Status.Should().Be(StoreErasureStatus.Skipped);
+        var line = receipt.Stores.Should().ContainSingle(s => s.Store == KeptLine).Subject;
+        line.Status.Should().Be(StoreErasureStatus.Skipped);
+        line.Reason.Should().Be(KeptReason, "the line's wording is the source's own, which knows what kind of record it kept");
         receipt.CompletenessReason.Should().Contain("run erasure again");
         _calls.Should().ContainInOrder(["workflow and evaluation runs", "plans", "count"],
             "the count is of what the run store kept, so it is read after the store was erased");
@@ -119,6 +134,40 @@ public sealed class PersonalDataErasureCoordinatorKeptRunTests
         var line = receipt.Stores.Should().ContainSingle(s => s.Store == KeptLine).Subject;
         line.Status.Should().Be(StoreErasureStatus.Failed);
         line.Reason.Should().NotContain("secret");
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_SeveralSourcesKeepRecords_ListsEachOnItsOwnLine()
+    {
+        _keptRuns.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var receipt = await EraseAsync(KeptSource("bundle runs still held", 1).Object, KeptSource("staged bundles still held", 0).Object);
+
+        receipt.Stores.Where(s => s.Status == StoreErasureStatus.Skipped).Select(s => s.Store)
+            .Should().BeEquivalentTo([KeptLine, "bundle runs still held"], "only a source that kept something gets a line");
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_OneSourceCannotCount_StillAsksTheOthers()
+    {
+        // A failure is that source's own line; it must not hide a record another source kept.
+        _keptRuns.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("down"));
+
+        var receipt = await EraseAsync(KeptSource("bundle runs still held", 2).Object);
+
+        receipt.Stores.Single(s => s.Store == KeptLine).Status.Should().Be(StoreErasureStatus.Failed);
+        receipt.Stores.Single(s => s.Store == "bundle runs still held").Status.Should().Be(StoreErasureStatus.Skipped);
+    }
+
+    [Fact]
+    public async Task EraseOwnerAsync_OneSourceRegisteredTwice_ListsItOnce()
+    {
+        // A substrate composed twice registers the same instance twice; one store must not read as two kept lines.
+        _keptRuns.Setup(s => s.CountRunsKeptAsync(Owner, It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var receipt = await EraseAsync(_keptRuns.Object);
+
+        receipt.Stores.Should().ContainSingle(s => s.Store == KeptLine);
     }
 
     private void RecordRunSteps()

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Bundles;
 
 namespace Application.AI.Common.Interfaces.Bundles;
@@ -29,8 +30,13 @@ namespace Application.AI.Common.Interfaces.Bundles;
 /// so an in-flight run is never dropped nor its outcome lost to a mid-run sweep. An implementation that expired
 /// a background-queued or running record would silently drop a run.
 /// </para>
+/// <para>
+/// <strong>Run records name their caller</strong>, so the store also answers <see cref="IKeptRunSource"/> (#990): erasure
+/// removes a person's finished runs and keeps the ones in flight, and the receipt must say when one was kept. Part of this
+/// contract, so a store that replaces the shipped one has to answer it too.
+/// </para>
 /// </remarks>
-public interface IBundleRunJobStore
+public interface IBundleRunJobStore : IKeptRunSource
 {
     /// <summary>
     /// Admits a newly created run, or refuses it, deciding and inserting as one atomic step. The record

@@ -20,11 +20,19 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// only live runs would let the receipt read <c>Full</c> while it remained.
 /// </para>
 /// <para>
-/// Part of <c>IRunJobStore</c>, so a store that replaces the shipped one has to answer it too.
+/// Part of <c>IRunJobStore</c>, so a store that replaces the shipped one has to answer it too. The bundle API's run and
+/// handle stores answer it the same way (#990): each keeps what a run still in flight is using, and each gets a receipt
+/// line of its own, named by <see cref="KeptRunsStoreName"/>, so the person is told which kind of record was kept.
 /// </para>
 /// </remarks>
 public interface IKeptRunSource
 {
+    /// <summary>The receipt line's store name when a record was kept, such as <c>"bundle runs still held"</c>.</summary>
+    string KeptRunsStoreName { get; }
+
+    /// <summary>The receipt line's reason: what was kept, why, and that the person should run erasure again.</summary>
+    string KeptRunsReason { get; }
+
     /// <summary>Counts every run record held for <paramref name="ownerId"/>, in every tenant, whatever its status.</summary>
     /// <param name="ownerId">The person's user id, in either the issued or the canonical form.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
