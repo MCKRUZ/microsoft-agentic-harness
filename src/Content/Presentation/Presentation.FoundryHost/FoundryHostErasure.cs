@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace Presentation.FoundryHost;
 
 /// <summary>
-/// What FoundryHost tells the deployer at startup about erasing and exporting the personal data it holds (#1003).
+/// What FoundryHost tells the deployer at startup about erasing and exporting the personal data it holds (#1003, #1008).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,10 +19,11 @@ namespace Presentation.FoundryHost;
 /// </para>
 /// <para>
 /// <strong>What session deletion does not reach.</strong> A store promoted to an external service is shared by every
-/// session. This host sets no knowledge scope, so what it writes there carries no owner: neither session deletion nor a
-/// per-person erasure can find one person's records. The notice names each such store the host was bound with, from the
-/// bound configuration rather than the promotion variables, so a store a deployer set through <c>AppConfig__</c> keys is
-/// named too.
+/// session. Each request runs as the caller Foundry verified (<see cref="FoundryCallerIdentity"/>), so the graph stores
+/// and the document index record that caller as owner, and an erasure or export sent to another host bound to the same
+/// store, naming that id, reaches them. The observability database and the Redis cache key nothing by person, so the
+/// owner does not reach them, and they are named in a warning. Each store is named from the bound configuration rather
+/// than the promotion variables, so a store a deployer set through <c>AppConfig__</c> keys is named too.
 /// </para>
 /// </remarks>
 internal static class FoundryHostErasure
@@ -30,7 +31,10 @@ internal static class FoundryHostErasure
     /// <summary>Where the data-protection guide explains erasure and export for this host.</summary>
     internal const string GuideAnchor = "documentation/security/08-data-protection.html#foundry-erasure";
 
-    /// <summary>The startup notices: one always, and a warning for each store shared across sessions.</summary>
+    /// <summary>
+    /// The startup notices: one always, one for each shared store that records its owner, and a warning for each shared
+    /// store that does not.
+    /// </summary>
     /// <param name="config">The configuration the host bound.</param>
     /// <returns>The notices to log, each with its level.</returns>
     internal static IReadOnlyList<(LogLevel Level, string Message)> Describe(AppConfig config)
@@ -46,18 +50,30 @@ internal static class FoundryHostErasure
                 $"files API copies it ({GuideAnchor})."),
         };
 
-        foreach (var store in SharedStores(config))
+        foreach (var store in OwnedSharedStores(config))
+        {
+            notices.Add((LogLevel.Information,
+                $"{store} is shared by every session, so deleting a person's sessions leaves what they put there. FoundryHost " +
+                "records the caller Foundry verified (x-agent-user-id) as its owner: an erasure or export naming that id, " +
+                "sent to a host bound to the same store, reaches it. Records written by a request without that header, by " +
+                $"background work, or derived from ingested documents carry no owner ({GuideAnchor})."));
+        }
+
+        foreach (var (store, why) in UnownedSharedStores(config))
         {
             notices.Add((LogLevel.Warning,
-                $"{store} is shared by every session, and FoundryHost writes its records with no owner: deleting a " +
-                $"person's sessions leaves what they put there, and it cannot be erased or copied for one person ({GuideAnchor})."));
+                $"{store} is shared by every session, and its records carry no owner ({why}): deleting a person's sessions " +
+                $"leaves what they put there, and it cannot be erased or copied for one person ({GuideAnchor})."));
         }
 
         return notices;
     }
 
-    /// <summary>The stores the host was bound with that live outside the session, named by the setting that chose them.</summary>
-    private static IEnumerable<string> SharedStores(AppConfig config)
+    /// <summary>
+    /// The stores outside the session that stamp the request's knowledge-scope owner on what they write, named by the
+    /// setting that chose them.
+    /// </summary>
+    private static IEnumerable<string> OwnedSharedStores(AppConfig config)
     {
         var rag = config.AI.Rag;
 
@@ -75,11 +91,17 @@ internal static class FoundryHostErasure
         var inSession = vectorProvider == "faiss" || (vectorProvider == "azure_ai_search" && !rag.VectorStore.IsConfigured);
         if (!inSession)
             yield return $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
+    }
 
+    /// <summary>The stores outside the session that key nothing by person, each with the reason the owner does not reach it.</summary>
+    private static IEnumerable<(string Store, string Why)> UnownedSharedStores(AppConfig config)
+    {
         if (!string.IsNullOrWhiteSpace(config.Observability.PostgresConnectionString))
-            yield return "The observability database (AppConfig:Observability:PostgresConnectionString)";
+            yield return ("The observability database (AppConfig:Observability:PostgresConnectionString)",
+                "its rows name only a conversation, and the only record of whose conversation it was stays in the session");
 
         if (config.Cache.CacheType == CacheType.RedisCache)
-            yield return "The Redis cache (AppConfig:Cache:CacheType = RedisCache), whose entries go only when they expire,";
+            yield return ("The Redis cache (AppConfig:Cache:CacheType = RedisCache)",
+                "its entries are keyed by a hash of the model request and go only when they expire");
     }
 }

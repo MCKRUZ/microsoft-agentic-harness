@@ -1,8 +1,10 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -19,6 +21,8 @@ public sealed class FoundryRequestScopeTests
         var services = new ServiceCollection();
         services.AddScoped<IToolCallAdmissionPipeline>(
             _ => DispatchProxy.Create<IToolCallAdmissionPipeline, UnusedPipeline>());
+        // These requests carry no platform user id, so the writer is never asked to set a scope.
+        services.AddScoped<IKnowledgeScopeWriter>(_ => DispatchProxy.Create<IKnowledgeScopeWriter, UnusedPipeline>());
         return services.BuildServiceProvider();
     }
 
@@ -35,7 +39,7 @@ public sealed class FoundryRequestScopeTests
         var seen = new ReplayedToolCallSet?[2];
         var claimed = new bool[2];
 
-        Task Request(int i) => Task.Run(() => FoundryRequestScope.RunAsync(provider, () =>
+        Task Request(int i) => Task.Run(() => FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () =>
         {
             seen[i] = ReplayedToolCallScope.Current;
             claimed[i] = ReplayedToolCallScope.Current!.TryClaim("call_1");
@@ -59,7 +63,7 @@ public sealed class FoundryRequestScopeTests
         await using var provider = ProviderWithAdmissionPipeline();
         IToolCallAdmissionPipeline? armed = null;
 
-        await FoundryRequestScope.RunAsync(provider, () =>
+        await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () =>
         {
             armed = ToolAdmissionAccessor.Current;
             return Task.CompletedTask;
@@ -76,7 +80,7 @@ public sealed class FoundryRequestScopeTests
         ReplayedToolCallScope.Current = outer;
         try
         {
-            await FoundryRequestScope.RunAsync(provider, () => Task.CompletedTask);
+            await FoundryRequestScope.RunAsync(provider, new DefaultHttpContext(), () => Task.CompletedTask);
 
             ReplayedToolCallScope.Current.Should().BeSameAs(outer);
         }
@@ -86,7 +90,7 @@ public sealed class FoundryRequestScopeTests
         }
     }
 
-    /// <summary>A pipeline nothing in these tests calls; it only has to exist to be armed.</summary>
+    /// <summary>A service nothing in these tests calls; it only has to exist to be resolved.</summary>
     public class UnusedPipeline : DispatchProxy
     {
         /// <inheritdoc />

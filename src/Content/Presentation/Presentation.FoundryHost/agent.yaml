@@ -4,9 +4,12 @@
 # `azd deploy` builds the Dockerfile, pushes the image to ACR, and registers this hosted agent.
 kind: hosted
 name: agentic-harness
+# Container protocol 2.0.0: the version Microsoft.Agents.AI.Foundry.Hosting 1.24 speaks (Foundry no longer serves
+# 1.0.0), and the one on which Foundry stamps each request with the verified caller's x-agent-user-id, which this
+# host records as the owner of what it writes to shared stores (#1008).
 protocols:
   - protocol: responses
-    version: 1.0.0
+    version: 2.0.0
 # Build the image from the repository src/ directory (shared props + sibling project references).
 docker:
   context: ../../..

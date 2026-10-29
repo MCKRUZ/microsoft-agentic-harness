@@ -137,7 +137,9 @@ public static class Program
             // Trust boundary: the /responses endpoint is NOT authenticated by this host. That is by
             // design of the Foundry hosting model — the platform fronts the container with the
             // agent's dedicated identity and never exposes the listening port (8088) beyond the
-            // Foundry runtime. Do not publish this port directly; all access must go through Foundry.
+            // Foundry runtime. Do not publish this port directly; all access must go through Foundry. The caller's
+            // identity rests on the same boundary: the platform's x-agent-user-id header is trusted because Foundry's
+            // gateway drops any copy a caller sends (see FoundryCallerIdentity), which it cannot do for a published port.
             var builder = AgentHost.CreateBuilder(args);
             // Pinned to the file-system session store: Agent Framework 1.24 defaults to the platform's
             // shared FoundryAgentSessionStore, and moving where that state lives should be a deliberate
@@ -198,8 +200,9 @@ public static class Program
             // WebApplicationBuilder.Services, which never had the harness's services registered into
             // it — is what resolves the scoped admission pipeline, one fresh scope per request,
             // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn. The same scope also gives
-            // each request its own tool-call trace claims (#541); see FoundryRequestScope.
-            app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, () => next(context)));
+            // each request its own tool-call trace claims (#541), and runs it as the caller Foundry verified, so what it
+            // writes to a shared store carries that caller as owner (#1008); see FoundryRequestScope.
+            app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, context, () => next(context)));
 
             await app.RunAsync().ConfigureAwait(false);
         }
