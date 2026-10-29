@@ -161,4 +161,18 @@ public sealed class UnconfiguredStoreTests
         copy.Sections.Should().BeEmpty();
         copy.IsComplete.Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Export_AnUnconfiguredStoreThatOnlyErases_IsNotApplicable_NotNotExportable()
+    {
+        // The erasure receipt says the store has no backend here; the copy must not claim it holds data it cannot return.
+        var coordinator = new PersonalDataExportCoordinator([], [UnconfiguredEraser().Object], [], new AmbientRequestScope(),
+            TimeProvider.System, NullLogger<PersonalDataExportCoordinator>.Instance);
+
+        var copy = await coordinator.ExportOwnerAsync(Owner, CancellationToken.None);
+
+        copy.Manifest.Should().ContainSingle(m => m.Store == IndexName)
+            .Which.Status.Should().Be(ExportStatus.NotApplicable);
+        copy.IsComplete.Should().BeTrue();
+    }
 }
