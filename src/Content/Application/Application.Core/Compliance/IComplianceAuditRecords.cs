@@ -10,7 +10,7 @@ namespace Application.Core.Compliance;
 /// <para>
 /// Separate from <see cref="IComplianceAuditTrail"/>, which only writes: a deployment that replaces the trail keeps its own
 /// type working, and adds this when it wants its records in the report. The shipped trail implements both and is registered
-/// as both; a replacement that does not implement this must change that registration, as for <c>IVerifiableAuditChain</c>.
+/// as both; a replacement that does not implement this leaves the report with a warning that the trail cannot be read.
 /// </para>
 /// <para>
 /// Records come back as the trail holds them: a named operator as a keyed reference, the subject as a keyed reference when

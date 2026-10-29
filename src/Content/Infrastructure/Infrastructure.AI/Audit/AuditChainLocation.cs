@@ -8,4 +8,9 @@ namespace Infrastructure.AI.Audit;
 /// The folder a record that could not be appended is held in until replay writes it (<see cref="PendingAuditRecords"/>):
 /// a sibling of the day-file folder, so it is never read as part of the chain or archived.
 /// </param>
-public sealed record AuditChainLocation(string Name, DatedAuditSegments Segments, string LockPath, string PendingPath);
+/// <param name="RecordProperty">
+/// A property every record of this log carries, as written (snake_case). A held file without it is no record of this log and
+/// is set aside rather than replayed into the chain.
+/// </param>
+public sealed record AuditChainLocation(
+    string Name, DatedAuditSegments Segments, string LockPath, string PendingPath, string RecordProperty);

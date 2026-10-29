@@ -40,11 +40,23 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
         var append = () => _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
 
         await append.Should().ThrowAsync<IOException>("an outbound request is never let through unaudited (#1001 changes nothing here)");
-        Directory.GetFiles(_sut.PendingLocation, "*.pending").Should().ContainSingle("the decision that was taken is kept");
+        File.ReadAllText(Directory.GetFiles(_sut.PendingLocation, "*.pending").Single()).Should().Contain(
+            "\"not_carried_out\":true", "the decision is kept, marked as one whose request never went out");
 
         File.Delete(dayFolder);
         (await _sut.ReplayPendingAsync(CancellationToken.None)).Written.Should().Be(1);
         (await _sut.VerifyChainAsync(checkpoint: null, CancellationToken.None)).VerifiedCount.Should().Be(1);
+        var replayed = (await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None)).Value!.Single();
+        replayed.Allowed.Should().BeTrue("the decision itself is unchanged");
+        replayed.NotCarriedOut.Should().BeTrue("an auditor must not read a refused request as one that went out");
+    }
+
+    [Fact]
+    public async Task Append_AppendedWhenMade_CarriesNoNotCarriedOutMarker()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+
+        (await AuditTrailFiles.ReadAllLinesAsync(_expectedFile)).Single().Should().NotContain("not_carried_out");
     }
 
     [Fact]

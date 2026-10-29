@@ -81,7 +81,9 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
     private static string[] Held(string folder) =>
         Directory.Exists(folder) ? Directory.GetFiles(folder, "*.pending").Order(StringComparer.Ordinal).ToArray() : [];
 
-    private static string Record(string id) => $"{{\"id\":\"{id}\",\"timestamp\":\"{DateTimeOffset.UtcNow:O}\"}}";
+    // Carries the property each trail's records carry (action, timestamp, recorded_at), so every trail takes it as its own.
+    private static string Record(string id) =>
+        $"{{\"id\":\"{id}\",\"action\":\"probe\",\"timestamp\":\"{DateTimeOffset.UtcNow:O}\",\"recorded_at\":\"{DateTimeOffset.UtcNow:O}\"}}";
 
     [Fact]
     public void AuditChains_EveryTrail_HasItsOwnPendingFolderBesideItsDayFolderInsideItsConfiguredFolder()
@@ -142,6 +144,21 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
         var verified = await writer.VerifyChainAsync(CancellationToken.None);
         verified.IsValid.Should().BeTrue();
         verified.VerifiedCount.Should().Be(1, $"the {name} trail must not lose a record its chain refused once");
+    }
+
+    [Theory]
+    [MemberData(nameof(ChainNames))]
+    public async Task ReplayPendingAsync_AHeldFileThatIsNoRecordOfThisTrail_IsSetAsideNotWrittenIntoTheChain(string name)
+    {
+        var chain = Chain(name);
+        Directory.CreateDirectory(chain.PendingPath);
+        File.WriteAllText(Path.Combine(chain.PendingPath, "0000000000000000001-stray.pending"), "{\"foo\":1}");
+        using var writer = new HashChainedJsonlWriter(chain, NullLogger.Instance);
+
+        var pass = await writer.ReplayPendingAsync(CancellationToken.None);
+
+        pass.SetAside.Should().Be(1, "a chain kept for good must not take in a file that is no record of it");
+        (await writer.VerifyChainAsync(CancellationToken.None)).VerifiedCount.Should().Be(0);
     }
 
     [Fact]
@@ -263,13 +280,15 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
         logger.Levels.Should().NotContain(level => level >= LogLevel.Error);
     }
 
-    [Fact]
-    public void AuditPseudonymKey_ANewKeyWhileOnlyAHeldRecordExists_SaysTheTrailsAlreadyHoldRecords()
+    [Theory]
+    [InlineData("0000000000000000001-held.pending")]
+    [InlineData("0000000000000000001-held.unreadable")] // Set aside for an operator to repair and put back.
+    public void AuditPseudonymKey_ANewKeyWhileOnlyAHeldRecordExists_SaysTheTrailsAlreadyHoldRecords(string heldFile)
     {
         var config = EveryTrail();
         var chain = AuditChains.Governance(config, TimeProvider.System);
         Directory.CreateDirectory(chain.PendingPath);
-        File.WriteAllText(Path.Combine(chain.PendingPath, "0000000000000000001-held.pending"), Record("held"));
+        File.WriteAllText(Path.Combine(chain.PendingPath, heldFile), Record("held"));
         var logger = new LevelCapture();
 
         AuditPseudonymKey.Resolve(config, new OwnerOnlyDirectoryCreator(), logger);

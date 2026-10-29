@@ -24,9 +24,11 @@ namespace Application.Core.Compliance;
 /// correlation id. A retry that ends as the last recorded one did writes nothing.
 /// </para>
 /// <para>
-/// <strong>A retry that dies part-way.</strong> Its attempt was never written, so it leaves no record of its own. The trail
-/// still holds the first attempt and the last outcome recorded, and both are still true: the request began, and the
-/// document is not fully removed. The next retry that ends differently, or the one that ends <c>Full</c>, is recorded.
+/// <strong>A retry that dies part-way.</strong> Its attempt was never written, so it leaves no record of its own, and what
+/// it removed before it died is in no record either (the outcome that would have counted it was never written; an attempt
+/// written first, as before #998, would not have counted it either). The trail still holds the first attempt and the last
+/// outcome recorded, and both are still true: the request began, and the document is not fully removed. The retry that
+/// ends <c>Full</c> is always recorded, so the trail never stops short of saying the document went.
 /// </para>
 /// <para>
 /// <strong>Scope.</strong> Only the age limit passes this; an operator's removal is always recorded in full. A document

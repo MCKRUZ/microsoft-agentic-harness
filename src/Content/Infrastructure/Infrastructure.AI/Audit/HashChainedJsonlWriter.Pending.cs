@@ -1,5 +1,3 @@
-using Domain.Common;
-
 namespace Infrastructure.AI.Audit;
 
 /// <summary>
@@ -34,8 +32,4 @@ public sealed partial class HashChainedJsonlWriter
         _pending is null
             ? Task.FromResult(PendingRecordsReplay.Nothing)
             : _pending.ReplayAsync(this, cancellationToken);
-
-    /// <summary>Appends a held record with the full lock wait, and never holds it again when the append fails.</summary>
-    internal Task<Result> AppendWithoutHoldingAsync(string payloadJson, CancellationToken cancellationToken) =>
-        AppendOnceAsync(payloadJson, LockTimeout, cancellationToken);
 }

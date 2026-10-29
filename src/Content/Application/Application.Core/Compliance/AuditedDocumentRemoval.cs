@@ -248,7 +248,8 @@ public sealed class AuditedDocumentRemoval
         }
 
         await RecordSafelyAsync(outcome, actor);
-        retry.Retries?.Recorded(retry.DocumentId, retry.Load, retry.Of?.RetryOf ?? attempt.CorrelationId, endedWith, fullyRemoved);
+        // RemoveAsync always sets the attempt's correlation id.
+        retry.Retries?.Recorded(retry.DocumentId, retry.Load, retry.Of?.RetryOf ?? attempt.CorrelationId!, endedWith, fullyRemoved);
     }
 
     /// <summary>The retries this removal is tracked in, if any, and what they last recorded for it.</summary>

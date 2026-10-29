@@ -62,7 +62,7 @@ public sealed partial class HashChainedJsonlWriter
     public HashChainedJsonlWriter(AuditChainLocation chain, ILogger logger, string? archivePath = null)
         : this((chain ?? throw new ArgumentNullException(nameof(chain))).Segments, chain.LockPath, logger, archivePath)
     {
-        _pending = new PendingAuditRecords(chain.PendingPath, chain.Name, chain.Segments.Clock, logger);
+        _pending = new PendingAuditRecords(chain.PendingPath, chain.Name, chain.RecordProperty, chain.Segments.Clock, logger);
     }
 
     /// <summary>

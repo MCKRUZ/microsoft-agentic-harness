@@ -11,7 +11,6 @@ public sealed partial class PendingAuditRecords
 {
     private const string SetAsideExtension = ".unreadable";
     private const string ReplayLockName = ".replay.lock";
-    private const string DayFormat = "yyyy-MM-dd";
 
     /// <summary>
     /// Appends every held record to <paramref name="chain"/>, oldest first, and removes each once it is in the chain. Run on
@@ -144,7 +143,7 @@ public sealed partial class PendingAuditRecords
     private HeldRecord? ReadOne(string path)
     {
         var payload = ReadHeldFile(path);
-        if (IsRecord(payload))
+        if (IsRecord(payload, _recordProperty))
             return new HeldRecord(path, payload, HeldOn(path));
 
         // Not a record the chain would accept: keeping it in the queue would stop every record after it.
@@ -168,12 +167,10 @@ public sealed partial class PendingAuditRecords
         HashChainedJsonlWriter chain, List<HeldRecord> held, CancellationToken cancellationToken)
     {
         var wanted = held.Select(record => record.Payload).ToHashSet(StringComparer.Ordinal);
-        // A record appended by an earlier pass went to a day-file no earlier than the day it was held; one day of margin
-        // for a host whose clock ran behind the one that held it.
-        var oldest = held.Min(record => record.HeldOn);
-        var from = oldest > DateOnly.MinValue ? oldest.AddDays(-1) : oldest;
+        // A record appended by an earlier pass went to a day-file no earlier than the day it was held.
+        var from = DatedAuditSegments.WithClockMargin(held.Min(record => record.HeldOn));
         var found = new HashSet<string>(StringComparer.Ordinal);
-        await foreach (var payload in chain.ReadPayloadsAsync(path => MayHoldReplayed(path, from), cancellationToken)
+        await foreach (var payload in chain.ReadPayloadsAsync(path => DatedAuditSegments.MayHoldRecordsFrom(path, from), cancellationToken)
                            .ConfigureAwait(false))
         {
             if (wanted.Contains(payload))
@@ -230,8 +227,11 @@ public sealed partial class PendingAuditRecords
         }
     }
 
-    /// <summary>Whether <paramref name="payload"/> is one line the chain accepts and every trail writes: a JSON object.</summary>
-    private static bool IsRecord(string payload)
+    /// <summary>
+    /// Whether <paramref name="payload"/> is one line the chain accepts and a record of this chain: a JSON object carrying
+    /// <paramref name="recordProperty"/>.
+    /// </summary>
+    private static bool IsRecord(string payload, string recordProperty)
     {
         if (string.IsNullOrWhiteSpace(payload) || payload.AsSpan().IndexOfAny(FramingChars) >= 0)
             return false;
@@ -239,7 +239,9 @@ public sealed partial class PendingAuditRecords
         try
         {
             using var document = JsonDocument.Parse(payload);
-            return document.RootElement.ValueKind == JsonValueKind.Object;
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty(recordProperty, out var marker)
+                && marker.ValueKind == JsonValueKind.String;
         }
         catch (JsonException)
         {
@@ -258,11 +260,6 @@ public sealed partial class PendingAuditRecords
                 : DateOnly.MinValue;
     }
 
-    // A file that is not a day-file (the earlier single file, say) is read too: only a day-file dated before the margin is skipped.
-    private static bool MayHoldReplayed(string path, DateOnly from) =>
-        !DateOnly.TryParseExact(Path.GetFileNameWithoutExtension(path), DayFormat, CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var day)
-        || day >= from;
 
     private sealed record HeldRecord(string FilePath, string Payload, DateOnly HeldOn);
 }

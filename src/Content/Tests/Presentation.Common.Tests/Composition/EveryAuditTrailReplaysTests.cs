@@ -67,7 +67,8 @@ public sealed class EveryAuditTrailReplaysTests : IDisposable
         var name = string.Create(CultureInfo.InvariantCulture, $"{DateTimeOffset.UtcNow.UtcTicks:D19}-{Guid.NewGuid():N}.pending");
         File.WriteAllText(
             Path.Combine(trail.PendingLocation, name),
-            $"{{\"held_by\":\"{trail.AuditName}\",\"timestamp\":\"{DateTimeOffset.UtcNow:O}\"}}");
+            $"{{\"held_by\":\"{trail.AuditName}\",\"action\":\"probe\",\"timestamp\":\"{DateTimeOffset.UtcNow:O}\"," +
+            $"\"recorded_at\":\"{DateTimeOffset.UtcNow:O}\"}}");
     }
 
     private static async Task AllWrittenAsync(IReadOnlyList<IReplaysHeldAuditRecords> trails)

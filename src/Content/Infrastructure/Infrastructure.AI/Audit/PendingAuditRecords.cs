@@ -22,8 +22,8 @@ namespace Infrastructure.AI.Audit;
 /// decision taken, an outbound request decided. Before #995 (compliance) and #1001 (the other five trails) a record the chain
 /// refused (busy for longer than the writer waits, a full disk, a folder that cannot be written) survived only as an error
 /// log line, deleted with the logs after 30 days. What the caller does about the failure is unchanged: a trail that refuses
-/// the action when its record cannot be written (changes, egress, escalations) still refuses it, and a held record of that
-/// refused action is the record of the decision that was taken.
+/// the action when its record cannot be written (changes, egress, escalations) still refuses it, and holds its record marked
+/// <c>not_carried_out</c>, so replay never writes an allowed decision for a request that never went out.
 /// </para>
 /// <para>
 /// <strong>What is held.</strong> One file per record, <c>{UTC ticks}-{guid}.pending</c>, in the chain's
@@ -49,7 +49,8 @@ namespace Infrastructure.AI.Audit;
 /// A pass stops at the first append that fails, and the next pass retries from there. A file that cannot be read (another
 /// account owns it, another process holds it open) is left for the next pass and the files after it go ahead. It is counted
 /// with outcome <c>stuck</c> and logged as an error when it first sticks, not on every pass; once a pass no longer finds it
-/// stuck (read, set aside or gone), a later stick is reported again. A file that reads but is not a record is set aside as
+/// stuck (read, set aside or gone), a later stick is reported again. A file that reads but is not a record of this chain (one
+/// line, a JSON object carrying the chain's <see cref="AuditChainLocation.RecordProperty"/>) is set aside as
 /// <c>.unreadable</c>, so neither stops the queue.
 /// </para>
 /// <para>
@@ -78,6 +79,7 @@ public sealed partial class PendingAuditRecords
     private static readonly SearchValues<char> FramingChars = SearchValues.Create("\t\n\r");
 
     private readonly string _chainName;
+    private readonly string _recordProperty;
     private readonly TimeProvider _clock;
     private readonly ILogger _logger;
 
@@ -87,17 +89,20 @@ public sealed partial class PendingAuditRecords
     /// <summary>Initializes the pending folder of one chain.</summary>
     /// <param name="folder">The folder held records are kept in; created when the first record is held.</param>
     /// <param name="chainName">The chain's name, for logs and the <see cref="AuditConventions.Chain"/> tag.</param>
+    /// <param name="recordProperty">A property every record of the chain carries; a held file without it is set aside.</param>
     /// <param name="clock">Names held files by the time they were held, so replay keeps them in that order.</param>
     /// <param name="logger">Logger for holds, losses and replay.</param>
-    public PendingAuditRecords(string folder, string chainName, TimeProvider clock, ILogger logger)
+    public PendingAuditRecords(string folder, string chainName, string recordProperty, TimeProvider clock, ILogger logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(folder);
         ArgumentException.ThrowIfNullOrWhiteSpace(chainName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordProperty);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
 
         Folder = folder;
         _chainName = chainName;
+        _recordProperty = recordProperty;
         _clock = clock;
         _logger = logger;
     }

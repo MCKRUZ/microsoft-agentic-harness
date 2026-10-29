@@ -45,7 +45,7 @@ public sealed class AuditArchiverTests : IDisposable
         get
         {
             var segments = DatedAuditSegments.BesideLegacyFile(_legacyFile, _clock);
-            return new("governance", segments, _legacyFile + ".lock", segments.Folder + "-pending");
+            return new("governance", segments, _legacyFile + ".lock", segments.Folder + "-pending", "timestamp");
         }
     }
 
@@ -559,7 +559,7 @@ public sealed class AuditArchiverTests : IDisposable
         Directory.CreateDirectory(folder);
         await File.WriteAllTextAsync(Path.Combine(folder, "2026-10-17.jsonl"), "{\"unchained\":1}\n");
         var drift = new AuditChainLocation(
-            "drift", new DatedAuditSegments(folder, legacyFile: null, _clock), Path.Combine(folder, ".chain.lock"), folder + "-pending");
+            "drift", new DatedAuditSegments(folder, legacyFile: null, _clock), Path.Combine(folder, ".chain.lock"), folder + "-pending", "recorded_at");
         ReadOnlyArchiveRoot.Unlock(_archiveRoot);
         Directory.CreateDirectory(Path.Combine(_archiveRoot, "drift-audit"));
         ReadOnlyArchiveRoot.Lock(_archiveRoot);

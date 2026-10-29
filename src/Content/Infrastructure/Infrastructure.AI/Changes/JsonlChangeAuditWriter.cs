@@ -129,7 +129,9 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
         };
 
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var result = await _chain.AppendAsync(json, cancellationToken).ConfigureAwait(false);
+        // Held, it says the gate step did not go ahead: the throw below stops the transition (#1001).
+        var ifHeld = JsonSerializer.Serialize(record with { NotCarriedOut = true }, SerializeOptions);
+        var result = await _chain.AppendAsync(json, ifHeld, cancellationToken).ConfigureAwait(false);
         if (!result.IsSuccess)
         {
             var reason = string.Join("; ", result.Errors);

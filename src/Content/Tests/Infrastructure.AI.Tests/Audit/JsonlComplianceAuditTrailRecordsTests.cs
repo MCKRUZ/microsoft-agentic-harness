@@ -99,6 +99,14 @@ public sealed class JsonlComplianceAuditTrailRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadAsync_AReplacedTrailThatCannotBeReadBack_FailsSoTheReportWarns()
+    {
+        var read = await new UnreadableComplianceAuditRecords().ReadAsync(Day1, Day1, CancellationToken.None);
+
+        read.IsSuccess.Should().BeFalse("an unreadable trail must never be reported as one that recorded nothing");
+    }
+
+    [Fact]
     public async Task ReadAsync_TheTrailsFolderIsUnreadable_FailsInsteadOfReadingAsEmpty()
     {
         using var trail = NewTrail();
@@ -109,5 +117,6 @@ public sealed class JsonlComplianceAuditTrailRecordsTests : IDisposable
         var read = await trail.ReadAsync(Day1.AddHours(-1), Day1.AddHours(1), CancellationToken.None);
 
         read.IsSuccess.Should().BeFalse();
+        read.Errors.Single().Should().NotContain(_root, "the report travels further than the host log");
     }
 }

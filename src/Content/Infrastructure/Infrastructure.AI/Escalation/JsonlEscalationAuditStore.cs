@@ -255,7 +255,9 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     private async Task AppendRecordAsync(EscalationAuditRecord record, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var result = await _chain.AppendAsync(json, ct);
+        // Held, it says the step did not go ahead: the throw below stops it (#1001).
+        var ifHeld = JsonSerializer.Serialize(record with { NotCarriedOut = true }, SerializeOptions);
+        var result = await _chain.AppendAsync(json, ifHeld, ct);
         if (!result.IsSuccess)
         {
             var reason = string.Join("; ", result.Errors);

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Application.Core.Compliance;
 using Domain.Common;
@@ -18,19 +17,16 @@ namespace Infrastructure.AI.Audit;
 /// </remarks>
 public sealed partial class JsonlComplianceAuditTrail
 {
-    private const string DayFormat = "yyyy-MM-dd";
-
     /// <inheritdoc />
     public async Task<Result<ComplianceTrailContents>> ReadAsync(
         DateTimeOffset start, DateTimeOffset end, CancellationToken cancellationToken)
     {
-        var from = DateOnly.FromDateTime(start.UtcDateTime);
-        from = from > DateOnly.MinValue ? from.AddDays(-1) : from;
+        var from = DatedAuditSegments.WithClockMargin(DateOnly.FromDateTime(start.UtcDateTime));
         var records = new List<AuditEntry>();
         var unreadable = 0;
         try
         {
-            await foreach (var payload in _chain.ReadPayloadsAsync(path => OnOrAfter(path, from), cancellationToken)
+            await foreach (var payload in _chain.ReadPayloadsAsync(path => DatedAuditSegments.MayHoldRecordsFrom(path, from), cancellationToken)
                                .ConfigureAwait(false))
             {
                 if (Parse(payload) is not { } record)
@@ -42,7 +38,8 @@ public sealed partial class JsonlComplianceAuditTrail
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Failed to read the compliance audit trail at {AuditLocation}", _folder);
-            return Result<ComplianceTrailContents>.Fail($"Failed to read the compliance audit trail: {ex.Message}");
+            // A fixed reason: the report travels further than the host log, and an I/O message names the trail's path.
+            return Result<ComplianceTrailContents>.Fail("The compliance audit trail could not be read; the host log says why.");
         }
 
         if (unreadable > 0)
@@ -62,10 +59,4 @@ public sealed partial class JsonlComplianceAuditTrail
             return null;
         }
     }
-
-    // A file that is not a day-file is read too: only a day-file dated before the margin is skipped.
-    private static bool OnOrAfter(string path, DateOnly from) =>
-        !DateOnly.TryParseExact(Path.GetFileNameWithoutExtension(path), DayFormat, CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var day)
-        || day >= from;
 }
