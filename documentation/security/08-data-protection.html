@@ -1243,9 +1243,10 @@
                             Never publish port 8088.</li>
                         <li><strong>No header:</strong> a local run, or the readiness probe. The request runs unscoped, as
                             every request did before #1008, and what it writes carries no owner.</li>
-                        <li><strong>A header that names no one usable:</strong> sent twice with different values, or blank.
-                            The request is refused with 401 instead of being run unowned, because a record with no owner reads
-                            as global.</li>
+                        <li><strong>A header that names no one usable:</strong> sent twice with different values, blank,
+                            or an id an operator erasure would refuse to name (longer than 256 characters, or with surrounding
+                            whitespace). The request is refused with 401 instead of being run unowned, because a record with
+                            no owner reads as global. The same value sent twice is one caller.</li>
                         <li><strong>Nothing else establishes the caller.</strong> A bearer token, an <code>x-client-*</code>
                             header, or a principal set earlier in the pipeline is ignored.</li>
                     </ul>
@@ -1253,14 +1254,18 @@
                         What that owner reaches, store by store:
                     </p>
                     <ul>
-                        <li><strong>Knowledge graph and graph database</strong> (other than the embedded ones). Memories,
-                            learnings and cross-session memory written during a request record that caller as owner, so owner
-                            erasure and export find them. Two kinds of record carry no owner: entities derived from ingested
-                            documents, and what background work writes.</li>
-                        <li><strong>Document index</strong> (Azure AI Search, or any other non-FAISS provider). A document
-                            ingested during a request is stamped with that caller. Owner erasure deletes its chunks, and
-                            export copies them. The index is still kept by design as business content, as for every other
-                            host.</li>
+                        <li><strong>Knowledge graph store</strong> (Neo4j or PostgreSQL). Memories and learnings written
+                            during a request record that caller as owner, so owner erasure and export find them. That includes
+                            what the request leaves running after it answers, which keeps the caller's scope. Two kinds of
+                            record carry no owner: entities derived from ingested documents, and what work no request started
+                            writes, such as a scheduled job.</li>
+                        <li><strong>Document index</strong> (Azure AI Search). A document ingested during a request is
+                            stamped with that caller. Owner erasure deletes its chunks, and export copies them. The index is
+                            still kept by design as business content, as for every other host.</li>
+                        <li><strong>A provider the template does not ship</strong>: a graph database other than Kuzu (Kuzu
+                            is the only backend shipped), or a knowledge graph or document index added by you. Not promised.
+                            FoundryHost cannot tell whether it writes an owner, so it warns about it at startup. Check your
+                            provider stamps the knowledge scope's owner before relying on per-person erasure there.</li>
                         <li><strong>Observability database.</strong> Not reached. Its rows name only a conversation, and the
                             record of whose conversation it was stays inside the session. FoundryHost still warns about it at
                             startup. Keep personal data out of it, or clear it as a whole.</li>
@@ -1284,7 +1289,15 @@
                             these stores works only where you already know the id. Otherwise clear the stores as a
                             whole.</li>
                         <li><strong>Records with no owner stay.</strong> Those written by a request without the header, by
-                            background work, or derived from documents are not found by any per-person request.</li>
+                            work no request started, or derived from documents are not found by any per-person request.</li>
+                        <li><strong>An application calling as itself is one owner.</strong> The id is the caller Foundry
+                            resolved. If your application calls the agent under its own identity without naming the person it
+                            acts for (the <code>x-ms-user-identity</code> delegation in <em>Multiplex multiple users in one
+                            hosted agent session</em>), we expect Foundry to give every person it relays the application's
+                            id. Microsoft does not document this, and we have not checked it on a deployment. If so, they
+                            share one owner, so an erasure naming it erases all of them. FoundryHost cannot tell such a
+                            caller from a person, as the other hosts do for an application's own token. Delegate the
+                            person's identity if you need either right per person.</li>
                     </ul>
 
                     <div class="callout callout-tip" id="erasure-receipt">

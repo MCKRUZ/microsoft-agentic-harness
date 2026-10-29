@@ -36,7 +36,9 @@ namespace Presentation.FoundryHost;
 /// mounts, so what the agent writes to a shared store carries that caller as owner. The middleware is invoked here
 /// rather than mounted, because its <see cref="IKnowledgeScopeWriter"/> lives in the harness's composition root, not in
 /// AgentHost's container. A request that names a user who cannot be resolved is refused with 401, never run unowned;
-/// one that names nobody runs unscoped, as before.
+/// one that names nobody runs unscoped, as before. The principal stays on <see cref="HttpContext.User"/> for the rest of
+/// the request, since it is who the request is from. The harness reads it only here; the Foundry hosting layer, which
+/// this host does not configure with any authentication or authorization, may also see it.
 /// </para>
 /// </remarks>
 internal static class FoundryRequestScope

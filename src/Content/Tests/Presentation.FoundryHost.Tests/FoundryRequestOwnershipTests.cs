@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Azure.AI.AgentServer.Core;
 using Domain.Common.Config;
 using FluentAssertions;
@@ -152,6 +153,9 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
         new[] { FoundryUser, "someone-else" },
         new[] { "" },
         new[] { "   " },
+        // Ids an operator erasure would refuse to name, so their records could never be erased.
+        new[] { " " + FoundryUser },
+        new[] { new string('u', EraseSubjectDataCommandValidator.MaxSubjectIdLength + 1) },
     };
 
     [Theory]
@@ -172,6 +176,35 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
         context.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
     }
 
+    [Fact]
+    public async Task RunAsync_TheSameIdSentTwice_IsOneIdentity()
+    {
+        string? seen = null;
+
+        await FoundryRequestScope.RunAsync(_provider, Request(FoundryUser, FoundryUser), () =>
+        {
+            seen = OwnerSeenByTheAgent();
+            return Task.CompletedTask;
+        });
+
+        seen.Should().Be(FoundryUser);
+    }
+
+    [Fact]
+    public async Task RunAsync_TheLongestIdAnErasureAccepts_IsServed()
+    {
+        var longest = new string('u', EraseSubjectDataCommandValidator.MaxSubjectIdLength);
+        string? seen = null;
+
+        await FoundryRequestScope.RunAsync(_provider, Request(longest), () =>
+        {
+            seen = OwnerSeenByTheAgent();
+            return Task.CompletedTask;
+        });
+
+        seen.Should().Be(longest);
+    }
+
     [Theory]
     [InlineData("agent.yaml")]
     [InlineData("agent.manifest.yaml")]
@@ -181,8 +214,8 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
         var yaml = File.ReadAllText(RepoRoot.Combine(
             "src", "Content", "Presentation", "Presentation.FoundryHost", descriptor));
 
-        yaml.Should().MatchRegex(@"-\s*protocol:\s*responses\s*\r?\n\s*version:\s*2\.0\.0\s*\r?\n");
-        yaml.Should().NotMatchRegex(@"version:\s*1\.0\.0");
+        yaml.Should().MatchRegex(@"(?m)-\s*protocol:\s*responses[ \t]*\r?\n\s*version:\s*[""']?2\.0\.0[""']?[ \t]*(#.*)?\r?$");
+        yaml.Should().NotMatchRegex(@"version:\s*[""']?1\.0\.0");
     }
 
     [Fact]

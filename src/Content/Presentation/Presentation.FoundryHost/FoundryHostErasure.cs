@@ -19,11 +19,12 @@ namespace Presentation.FoundryHost;
 /// </para>
 /// <para>
 /// <strong>What session deletion does not reach.</strong> A store promoted to an external service is shared by every
-/// session. Each request runs as the caller Foundry verified (<see cref="FoundryCallerIdentity"/>), so the graph stores
-/// and the document index record that caller as owner, and an erasure or export sent to another host bound to the same
-/// store, naming that id, reaches them. The observability database and the Redis cache key nothing by person, so the
-/// owner does not reach them, and they are named in a warning. Each store is named from the bound configuration rather
-/// than the promotion variables, so a store a deployer set through <c>AppConfig__</c> keys is named too.
+/// session. Each request runs as the caller Foundry verified (<see cref="FoundryCallerIdentity"/>), so the shipped
+/// Neo4j and PostgreSQL knowledge graph stores and the Azure AI Search document index record that caller as owner, and an
+/// erasure or export sent to another host bound to the same store, naming that id, reaches them. The observability
+/// database and the Redis cache key nothing by person, and a provider a consumer adds may never write an owner, so those
+/// are named in a warning. Each store is named from the bound configuration rather than the promotion variables, so a
+/// store a deployer set through <c>AppConfig__</c> keys is named too.
 /// </para>
 /// </remarks>
 internal static class FoundryHostErasure
@@ -50,51 +51,73 @@ internal static class FoundryHostErasure
                 $"files API copies it ({GuideAnchor})."),
         };
 
-        foreach (var store in OwnedSharedStores(config))
+        var (owned, unowned) = SharedStores(config);
+
+        foreach (var store in owned)
         {
             notices.Add((LogLevel.Information,
                 $"{store} is shared by every session, so deleting a person's sessions leaves what they put there. FoundryHost " +
                 "records the caller Foundry verified (x-agent-user-id) as its owner: an erasure or export naming that id, " +
                 "sent to a host bound to the same store, reaches it. Records written by a request without that header, by " +
-                $"background work, or derived from ingested documents carry no owner ({GuideAnchor})."));
+                $"work no request started, or derived from ingested documents carry no owner ({GuideAnchor})."));
         }
 
-        foreach (var (store, why) in UnownedSharedStores(config))
+        foreach (var (store, why) in unowned)
         {
             notices.Add((LogLevel.Warning,
-                $"{store} is shared by every session, and its records carry no owner ({why}): deleting a person's sessions " +
-                $"leaves what they put there, and it cannot be erased or copied for one person ({GuideAnchor})."));
+                $"{store} is shared by every session, and its records carry no owner this host can vouch for ({why}): " +
+                "deleting a person's sessions leaves what they put there, and it cannot be erased or copied for one person " +
+                $"({GuideAnchor})."));
         }
 
         return notices;
     }
 
     /// <summary>
-    /// The stores outside the session that stamp the request's knowledge-scope owner on what they write, named by the
-    /// setting that chose them.
+    /// The stores the host was bound with that live outside the session, named by the setting that chose them: those this
+    /// template ships knowing they stamp the request's owner on what they write, and the rest, each with the reason the
+    /// owner does not reach it.
     /// </summary>
-    private static IEnumerable<string> OwnedSharedStores(AppConfig config)
+    /// <remarks>
+    /// Fails closed in both directions: a store is outside the session unless it is one of the in-process defaults, and
+    /// it is owned only when it is a provider this template ships and has read the owner-stamping of. A provider a consumer
+    /// adds may never write an owner, so it is warned about rather than promised.
+    /// </remarks>
+    private static (IReadOnlyList<string> Owned, IReadOnlyList<(string Store, string Why)> Unowned) SharedStores(
+        AppConfig config)
     {
+        const string NotShipped = "a provider this template does not ship, so FoundryHost cannot tell whether it records one";
+        var owned = new List<string>();
+        var unowned = new List<(string, string)>();
         var rag = config.AI.Rag;
 
-        var graphProvider = rag.GraphRag.GraphProvider;
-        if (graphProvider is not ("in_memory" or "managed_code"))
-            yield return $"The knowledge graph store (AppConfig:AI:Rag:GraphRag:GraphProvider = {graphProvider})";
-
         // Compared as the keyed registrations resolve them, ordinally, so the notice describes the store that is built.
-        if (rag.GraphDatabase.Enabled && rag.GraphDatabase.Provider != "kuzu")
-            yield return $"The graph database (AppConfig:AI:Rag:GraphDatabase:Provider = {rag.GraphDatabase.Provider})";
+        var graphProvider = rag.GraphRag.GraphProvider;
+        var graphStore = $"The knowledge graph store (AppConfig:AI:Rag:GraphRag:GraphProvider = {graphProvider})";
+        if (graphProvider is "neo4j" or "postgresql")
+            owned.Add(graphStore);
+        else if (graphProvider is not ("in_memory" or "managed_code"))
+            unowned.Add((graphStore, NotShipped));
 
-        // Fails closed: only the in-process FAISS index, or an Azure index with no endpoint (which holds nothing), stays in
-        // the session; any other provider, including one a consumer adds, is named.
+        // Kuzu is the only graph database backend the template ships, and it lives in the session.
+        if (rag.GraphDatabase.Enabled && rag.GraphDatabase.Provider != "kuzu")
+            unowned.Add(($"The graph database (AppConfig:AI:Rag:GraphDatabase:Provider = {rag.GraphDatabase.Provider})",
+                NotShipped));
+
+        // The in-process FAISS index, or an Azure index with no endpoint (which holds nothing), stays in the session.
         var vectorProvider = rag.VectorStore.Provider;
-        var inSession = vectorProvider == "faiss" || (vectorProvider == "azure_ai_search" && !rag.VectorStore.IsConfigured);
-        if (!inSession)
-            yield return $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
+        var documentIndex = $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
+        if (vectorProvider == "azure_ai_search" && rag.VectorStore.IsConfigured)
+            owned.Add(documentIndex);
+        else if (vectorProvider is not ("faiss" or "azure_ai_search"))
+            unowned.Add((documentIndex, NotShipped));
+
+        unowned.AddRange(StoresKeyedByNoPerson(config));
+        return (owned, unowned);
     }
 
-    /// <summary>The stores outside the session that key nothing by person, each with the reason the owner does not reach it.</summary>
-    private static IEnumerable<(string Store, string Why)> UnownedSharedStores(AppConfig config)
+    /// <summary>The shipped stores outside the session that key nothing by person, each with the reason.</summary>
+    private static IEnumerable<(string Store, string Why)> StoresKeyedByNoPerson(AppConfig config)
     {
         if (!string.IsNullOrWhiteSpace(config.Observability.PostgresConnectionString))
             yield return ("The observability database (AppConfig:Observability:PostgresConnectionString)",
