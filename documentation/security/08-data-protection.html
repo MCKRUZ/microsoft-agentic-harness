@@ -1095,18 +1095,103 @@
                             records: they hold the run's messages and outcome in memory for
                             <code>AppConfig:AI:BundleExecution:RunRecordTtl</code> (30 minutes) after the run ends, and no
                             store line lists them.</li>
-                        <li><strong>FoundryHost</strong> keeps each agent session's transcript under
-                            <code>$HOME/.checkpoints</code>. Its planner database, tool results and compliance audit go
-                            under <code>$HOME/agent-state</code>. <strong>It serves no erasure or export endpoint</strong>
-                            (it maps only <code>/responses</code>). A deployment that runs it holds personal data that none
-                            of these requests reaches. Clear that container's state by its own means until the gap is
-                            closed.</li>
+                        <li><strong>FoundryHost</strong> keeps each Foundry session's state in that session's own
+                            <code>$HOME</code>. It serves no erasure or export endpoint. You erase and export its data
+                            through Foundry's session API instead
+                            (<a href="#foundry-erasure">see below</a>).</li>
                         <li><strong>ConsoleUI</strong> and <strong>EvalRunner</strong> are run by hand, not deployed as
                             services. They compose the same stores, so anything they write lands in their own working
                             directory. They serve no endpoint, so clear their state directly. <strong>AuditArchiver</strong>
                             only moves existing audit day-files into the archive, and <strong>LoggerUI</strong> only prints
                             log pipes. Neither writes personal data of its own.</li>
                     </ul>
+
+                    <h3 id="foundry-erasure">Erasing and exporting FoundryHost's data: delete or copy the Foundry session</h3>
+                    <p>
+                        FoundryHost cannot serve these endpoints, and it does not need to. Foundry forwards only a hosted
+                        agent's protocol endpoints (<code>POST /responses</code>, <code>POST /invocations</code>) and its
+                        health probe to the container (Microsoft Learn, <em>Hosted agent runtime contract</em>), so
+                        <code>/api/compliance/*</code> never reaches it. Every call also lands in one session's sandbox.
+                        A session is "a stateful, isolated sandbox tied to a single logical workload (for example, one
+                        user's chat)", with its own persistent <code>$HOME</code> (<em>Manage hosted agent sessions</em>).
+                        FoundryHost keeps what it writes in that <code>$HOME</code>, with two exceptions, both off by
+                        default. Durable governance state stays in the application directory, on the sandbox's ephemeral
+                        root disk. Prompt usage goes wherever its connection string points
+                        (<code>src/Content/Presentation/Presentation.FoundryHost/README.md</code>). The rest is:
+                    </p>
+                    <ul>
+                        <li>the agent session store, under <code>$HOME/.checkpoints</code>;</li>
+                        <li>the planner, conversation, document-ledger, schedule and erasure-journal databases;</li>
+                        <li>workflow state, execution traces, offloaded tool results, and subagent delegations and
+                            mailbox;</li>
+                        <li>the embedded Kuzu graph, file logs and the audit trails, all under
+                            <code>$HOME/agent-state</code>.</li>
+                    </ul>
+                    <p>
+                        An erasure run inside the container could reach only the one session the request landed in.
+                        Deleting the session reaches all of it.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Find the person's sessions.</strong> Each session belongs to one isolation key.
+                            <ul>
+                                <li>With the default Entra isolation source, the key is the caller's Microsoft Entra
+                                    identity, and the list call returns only the caller's own sessions.</li>
+                                <li>With the header source, the key is whatever your application sent in
+                                    <code>x-ms-user-isolation-key</code>.</li>
+                            </ul>
+                            An operator who holds the Foundry User role on the project sees and deletes every session on
+                            the agent. Listing is
+                            <code>GET .../agents/{agent}/endpoint/sessions</code>. If your application calls the agent on
+                            people's behalf under its own identity, it must record which sessions are whose: FoundryHost
+                            cannot tell you.
+                        </li>
+                        <li>
+                            <strong>Erase.</strong> <code>DELETE .../agents/{agent}/endpoint/sessions/{id}</code>, sent with
+                            the session's isolation key, "terminates the sandbox and releases its resources". The platform
+                            otherwise "retains <code>$HOME</code> state for 30 days unless you delete the session"
+                            (<em>Customer-managed keys in Microsoft Foundry</em>), so deleting the session is what removes
+                            the <code>$HOME</code> above. A session nobody deletes goes after 30 days of inactivity.
+                        </li>
+                        <li>
+                            <strong>Export.</strong> The session files API lists and downloads what is under
+                            <code>$HOME</code>: <code>GET .../sessions/{id}/files?path=...</code> and
+                            <code>GET .../sessions/{id}/files/content?path=...</code>. Copy <code>agent-state</code> and
+                            <code>.checkpoints</code>. They are the host's own storage formats (SQLite, JSONL, framework
+                            session files), not the JSON copy the other hosts return.
+                        </li>
+                    </ul>
+                    <p>
+                        <strong>What deleting a session does not cover.</strong>
+                    </p>
+                    <ul>
+                        <li>The conversation history Foundry itself stores for the Responses protocol is kept apart from
+                            the session. Delete it through Foundry's conversations API.</li>
+                        <li>The session's audit trails, including the compliance trail, are inside <code>$HOME</code>.
+                            Deleting the session deletes them too, so the proof they hold goes with it. A deployment that
+                            must keep that proof archives the trails first (see
+                            <a href="#audit-archive-retention">the audit archive</a>).</li>
+                        <li>
+                            A store promoted to an external service is shared by every session: an external knowledge
+                            graph (<code>GRAPH_PROVIDER</code>, or <code>AppConfig:AI:Rag:GraphRag:GraphProvider</code>), a
+                            graph database other than the embedded Kuzu, Azure AI Search (<code>AZURE_SEARCH_ENDPOINT</code>),
+                            or Redis (<code>REDIS_ENDPOINT</code>).
+                            <ul>
+                                <li>FoundryHost sets no knowledge scope, so what it writes there carries no owner. Neither
+                                    session deletion nor any per-person request can find one person's records there.</li>
+                                <li>FoundryHost names each such store in a warning at startup
+                                    (<code>FoundryHostErasure</code>).</li>
+                                <li>Keep personal data out of those stores, or clear them as a whole.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                    <p>
+                        <strong>A way to per-person ownership.</strong> On container protocol 2.0.0, Foundry passes each
+                        request a verified per-user id, <code>x-agent-user-id</code> (<em>Hosted agent runtime
+                        contract</em>). FoundryHost declares the Responses protocol at 1.0.0 and does not read that header
+                        today. Upgrading, and owning records by that id, would let shared stores be erased per person. It
+                        would not change the routing above.
+                    </p>
 
                     <div class="callout callout-tip" id="erasure-receipt">
                         <span class="callout-icon">✓</span>

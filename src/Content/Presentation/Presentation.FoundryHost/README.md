@@ -50,6 +50,16 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
 external services**. External managed stores are needed *only* to share knowledge **across different
 conversations or users**, or beyond the 30-day window.
 
+## Erasing and exporting a person's data
+
+This host serves no erasure or export endpoint (#1003). Foundry routes only the protocol endpoints to the container, and
+each call reaches one session's sandbox, whose `$HOME` holds everything this host writes. Erase a person's data by
+deleting their Foundry sessions (`DELETE .../agents/{agent}/endpoint/sessions/{id}`); copy it with the session files API.
+Stores promoted to external services are shared by every session and hold records with no owner, which session deletion
+does not reach; the host warns about each one at startup. The procedure, and what it does not cover (Foundry's own
+conversation history, the audit trails deleted with the session), is in the
+[security guide](../../../../documentation/security/08-data-protection.html#foundry-erasure).
+
 ## Environment variables
 
 ### Injected by Foundry at deploy time

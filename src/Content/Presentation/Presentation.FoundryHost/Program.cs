@@ -90,6 +90,12 @@ public static class Program
                      FoundryHostBootstrap.HarnessExporterIsActive(azureMonitor)))
             startupLog.Log(level, "{TelemetryExport}", message);
 
+        // This host serves no erasure or export endpoint (#1003): said at startup, with every store the host was bound
+        // with that deleting a Foundry session does not reach.
+        foreach (var (level, message) in FoundryHostErasure.Describe(
+                     provider.GetRequiredService<IOptions<AppConfig>>().Value))
+            startupLog.Log(level, "{PersonalDataErasure}", message);
+
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —
         // ConsoleUI and EvalRunner follow the same pattern. We track started services separately so
