@@ -42,7 +42,9 @@ namespace Presentation.FoundryHost;
 /// unauthenticated principal and runs unscoped, as before #1008. In a Foundry-hosted container
 /// (<see cref="FoundryEnvironment.IsHosted"/>) the platform puts it on every protocol request, and every such request was
 /// authenticated at the gateway, so a <c>/responses</c> request without it is treated as authenticated with no identity
-/// and refused, never run unowned. Other paths, such as the readiness probe, never carry it and stay anonymous. No other
+/// and refused, never run unowned. The hosting package draws the same line for the other 2.0.0 header: a hosted request
+/// without <c>x-agent-foundry-call-id</c> already gets a 501 there. Every route it maps for the protocol is under
+/// <c>/responses</c>; other paths, such as the readiness probe, never carry the header and stay anonymous. No other
 /// header, including a bearer token or an <c>x-client-*</c> value, can establish who the caller is.
 /// </para>
 /// </remarks>
