@@ -94,8 +94,9 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         ArgumentNullException.ThrowIfNull(logger);
 
         // A forwarded registration yields null when the host's store cannot export or erase; see AddPersonalDataExporter.
-        _exporters = exporters.OfType<IPersonalDataExporter>().ToList();
-        _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        // A substrate composed twice registers each store twice: one store is still one section and one line (#1004).
+        _exporters = PersonalDataRegistrations.DistinctExporters(exporters);
+        _erasers = PersonalDataRegistrations.DistinctErasers(erasers);
         _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;
@@ -256,7 +257,8 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         if (_memory is not null && !_exporters.Any(e => ReferenceEquals(e, _memory)))
             manifest.Add(NotExported(MemoryStore, _memory.GetType()));
 
-        foreach (var outcome in _retained.Select(r => r.ToOutcome()).OfType<StoreErasureOutcome>())
+        foreach (var outcome in _retained.Select(r => r.ToOutcome()).OfType<StoreErasureOutcome>()
+                     .DistinctBy(o => o.Store, StringComparer.Ordinal))
             manifest.Add(new ExportManifestEntry(outcome.Store, Retained(outcome.Status), 0, outcome.Reason));
     }
 
