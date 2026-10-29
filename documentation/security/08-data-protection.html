@@ -692,7 +692,11 @@
                             An edge records only one source, so a relationship another document also asserts goes too, until
                             that document is loaded again. A document id is derived from where the document came from, so
                             this reaches every tenant and collection it was loaded into; it runs system-scoped, a store that
-                            cannot delete the chunks makes the result Partial, and every removal is audited.
+                            cannot delete the chunks makes the result Partial, and every removal is audited. A chunk store
+                            the host has not configured, such as an Azure AI Search index with no endpoint, is not asked: the
+                            receipt's <code>stores</code> and the audit record name it as <code>NotConfigured</code> rather
+                            than a count of 0 that reads like a search that found nothing, and the result stays
+                            <code>Full</code> (#1011).
                             Operators run it through <code>POST /api/compliance/document-removals</code> with the
                             document id in the body. It requires its own role,
                             <code>Harness.Compliance.RemoveDocument</code> (the erasure role does not grant it, nor it
@@ -1432,7 +1436,14 @@
                             still cannot see a store whose records carry no owner, such as one keyed only by a run or
                             conversation id. Those are declared by hand. Two types it flags are listed as exceptions, each
                             with its reason: a per-request buffer of graph nodes, and the AgentHub's record of open
-                            connections, which is dropped when a connection closes or has been idle for five minutes.
+                            connections, which is dropped when a connection closes or has been idle for the configured
+                            time (five minutes by default). One type it cannot see is listed by hand: the workflow
+                            progress feed, keyed by run id, which buffers events only for an open watcher and never a
+                            step's output (#1005). Both exceptions whose reason rests on what their records carry are
+                            pinned to every field of those records and to every type that calls them directly, so a field
+                            or a direct caller added later fails the build until someone re-reads it. Text that reaches
+                            those callers from further up (cancellation notices, a run's caller-safe failure message) is
+                            not pinned; the exemption names the contracts it relies on instead.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
