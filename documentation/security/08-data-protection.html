@@ -1009,9 +1009,17 @@
                         erased. Each store's kept records get a <code>Skipped</code> line of their own, "bundle runs still
                         held" or "staged bundles still held", and the receipt is <code>Partial</code>. Both are erased
                         and copied only by a request served by the same process as the bundle API. The bundle API runs in
-                        <code>Presentation.ExecutionApi</code>, and erasure and export are served by the AgentHub host.
-                        When the two run separately, the bundle API's records are not reached, and they expire on their
-                        own within the periods above.
+                        <code>Presentation.ExecutionApi</code>, which serves erasure and export for its own stores (#1003),
+                        so send the request there as well as to AgentHub (<a href="#one-host">each request covers the host it
+                        is sent to</a>).
+                    </p>
+                    <p>
+                        <strong>Replacing a run store.</strong> Each run store's "still held" count is registered with
+                        <code>AddSingleton&lt;IKeptRunSource&gt;</code>, not <code>TryAdd</code>, and forwards to the
+                        store's own service (<code>IRunJobStore</code>, <code>IBundleRunJobStore</code>,
+                        <code>IBundleHandleStore</code>). If you wrap one in a decorator, register the decorator in place
+                        of the store as that service, so the shipped registration reaches it. Do not add another
+                        <code>IKeptRunSource</code> for it, or every receipt shows two kept lines for the one store.
                     </p>
                     <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
@@ -1108,10 +1116,8 @@
                             persist and whatever its agents' tools store. It serves the compliance API at
                             <code>/api/compliance/*</code>, authenticated with its own audience. Its anonymous development
                             mode makes every caller one person, so the API refuses self-service and operator requests there,
-                            as AgentHub does under its sign-in bypass. Until #990 lands, its receipt does not cover bundle run
-                            records: they hold the run's messages and outcome in memory for
-                            <code>AppConfig:AI:BundleExecution:RunRecordTtl</code> (30 minutes) after the run ends, and no
-                            store line lists them.</li>
+                            as AgentHub does under its sign-in bypass. Its receipt lists the bundle runs and staged bundles
+                            it keeps in memory (#990).</li>
                         <li><strong>FoundryHost</strong> keeps each Foundry session's state in that session's own
                             <code>$HOME</code>. It serves no erasure or export endpoint. You erase and export its data
                             through Foundry's session API instead

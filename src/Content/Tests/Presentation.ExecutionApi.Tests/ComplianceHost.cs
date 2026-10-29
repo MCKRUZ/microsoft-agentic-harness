@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Models.Conversations;
 using Domain.AI.Bundles;
@@ -54,12 +55,18 @@ internal static class ComplianceHost
         return request;
     }
 
-    /// <summary>What one person left in this host: a finished workflow run and a conversation with one message.</summary>
+    /// <summary>
+    /// What one person left in this host: a finished workflow run, a finished bundle run, and a conversation with one
+    /// message.
+    /// </summary>
     /// <param name="OwnerId">The person.</param>
-    /// <param name="RunId">Their finished run.</param>
+    /// <param name="RunId">Their finished workflow run.</param>
+    /// <param name="BundleRunId">Their finished bundle run.</param>
+    /// <param name="BundleMessage">The message their bundle run carried, unique to this person.</param>
     /// <param name="ConversationId">Their conversation.</param>
     /// <param name="Message">The text of the message in it, unique to this person.</param>
-    public sealed record Seeded(string OwnerId, string RunId, string ConversationId, string Message);
+    public sealed record Seeded(
+        string OwnerId, string RunId, string BundleRunId, string BundleMessage, string ConversationId, string Message);
 
     /// <summary>
     /// Writes a finished workflow run and a conversation for <paramref name="ownerId"/>, the way the host's runs and agents
@@ -83,6 +90,24 @@ internal static class ComplianceHost
         // Finished, so erasure may remove it: a live run is kept until it ends (#926).
         runs.Update(run with { Status = RunStatus.Succeeded, CompletedAt = DateTimeOffset.UtcNow }).Should().BeTrue();
 
+        // A bundle run keeps the person's messages and the agent's outcome in this host's memory (#990).
+        var bundleRuns = services.GetRequiredService<IBundleRunJobStore>();
+        var bundleRun = new BundleRunRecord
+        {
+            JobId = $"bundle-run-{label}",
+            Handle = $"bundle-{label}",
+            OwnerId = ownerId,
+            AgentName = $"agent-{label}",
+            UserMessages = [$"bundle-message-{label}"],
+            MaxTurns = 1,
+            Envelope = new CapabilityEnvelope(),
+            Status = BundleRunStatus.Queued,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        bundleRuns.TryCreate(bundleRun, int.MaxValue).Should().Be(BundleRunAdmission.Accepted);
+        bundleRuns.Update(bundleRun with { Status = BundleRunStatus.Succeeded, CompletedAt = DateTimeOffset.UtcNow })
+            .Should().BeTrue();
+
         await using var scope = services.CreateAsyncScope();
         var conversations = scope.ServiceProvider.GetRequiredService<IConversationStore>();
         var conversation = await conversations.CreateAsync("agent", ownerId);
@@ -90,13 +115,18 @@ internal static class ComplianceHost
         await conversations.AppendMessageAsync(conversation.Id, ownerId,
             new ConversationMessage(Guid.NewGuid(), MessageRole.User, message, DateTimeOffset.UtcNow));
 
-        return new Seeded(ownerId, run.JobId, conversation.Id, message);
+        return new Seeded(ownerId, run.JobId, bundleRun.JobId, bundleRun.UserMessages[0], conversation.Id, message);
     }
 
-    /// <summary>Whether this host still holds the run and the conversation <paramref name="person"/> left.</summary>
+    /// <summary>
+    /// Whether this host still holds the runs and the conversation <paramref name="person"/> left: their workflow run and
+    /// their bundle run count as one answer, held only while either is.
+    /// </summary>
     public static async Task<(bool Run, bool Conversation)> StillHeldAsync(IServiceProvider services, Seeded person)
     {
-        var run = services.GetRequiredService<IRunJobStore>().Get(person.RunId, person.OwnerId, null) is not null;
+        var workflowRun = services.GetRequiredService<IRunJobStore>().Get(person.RunId, person.OwnerId, null) is not null;
+        var bundleRun = services.GetRequiredService<IBundleRunJobStore>().Get(person.BundleRunId) is not null;
+        var run = workflowRun || bundleRun;
         await using var scope = services.CreateAsyncScope();
         var conversations = await scope.ServiceProvider.GetRequiredService<IConversationStore>().ListAsync(person.OwnerId);
         return (run, conversations.Any(c => c.Id == person.ConversationId));

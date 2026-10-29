@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Presentation.Common.Compliance;
 using Xunit;
 using static Presentation.ExecutionApi.Tests.ComplianceHost;
@@ -33,6 +34,14 @@ public sealed class ComplianceEndToEndTests
         receipt.GetProperty("host").GetString().Should().Be(Name,
             "the receipt speaks for this host only, and must say so");
         Statuses(receipt).Should().NotContain(["Failed", "Skipped"]);
+        // The bundle runs this host keeps in memory are on its receipt (#990), and this person's one was removed.
+        receipt.GetProperty("stores").EnumerateArray()
+            .Should().ContainSingle(s => s.GetProperty("store").GetString() == "bundle runs")
+            .Which.GetProperty("status").GetString().Should().Be("Erased");
+        factory.Services.GetRequiredService<Application.AI.Common.Interfaces.Bundles.IBundleRunJobStore>()
+            .Get(subject.BundleRunId).Should().BeNull();
+        factory.Services.GetRequiredService<Application.AI.Common.Interfaces.Bundles.IBundleRunJobStore>()
+            .Get(bystander.BundleRunId).Should().NotBeNull("everyone else's bundle runs are kept");
         // The shipped host has no Azure AI Search endpoint: its two lines say so, not "searched, found nothing".
         receipt.GetProperty("stores").EnumerateArray()
             .Where(s => s.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
@@ -96,8 +105,9 @@ public sealed class ComplianceEndToEndTests
         JsonDocument.Parse(body).RootElement.GetProperty("manifest").EnumerateArray()
             .Where(m => m.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
             .Should().ContainSingle().Which.GetProperty("status").GetString().Should().Be("NotApplicable");
-        body.Should().Contain(subject.Message).And.Contain(subject.RunId);
-        body.Should().NotContain(bystander.Message).And.NotContain(bystander.RunId).And.NotContain(bystander.OwnerId);
+        body.Should().Contain(subject.Message).And.Contain(subject.RunId).And.Contain(subject.BundleMessage);
+        body.Should().NotContain(bystander.Message).And.NotContain(bystander.RunId).And.NotContain(bystander.OwnerId)
+            .And.NotContain(bystander.BundleMessage);
         (await StillHeldAsync(factory.Services, subject)).Should().Be((true, true), "a copy deletes nothing");
     }
 
