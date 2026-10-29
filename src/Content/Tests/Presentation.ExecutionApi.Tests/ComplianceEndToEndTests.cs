@@ -19,6 +19,9 @@ namespace Presentation.ExecutionApi.Tests;
 /// </remarks>
 public sealed class ComplianceEndToEndTests
 {
+    private const string InMemoryVectors = "document index (in-memory vectors)";
+    private const string SqliteFullText = "document index (SQLite full text)";
+
     [Fact]
     public async Task EraseMyData_ErasesTheCallersRunsAndConversationsHere_AndKeepsEveryoneElses()
     {
@@ -42,11 +45,15 @@ public sealed class ComplianceEndToEndTests
             .Get(subject.BundleRunId).Should().BeNull();
         factory.Services.GetRequiredService<Application.AI.Common.Interfaces.Bundles.IBundleRunJobStore>()
             .Get(bystander.BundleRunId).Should().NotBeNull("everyone else's bundle runs are kept");
-        // The shipped host has no Azure AI Search endpoint: its two lines say so, not "searched, found nothing".
-        receipt.GetProperty("stores").EnumerateArray()
-            .Where(s => s.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
-            .Select(s => s.GetProperty("status").GetString())
-            .Should().Equal("NotConfigured", "NotConfigured");
+        // The shipped host's document index is the in-process pair (#1012), and both were asked.
+        var indexLines = receipt.GetProperty("stores").EnumerateArray()
+            .Where(s => s.GetProperty("store").GetString()!.StartsWith("document index", StringComparison.Ordinal))
+            .ToDictionary(s => s.GetProperty("store").GetString()!, s => s.GetProperty("status").GetString());
+        indexLines.Should().Equal(new Dictionary<string, string?>
+        {
+            [InMemoryVectors] = "Erased",
+            [SqliteFullText] = "Erased",
+        });
         (await StillHeldAsync(factory.Services, subject)).Should().Be((false, false));
         (await StillHeldAsync(factory.Services, bystander)).Should().Be((true, true));
     }
@@ -103,8 +110,10 @@ public sealed class ComplianceEndToEndTests
             "the copy holds only what this host can find, and must say so");
         ManifestStatuses(body).Should().NotContain("Failed", "a store that failed would leave the copy short");
         JsonDocument.Parse(body).RootElement.GetProperty("manifest").EnumerateArray()
-            .Where(m => m.GetProperty("store").GetString()!.Contains("Azure AI Search", StringComparison.Ordinal))
-            .Should().ContainSingle().Which.GetProperty("status").GetString().Should().Be("NotApplicable");
+            .Where(m => m.GetProperty("store").GetString()!.StartsWith("document index", StringComparison.Ordinal))
+            .Select(m => (m.GetProperty("store").GetString(), m.GetProperty("status").GetString()))
+            .Should().BeEquivalentTo([(InMemoryVectors, "Included"), (SqliteFullText, "Included")],
+                "the shipped host's document index is the in-process pair, and both were read");
         body.Should().Contain(subject.Message).And.Contain(subject.RunId).And.Contain(subject.BundleMessage);
         body.Should().NotContain(bystander.Message).And.NotContain(bystander.RunId).And.NotContain(bystander.OwnerId)
             .And.NotContain(bystander.BundleMessage);

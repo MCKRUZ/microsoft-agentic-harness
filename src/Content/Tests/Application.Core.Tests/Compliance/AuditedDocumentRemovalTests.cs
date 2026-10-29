@@ -142,17 +142,21 @@ public sealed class AuditedDocumentRemovalTests
     }
 
     [Fact]
-    public async Task RemoveAsync_AChunkStoreNotConfigured_IsNamedInTheOutcomeRecord()
+    public async Task RemoveAsync_AStoreLineOnTheReceipt_IsNamedInTheOutcomeRecord()
     {
-        // #1011: a store this host never configured is a line of its own, so the record does not read "0 removed" for it.
+        // A store an orchestrator lists on the receipt is a line of its own in the record, as it is on erasure.
         const string Index = "document index (Azure AI Search vectors)";
         _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Receipt() with { Stores = [new StoreErasureOutcome(Index, StoreErasureStatus.NotConfigured, 0)] });
+            .ReturnsAsync(Receipt() with
+            {
+                Stores = [new StoreErasureOutcome(Index, StoreErasureStatus.Failed, 0, "unreachable")],
+                Completeness = ErasureCompleteness.Partial,
+            });
 
         await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
 
-        _records[1].Metadata!["store." + Index].Should().Be("NotConfigured:0");
-        _records[1].Metadata["completeness"].Should().Be("Full");
+        _records[1].Metadata!["store." + Index].Should().Be("Failed:0");
+        _records[1].Metadata["completeness"].Should().Be("Partial");
     }
 
     [Fact]

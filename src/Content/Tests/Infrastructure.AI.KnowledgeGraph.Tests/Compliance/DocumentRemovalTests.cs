@@ -1,12 +1,9 @@
-using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Services;
-using Azure.Search.Documents;
 using Application.Common.Interfaces.Common;
 using Domain.AI.KnowledgeGraph.Scoping;
-using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Infrastructure.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,7 +15,6 @@ using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.Feedback;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Infrastructure.AI.RAG.GraphRag;
-using Infrastructure.AI.RAG.Retrieval;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -236,85 +232,6 @@ public sealed class DocumentRemovalTests : IDisposable
         _audit.Verify(a => a.EmitAsync(
             It.Is<MemoryAuditEvent>(e => e.Action == MemoryAuditAction.DocumentRemoval), It.IsAny<CancellationToken>()),
             Times.Once);
-    }
-
-    [Fact]
-    public async Task AnAzureIndexWithNoEndpoint_IsNamedAsNotConfigured_NeverAsked_AndLeavesTheReceiptFull()
-    {
-        // #1011: the shipped default index is Azure AI Search. With no endpoint it has never held anything, and a receipt
-        // saying "0 removed" for it would read as a search that found nothing.
-        await _graph.AddNodesAsync([Node("only-a", Chunk(Removed, 0))]);
-        var client = new Mock<SearchClient>(MockBehavior.Strict);
-        var vectors = new AzureAISearchVectorStore(
-            client.Object, indexConfigured: false, Mock.Of<IEmbeddingService>(), NullLogger<AzureAISearchVectorStore>.Instance);
-        var bm25 = new AzureAISearchBm25Store(client.Object, indexConfigured: false, NullLogger<AzureAISearchBm25Store>.Instance);
-        var sut = new DefaultErasureOrchestrator(
-            _graph, _feedback, vectors, _audit.Object, TimeProvider.System,
-            NullLogger<DefaultErasureOrchestrator>.Instance, bm25, crossSessionMemory: null);
-
-        var receipt = await sut.RemoveDocumentAsync(Removed);
-
-        receipt.Stores.Should().BeEquivalentTo(
-        [
-            new StoreErasureOutcome(vectors.ErasureStoreName, StoreErasureStatus.NotConfigured, 0,
-                IConfigurablePersonalDataStore.NotConfiguredReason),
-            new StoreErasureOutcome(bm25.ErasureStoreName, StoreErasureStatus.NotConfigured, 0,
-                IConfigurablePersonalDataStore.NotConfiguredReason),
-        ]);
-        receipt.Completeness.Should().Be(ErasureCompleteness.Full, "a store with no backend has held nothing to keep");
-        receipt.NodesDeleted.Should().Be(1);
-        receipt.UnmatchedDocumentIds.Should().BeEmpty();
-        client.VerifyNoOtherCalls();
-    }
-
-    [Fact]
-    public async Task OwnerErasure_AnAzureIndexWithNoEndpoint_IsNeverAsked_AndLeavesNoDocumentUnmatched()
-    {
-        // The owner path's chunk purge had the same defect (#1011): every document the person's nodes cite came back
-        // "unmatched" from an index that has never held anything.
-        await _graph.AddNodesAsync([Node("owned", Chunk(Removed, 0)) with { OwnerId = "user-1" }]);
-        var client = new Mock<SearchClient>(MockBehavior.Strict);
-        var sut = new DefaultErasureOrchestrator(
-            _graph, _feedback,
-            new AzureAISearchVectorStore(client.Object, indexConfigured: false, Mock.Of<IEmbeddingService>(),
-                NullLogger<AzureAISearchVectorStore>.Instance),
-            _audit.Object, TimeProvider.System, NullLogger<DefaultErasureOrchestrator>.Instance,
-            new AzureAISearchBm25Store(client.Object, indexConfigured: false, NullLogger<AzureAISearchBm25Store>.Instance),
-            crossSessionMemory: null);
-
-        var receipt = await sut.EraseByOwnerAsync("user-1");
-
-        receipt.NodesDeleted.Should().Be(1);
-        receipt.UnmatchedDocumentIds.Should().BeEmpty("a store that was not asked cannot have failed to find the document");
-        receipt.Stores.Should().HaveCount(2).And.OnlyContain(s => s.Status == StoreErasureStatus.NotConfigured,
-            "a caller of the graph erasure itself is told the indexes were not asked, as on a document removal");
-        client.VerifyNoOtherCalls();
-    }
-
-    [Fact]
-    public async Task AnUnconfiguredChunkStore_IsNeverCalled_OnEitherPath()
-    {
-        // The skip is the orchestrator's, not the Azure store's own guard: a store that would reach a placeholder backend
-        // if asked must not be asked at all.
-        await _graph.AddNodesAsync([Node("owned", Chunk(Removed, 0)) with { OwnerId = "user-1" }]);
-        var vectors = new Mock<IVectorStore>(MockBehavior.Strict);
-        vectors.As<IConfigurablePersonalDataStore>().SetupGet(s => s.IsConfigured).Returns(false);
-        var sut = new DefaultErasureOrchestrator(
-            _graph, _feedback, vectors.Object, _audit.Object, TimeProvider.System,
-            NullLogger<DefaultErasureOrchestrator>.Instance, _bm25.Object, crossSessionMemory: null);
-
-        await sut.EraseByOwnerAsync("user-1");
-        await sut.RemoveDocumentAsync(Removed);
-
-        vectors.Verify(v => v.DeleteFromAllCollectionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task ConfiguredChunkStores_AreNotListedAsStoreLines()
-    {
-        var receipt = await _sut.RemoveDocumentAsync(Removed);
-
-        receipt.Stores.Should().BeEmpty("their counts are the receipt's chunk counts; only a store never asked is a line");
     }
 
     private static string Chunk(string documentId, int index) => $"{documentId}_chunk_{index}";

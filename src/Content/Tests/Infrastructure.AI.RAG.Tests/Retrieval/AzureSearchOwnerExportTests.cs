@@ -107,10 +107,10 @@ public sealed class AzureSearchOwnerExportTests
     }
 
     private AzureAISearchVectorStore VectorStore() =>
-        new(_client.Object, indexConfigured: true, Mock.Of<IEmbeddingService>(), NullLogger<AzureAISearchVectorStore>.Instance);
+        new(_client.Object, Mock.Of<IEmbeddingService>(), NullLogger<AzureAISearchVectorStore>.Instance);
 
     private AzureAISearchBm25Store Bm25Store() =>
-        new(_client.Object, indexConfigured: true, NullLogger<AzureAISearchBm25Store>.Instance);
+        new(_client.Object, NullLogger<AzureAISearchBm25Store>.Instance);
 
     /// <summary>
     /// An index holding <paramref name="ids"/> for the owner. Each search returns, in id order, up to a page of those after

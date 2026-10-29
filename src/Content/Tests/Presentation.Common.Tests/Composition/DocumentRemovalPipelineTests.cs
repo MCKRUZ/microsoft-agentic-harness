@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.RemoveDocument;
 using Domain.Common;
 using Domain.AI.KnowledgeGraph.Models;
-using Domain.Common.Compliance;
+using Domain.AI.RAG.Models;
 using FluentAssertions;
+using Infrastructure.AI.RAG.Retrieval;
 using MediatR;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,33 +75,57 @@ public sealed class DocumentRemovalPipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task TheShippedAzureIndexWithNoEndpoint_IsNamedAsNotConfigured_InTheReceiptAndTheRecord()
+    public async Task TheShippedDefaultIndex_IsAskedAndReadsFull_WhenTheDocumentIsRemoved()
     {
-        // #1011, against the stores the host actually resolves: a decorator over either one that hid whether it was
-        // configured would put "0 removed" back on the receipt, which a test of the bare store cannot see.
-        await using var provider = BuildProvider(vectorStore: "azure_ai_search");
+        // #1012: a host that never names a document index runs on the in-process stores, which are really asked. Before,
+        // the default was an Azure AI Search index with no endpoint, listed as not configured and never asked.
+        await using var provider = BuildProvider(vectorStore: null);
         await using var scope = provider.CreateAsyncScope();
+        var vectors = scope.ServiceProvider.GetRequiredService<IVectorStore>();
+        var bm25 = scope.ServiceProvider.GetRequiredService<IBm25Store>();
+        vectors.Should().BeOfType<FaissVectorStore>();
+        bm25.Should().BeOfType<SqliteFts5Store>();
+
+        // Unique per run: the full-text store is one in-memory database for the whole process.
+        var documentId = Guid.NewGuid().ToString("N")[..16].ToUpperInvariant();
+        IReadOnlyList<DocumentChunk> chunks = [Chunk(documentId)];
+        await vectors.IndexAsync(chunks);
+        await bm25.IndexAsync(chunks);
 
         var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
-            new RemoveDocumentCommand { DocumentId = "0123456789ABCDEF", OperatorId = Operator });
+            new RemoveDocumentCommand { DocumentId = documentId, OperatorId = Operator });
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
-        result.Value!.Completeness.Should().Be(ErasureCompleteness.Full, "an index with no backend has held nothing");
-        result.Value.Stores.Should().HaveCount(2).And.OnlyContain(s =>
-            s.Status == StoreErasureStatus.NotConfigured && s.Store.StartsWith("document index (Azure AI Search", StringComparison.Ordinal));
-        _logs.Messages.Should().ContainSingle(m => m.Contains("phase=outcome") && m.Contains("NotConfigured:0"),
-            "the audit record names the store too, so it does not read as a search that found nothing");
+        result.Value!.Completeness.Should().Be(ErasureCompleteness.Full);
+        result.Value.VectorEmbeddingsDeleted.Should().Be(1, "the vector store was asked and removed the chunk");
+        result.Value.Bm25DocumentsDeleted.Should().Be(1, "the full-text store was asked and removed the chunk");
+        result.Value.UnmatchedDocumentIds.Should().BeEmpty();
     }
 
-    private ServiceProvider BuildProvider(string vectorStore = "faiss") => CompositionRootTestHost.BuildProvider(
-        new Dictionary<string, string?>
+    private static DocumentChunk Chunk(string documentId) => new()
+    {
+        Id = documentId + "-0",
+        DocumentId = documentId,
+        SectionPath = "Section",
+        Content = "Quarterly figures for the removal test.",
+        Tokens = 8,
+        Embedding = [0.1f, 0.2f, 0.3f],
+        Metadata = new ChunkMetadata { SourceUri = new Uri($"file:///docs/{documentId}.md"), CreatedAt = DateTimeOffset.UtcNow },
+    };
+
+    private ServiceProvider BuildProvider(string? vectorStore = "faiss")
+    {
+        var settings = new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
             ["AppConfig:AI:Schedules:DatabasePath"] = Path.Combine(_workingDir, "schedules.db"),
             ["AppConfig:AI:Planner:DatabasePath"] = Path.Combine(_workingDir, "planner.db"),
-            ["AppConfig:AI:Rag:VectorStore:Provider"] = vectorStore,
-        },
-        (services, _) => services.AddSingleton<ILoggerProvider>(_logs));
+        };
+        if (vectorStore is not null)
+            settings["AppConfig:AI:Rag:VectorStore:Provider"] = vectorStore;
+
+        return CompositionRootTestHost.BuildProvider(settings, (services, _) => services.AddSingleton<ILoggerProvider>(_logs));
+    }
 
     private sealed class CapturingLoggerProvider : ILoggerProvider
     {

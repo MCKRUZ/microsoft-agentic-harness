@@ -56,7 +56,6 @@ public sealed class AzureAISearchStoreIndexingFailureTests
     {
         var store = new AzureAISearchVectorStore(
             ClientReturning(BatchResponse(true, false)).Object,
-            indexConfigured: true,
             Mock.Of<IEmbeddingService>(),
             NullLogger<AzureAISearchVectorStore>.Instance);
 
@@ -71,7 +70,6 @@ public sealed class AzureAISearchStoreIndexingFailureTests
     {
         var store = new AzureAISearchVectorStore(
             ClientReturning(BatchResponse(true, true)).Object,
-            indexConfigured: true,
             Mock.Of<IEmbeddingService>(),
             NullLogger<AzureAISearchVectorStore>.Instance);
 
@@ -83,7 +81,6 @@ public sealed class AzureAISearchStoreIndexingFailureTests
     {
         var store = new AzureAISearchBm25Store(
             ClientReturning(BatchResponse(false, true, true)).Object,
-            indexConfigured: true,
             NullLogger<AzureAISearchBm25Store>.Instance);
 
         var act = () => store.IndexAsync(Chunks(3));
@@ -97,7 +94,6 @@ public sealed class AzureAISearchStoreIndexingFailureTests
     {
         var store = new AzureAISearchBm25Store(
             ClientReturning(BatchResponse(true)).Object,
-            indexConfigured: true,
             NullLogger<AzureAISearchBm25Store>.Instance);
 
         await store.Invoking(s => s.IndexAsync(Chunks(1))).Should().NotThrowAsync();

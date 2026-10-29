@@ -692,11 +692,7 @@
                             An edge records only one source, so a relationship another document also asserts goes too, until
                             that document is loaded again. A document id is derived from where the document came from, so
                             this reaches every tenant and collection it was loaded into; it runs system-scoped, a store that
-                            cannot delete the chunks makes the result Partial, and every removal is audited. A chunk store
-                            the host has not configured, such as an Azure AI Search index with no endpoint, is not asked: the
-                            receipt's <code>stores</code> and the audit record name it as <code>NotConfigured</code> rather
-                            than a count of 0 that reads like a search that found nothing, and the result stays
-                            <code>Full</code> (#1011).
+                            cannot delete the chunks makes the result Partial, and every removal is audited.
                             Operators run it through <code>POST /api/compliance/document-removals</code> with the
                             document id in the body. It requires its own role,
                             <code>Harness.Compliance.RemoveDocument</code> (the erasure role does not grant it, nor it
@@ -1084,11 +1080,13 @@
                         only. Hosts never call one another. Most stores live inside their process: the workflow and
                         evaluation run records in memory, and, by default, the conversation database, journal and plan
                         database as files beside each host's own binaries. The document indexes are wherever the host's
-                        configuration puts them: FAISS and SQLite files, or an Azure AI Search index. An Azure AI Search
-                        index with no endpoint configured, the default for a host that sets nothing, has never held
-                        anything, so its two receipt lines read <code>NotConfigured</code> and its export line
-                        <code>NotApplicable</code>, without either store being asked. Before #1003 they failed against the placeholder endpoint and held every
-                        such host's receipts <code>Partial</code>.
+                        configuration puts them: the in-process FAISS index and SQLite full-text table, the default for
+                        a host that sets nothing, or an Azure AI Search index. Choosing Azure AI Search
+                        (<code>AppConfig:AI:Rag:VectorStore:Provider</code> = <code>azure_ai_search</code>) without
+                        its <code>Endpoint</code>, or setting an <code>Endpoint</code> without choosing it, stops the host
+                        at startup (#1012). Either half alone would erase the person from a store that holds nothing
+                        while their chunks stayed in the real index, and the receipt would read <code>Full</code>; an
+                        endpoint lost to a failed Key Vault reference or an environment override is the usual cause.
                         A request sent to AgentHub therefore leaves the Execution API's copy of the same person's data
                         alone, and the reverse. So every receipt and every copy names the host it covers in a
                         <code>host</code> field, the host's application name such as <code>Presentation.AgentHub</code>
@@ -1281,10 +1279,6 @@
                                     person that documents others loaded, and what was drawn from them, may mention them and
                                     are kept as the organisation's business content until it removes them; with the document
                                     age limit running, it adds how long.
-                                    <code>NotConfigured</code> is a store this host is wired with but not configured to use,
-                                    such as an Azure AI Search index with no endpoint: it has never held anything, so it is not
-                                    asked, and it does not make the receipt <code>Partial</code> (#1003). The copy lists the same
-                                    store as <code>NotApplicable</code>, with the same reason.
                                 </li>
                                 <li>
                                     <code>Completeness</code> and <code>CompletenessReason</code>. <code>Full</code> means

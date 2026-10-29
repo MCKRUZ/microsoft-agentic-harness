@@ -8,14 +8,29 @@ namespace Domain.Common.Config.AI.RAG;
 public class VectorStoreConfig
 {
     /// <summary>
-    /// Gets or sets the vector store provider name.
-    /// Options: <c>"azure_ai_search"</c>, <c>"qdrant"</c>, <c>"chroma"</c>.
+    /// Gets or sets the vector store provider name: the key the default <c>IVectorStore</c> and <c>IBm25Store</c> are
+    /// resolved by.
     /// </summary>
-    public string Provider { get; set; } = "azure_ai_search";
+    /// <remarks>
+    /// <para>
+    /// The shipped keys are <c>"faiss"</c> (an in-process vector index paired with an in-memory SQLite FTS5 table, both
+    /// lost at restart) and <c>"azure_ai_search"</c> (one Azure AI Search index backing both stores). A consumer may
+    /// register further keys.
+    /// </para>
+    /// <para>
+    /// Defaults to <c>"faiss"</c>, which needs no endpoint, so a host that omits this section runs on a store it actually
+    /// has (#1012). Choosing <c>"azure_ai_search"</c> requires <see cref="Endpoint"/>, and an <see cref="Endpoint"/>
+    /// requires <c>"azure_ai_search"</c>: <c>RagConfigValidator</c> refuses either half alone at startup. Otherwise a
+    /// host that lost its endpoint, or set one without choosing the provider, would erase a person from a store that holds
+    /// nothing while their chunks stayed in the real index, and certify the erasure complete.
+    /// </para>
+    /// </remarks>
+    public string Provider { get; set; } = "faiss";
 
     /// <summary>
     /// Gets or sets the vector store endpoint URL.
-    /// For Azure AI Search, this is the service URL (e.g., <c>https://myservice.search.windows.net</c>).
+    /// For Azure AI Search, this is the service URL (e.g., <c>https://myservice.search.windows.net</c>). Required when,
+    /// and only when, <see cref="Provider"/> is <c>"azure_ai_search"</c>.
     /// </summary>
     public string? Endpoint { get; set; }
 

@@ -30,6 +30,15 @@ namespace Application.Core.Validation;
 ///     shared graph with no collection concept, so indexing scoped ingests into it would
 ///     make every tenant's chunks readable through the GraphRag strategy and the Phase-D
 ///     <c>"graph"</c> source. The validator makes the unsafe combination unrepresentable.</item>
+///   <item>The Azure AI Search document index and its endpoint come together (#1012): choosing
+///     <c>"azure_ai_search"</c> as <see cref="VectorStoreConfig.Provider"/> requires
+///     <see cref="VectorStoreConfig.Endpoint"/>, and an endpoint requires that provider. Either half
+///     alone means the host searches, ingests into and erases from a store other than the index
+///     that holds the chunks: with the endpoint lost (a failed Key Vault reference, an environment
+///     override) the Azure stores point at a placeholder; with the endpoint set but the provider
+///     left at the FAISS default, the in-process stores are used. Either way an erasure would
+///     clear a store that holds nothing and report the person erased while their chunks stay in
+///     the real index. Refusing to start is the only outcome that cannot certify that.</item>
 /// </list>
 /// All class defaults satisfy every rule, so hosts that omit the section keep booting
 /// unchanged.
@@ -49,9 +58,39 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
     private static readonly HashSet<string> RegisteredBackendProviders =
         new(StringComparer.OrdinalIgnoreCase) { "kuzu" };
 
+    /// <summary>
+    /// The <see cref="VectorStoreConfig.Provider"/> key that selects the Azure AI Search stores, the only shipped provider
+    /// that reads <see cref="VectorStoreConfig.Endpoint"/>.
+    /// </summary>
+    private const string AzureAISearchProvider = "azure_ai_search";
+
     /// <summary>Initializes a new instance of the <see cref="RagConfigValidator"/> class.</summary>
     public RagConfigValidator()
     {
+        // Compared ignoring case so a near-miss spelling is refused too; the DI layer resolves the exact key only.
+        When(x => string.Equals(x.VectorStore.Provider, AzureAISearchProvider, StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.VectorStore.Endpoint)
+                .NotEmpty()
+                .WithMessage(
+                    "AppConfig:AI:Rag:VectorStore:Provider is 'azure_ai_search' but AppConfig:AI:Rag:VectorStore:Endpoint " +
+                    "is blank. Without the endpoint the host cannot reach the index that holds the document chunks, so " +
+                    "erasing a person would report them erased while their chunks stay in it. Set the endpoint (check that " +
+                    "a Key Vault reference or environment override did not resolve it to blank), or set the provider to " +
+                    "'faiss' if this host does not use an Azure AI Search index.");
+        });
+
+        When(x => !string.IsNullOrWhiteSpace(x.VectorStore.Endpoint), () =>
+        {
+            RuleFor(x => x.VectorStore.Provider)
+                .Equal(AzureAISearchProvider, StringComparer.Ordinal)
+                .WithMessage(x =>
+                    $"AppConfig:AI:Rag:VectorStore:Endpoint is set but AppConfig:AI:Rag:VectorStore:Provider is " +
+                    $"'{x.VectorStore.Provider}', so the host would use that store and never the index at the endpoint: " +
+                    "erasing a person would leave their chunks in it. Set the provider to 'azure_ai_search' to use the " +
+                    "index, or clear the endpoint once that index no longer holds anyone's data.");
+        });
+
         When(x => x.GraphDatabase.Enabled, () =>
         {
             RuleFor(x => x.GraphDatabase.Provider)

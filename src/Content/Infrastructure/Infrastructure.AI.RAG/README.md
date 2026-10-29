@@ -125,6 +125,8 @@ Both searches run concurrently via `Task.WhenAll`. If one fails, the other provi
 | Azure AI Search | `"azure_ai_search"` | Azure Cognitive Search vector index | Production cloud deployments |
 | FAISS | `"faiss"` | Facebook AI Similarity Search (local) | Development, testing, edge deployments |
 
+`"faiss"` is the default, so a host that omits `AppConfig:AI:Rag:VectorStore` runs on in-process stores it actually has. `"azure_ai_search"` and `Endpoint` must be set together: `RagConfigValidator` stops the host at startup when either is set without the other (#1012). Either half alone would leave the chunks in an index that erasure never reaches while the receipt read `Full`.
+
 #### BM25 Stores (2 backends, keyed DI)
 
 | Backend | Key | Technology | Best For |
@@ -337,8 +339,8 @@ Infrastructure.AI.RAG/
           "EnableHybrid": true                     // false = dense-only retrieval
         },
         "VectorStore": {
-          "Provider": "azure_ai_search",           // "azure_ai_search" | "faiss"
-          "Endpoint": "https://my-search.search.windows.net",
+          "Provider": "azure_ai_search",           // "faiss" (default) | "azure_ai_search"
+          "Endpoint": "https://my-search.search.windows.net", // required with, and only with, "azure_ai_search"
           "ApiKey": "...",
           "IndexName": "rag-index"
         },

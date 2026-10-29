@@ -114,8 +114,7 @@ public sealed class OperatorErasureEndToEndTests : IDisposable
             ["AppConfig:AI:ContextManagement:ToolResultStorage:StoragePath"] = Path.Combine(_workingDir, "spills"),
             ["AppConfig:AI:ContextManagement:ToolResultStorage:PerResultCharLimit"] = "100",
             ["AppConfig:AI:Rag:GraphRag:MultiTenantIsolation"] = "true",
-            // As AgentHub, the host that exposes erasure, ships it. The class default is an Azure AI Search index with
-            // no endpoint, which cannot be reached and so cannot be erased.
+            // As AgentHub, the host that exposes erasure, ships it (also the class default since #1012).
             ["AppConfig:AI:Rag:VectorStore:Provider"] = "faiss",
             ["AppConfig:AI:Erasure:SubjectReferenceKey"] =
                 Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray()),

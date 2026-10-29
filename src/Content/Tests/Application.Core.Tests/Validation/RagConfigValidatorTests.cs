@@ -8,8 +8,8 @@ namespace Application.Core.Tests.Validation;
 /// <summary>
 /// Verifies the cross-section coherence rules of <see cref="RagConfigValidator"/>: an enabled
 /// graph database must name a registered backend provider, and corpus-graph indexing on ingest
-/// must have a backend to write into. Class defaults must always pass so every host keeps
-/// booting unchanged.
+/// must have a backend to write into, and the Azure AI Search provider and its endpoint come
+/// together (#1012). Class defaults must always pass so every host keeps booting unchanged.
 /// </summary>
 public sealed class RagConfigValidatorTests
 {
@@ -111,9 +111,8 @@ public sealed class RagConfigValidatorTests
     [Fact]
     public void Validate_ScopedCollectionsWithAzureSearchProvider_Fails()
     {
-        // The class default provider IS azure_ai_search, so enabling the flag alone must fail:
-        // the Azure stores ignore collection names and every tenant would silently share one index.
-        var config = new RagConfig();
+        // The Azure stores ignore collection names, so every tenant would silently share one index.
+        var config = AzureSearchConfig();
         config.ScopedCollections.Enabled = true;
 
         var result = _sut.Validate(config);
@@ -153,7 +152,7 @@ public sealed class RagConfigValidatorTests
     [Fact]
     public void Validate_ScopedCollectionsDisabled_AzureProviderAndAgenticRetrievalUnconstrained()
     {
-        var config = new RagConfig();
+        var config = AzureSearchConfig();
         config.AgenticRetrieval.Enabled = true;
 
         var result = _sut.Validate(config);
@@ -191,5 +190,82 @@ public sealed class RagConfigValidatorTests
         var result = _sut.Validate(config);
 
         result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Defaults_UseTheInProcessStore_SoAHostThatOmitsTheSectionNeedsNoEndpoint()
+    {
+        // A host that never mentions the vector store must run on one it actually has (#1012).
+        new RagConfig().VectorStore.Provider.Should().Be("faiss");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_AzureSearchWithoutAnEndpoint_Fails(string? endpoint)
+    {
+        // A lost endpoint (a failed Key Vault reference, an environment override) must stop the host: running on, every
+        // erasure would clear a placeholder and read complete while the person's chunks stay in the real index.
+        var config = AzureSearchConfig();
+        config.VectorStore.Endpoint = endpoint;
+
+        var result = _sut.Validate(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().ContainSingle().Which.PropertyName.Should().Be("VectorStore.Endpoint");
+    }
+
+    [Fact]
+    public void Validate_AzureSearchSpelledDifferently_WithoutAnEndpoint_StillFails()
+    {
+        var config = AzureSearchConfig();
+        config.VectorStore.Provider = "Azure_AI_Search";
+        config.VectorStore.Endpoint = null;
+
+        _sut.Validate(config).Errors.Should().Contain(e => e.PropertyName == "VectorStore.Endpoint");
+    }
+
+    [Fact]
+    public void Validate_AzureSearchWithAnEndpoint_Passes()
+    {
+        _sut.Validate(AzureSearchConfig()).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("faiss")]
+    [InlineData("Azure_AI_Search")]
+    [InlineData("a_consumer_store")]
+    public void Validate_AnEndpointWithAnotherProvider_Fails(string provider)
+    {
+        // An endpoint left with the FAISS default (or any other key) means the index at it is never searched or erased:
+        // the in-process stores would answer for it and an erasure would read complete.
+        var config = AzureSearchConfig();
+        config.VectorStore.Provider = provider;
+
+        var result = _sut.Validate(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "VectorStore.Provider");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Validate_AnotherProviderWithoutAnEndpoint_Passes(string? endpoint)
+    {
+        var config = new RagConfig();
+        config.VectorStore.Provider = "a_consumer_store";
+        config.VectorStore.Endpoint = endpoint;
+
+        _sut.Validate(config).IsValid.Should().BeTrue("only the Azure AI Search stores read the endpoint");
+    }
+
+    private static RagConfig AzureSearchConfig()
+    {
+        var config = new RagConfig();
+        config.VectorStore.Provider = "azure_ai_search";
+        config.VectorStore.Endpoint = "https://svc.search.windows.net";
+        return config;
     }
 }
