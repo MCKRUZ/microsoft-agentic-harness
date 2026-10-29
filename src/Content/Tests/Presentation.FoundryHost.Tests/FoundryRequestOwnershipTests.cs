@@ -266,7 +266,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
             RepoRoot.Combine("src", "Content", "Presentation", "Presentation.FoundryHost", "Program.cs")));
 
         code.Should().MatchRegex(
-            @"var\s+hosted\s*=\s*FoundryEnvironment\.IsHosted;\s*app\.App\.Use\(\(context,\s*next\)\s*=>\s*FoundryRequestScope\.RunAsync\(provider,\s*context,\s*hosted,\s*\(\)\s*=>\s*next\(context\)\)\)");
+            @"var\s+hosted\s*=\s*FoundryEnvironment\.IsHosted\s*\|\|\s*!string\.IsNullOrEmpty\(app\.App\.Configuration\[""""\]\);\s*app\.App\.Use\(\(context,\s*next\)\s*=>\s*FoundryRequestScope\.RunAsync\(provider,\s*context,\s*hosted,\s*\(\)\s*=>\s*next\(context\)\)\)");
     }
 
     [Fact]
@@ -280,5 +280,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
 
         code.Should().MatchRegex(@"AddFoundryResponses\(agent,\s*new\s+FileSystemAgentSessionStore\(sessionStoreRoot\)\)");
         code.Should().NotContain("ResilientBackground").And.NotContain("SteerableConversations");
+        // The hosted refusal covers the protocol routes because they are mapped under /responses with no prefix.
+        code.Should().MatchRegex(@"RegisterProtocol\("""",\s*endpoints\s*=>\s*endpoints\.MapFoundryResponses\(\)\)");
     }
 }

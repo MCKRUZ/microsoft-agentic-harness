@@ -202,7 +202,10 @@ public static class Program
             // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn. The same scope also gives
             // each request its own tool-call trace claims (#541), and runs it as the caller Foundry verified, so what it
             // writes to a shared store carries that caller as owner (#1008); see FoundryRequestScope.
-            var hosted = FoundryEnvironment.IsHosted;
+            // Hosted when either source says so, the environment the SDK reads or the configuration the hosting
+            // package reads: a disagreement then refuses unnamed callers instead of running them unscoped.
+            var hosted = FoundryEnvironment.IsHosted
+                || !string.IsNullOrEmpty(app.App.Configuration["FOUNDRY_HOSTING_ENVIRONMENT"]);
             app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, context, hosted, () => next(context)));
 
             await app.RunAsync().ConfigureAwait(false);
