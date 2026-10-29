@@ -1358,7 +1358,12 @@
                             still cannot see a store whose records carry no owner, such as one keyed only by a run or
                             conversation id. Those are declared by hand. Two types it flags are listed as exceptions, each
                             with its reason: a per-request buffer of graph nodes, and the AgentHub's record of open
-                            connections, which is dropped when a connection closes or has been idle for five minutes.
+                            connections, which is dropped when a connection closes or has been idle for the configured
+                            time (five minutes by default). One type it cannot see is listed by hand: the workflow
+                            progress feed, keyed by run id, which buffers events only for an open watcher and never a
+                            step's output (#1005). Both exceptions whose reason rests on what their records carry are
+                            pinned to every field of those records and to every caller that fills them, so a field added
+                            later fails the build until someone re-reads it.
                         </li>
                         <li>
                             Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,

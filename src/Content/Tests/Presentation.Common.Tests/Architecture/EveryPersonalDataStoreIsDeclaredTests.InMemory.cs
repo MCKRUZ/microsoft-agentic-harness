@@ -29,7 +29,9 @@ namespace Presentation.Common.Tests.Architecture;
 /// </para>
 /// <para>
 /// <strong>Blind spots, stated:</strong> a collection keyed only by a conversation, run or job id, with no owner on its
-/// records (the evaluation submissions, the token budgets), is not seen; such a store is declared by hand. Nor is a
+/// records (the evaluation submissions, the token budgets, the run progress broker), is not seen; such a store is declared
+/// by hand, or, when it holds nothing beyond its own use, listed in
+/// <see cref="HoldsOwnerRecordsWithoutStoringThem.UnseenByTheHolderRule"/> with a field-by-field review (#1005). Nor is a
 /// collection of strings that happen to be owner ids, data held as <c>object</c> (a memory cache), or an owner field under
 /// another name. Widening the names would flag tenant- and caller-scoped governance state that holds no personal data;
 /// measure the result before doing so.
