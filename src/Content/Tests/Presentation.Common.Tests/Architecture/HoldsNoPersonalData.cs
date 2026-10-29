@@ -223,6 +223,15 @@ internal static class HoldsNoPersonalData
             "Null object used when no observability database is configured: discards every write and keeps nothing.",
             "shares Application.AI.Common.Interfaces.IObservabilityStore with store Infrastructure.Observability.Persistence.PostgresObservabilityStore"),
 
+        // Release adapters (#991): the evaluation submission store also listens for reclaimed runs, so the scan pairs it
+        // with the other listeners, which hold nothing and only forward a run's release to the holder they wrap.
+        ["Infrastructure.AI/Infrastructure.AI.Runs.EvalSubmissionReclaimListener"] = new(
+            "Forwards a reclaimed run's id to the evaluation submission store so it releases that run's submission; holds nothing itself.",
+            "shares Application.AI.Common.Interfaces.Runs.IRunReclaimListener with store Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"),
+        ["Infrastructure.AI/Infrastructure.AI.Runs.RunProgressReclaimListener"] = new(
+            "Forwards a reclaimed run's id to the run progress broker so it forgets that run's progress; holds nothing itself.",
+            "shares Application.AI.Common.Interfaces.Runs.IRunReclaimListener with store Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"),
+
         // Scratch space removed when its run ends.
         ["Infrastructure.AI/Infrastructure.AI.Sandbox.DockerSandboxExecutor"] = new(
             "Sandbox scratch space: writes input.json into a per-run workspace that is deleted with the container when the run ends.",

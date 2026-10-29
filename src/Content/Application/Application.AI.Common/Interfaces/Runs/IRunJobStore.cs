@@ -61,6 +61,24 @@ public interface IRunJobStore : IKeptRunSource
     RunRecord? Get(string jobId, string ownerId, string? tenantId);
 
     /// <summary>
+    /// Lists every run <paramref name="ownerId"/> owns, finished or not, in every tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists for the person's copy of their data (#991): a store that keeps run-scoped state under a run's id, such as an
+    /// evaluation's submission and report, records no owner, so the person's run ids are the only way to theirs.
+    /// </para>
+    /// <para>
+    /// Takes no tenant and no caller, because the copy is about the person, not the tenant a run was started under. The
+    /// owner is matched as every read here matches it, through the canonical form. Nothing reached through a request may
+    /// use it to find runs: a caller is entitled only to the runs <see cref="Get"/> returns for its own identity.
+    /// </para>
+    /// </remarks>
+    /// <param name="ownerId">The person, in either the issued or the canonical form.</param>
+    /// <returns>Each of the person's run records as the store holds it.</returns>
+    IReadOnlyList<RunRecord> GetRunsOwnedBy(string ownerId);
+
+    /// <summary>
     /// Atomically claims a queued run for execution, returning the updated record to the winner and
     /// <see langword="null"/> to everyone else.
     /// </summary>

@@ -18,6 +18,13 @@ public sealed partial class InMemoryRunJobStore : IPersonalDataEraser
     /// <inheritdoc />
     public ErasureReach ErasureReach => ErasureReach.Owner;
 
+    /// <inheritdoc />
+    public string KeptRunsStoreName => "workflow and evaluation runs still held";
+
+    /// <inheritdoc />
+    public string KeptRunsReason =>
+        "a run record of the person's was kept: a workflow or evaluation run that was still executing when erasure stopped waiting for it, one that ended or started while erasure ran, or one whose run-scoped state could not be released; run erasure again once the person's runs have ended";
+
     /// <inheritdoc/>
     /// <remarks>
     /// <para>
