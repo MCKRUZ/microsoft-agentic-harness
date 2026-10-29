@@ -46,8 +46,9 @@ public static class TestStateRoot
     /// <returns>The created root directory, for a caller that wants to place state of its own in it.</returns>
     /// <remarks>
     /// Setting a key a given host does not read is harmless, so every caller redirects the same
-    /// three rather than each maintaining its own list of what it happens to persist today. A host
-    /// that starts persisting something new is then already covered.
+    /// set rather than each maintaining its own list of what it happens to persist today. A host
+    /// that starts persisting to one of these is then already covered; a new setting still has to be
+    /// added here.
     /// </remarks>
     public static string Redirect(string prefix)
     {
@@ -70,6 +71,16 @@ public static class TestStateRoot
             "AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath", Path.Combine(root, "documents.db"));
         Environment.SetEnvironmentVariable(
             "AppConfig__AI__Erasure__JournalDatabasePath", Path.Combine(root, "erasure-journal.db"));
+
+        // The compliance trail and its pending folder are kept for good by design, so left in the build output they would
+        // grow with every run, and every host's replay service would work on them (#995). The verification checkpoints
+        // and the pseudonym key are written there too, once each, and never removed.
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Erasure__AuditStoragePath", Path.Combine(root, "erasure-audit"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Audit__ReceiptPath", Path.Combine(root, "audit-verify"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Audit__PseudonymKeyPath", Path.Combine(root, "keys", "audit-pseudonym.key"));
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => TryDelete(root);
 

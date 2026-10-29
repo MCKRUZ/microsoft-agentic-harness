@@ -30,6 +30,11 @@ namespace Application.Core.Compliance;
 /// their request.
 /// </para>
 /// <para>
+/// <strong>A failure need not be a loss.</strong> The shipped trail holds a record it cannot append and writes it in later
+/// (#995); its failure says so, so the caller's log line names where the record waits. A replacement should do the same
+/// or say in its failure that the record is gone.
+/// </para>
+/// <para>
 /// <strong>Replacing it.</strong> The shipped trail is also registered as an <c>IVerifiableAuditChain</c>, so scheduled
 /// verification and the compliance report walk it. A replacement must implement that interface too, or provide its own
 /// verification and change that registration.

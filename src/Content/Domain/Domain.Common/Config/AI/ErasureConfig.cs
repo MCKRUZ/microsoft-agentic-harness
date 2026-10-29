@@ -53,10 +53,21 @@ public sealed class ErasureConfig
     /// </summary>
     public TimeSpan JournalRetention { get; set; } = TimeSpan.FromDays(365);
 
+    /// <summary>The folder inside <see cref="AuditStoragePath"/> that holds the compliance audit trail's day-files.</summary>
+    /// <remarks>Fixed, so the trail's archive folder, which is named after it, never takes its name from configuration.</remarks>
+    public const string TrailFolderName = "compliance";
+
     /// <summary>
-    /// The folder of the compliance audit trail (#969): the hash-chained record of every erasure, data export and document
-    /// removal, kept as proof that each was handled. Relative to the working directory unless absolute. The day-files go in
-    /// a <c>compliance</c> folder inside it.
+    /// The folder inside <see cref="AuditStoragePath"/> that holds compliance records the trail could not append yet, until
+    /// replay writes them in (#995).
+    /// </summary>
+    public const string PendingFolderName = "compliance-pending";
+
+    /// <summary>
+    /// The folder the compliance audit trail (#969) keeps its folders in: the hash-chained record of every erasure, data
+    /// export and document removal, kept as proof that each was handled, goes in <see cref="TrailFolderName"/> inside it,
+    /// and records not yet appended in <see cref="PendingFolderName"/>. Relative to the working directory unless absolute.
+    /// Defaults to <c>.agent-sessions</c>, so the trail is <c>.agent-sessions/compliance</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -70,5 +81,5 @@ public sealed class ErasureConfig
     /// per-store counts. Never the person's id and never any of their data.
     /// </para>
     /// </remarks>
-    public string AuditStoragePath { get; set; } = ".agent-sessions/compliance";
+    public string AuditStoragePath { get; set; } = ".agent-sessions";
 }

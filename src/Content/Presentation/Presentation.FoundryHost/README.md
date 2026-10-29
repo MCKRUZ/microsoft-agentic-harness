@@ -24,9 +24,26 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   the harness to *not* re-persist it, so Foundry remains the single source of truth.
 - **Only `$HOME`/`/files` are guaranteed to persist** — *not* the container's app/publish
   directory. So the host re-roots the harness's per-session disk stores under `$HOME/agent-state`:
-  the planner database, the JSONL audit trails (drift, escalation, change proposals + evidence,
-  egress), offloaded tool results, subagent delegation records and mailbox, the embedded (Kuzu)
-  graph database, and file logs. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
+  the planner database, the JSONL audit trails (drift, governance, escalation, change proposals +
+  evidence, egress, and the compliance trail of erasures, exports and document removals at
+  `compliance/`, with its folder of records held for replay at `compliance-pending/`), the audit
+  verification checkpoints (`audit-verify/`; without them a chain cut off while the container was
+  down verifies as intact), the audit pseudonym key (`keys/audit-pseudonym.key`; without it every
+  restart made a new key, so person references written before and after a restart could not be
+  matched), the erasure journal (`erasure/`; without it an erasure that failed part-way cannot be
+  finished), the conversation, document-ledger and schedule databases, workflow state
+  (`workflows/`), execution traces (`traces/`), offloaded tool results, subagent delegation
+  records and mailbox, the embedded (Kuzu) graph database, and file logs. Stores that are off by
+  default are rooted too, so turning one on lands it here. Four are not: durable governance state,
+  whose database must stay inside the application directory (`GovernanceStatePaths` refuses any
+  other); prompt usage, configured by a whole connection string an override would replace (point
+  `AppConfig:AI:PromptUsage:ConnectionString` yourself, as `Data Source=` followed by the absolute
+  path of a file under `$HOME/agent-state`, in a folder that already exists, since SQLite does not
+  create it); and
+  skill-training checkpoints and the eval dashboard's run reports, which the personal-data
+  inventory records as holding no personal data. Setting `AppConfig:AI:Audit:PseudonymKey` from a
+  secret store replaces the key file and is still the right choice when more than one instance
+  writes the trails. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
   there is no on-disk index to root; they rebuild from ingested documents.)
 
 **Net effect:** out of the box, every conversation gets durable, idle-surviving memory with **zero

@@ -804,7 +804,9 @@
                         The key is <code>AppConfig:AI:Audit:PseudonymKey</code>. Set it from a secret store wherever more
                         than one instance writes the trails. Without one, a key file is made once at
                         <code>.agent-sessions/keys/audit-pseudonym.key</code> with access for the application's own account
-                        only, and read on every later start, so references stay the same across restarts. Startup refuses a
+                        only, and read on every later start, so references stay the same across restarts. FoundryHost puts
+                        it at <code>$HOME/agent-state/keys/audit-pseudonym.key</code>, beside the trails it roots there,
+                        because Foundry keeps only <code>$HOME</code> across idle and resume (#996). Startup refuses a
                         key file inside any audit folder or the archive, so the key never travels with the records it
                         protects, and warns at startup when an existing key file is readable by other accounts. Back the
                         key up: without it, references can no longer be recomputed. If the key file is lost while the trails
@@ -1270,8 +1272,8 @@
                             <p style="margin: 0">
                                 Each record is written twice, independently (#969). <code>IComplianceAuditTrail</code> keeps
                                 it in the compliance audit trail: hash-chained JSONL day-files under
-                                <code>AppConfig:AI:Erasure:AuditStoragePath</code> (default
-                                <code>.agent-sessions/compliance</code>, day-files in its <code>compliance</code> folder),
+                                <code>{AppConfig:AI:Erasure:AuditStoragePath}/compliance</code> (by default
+                                <code>.agent-sessions/compliance</code>),
                                 walked by scheduled chain verification and moved to the archive with the other trails when
                                 <code>AppConfig:AI:Audit:ArchivePath</code> is set. Nothing deletes it, and erasure lists it
                                 on every receipt as <code>RetainedByObligation</code> rather than erasing from it. The audit
@@ -1280,6 +1282,44 @@
                                 30 days by default. Export (<code>subject_access_export</code>) and document-removal
                                 (<code>document_removal</code>) records are kept the same way. Startup refuses an empty
                                 <code>AuditStoragePath</code>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A record the trail cannot write is held, then written</div>
+                            <p style="margin: 0">
+                                When the trail cannot be appended to (its chain lock still busy after the writer's
+                                ten-second wait, a full disk, a folder it may not write), the record is held in
+                                <code>{AuditStoragePath}/compliance-pending</code> instead of surviving only as the error
+                                log line (#995). Each held file is the exact line the trail refused, with an operator
+                                already replaced by their keyed reference, so it holds nothing the trail would not; it is
+                                flushed to disk and renamed into place before the request returns (the rename itself is
+                                not forced to disk, so on Linux a power cut at that moment can still lose it; a process
+                                crash cannot). A held file one pass cannot read is left for the next, and the files behind
+                                it go ahead. Anything that can write this folder can add a record to the trail, as anything
+                                that can write the trail's own folder can; both are made owner-only. A background service
+                                writes held records into the trail when the host starts and every minute, oldest first,
+                                and removes each file only once its record is in the trail. A pass first looks for every
+                                held line in the trail and only removes those already there, so a crash between writing and
+                                removing never writes a record twice, and an exclusive lock in the folder stops hosts that
+                                share it from replaying the same record. The trail is in the order records were appended:
+                                a replayed record keeps its own <code>timestamp</code> and <code>correlation_id</code> but
+                                can sit after records made later, so order requests by <code>timestamp</code>. Every record
+                                that could not be written is counted on
+                                <code>agent.compliance.audit_write_failures</code>, tagged
+                                <code>agent.compliance.audit.outcome</code>: <code>pending</code> when it is held,
+                                <code>lost</code> when it could not be held either (logged as critical; alert on it),
+                                <code>stuck</code> when a held file cannot be opened (another account owns it, another
+                                process keeps it open), counted and logged as an error once per file in each process rather
+                                than on every pass, so it too means a record missing from the trail, and
+                                <code>agent.compliance.audit_records_replayed</code> counts the held records written since.
+                                The folder is on the trail's volume, so a full or read-only volume usually refuses the held
+                                file as well; holding mainly covers a busy lock and passing I/O failures. A held file
+                                that is not a record is renamed <code>.unreadable</code>, counted as lost and left for an
+                                operator.
                             </p>
                         </div>
                     </div>

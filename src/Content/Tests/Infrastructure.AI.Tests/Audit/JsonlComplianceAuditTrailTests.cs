@@ -112,6 +112,18 @@ public sealed class JsonlComplianceAuditTrailTests : IDisposable
         Lines().Single().Should().NotContain("dpo-operator-9");
     }
 
+    [Fact]
+    public async Task RecordAsync_ANamedOperatorWhoseIdReadsLikeAFixedName_IsStillRecordedAsAReference()
+    {
+        // Pseudonymised by the kind of actor, not by its id: an id that happens to read "unidentified-operator" is a person.
+        using var trail = NewTrail();
+
+        await trail.RecordAsync(Entry("attempt", AuditOutcome.Attempted, "unidentified-operator"),
+            ErasureActor.Operator("unidentified-operator"), CancellationToken.None);
+
+        Record(0).GetProperty("executor_id").GetString().Should().Be(_pseudonyms.Person("unidentified-operator"));
+    }
+
     [Theory]
     [InlineData("data-subject")]
     [InlineData("retention")]
