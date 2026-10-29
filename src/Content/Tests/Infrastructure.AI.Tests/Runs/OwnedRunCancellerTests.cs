@@ -263,6 +263,26 @@ public sealed class OwnedRunCancellerTests
     }
 
     [Fact]
+    public async Task WaitForRunsAsync_RunParksAsItIsSignalled_IsCancelledBeforeTheWaitEnds()
+    {
+        // The run reaches a gate while the stop signal is being sent, so the poll's re-read finds it parked and nothing
+        // executing. Before #997's correctness review the wait ended on that read, leaving the run parked, holding its
+        // approval, and the receipt Partial, with time still left to cancel it.
+        var escalation = Guid.NewGuid();
+        var running = Admit("running", Subject, RunStatus.Running);
+        _registry.Setup(r => r.TryCancel(new PlanId(Guid.Parse(running.TargetId)))).Callback(() =>
+            _store.Update(running with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow(), AwaitingEscalationIds = [escalation] }));
+
+        var stillLive = await AdvanceUntilDoneAsync(
+            Canceller(TimeSpan.FromSeconds(30)).WaitForRunsAsync(Subject, CancellationToken.None));
+
+        stillLive.Should().Be(0);
+        StatusOf("running", Subject).Should().Be(RunStatus.Cancelled);
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            escalation, It.IsAny<string>(), OwnedRunCanceller.WithdrawnBy, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task WaitForRunsAsync_RunQueuedAfterThePendingRunsWereCancelled_IsCancelledToo()
     {
         // A schedule or a client can queue a run between the two halves, while the planned tasks are being stopped.
