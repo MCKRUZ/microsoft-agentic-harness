@@ -1108,10 +1108,14 @@
 
                     <h3 id="foundry-erasure">Erasing and exporting FoundryHost's data: delete or copy the Foundry session</h3>
                     <p>
-                        FoundryHost cannot serve these endpoints, and it does not need to. Foundry forwards only a hosted
-                        agent's protocol endpoints (<code>POST /responses</code>, <code>POST /invocations</code>) and its
-                        health probe to the container (Microsoft Learn, <em>Hosted agent runtime contract</em>), so
-                        <code>/api/compliance/*</code> never reaches it. Every call also lands in one session's sandbox.
+                        FoundryHost cannot serve these endpoints, and it does not need to. Callers reach a hosted agent only
+                        through its Foundry endpoint. The documented routes are the protocols
+                        (<code>.../endpoint/protocols/openai/responses</code>, <code>.../endpoint/protocols/invocations</code>)
+                        and the sessions API (Microsoft Learn, <em>Manage hosted agent sessions</em>). The container serves
+                        <code>POST /responses</code> or <code>POST /invocations</code> and <code>GET /readiness</code>
+                        (<em>Hosted agent runtime contract</em>). Neither page documents a route to any other container path,
+                        so we infer that <code>/api/compliance/*</code> would not be reachable. Every call also lands in one
+                        session's sandbox.
                         A session is "a stateful, isolated sandbox tied to a single logical workload (for example, one
                         user's chat)", with its own persistent <code>$HOME</code> (<em>Manage hosted agent sessions</em>).
                         FoundryHost keeps what it writes in that <code>$HOME</code>, with two exceptions, both off by
@@ -1162,6 +1166,16 @@
                         </li>
                     </ul>
                     <p>
+                        <strong>Only when a session is one person's.</strong> Deleting or copying a session is a per-person
+                        erasure or copy only if nobody else's data is in it. That holds for the default Entra isolation
+                        source, where each caller has their own sessions. It does not hold in two cases. The first is a
+                        header isolation key shared by several people, such as a tenant id. The second is several users
+                        multiplexed into one session (Microsoft Learn, <em>Multiplex multiple users in one hosted agent
+                        session</em>). FoundryHost does not separate users inside a session. In those deployments, copying a
+                        session hands the requester the other people's data, and deleting it erases theirs too. Use one
+                        isolation key per person if you need either right per person.
+                    </p>
+                    <p>
                         <strong>What deleting a session does not cover.</strong>
                     </p>
                     <ul>
@@ -1174,8 +1188,10 @@
                         <li>
                             A store promoted to an external service is shared by every session: an external knowledge
                             graph (<code>GRAPH_PROVIDER</code>, or <code>AppConfig:AI:Rag:GraphRag:GraphProvider</code>), a
-                            graph database other than the embedded Kuzu, Azure AI Search (<code>AZURE_SEARCH_ENDPOINT</code>),
-                            or Redis (<code>REDIS_ENDPOINT</code>).
+                            graph database other than the embedded Kuzu, any document index other than the in-process FAISS
+                            one (Azure AI Search through <code>AZURE_SEARCH_ENDPOINT</code>, say), Redis
+                            (<code>REDIS_ENDPOINT</code>), or the observability database
+                            (<code>AppConfig:Observability:PostgresConnectionString</code>).
                             <ul>
                                 <li>FoundryHost sets no knowledge scope, so what it writes there carries no owner. Neither
                                     session deletion nor any per-person request can find one person's records there.</li>
@@ -1184,6 +1200,10 @@
                                 <li>Keep personal data out of those stores, or clear them as a whole.</li>
                             </ul>
                         </li>
+                        <li>Telemetry that has left the container: the Foundry hosting layer's traces and logs, and the
+                            harness's own Azure Monitor or OTLP export, sit in the Application Insights resource or collector
+                            they were sent to, under its own retention (see <a href="#foundry-telemetry">telemetry export</a>
+                            for turning that off).</li>
                     </ul>
                     <p>
                         <strong>A way to per-person ownership.</strong> On container protocol 2.0.0, Foundry passes each

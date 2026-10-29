@@ -62,8 +62,6 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         "the person had a conversation whose id is shaped like a planned task's; the conversation was erased, but what other stores hold under its id was kept, because those stores record no owner and the records may be another person's planned task";
     private const string UnreadableReason =
         "some stored conversations could not be read, so whether they are this person's is unknown; they and what they lead to were kept, so fix the store and run erasure again";
-    private const string NotConfiguredReason =
-        "this host is not configured to use the store, so it has never held anything and was not asked";
     private const string HeldBackReason =
         "kept because an earlier store failed; erasing it now would leave that store's data with nothing that leads to it, or re-arm a once-only tool in a surviving conversation";
 
@@ -383,6 +381,12 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         var mayRun = beforeSucceeded && (!partly || narrowed.AllConversationIds.Count > 0 || !narrowed.PlanRuns.IsEmpty);
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == ErasureStage.AfterConversations))
         {
+            if (NotConfigured(eraser) is { } notConfigured)
+            {
+                outcomes.Add(notConfigured);
+                continue;
+            }
+
             if (!mayRun || (partly && eraser.ErasureReach == ErasureReach.Owner))
             {
                 outcomes.Add(new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason));
@@ -407,15 +411,26 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         var allErased = mayRun;
         foreach (var eraser in _erasers.Where(e => e.ErasureStage == stage))
         {
-            var outcome = mayRun
+            var outcome = mayRun || NotConfigured(eraser) is not null
                 ? await EraseAsync(eraser, subject, cancellationToken)
                 : new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.Skipped, 0, HeldBackReason);
-            allErased &= outcome.Status == StoreErasureStatus.Erased;
+            allErased &= outcome.Status is StoreErasureStatus.Erased or StoreErasureStatus.NotConfigured;
             outcomes.Add(outcome);
         }
 
         return allErased;
     }
+
+    /// <summary>
+    /// The line for a store this host has no backend configured for (#1003), or <see langword="null"/>. Such a store is
+    /// never asked, on any path: asking it would only fail on the placeholder it was built with, and listing it as held
+    /// back would say it keeps data. Checked before any hold-back decision, so it neither holds a stage back nor is held.
+    /// </summary>
+    private static StoreErasureOutcome? NotConfigured(IPersonalDataEraser eraser) =>
+        eraser is IConfigurablePersonalDataStore { IsConfigured: false }
+            ? new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotConfigured, 0,
+                IConfigurablePersonalDataStore.NotConfiguredReason)
+            : null;
 
     /// <summary>
     /// Erases the knowledge graph. Its own receipt is the base of the combined one; when it throws, an empty base is
@@ -452,10 +467,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         if (eraser is NonErasableStore)
             return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotSupported, 0, NonErasableStore.Reason);
 
-        // Never asked: a store with no backend configured has never held anything, and asking it would only fail on the
-        // placeholder it was built with (#1003).
-        if (eraser is IConfigurablePersonalDataStore { IsConfigured: false })
-            return new StoreErasureOutcome(eraser.ErasureStoreName, StoreErasureStatus.NotConfigured, 0, NotConfiguredReason);
+        if (NotConfigured(eraser) is { } notConfigured)
+            return notConfigured;
 
         try
         {

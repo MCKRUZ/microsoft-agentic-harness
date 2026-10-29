@@ -9,9 +9,9 @@ namespace Presentation.FoundryHost;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Why this host serves no erasure or export endpoint.</strong> Foundry forwards only the protocol endpoints
-/// (<c>POST /responses</c>, <c>POST /invocations</c>) and the health probe to a hosted-agent container, so
-/// <c>/api/compliance/*</c> would never reach it. Every protocol call also lands in one session's sandbox, and each session
+/// <strong>Why this host serves no erasure or export endpoint.</strong> Callers reach a hosted agent only through its
+/// Foundry endpoint, whose documented routes are the protocols and the sessions API; none leads to an arbitrary container
+/// path, so <c>/api/compliance/*</c> would not be reachable. Every protocol call also lands in one session's sandbox, and each session
 /// has its own <c>$HOME</c>, where this host keeps all of its own state (<c>$HOME/agent-state</c>,
 /// <c>$HOME/.checkpoints</c>). An erasure run inside the container could reach only that one session, while deleting the
 /// session through Foundry's session API removes its <c>$HOME</c> with everything in it, and the session files API copies
@@ -40,8 +40,8 @@ internal static class FoundryHostErasure
         var notices = new List<(LogLevel, string)>
         {
             (LogLevel.Information,
-                "FoundryHost serves no erasure or export endpoint: Foundry forwards only its protocol endpoints to this " +
-                "container, and each call reaches one session's sandbox. This host keeps its own state in the session's " +
+                "FoundryHost serves no erasure or export endpoint: callers reach this container only through Foundry's " +
+                "protocol endpoints, and each call reaches one session's sandbox. This host keeps its own state in the session's " +
                 "$HOME ($HOME/agent-state and $HOME/.checkpoints): deleting the Foundry session erases it, and the session " +
                 $"files API copies it ({GuideAnchor})."),
         };
@@ -68,9 +68,16 @@ internal static class FoundryHostErasure
         if (rag.GraphDatabase.Enabled && !string.Equals(rag.GraphDatabase.Provider, "kuzu", StringComparison.OrdinalIgnoreCase))
             yield return $"The graph database (AppConfig:AI:Rag:GraphDatabase:Provider = {rag.GraphDatabase.Provider})";
 
-        if (string.Equals(rag.VectorStore.Provider, "azure_ai_search", StringComparison.OrdinalIgnoreCase)
-            && rag.VectorStore.IsConfigured)
-            yield return "The Azure AI Search document index (AppConfig:AI:Rag:VectorStore:Endpoint)";
+        // Fails closed: only the in-process FAISS index, or an Azure index with no endpoint (which holds nothing), stays in
+        // the session; any other provider, including one a consumer adds, is named.
+        var vectorProvider = rag.VectorStore.Provider;
+        var inSession = string.Equals(vectorProvider, "faiss", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(vectorProvider, "azure_ai_search", StringComparison.OrdinalIgnoreCase) && !rag.VectorStore.IsConfigured);
+        if (!inSession)
+            yield return $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
+
+        if (!string.IsNullOrWhiteSpace(config.Observability.PostgresConnectionString))
+            yield return "The observability database (AppConfig:Observability:PostgresConnectionString)";
 
         if (config.Cache.CacheType == CacheType.RedisCache)
             yield return "The Redis cache (AppConfig:Cache:CacheType = RedisCache), whose entries go only when they expire,";

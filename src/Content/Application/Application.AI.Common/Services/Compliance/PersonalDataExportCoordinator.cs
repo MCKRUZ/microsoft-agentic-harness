@@ -39,8 +39,6 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     private const string FailedReason = "the store could not be read; the failure has been logged";
     private const string NotExportableReason = "this store can hold your data but cannot yet return a copy of it";
     private const string NotApplicableReason = "holds nothing a person would receive a copy of";
-    private const string NotConfiguredReason =
-        "this host is not configured to use the store, so it has never held anything and was not read";
     private const string UnreadableReason =
         "some stored conversations could not be read, so whether they are yours is unknown; they were left out";
     private const string ConversationListStore = "conversation list";
@@ -223,7 +221,8 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         // Never read: a store with no backend configured has never held anything (#1003).
         if (exporter is IConfigurablePersonalDataStore { IsConfigured: false })
         {
-            manifest.Add(new ExportManifestEntry(exporter.ExportStoreName, ExportStatus.NotApplicable, 0, NotConfiguredReason));
+            manifest.Add(new ExportManifestEntry(
+                exporter.ExportStoreName, ExportStatus.NotApplicable, 0, IConfigurablePersonalDataStore.NotConfiguredReason));
             return null;
         }
 
@@ -245,7 +244,12 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
     private void NameStoresThatDidNotExport(List<ExportManifestEntry> manifest)
     {
         foreach (var eraser in _erasers.Where(e => !IsExported(e)))
-            manifest.Add(NotExported(eraser.ErasureStoreName, eraser is NonErasableStore ? null : eraser.GetType()));
+        {
+            manifest.Add(eraser is IConfigurablePersonalDataStore { IsConfigured: false }
+                ? new ExportManifestEntry(
+                    eraser.ErasureStoreName, ExportStatus.NotApplicable, 0, IConfigurablePersonalDataStore.NotConfiguredReason)
+                : NotExported(eraser.ErasureStoreName, eraser is NonErasableStore ? null : eraser.GetType()));
+        }
 
         // Named unless it was actually read: a memory store that can export but was never registered as an exporter would
         // otherwise be left out of the copy without a line saying so.
@@ -274,6 +278,7 @@ public sealed class PersonalDataExportCoordinator : IPersonalDataExport
         StoreErasureStatus.RetainedUntilExpiry => ExportStatus.RetainedUntilExpiry,
         StoreErasureStatus.RetainedByObligation => ExportStatus.RetainedByObligation,
         StoreErasureStatus.RetainedAsBusinessContent => ExportStatus.RetainedAsBusinessContent,
-        _ => ExportStatus.RetainedUnsearchable,
+        StoreErasureStatus.RetainedIndefinitely => ExportStatus.RetainedUnsearchable,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Only a retained store's line is mapped here."),
     };
 }

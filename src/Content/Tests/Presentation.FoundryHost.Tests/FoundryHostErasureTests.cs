@@ -35,13 +35,16 @@ public sealed class FoundryHostErasureTests
         { "GraphProvider = neo4j", c => c.AI.Rag.GraphRag.GraphProvider = "neo4j" },
         { "GraphProvider = postgresql", c => c.AI.Rag.GraphRag.GraphProvider = "postgresql" },
         { "GraphDatabase:Provider = neo4j", c => c.AI.Rag.GraphDatabase.Provider = "neo4j" },
-        { "Azure AI Search", c =>
+        { "Provider = azure_ai_search", c =>
             {
                 c.AI.Rag.VectorStore.Provider = "azure_ai_search";
                 c.AI.Rag.VectorStore.Endpoint = "https://search.example";
             }
         },
         { "Redis", c => c.Cache.CacheType = CacheType.RedisCache },
+        // Fails closed: a document index the template does not ship is still named.
+        { "Provider = qdrant", c => c.AI.Rag.VectorStore.Provider = "qdrant" },
+        { "observability database", c => c.Observability.PostgresConnectionString = "Host=db;Database=obs" },
     };
 
     [Theory]

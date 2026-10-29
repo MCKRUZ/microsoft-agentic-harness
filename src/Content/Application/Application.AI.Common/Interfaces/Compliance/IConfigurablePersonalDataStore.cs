@@ -18,6 +18,14 @@ namespace Application.AI.Common.Interfaces.Compliance;
 /// </remarks>
 public interface IConfigurablePersonalDataStore
 {
+    /// <summary>
+    /// The reason the receipt and the copy both give for such a store. It says what the host knows, that no backend is
+    /// configured here, not that nothing was ever stored: a backend configured once and then lost from configuration
+    /// cannot be reached from this host either.
+    /// </summary>
+    const string NotConfiguredReason =
+        "this host has no backend configured for the store, so it was not asked; data stored while one was configured is out of this host's reach";
+
     /// <summary>Whether this host configured the store's backend, so it may hold anyone's data.</summary>
     bool IsConfigured { get; }
 }
