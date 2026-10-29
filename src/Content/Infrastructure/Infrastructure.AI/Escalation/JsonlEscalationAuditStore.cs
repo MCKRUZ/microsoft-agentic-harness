@@ -28,13 +28,13 @@ namespace Infrastructure.AI.Escalation;
 /// that split continues (see <see cref="DatedAuditSegments"/>). Files are created lazily on first write.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests, decisions, outcomes and executions. Since #903 people are keyed references and tool arguments keyed fingerprints (IAuditPseudonymizer), and free text is redacted; records written earlier hold them raw. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests, decisions, outcomes and executions. Since #903 people are keyed references and tool arguments keyed fingerprints (IAuditPseudonymizer), and free text is redacted; records written earlier hold them raw. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Escalation:AuditStoragePath}/escalations-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiableAuditChain, IDisposable
+public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -82,6 +82,13 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
 
     /// <inheritdoc />
     public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     /// <inheritdoc />
     public async Task RecordRequestAsync(EscalationRequest request, CancellationToken ct)

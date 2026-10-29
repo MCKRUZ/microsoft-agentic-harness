@@ -8,9 +8,17 @@ namespace Infrastructure.AI.Audit;
 /// archiver reads (#416), so the two cannot disagree about which files belong to which log.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A log's archive folder is named after its day folder (<see cref="DatedAuditSegments.ArchivedUnder"/>):
 /// <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c>, <c>drift-audit</c> and <c>compliance</c>. Renaming one of
 /// those folders moves the log away from its archive, so they are fixed here.
+/// </para>
+/// <para>
+/// Each log's held records wait beside its day folder, in the same name with <c>-pending</c> added (#1001):
+/// <c>governance-pending</c>, <c>escalations-pending</c>, <c>changes-pending</c>, <c>egress-pending</c>,
+/// <c>drift-audit-pending</c> and <c>compliance-pending</c>. Inside the log's configured folder, so every rule that keeps
+/// that folder apart (from the archive, from another log) keeps the held records apart too.
+/// </para>
 /// </remarks>
 public static class AuditChains
 {
@@ -50,7 +58,8 @@ public static class AuditChains
     {
         var folder = Path.Combine(config.AI.DriftDetection.AuditPath, "drift-audit");
         // Shared by every process writing these segments; not itself a *.jsonl segment.
-        return new AuditChainLocation("drift", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
+        return new AuditChainLocation(
+            "drift", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"), PendingBeside(folder));
     }
 
     /// <summary>
@@ -64,7 +73,11 @@ public static class AuditChains
     {
         // A fixed folder name inside the configured path, so the archive folder never takes its name from configuration.
         var folder = Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.TrailFolderName);
-        return new AuditChainLocation("compliance", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
+        return new AuditChainLocation(
+            "compliance",
+            new DatedAuditSegments(folder, legacyFile: null, clock),
+            Path.Combine(folder, ".chain.lock"),
+            Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.PendingFolderName));
     }
 
     /// <summary>Every log whose storage path is configured, in a fixed order.</summary>
@@ -92,6 +105,14 @@ public static class AuditChains
         return chains;
     }
 
-    private static AuditChainLocation BesideLegacyFile(string name, string legacyFile, TimeProvider clock) =>
-        new(name, DatedAuditSegments.BesideLegacyFile(legacyFile, clock), legacyFile + ".lock");
+    private static AuditChainLocation BesideLegacyFile(string name, string legacyFile, TimeProvider clock)
+    {
+        var segments = DatedAuditSegments.BesideLegacyFile(legacyFile, clock);
+        return new(name, segments, legacyFile + ".lock", PendingBeside(segments.Folder));
+    }
+
+    // A sibling of the day folder, never inside it: a file in the day folder that is not a day-file is ignored by the
+    // chain, but the archiver and the overlap checks treat that folder as the log's own.
+    private static string PendingBeside(string dayFolder) =>
+        Path.TrimEndingDirectorySeparator(dayFolder) + "-pending";
 }

@@ -26,7 +26,8 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   directory. So the host re-roots the harness's per-session disk stores under `$HOME/agent-state`:
   the planner database, the JSONL audit trails (drift, governance, escalation, change proposals +
   evidence, egress, and the compliance trail of erasures, exports and document removals at
-  `compliance/`, with its folder of records held for replay at `compliance-pending/`), the audit
+  `compliance/`, with its folder of records held for replay at `compliance-pending/`; every other trail keeps its
+  held records inside its own folder too, for example `governance/governance-pending/`), the audit
   verification checkpoints (`audit-verify/`; without them a chain cut off while the container was
   down verifies as intact), the audit pseudonym key (`keys/audit-pseudonym.key`; without it every
   restart made a new key, so person references written before and after a restart could not be

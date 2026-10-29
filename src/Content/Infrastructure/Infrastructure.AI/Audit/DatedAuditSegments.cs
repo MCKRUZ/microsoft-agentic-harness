@@ -58,6 +58,9 @@ public sealed class DatedAuditSegments
 
     private readonly TimeProvider _clock;
 
+    /// <summary>Decides which day a new record is appended to; also names the files a held record is kept in (#1001).</summary>
+    internal TimeProvider Clock => _clock;
+
     /// <summary>Initializes the layout.</summary>
     /// <param name="folder">The folder holding the day-files.</param>
     /// <param name="legacyFile">The single file the chain was written to before it was split by day, or <c>null</c>.</param>

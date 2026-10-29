@@ -77,6 +77,17 @@ public static class TestStateRoot
         // and the pseudonym key are written there too, once each, and never removed.
         Environment.SetEnvironmentVariable(
             "AppConfig__AI__Erasure__AuditStoragePath", Path.Combine(root, "erasure-audit"));
+        // The other five audit trails, for the same reason: since #1001 each holds what it could not append for replay.
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Governance__AuditStoragePath", Path.Combine(root, "governance-audit"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Governance__Escalation__AuditStoragePath", Path.Combine(root, "escalation-audit"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Changes__AuditStoragePath", Path.Combine(root, "change-audit"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__Egress__AuditStoragePath", Path.Combine(root, "egress-audit"));
+        Environment.SetEnvironmentVariable(
+            "AppConfig__AI__DriftDetection__AuditPath", Path.Combine(root, "drift-audit-root"));
         Environment.SetEnvironmentVariable(
             "AppConfig__AI__Audit__ReceiptPath", Path.Combine(root, "audit-verify"));
         Environment.SetEnvironmentVariable(

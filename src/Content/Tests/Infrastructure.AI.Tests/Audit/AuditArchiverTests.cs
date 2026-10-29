@@ -40,7 +40,14 @@ public sealed class AuditArchiverTests : IDisposable
         catch { /* best effort */ }
     }
 
-    private AuditChainLocation Chain => new("governance", DatedAuditSegments.BesideLegacyFile(_legacyFile, _clock), _legacyFile + ".lock");
+    private AuditChainLocation Chain
+    {
+        get
+        {
+            var segments = DatedAuditSegments.BesideLegacyFile(_legacyFile, _clock);
+            return new("governance", segments, _legacyFile + ".lock", segments.Folder + "-pending");
+        }
+    }
 
     private HashChainedJsonlWriter Writer() => new(Chain, NullLogger.Instance, _archiveRoot);
 
@@ -551,7 +558,8 @@ public sealed class AuditArchiverTests : IDisposable
         var folder = Path.Combine(_tempDir, "live", "drift-audit");
         Directory.CreateDirectory(folder);
         await File.WriteAllTextAsync(Path.Combine(folder, "2026-10-17.jsonl"), "{\"unchained\":1}\n");
-        var drift = new AuditChainLocation("drift", new DatedAuditSegments(folder, legacyFile: null, _clock), Path.Combine(folder, ".chain.lock"));
+        var drift = new AuditChainLocation(
+            "drift", new DatedAuditSegments(folder, legacyFile: null, _clock), Path.Combine(folder, ".chain.lock"), folder + "-pending");
         ReadOnlyArchiveRoot.Unlock(_archiveRoot);
         Directory.CreateDirectory(Path.Combine(_archiveRoot, "drift-audit"));
         ReadOnlyArchiveRoot.Lock(_archiveRoot);

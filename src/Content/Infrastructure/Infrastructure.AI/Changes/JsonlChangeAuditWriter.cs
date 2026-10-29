@@ -25,19 +25,26 @@ namespace Infrastructure.AI.Changes;
 /// decision is detectable.
 /// </summary>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Changes:AuditStoragePath} (default .agent-sessions/changes) of change-gate decisions: proposal id, gate, decision, redacted reason, reviewer and direct-invocation caller as keyed references (#903; records written earlier hold them raw), agent and tenant. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Changes:AuditStoragePath} (default .agent-sessions/changes) of change-gate decisions: proposal id, gate, decision, redacted reason, reviewer and direct-invocation caller as keyed references (#903; records written earlier hold them raw), agent and tenant. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Changes:AuditStoragePath}/changes-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Tenant,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAuditChain, IDisposable
+public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     /// <inheritdoc />
     public string AuditName => "changes";
 
     /// <inheritdoc />
     public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {

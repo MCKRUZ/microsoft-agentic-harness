@@ -248,8 +248,9 @@ public static partial class DependencyInjection
         services.TryAddSingleton(TimeProvider.System); // picks the trail's day-file
         services.AddSingleton<Application.Core.Compliance.IComplianceAuditTrail, JsonlComplianceAuditTrail>();
         services.AddRetainedPersonalData<Application.Core.Compliance.IComplianceAuditTrail>("compliance audit trail");
-        // A record the trail could not append is held beside it; this writes it in on start and every minute (#995).
-        services.AddHostedService<ComplianceAuditReplayService>();
+        // A record any audit trail could not append is held beside it; this writes it in on start and every minute
+        // (#995, #1001). It replays every registered IVerifiableAuditChain that holds records, governance's included.
+        services.AddHostedService<AuditRecordReplayService>();
 
         // --- Skills and agents ---
 

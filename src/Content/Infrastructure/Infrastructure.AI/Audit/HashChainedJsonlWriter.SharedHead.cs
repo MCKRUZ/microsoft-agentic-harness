@@ -66,8 +66,10 @@ public sealed partial class HashChainedJsonlWriter
     /// Takes the chain's cross-process lock, retrying while another process holds it. Released by disposing
     /// the returned handle. The file is left in place: deleting it would race a process about to open it.
     /// </summary>
-    /// <exception cref="AuditChainBusyException">Another process held the lock for longer than <see cref="LockTimeout"/>.</exception>
-    private async Task<FileStream> AcquireChainLockAsync(CancellationToken cancellationToken)
+    /// <param name="wait">How long to keep trying; <see cref="LockTimeout"/> unless an append was given a shorter bound (#999).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="AuditChainBusyException">Another process held the lock for longer than <paramref name="wait"/>.</exception>
+    private async Task<FileStream> AcquireChainLockAsync(TimeSpan wait, CancellationToken cancellationToken)
     {
         OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(Path.GetFullPath(_lockPath))!, _logger);
 
@@ -81,8 +83,8 @@ public sealed partial class HashChainedJsonlWriter
             }
             catch (IOException ex)
             {
-                if (waited.Elapsed >= LockTimeout)
-                    throw new AuditChainBusyException(_displayLocation, LockTimeout, ex);
+                if (waited.Elapsed >= wait)
+                    throw new AuditChainBusyException(_displayLocation, wait, ex);
 
                 await Task.Delay(LockRetryDelay, cancellationToken).ConfigureAwait(false);
             }

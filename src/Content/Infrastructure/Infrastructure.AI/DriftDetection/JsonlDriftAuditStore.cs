@@ -25,13 +25,13 @@ namespace Infrastructure.AI.DriftDetection;
 /// efficient range queries; <see cref="GetRecordsAsync"/> resolves only the files in range.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller as a keyed reference (#903; records written earlier hold the raw id). Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller as a keyed reference (#903; records written earlier hold the raw id). Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {DriftDetection:AuditPath}/drift-audit-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditChain, IDisposable
+public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -76,6 +76,13 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
 
     /// <inheritdoc />
     public string AuditLocation => _auditDirectory;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     /// <inheritdoc />
     public async Task<Result> RecordAsync(DriftAuditRecord record, CancellationToken ct)

@@ -30,19 +30,26 @@ namespace Infrastructure.AI.Egress;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: target scheme, host and port with a keyed fingerprint of the full address (#903; records written earlier hold the full URI with query string), resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: target scheme, host and port with a keyed fingerprint of the full address (#903; records written earlier hold the full URI with query string), resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Egress:AuditStoragePath}/egress-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.NetworkTargets | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Tenant,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IDisposable
+public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     /// <inheritdoc />
     public string AuditName => "egress";
 
     /// <inheritdoc />
     public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {

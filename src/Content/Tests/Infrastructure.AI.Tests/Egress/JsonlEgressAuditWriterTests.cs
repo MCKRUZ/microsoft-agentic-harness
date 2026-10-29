@@ -31,6 +31,23 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task Append_TheChainCannotBeWritten_StillRefusesTheRequestButHoldsTheRecordForReplay()
+    {
+        var dayFolder = Path.Combine(_tempDir, "audit", "egress");
+        Directory.CreateDirectory(Path.GetDirectoryName(dayFolder)!);
+        File.WriteAllText(dayFolder, "not a folder");
+
+        var append = () => _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+
+        await append.Should().ThrowAsync<IOException>("an outbound request is never let through unaudited (#1001 changes nothing here)");
+        Directory.GetFiles(_sut.PendingLocation, "*.pending").Should().ContainSingle("the decision that was taken is kept");
+
+        File.Delete(dayFolder);
+        (await _sut.ReplayPendingAsync(CancellationToken.None)).Written.Should().Be(1);
+        (await _sut.VerifyChainAsync(checkpoint: null, CancellationToken.None)).VerifiedCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Append_WritesOneLinePerDecision()
     {
         var d1 = AllowDecision();

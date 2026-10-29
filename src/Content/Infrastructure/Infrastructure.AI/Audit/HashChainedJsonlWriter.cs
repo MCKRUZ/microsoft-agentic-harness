@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -69,7 +70,12 @@ namespace Infrastructure.AI.Audit;
 /// the lock only long enough to note how far each segment reaches, then reads up to there, so a line
 /// another process is half-way through writing is never read. A writer that waits more than ten seconds
 /// for the lock gives up: the append fails and the verification throws <see cref="AuditChainBusyException"/>,
-/// neither of which is reported as tampering.
+/// neither of which is reported as tampering. A caller can bound an append's wait more tightly (#999).
+/// </para>
+/// <para>
+/// <b>A failed append is held, not lost (#1001).</b> A writer built from an <see cref="AuditChainLocation"/>, as all six
+/// audit trails are, keeps a record it could not append in the location's pending folder and writes it in later through
+/// <see cref="ReplayPendingAsync"/>; see <see cref="PendingAuditRecords"/> and <c>HashChainedJsonlWriter.Pending.cs</c>.
 /// </para>
 /// <para>
 /// <b>Where the lock holds.</b> It is the operating system's file lock: a share-mode lock on Windows,
@@ -266,27 +272,75 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     }
 
     /// <summary>
-    /// Appends a serialized record to the chain, computing and persisting its hash links.
+    /// Appends a serialized record to the chain, computing and persisting its hash links, waiting up to ten seconds for this
+    /// process's other appends and verifications and for any other process writing the chain.
     /// </summary>
     /// <param name="payloadJson">The caller's already-serialized record as a single-line JSON string.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// <see cref="Result.Success()"/> when the record was persisted; a failure result when the
-    /// payload contains a raw framing character or the file could not be written.
+    /// payload contains a raw framing character or the file could not be written. A writer built from an
+    /// <see cref="AuditChainLocation"/> holds a record it could not write for replay, and its failure says so (#1001).
     /// </returns>
-    public async Task<Result> AppendAsync(string payloadJson, CancellationToken cancellationToken)
+    public Task<Result> AppendAsync(string payloadJson, CancellationToken cancellationToken) =>
+        AppendAsync(payloadJson, LockTimeout, cancellationToken);
+
+    /// <summary>
+    /// Appends a serialized record as <see cref="AppendAsync(string, CancellationToken)"/> does, waiting no longer than
+    /// <paramref name="lockWait"/> in all for the chain: first for this process's other appends and verifications (a
+    /// verification holds the chain for its whole walk), then for any other process (#999).
+    /// </summary>
+    /// <param name="payloadJson">The caller's already-serialized record as a single-line JSON string.</param>
+    /// <param name="lockWait">
+    /// The longest the append waits for the chain. A caller answering a person keeps it short and lets a writer with a
+    /// pending folder hold the record for replay instead of making the person wait.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>As <see cref="AppendAsync(string, CancellationToken)"/>.</returns>
+    /// <remarks>
+    /// A record whose append throws (the writer disposed at shutdown, the caller cancelling) is held as well before the
+    /// exception goes on to the caller: whatever the record describes has already happened.
+    /// </remarks>
+    public async Task<Result> AppendAsync(string payloadJson, TimeSpan lockWait, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payloadJson);
+        ArgumentOutOfRangeException.ThrowIfLessThan(lockWait, TimeSpan.Zero);
 
+        // Not held: replay could never append it either.
         if (payloadJson.AsSpan().IndexOfAny(FramingChars) >= 0)
             return Result.Fail(
                 "Audit payload must not contain raw tab, carriage-return, or newline characters; chain framing is line- and tab-delimited.");
 
-        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (_pending is null)
+            return await AppendOnceAsync(payloadJson, lockWait, cancellationToken).ConfigureAwait(false);
+
+        Result appended;
+        try
+        {
+            appended = await AppendOnceAsync(payloadJson, lockWait, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _pending.Hold(payloadJson, [$"The append threw {ex.GetType().Name}."]);
+            throw;
+        }
+
+        return appended.IsSuccess ? appended : _pending.Hold(payloadJson, appended.Errors);
+    }
+
+    /// <summary>One attempt at the append, never held: what replay uses for a record that is held already.</summary>
+    private async Task<Result> AppendOnceAsync(string payloadJson, TimeSpan lockWait, CancellationToken cancellationToken)
+    {
+        // One deadline across both waits, so a short bound stays short whichever of the two is busy.
+        var waited = Stopwatch.StartNew();
+        if (!await _semaphore.WaitAsync(lockWait, cancellationToken).ConfigureAwait(false))
+            return Busy(new TimeoutException("Another append or a verification in this process still holds the chain."), lockWait);
+
         try
         {
             // Across processes: no other writer appends between reading the head and recording the new one.
-            await using var chainLock = await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false);
+            var remaining = lockWait > waited.Elapsed ? lockWait - waited.Elapsed : TimeSpan.Zero;
+            await using var chainLock = await AcquireChainLockAsync(remaining, cancellationToken).ConfigureAwait(false);
             var segments = WithCurrentSegment(_orderedSegments());
             var (head, sequence) = await LoadHeadAsync(chainLock, segments, cancellationToken).ConfigureAwait(false);
 
@@ -311,8 +365,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         }
         catch (AuditChainBusyException ex)
         {
-            _logger.LogError(ex, "Audit record not written to {AuditLocation}: the chain is busy", _displayLocation);
-            return Result.Fail("Failed to persist audit record: the audit chain is busy. Retry the operation.");
+            return Busy(ex, lockWait);
         }
         catch (AuditFolderRefusedException ex)
         {
@@ -328,6 +381,14 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         {
             _semaphore.Release();
         }
+    }
+
+    // A busy chain is routine for a writer that holds the record for replay, and a fault for one that loses it.
+    private Result Busy(Exception ex, TimeSpan lockWait)
+    {
+        _logger.Log(_pending is null ? LogLevel.Error : LogLevel.Warning, ex,
+            "Audit record not written to {AuditLocation}: the chain was still busy after {LockWait}", _displayLocation, lockWait);
+        return Result.Fail("Failed to persist audit record: the audit chain is busy. Retry the operation.");
     }
 
     /// <summary>
@@ -437,7 +498,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         // Note how far each segment reaches while no other process is mid-append, then read only that
         // far, so a half-written line from another writer is never mistaken for tampering.
         IReadOnlyList<SegmentReach> reach;
-        await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
+        await using (await AcquireChainLockAsync(LockTimeout, cancellationToken).ConfigureAwait(false))
         {
             // Lengths through open handles, not cached directory entries, so another host's appends are seen.
             // The same files the writer appends to, current segment included, so nothing can be written where

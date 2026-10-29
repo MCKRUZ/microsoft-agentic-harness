@@ -1,5 +1,6 @@
+using Application.AI.Common.Interfaces.Audit;
 using Application.Core.Compliance;
-using Domain.Common;
+using Domain.AI.Audit;
 using Domain.Common.Config;
 using Domain.Common.Models;
 using FluentAssertions;
@@ -12,14 +13,14 @@ using Xunit;
 namespace Infrastructure.AI.Tests.Audit;
 
 /// <summary>
-/// The replay service (#995) writes held compliance records into the trail when the host starts and again every minute,
-/// so a record held because the chain was busy reaches the trail without anyone acting on it.
+/// The replay service (#995, #1001) writes held audit records into their trails when the host starts and again every
+/// minute, so a record held because the chain was busy reaches the trail without anyone acting on it.
 /// </summary>
-public sealed class ComplianceAuditReplayServiceTests : IDisposable
+public sealed class AuditRecordReplayServiceTests : IDisposable
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
-    private readonly string _root = Path.Combine(Path.GetTempPath(), $"compliance-replay-{Guid.NewGuid():N}");
+    private readonly string _root = Path.Combine(Path.GetTempPath(), $"audit-replay-{Guid.NewGuid():N}");
     private readonly FakeTimeProvider _clock = new(DateTimeOffset.UtcNow);
 
     /// <inheritdoc />
@@ -36,6 +37,9 @@ public sealed class ComplianceAuditReplayServiceTests : IDisposable
         _clock,
         AuditPseudonyms.Create(),
         NullLogger<JsonlComplianceAuditTrail>.Instance);
+
+    private AuditRecordReplayService NewService(params IVerifiableAuditChain[] chains) =>
+        new(chains, _clock, NullLogger<AuditRecordReplayService>.Instance);
 
     private static AuditEntry Entry(string phase) => new()
     {
@@ -67,7 +71,7 @@ public sealed class ComplianceAuditReplayServiceTests : IDisposable
             if (count >= expected)
                 return count;
             if (advanceClock)
-                _clock.Advance(ComplianceAuditReplayService.Interval);
+                _clock.Advance(AuditRecordReplayService.Interval);
             await Task.Delay(50);
         }
         while (DateTime.UtcNow < deadline);
@@ -105,7 +109,7 @@ public sealed class ComplianceAuditReplayServiceTests : IDisposable
     {
         using var trail = NewTrail();
         await HoldOneAsync(trail, "attempt");
-        using var service = new ComplianceAuditReplayService(trail, _clock, NullLogger<ComplianceAuditReplayService>.Instance);
+        using var service = NewService(trail);
 
         await service.StartAsync(CancellationToken.None);
 
@@ -120,7 +124,7 @@ public sealed class ComplianceAuditReplayServiceTests : IDisposable
         Directory.CreateDirectory(_root);
         File.WriteAllText(Folder, "not a folder");
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
-        using var service = new ComplianceAuditReplayService(trail, _clock, NullLogger<ComplianceAuditReplayService>.Instance);
+        using var service = NewService(trail);
         await service.StartAsync(CancellationToken.None);
 
         // The start-up pass runs while the trail is still broken; only a later pass can write the record.
@@ -132,26 +136,47 @@ public sealed class ComplianceAuditReplayServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteAsync_AReplacedTrail_IsLeftAlone()
+    public async Task ExecuteAsync_ATrailThatHoldsNothing_IsLeftAlone()
     {
-        var replaced = new RecordingTrail();
-        using var service = new ComplianceAuditReplayService(replaced, _clock, NullLogger<ComplianceAuditReplayService>.Instance);
+        var replaced = new VerifyOnlyChain();
+        using var service = NewService(replaced);
 
         await service.StartAsync(CancellationToken.None);
         await service.ExecuteTask!.WaitAsync(Patience);
 
         service.ExecuteTask.IsCompletedSuccessfully.Should().BeTrue("a trail it does not own has no pending folder to replay");
-        replaced.Calls.Should().Be(0);
     }
 
-    private sealed class RecordingTrail : IComplianceAuditTrail
+    [Fact]
+    public async Task ExecuteAsync_OneTrailsPassThrows_TheOthersAreStillReplayed()
     {
-        public int Calls { get; private set; }
+        using var trail = NewTrail();
+        await HoldOneAsync(trail, "attempt");
+        using var service = NewService(new ThrowingChain(), trail);
 
-        public Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
-        {
-            Calls++;
-            return Task.FromResult(Result.Success());
-        }
+        await service.StartAsync(CancellationToken.None);
+
+        (await VerifiedCountWithinAsync(trail, 1)).Should().Be(1, "one broken trail must not keep the others' records out");
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    /// <summary>A trail a host supplied that verifies but holds nothing for replay.</summary>
+    private class VerifyOnlyChain : IVerifiableAuditChain
+    {
+        public string AuditName => "replaced";
+
+        public string AuditLocation => "nowhere";
+
+        public Task<AuditChainVerificationResult> VerifyChainAsync(AuditChainCheckpoint? checkpoint, CancellationToken cancellationToken) =>
+            Task.FromResult(AuditChainVerificationResult.Valid(0, 0, -1, null));
+    }
+
+    /// <summary>A trail whose every pass fails, as one on an unreadable volume would.</summary>
+    private sealed class ThrowingChain : VerifyOnlyChain, IReplaysHeldAuditRecords
+    {
+        public string PendingLocation => "nowhere-pending";
+
+        public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+            throw new IOException("The pending folder cannot be read.");
     }
 }

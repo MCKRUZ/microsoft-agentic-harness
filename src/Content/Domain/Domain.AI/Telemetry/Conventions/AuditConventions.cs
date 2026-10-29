@@ -1,31 +1,30 @@
 namespace Domain.AI.Telemetry.Conventions;
 
 /// <summary>
-/// Telemetry names for the compliance audit trail (#969, #995): the record of every erasure, data export and document
-/// removal.
+/// Telemetry names for the six hash-chained audit trails (governance, escalations, changes, egress, drift and compliance)
+/// when a record cannot be appended and is held for replay (#995, #1001).
 /// </summary>
-public static class ComplianceConventions
+public static class AuditConventions
 {
-    /// <summary>Compliance records that could not be appended to the trail when they were made.</summary>
-    public const string AuditWriteFailures = "agent.compliance.audit_write_failures";
+    /// <summary>Audit records that could not be appended to their trail when they were made.</summary>
+    public const string WriteFailures = "agent.audit.write_failures";
 
-    /// <summary>Compliance records held pending that were later written to the trail.</summary>
-    public const string AuditRecordsReplayed = "agent.compliance.audit_records_replayed";
+    /// <summary>Audit records held pending that were later written to their trail.</summary>
+    public const string RecordsReplayed = "agent.audit.records_replayed";
 
     /// <summary>
-    /// The request a record belongs to: <c>right_to_erasure</c>, <c>subject_access_export</c> or
-    /// <c>document_removal</c>, or a request a deployment adds of its own. Always set from code, never a correlation id:
-    /// on a replayed record, read back from a held file, anything but the three shipped requests is <c>unknown</c>.
+    /// The trail a record belongs to: <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c>, <c>drift</c> or
+    /// <c>compliance</c>. Always set from code, never from a record's content, so it cannot add a time series.
     /// </summary>
-    public const string Action = "agent.compliance.action";
+    public const string Chain = "agent.audit.chain";
 
     /// <summary>What became of a record that could not be appended; one of <see cref="OutcomeValues"/>.</summary>
-    public const string Outcome = "agent.compliance.audit.outcome";
+    public const string Outcome = "agent.audit.outcome";
 
     /// <summary>The values of <see cref="Outcome"/>.</summary>
     public static class OutcomeValues
     {
-        /// <summary>Held in the pending folder, to be written to the trail by replay.</summary>
+        /// <summary>Held in the trail's pending folder, to be written to the trail by replay.</summary>
         public const string Pending = "pending";
 
         /// <summary>

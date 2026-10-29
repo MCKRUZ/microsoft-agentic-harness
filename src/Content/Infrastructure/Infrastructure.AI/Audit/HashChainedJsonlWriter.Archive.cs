@@ -52,13 +52,17 @@ public sealed partial class HashChainedJsonlWriter
     /// <summary>The probe file that showed the archive accepts writes from this application, once one has.</summary>
     private volatile string? _archiveAcceptedWrite;
 
-    /// <summary>Initializes a chain from its shared location (<see cref="AuditChains"/>).</summary>
-    /// <param name="chain">The chain's files and lock.</param>
+    /// <summary>
+    /// Initializes a chain from its shared location (<see cref="AuditChains"/>), holding a record it cannot append in the
+    /// location's pending folder for replay (#1001; see <see cref="PendingAuditRecords"/>).
+    /// </summary>
+    /// <param name="chain">The chain's files, lock and pending folder.</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
     /// <param name="archivePath">The archive every audit log's finished files are moved into, or empty for none.</param>
     public HashChainedJsonlWriter(AuditChainLocation chain, ILogger logger, string? archivePath = null)
         : this((chain ?? throw new ArgumentNullException(nameof(chain))).Segments, chain.LockPath, logger, archivePath)
     {
+        _pending = new PendingAuditRecords(chain.PendingPath, chain.Name, chain.Segments.Clock, logger);
     }
 
     /// <summary>
