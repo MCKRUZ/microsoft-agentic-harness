@@ -16,6 +16,8 @@ public sealed class DocumentIndexStartupTests
     {
         const string Provider = "AppConfig__AI__Rag__VectorStore__Provider";
         const string Endpoint = "AppConfig__AI__Rag__VectorStore__Endpoint";
+        var priorProvider = Environment.GetEnvironmentVariable(Provider);
+        var priorEndpoint = Environment.GetEnvironmentVariable(Endpoint);
         Environment.SetEnvironmentVariable(Provider, "azure_ai_search");
         // An empty value, as a failed Key Vault reference or an environment override leaves it.
         Environment.SetEnvironmentVariable(Endpoint, " ");
@@ -29,8 +31,8 @@ public sealed class DocumentIndexStartupTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(Provider, null);
-            Environment.SetEnvironmentVariable(Endpoint, null);
+            Environment.SetEnvironmentVariable(Provider, priorProvider);
+            Environment.SetEnvironmentVariable(Endpoint, priorEndpoint);
         }
     }
 }

@@ -18,8 +18,8 @@ namespace Application.Core.Compliance;
 /// <remarks>
 /// <para>
 /// <strong>What the record holds.</strong> Who asked (an operator, or the document age limit), the document id, the
-/// receipt's request id, its completeness, whether the id matched anything, per-store counts, any chunk store this host
-/// has not configured (#1011), and the host whose stores the removal reached (#1003), also stamped on the receipt. A
+/// receipt's request id, its completeness, whether the id matched anything, per-store counts, any store line the receipt
+/// lists, and the host whose stores the removal reached (#1003), also stamped on the receipt. A
 /// document id is a hash of where the document came from, not a person's identity, so it is kept: an
 /// audit record that could not say which document went would prove little.
 /// </para>
@@ -231,7 +231,8 @@ public sealed class AuditedDocumentRemoval
         metadata["graph.feedback_weights"] = Count(receipt.FeedbackWeightsDeleted);
         metadata["graph.vector_embeddings"] = Count(receipt.VectorEmbeddingsDeleted);
         metadata["graph.bm25_documents"] = Count(receipt.Bm25DocumentsDeleted);
-        // The chunk stores this host has not configured (#1011), in the shape an erasure record gives every store line.
+        // Any store line the orchestrator lists on the receipt, in the shape an erasure record gives every store line. The
+        // shipped orchestrator lists none on a removal: its counts are the chunk counts above.
         foreach (var store in receipt.Stores)
             metadata[$"store.{store.Store}"] = $"{store.Status}:{Count(store.ItemsRemoved)}";
 

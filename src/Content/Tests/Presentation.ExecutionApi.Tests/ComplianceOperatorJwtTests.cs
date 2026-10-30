@@ -49,6 +49,7 @@ public sealed class ComplianceOperatorJwtTests : IDisposable
     /// <summary>Boots the host with the Entra scheme configured; the assembly runs its tests one at a time.</summary>
     public ComplianceOperatorJwtTests()
     {
+        var prior = AuthSettings.Keys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
         foreach (var (key, value) in AuthSettings)
             Environment.SetEnvironmentVariable(key, value);
         try
@@ -67,8 +68,8 @@ public sealed class ComplianceOperatorJwtTests : IDisposable
         }
         finally
         {
-            foreach (var key in AuthSettings.Keys)
-                Environment.SetEnvironmentVariable(key, null);
+            foreach (var (key, value) in prior)
+                Environment.SetEnvironmentVariable(key, value);
         }
     }
 

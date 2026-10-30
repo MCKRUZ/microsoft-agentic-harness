@@ -227,6 +227,19 @@ public sealed class RagConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_AzureSearchSpelledDifferently_WithAnEndpoint_FailsOnTheSpelling()
+    {
+        // The keys resolve exactly: this spelling would leave the full-text store on the in-process fallback.
+        var config = AzureSearchConfig();
+        config.VectorStore.Provider = "Azure_AI_Search";
+
+        var result = _sut.Validate(config);
+
+        result.Errors.Should().ContainSingle().Which.PropertyName.Should().Be("VectorStore.Provider");
+        result.Errors[0].ErrorMessage.Should().Contain("exactly");
+    }
+
+    [Fact]
     public void Validate_AzureSearchWithAnEndpoint_Passes()
     {
         _sut.Validate(AzureSearchConfig()).IsValid.Should().BeTrue();
@@ -234,19 +247,39 @@ public sealed class RagConfigValidatorTests
 
     [Theory]
     [InlineData("faiss")]
-    [InlineData("Azure_AI_Search")]
-    [InlineData("a_consumer_store")]
-    public void Validate_AnEndpointWithAnotherProvider_Fails(string provider)
+    [InlineData("FAISS")]
+    public void Validate_AnEndpointWithTheInProcessProvider_Fails(string provider)
     {
-        // An endpoint left with the FAISS default (or any other key) means the index at it is never searched or erased:
-        // the in-process stores would answer for it and an erasure would read complete.
+        // An endpoint left with the FAISS provider means the index at it is never searched or erased: the in-process stores
+        // would answer for it and an erasure would read complete.
         var config = AzureSearchConfig();
         config.VectorStore.Provider = provider;
 
         var result = _sut.Validate(config);
 
         result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.PropertyName == "VectorStore.Provider");
+        result.Errors.Should().ContainSingle().Which.PropertyName.Should().Be("VectorStore.Provider");
+    }
+
+    [Fact]
+    public void Validate_AnEndpointWithTheDefaultProvider_Fails()
+    {
+        // The case the default flip (#1012) opened: a host that set only the endpoint used to get Azure by default.
+        var config = new RagConfig();
+        config.VectorStore.Endpoint = "https://svc.search.windows.net";
+
+        _sut.Validate(config).Errors.Should().ContainSingle().Which.PropertyName.Should().Be("VectorStore.Provider");
+    }
+
+    [Fact]
+    public void Validate_AnEndpointWithAConsumerProvider_Passes()
+    {
+        // A store a consumer registers under its own key may read the endpoint (VectorStoreConfig allows further keys);
+        // only the in-process stores are known never to read it.
+        var config = AzureSearchConfig();
+        config.VectorStore.Provider = "a_consumer_store";
+
+        _sut.Validate(config).IsValid.Should().BeTrue();
     }
 
     [Theory]
