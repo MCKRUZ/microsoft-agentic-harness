@@ -191,6 +191,16 @@ public sealed class FoundryHostBootstrapTests
                 new KeyValuePair<string, string>("AppConfig__AI__Rag__VectorStore__Provider", "faiss"));
     }
 
+    [Fact]
+    public void BuildConfigOverrides_OperatorChoseAProvider_IsNotOverridden()
+    {
+        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Env(
+            ("AppConfig__AI__Rag__VectorStore__Provider", "custom_store"),
+            ("AppConfig__AI__Rag__VectorStore__Endpoint", "https://search.example.net")));
+
+        overrides.Should().NotContainKey("AppConfig__AI__Rag__VectorStore__Provider");
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -291,14 +301,15 @@ public sealed class FoundryHostBootstrapTests
     }
 
     [Fact]
-    public void BuildConfigOverrides_WithNativeVectorStoreEndpoint_DoesNotForceFaissFallback()
+    public void BuildConfigOverrides_WithNativeVectorStoreEndpoint_SelectsAzureSearchNotFaiss()
     {
-        // Operator configured Azure AI Search via the native key but not the Provider key; the
-        // standalone fallback must NOT clobber that endpoint with the in-process FAISS store.
+        // Operator configured Azure AI Search via the native key but not the Provider key. That used to mean Azure because
+        // Azure was the config default; FAISS is the default since #1012 and refuses an endpoint at startup, so the
+        // endpoint must still select Azure rather than the standalone FAISS fallback.
         var overrides = FoundryHostBootstrap.BuildConfigOverrides(Env(
             ("AppConfig__AI__Rag__VectorStore__Endpoint", "https://svc.search.windows.net")));
 
-        overrides.Should().NotContainKey("AppConfig__AI__Rag__VectorStore__Provider");
+        overrides["AppConfig__AI__Rag__VectorStore__Provider"].Should().Be("azure_ai_search");
     }
 
     [Theory]

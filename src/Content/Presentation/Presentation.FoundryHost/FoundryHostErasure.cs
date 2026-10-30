@@ -111,7 +111,8 @@ internal static class FoundryHostErasure
             unowned.Add(($"The graph database (AppConfig:AI:Rag:GraphDatabase:Provider = {rag.GraphDatabase.Provider})",
                 NotShipped));
 
-        // The in-process FAISS index, or an Azure index with no endpoint (which holds nothing), stays in the session.
+        // The in-process FAISS index stays in the session. Startup refuses an Azure index with no endpoint (#1012), so the
+        // endpoint check below is a guard rather than a reachable case.
         var vectorProvider = rag.VectorStore.Provider;
         var documentIndex = $"The document index (AppConfig:AI:Rag:VectorStore:Provider = {vectorProvider})";
         if (vectorProvider == "azure_ai_search" && rag.VectorStore.IsConfigured)

@@ -161,6 +161,21 @@ public class ConfigValidationStartupTests
             }
         },
         {
+            // An Azure AI Search index whose endpoint was lost would make every erasure clear a placeholder and read
+            // complete while the chunks stay in the real index (#1012); the host must refuse to start instead.
+            "RagConfig (Azure AI Search without an endpoint)",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Rag:VectorStore:Provider"] = "azure_ai_search",
+                ["AppConfig:AI:Rag:VectorStore:Endpoint"] = "",
+            }
+        },
+        {
+            // An endpoint with the provider left at the FAISS default: the index at it would never be searched or erased.
+            "RagConfig (an endpoint without Azure AI Search)",
+            new Dictionary<string, string?> { ["AppConfig:AI:Rag:VectorStore:Endpoint"] = "https://svc.search.windows.net" }
+        },
+        {
             // The audit archive is read as part of each audit chain (#416); one that is an audit log's own folder
             // would read the live files twice.
             "AIConfig (Audit.ArchivePath)",

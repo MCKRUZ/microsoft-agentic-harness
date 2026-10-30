@@ -1188,8 +1188,7 @@ paths:
           description: >-
             The request ran. Check `completeness`: `Partial` names what was kept and why, and the
             receipt covers this host only. The chunk counts are `vectorEmbeddingsDeleted` and
-            `bm25DocumentsDeleted`; `stores` lists only a document index this host has not configured,
-            as `NotConfigured`, which was not asked and leaves the receipt `Full`.
+            `bm25DocumentsDeleted`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErasureReceipt" }
@@ -1479,7 +1478,7 @@ components:
               status:
                 type: string
                 enum: [Erased, Failed, Skipped, NotSupported, RetainedIndefinitely, RetainedUntilExpiry,
-                       RetainedByObligation, RetainedAsBusinessContent, NotConfigured]
+                       RetainedByObligation, RetainedAsBusinessContent]
               itemsRemoved: { type: integer }
               reason: { type: string, nullable: true }
 

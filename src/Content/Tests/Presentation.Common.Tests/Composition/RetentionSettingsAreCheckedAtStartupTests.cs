@@ -13,6 +13,9 @@ namespace Presentation.Common.Tests.Composition;
 /// </summary>
 public sealed class RetentionSettingsAreCheckedAtStartupTests
 {
+    private const string AzureProvider = "AppConfig:AI:Rag:VectorStore:Provider";
+    private const string AzureEndpoint = "AppConfig:AI:Rag:VectorStore:Endpoint";
+
     [Fact]
     public void AConversationIdlePeriodUnderADay_StopsTheHost()
     {
@@ -61,11 +64,13 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
     [Fact]
     public async Task TheDocumentAgeLimit_OverSharedStoresWithTheLocalLoadRecord_StopsTheHost()
     {
-        // The default vector store is Azure AI Search, which other processes can write; the shipped load record is this
-        // process's own file, so a removal could delete a document another host loaded yesterday.
+        // An Azure AI Search index can be written by other processes; the shipped load record is this process's own file,
+        // so a removal could delete a document another host loaded yesterday.
         await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
         {
             ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = "true",
+            [AzureProvider] = "azure_ai_search",
+            [AzureEndpoint] = "https://svc.search.windows.net",
         });
 
         var act = () => provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>().ToList();
@@ -80,6 +85,8 @@ public sealed class RetentionSettingsAreCheckedAtStartupTests
         {
             ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = "true",
             ["AppConfig:AI:Rag:Documents:LoadLedgerSharedByEveryWriter"] = "true",
+            [AzureProvider] = "azure_ai_search",
+            [AzureEndpoint] = "https://svc.search.windows.net",
         });
 
         var act = () => provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>().ToList();
