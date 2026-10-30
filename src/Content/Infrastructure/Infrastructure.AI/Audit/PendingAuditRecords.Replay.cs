@@ -195,7 +195,7 @@ public sealed partial class PendingAuditRecords
             }
 
             // Never held again on failure: the record already is.
-            var appended = await chain.AppendWithoutHoldingAsync(record.Payload, cancellationToken).ConfigureAwait(false);
+            var appended = await chain.AppendHeldRecordAsync(record.Payload, cancellationToken).ConfigureAwait(false);
             if (!appended.IsSuccess)
             {
                 _logger.LogWarning(

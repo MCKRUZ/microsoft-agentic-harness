@@ -28,7 +28,7 @@ namespace Infrastructure.AI.Escalation;
 /// that split continues (see <see cref="DatedAuditSegments"/>). Files are created lazily on first write.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests, decisions, outcomes and executions. Since #903 people are keyed references and tool arguments keyed fingerprints (IAuditPseudonymizer), and free text is redacted; records written earlier hold them raw. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Escalation:AuditStoragePath}/escalations-pending until replay writes it to the chain, then deleted.",
+    "Hash-chained JSONL under {Escalation:AuditStoragePath} (default .agent-sessions/escalations): requests, decisions, outcomes and executions. Since #903 people are keyed references and tool arguments keyed fingerprints (IAuditPseudonymizer), and free text is redacted; records written earlier hold them raw. Kept by design: deleting records would break the chain. An execution report that could not be appended is held, as the same line, in {Escalation:AuditStoragePath}/escalations-pending until replay writes it to the chain, then deleted; requests, decisions and outcomes are not held, since the escalation service refuses or re-drives them itself.",
     PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
@@ -103,7 +103,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             Payload = JsonSerializer.Serialize(_minimizer.Minimize(request), SerializeOptions)
         };
 
-        await AppendRecordAsync(record, ct);
+        await AppendRecordAsync(record, Held.No, ct);
     }
 
     /// <inheritdoc />
@@ -119,7 +119,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             Payload = JsonSerializer.Serialize(_minimizer.Minimize(decision), SerializeOptions)
         };
 
-        await AppendRecordAsync(record, ct);
+        await AppendRecordAsync(record, Held.No, ct);
     }
 
     /// <inheritdoc />
@@ -135,7 +135,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             Payload = JsonSerializer.Serialize(_minimizer.Minimize(outcome), SerializeOptions)
         };
 
-        await AppendRecordAsync(record, ct);
+        await AppendRecordAsync(record, Held.No, ct);
     }
 
     /// <inheritdoc />
@@ -151,7 +151,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             Payload = JsonSerializer.Serialize(record, SerializeOptions)
         };
 
-        await AppendRecordAsync(auditRecord, ct);
+        await AppendRecordAsync(auditRecord, Held.Yes, ct);
     }
 
     /// <inheritdoc />
@@ -252,12 +252,19 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     /// <summary>
     /// Serializes and appends a single audit record as one hash-chained JSONL line.
     /// </summary>
-    private async Task AppendRecordAsync(EscalationAuditRecord record, CancellationToken ct)
+    /// <remarks>
+    /// Which records are held when the append fails (#1001) follows what the escalation service does with the failure. A
+    /// request it never opens and a decision it never applies would be held records of things that did not happen, and the
+    /// approver retries the decision; an outcome it re-drives from its own durable store until the append succeeds would be
+    /// written twice. Only an execution report is held: the step it reports has already run, and its reporter logs the
+    /// failure and carries on, so nothing else would ever write it.
+    /// </remarks>
+    private async Task AppendRecordAsync(EscalationAuditRecord record, Held held, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        // Held as it is (#1001): every escalation record says something that happened, whatever the caller does next (an
-        // execution report has already run; a resolution's outcome is reconciled and appended again).
-        var result = await _chain.AppendAsync(json, ct);
+        var result = held == Held.Yes
+            ? await _chain.AppendAsync(json, ct)
+            : await _chain.AppendWithoutHoldingAsync(json, ct);
         if (!result.IsSuccess)
         {
             var reason = string.Join("; ", result.Errors);
@@ -271,5 +278,15 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
         _logger.LogDebug(
             "Appended escalation audit {RecordType} for {EscalationId} to {FilePath}",
             record.RecordType, record.EscalationId, _filePath);
+    }
+
+    /// <summary>Whether a record whose append fails is held for replay.</summary>
+    private enum Held
+    {
+        /// <summary>The caller refuses or re-drives the record itself.</summary>
+        No,
+
+        /// <summary>Nothing else would ever write the record.</summary>
+        Yes,
     }
 }

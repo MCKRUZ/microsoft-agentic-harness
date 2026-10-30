@@ -74,10 +74,33 @@ public sealed partial class HashChainedJsonlWriter
     }
 
     /// <summary>
+    /// Appends a serialized record as <see cref="AppendAsync(string, CancellationToken)"/> does, but never holds it when the
+    /// append fails: the failure goes back to the caller and nothing reaches the pending folder.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that owns its own durable retry of the record, or that refuses the action so the record describes nothing
+    /// that happened. The escalation service is both: it re-drives a resolution's outcome from its own store until the
+    /// append succeeds, and it does not open a request or apply a decision whose record failed. Holding the record as well
+    /// would put it in the trail twice once replay wrote it, with different timestamps, so replay's whole-line match could
+    /// not tell the copies apart.
+    /// </remarks>
+    /// <param name="payloadJson">The caller's already-serialized record as a single-line JSON string.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>As <see cref="AppendAsync(string, CancellationToken)"/>, except that a failure is never held.</returns>
+    public Task<Result> AppendWithoutHoldingAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(payloadJson);
+        return payloadJson.AsSpan().IndexOfAny(FramingChars) >= 0
+            ? Task.FromResult(Result.Fail(
+                "Audit payload must not contain raw tab, carriage-return, or newline characters; chain framing is line- and tab-delimited."))
+            : AppendOnceAsync(payloadJson, lockWait: null, cancellationToken);
+    }
+
+    /// <summary>
     /// Appends a held record, waiting at most <see cref="LockTimeout"/> in all so one slow verification cannot stall a
     /// replay pass that holds the pending folder, and never holds it again when the append fails.
     /// </summary>
-    internal Task<Result> AppendWithoutHoldingAsync(string payloadJson, CancellationToken cancellationToken) =>
+    internal Task<Result> AppendHeldRecordAsync(string payloadJson, CancellationToken cancellationToken) =>
         AppendOnceAsync(payloadJson, LockTimeout, cancellationToken);
 
     /// <remarks>

@@ -162,6 +162,19 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendWithoutHoldingAsync_TheChainCannotBeWritten_FailsAndHoldsNothing()
+    {
+        var chain = Chain("escalations");
+        Break(chain);
+        using var writer = new HashChainedJsonlWriter(chain, NullLogger.Instance);
+
+        var appended = await writer.AppendWithoutHoldingAsync(Record("caller-retries"), CancellationToken.None);
+
+        appended.IsSuccess.Should().BeFalse();
+        Held(chain.PendingPath).Should().BeEmpty("a caller with its own durable retry would otherwise see the record twice");
+    }
+
+    [Fact]
     public async Task AppendAsync_AWriterBuiltFromBarePaths_HoldsNothing()
     {
         var chain = Chain("drift");

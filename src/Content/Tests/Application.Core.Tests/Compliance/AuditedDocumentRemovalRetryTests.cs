@@ -162,16 +162,39 @@ public sealed class AuditedDocumentRemovalRetryTests
     }
 
     [Fact]
-    public async Task RemoveAsync_ADocumentTheAgeLimitStoppedListing_IsRecordedInFullWhenItComesBack()
+    public async Task ForgetSettledAsync_ADocumentLoadedAgain_IsANewRequestRecordedInFull()
     {
         Returns(Partial(), Partial());
 
         await RetainAsync();
-        _retries.KeepOnly([]);
+        await _retries.ForgetSettledAsync((_, _) => Task.FromResult<DateTimeOffset?>(_load.AddDays(1)), CancellationToken.None);
         await RetainAsync();
 
-        Phases().Should().HaveCount(4, "a document no longer listed was removed or reloaded, so its history is forgotten");
+        Phases().Should().HaveCount(4, "a document loaded again since is a new request");
+    }
+
+    [Fact]
+    public async Task ForgetSettledAsync_ADocumentStillAtTheLoadJudged_IsKept()
+    {
+        Returns(Partial(), Partial());
+
+        await RetainAsync();
+        await _retries.ForgetSettledAsync((_, _) => Task.FromResult<DateTimeOffset?>(_load), CancellationToken.None);
+        await RetainAsync();
+
+        Phases().Should().HaveCount(2, "a document still waiting for removal keeps its history");
         _retries.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ForgetSettledAsync_ADocumentWithNoLoadRecord_IsForgotten()
+    {
+        Returns(Partial());
+
+        await RetainAsync();
+        await _retries.ForgetSettledAsync((_, _) => Task.FromResult<DateTimeOffset?>(null), CancellationToken.None);
+
+        _retries.Count.Should().Be(0, "a document removed some other way is no longer being retried");
     }
 
     [Fact]

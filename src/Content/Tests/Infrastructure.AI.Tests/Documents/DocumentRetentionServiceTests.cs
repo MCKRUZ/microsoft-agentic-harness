@@ -41,6 +41,7 @@ public sealed class DocumentRetentionServiceTests : IDisposable
     private readonly ConcurrentQueue<string> _removed = new();
     private ErasureCompleteness _completeness = ErasureCompleteness.Full;
     private int _vectorsRemoved = 1;
+    private readonly HashSet<string> _staysPartial = new(StringComparer.Ordinal);
     private bool _loadDuringRemoval;
 
     public DocumentRetentionServiceTests()
@@ -60,7 +61,7 @@ public sealed class DocumentRetentionServiceTests : IDisposable
                 _removed.Enqueue(id);
                 if (_loadDuringRemoval)
                     await LoadAsync(id, _clock.GetUtcNow());
-                return Receipt(_completeness, _vectorsRemoved);
+                return Receipt(_staysPartial.Contains(id) ? ErasureCompleteness.Partial : _completeness, _vectorsRemoved);
             });
     }
 
@@ -138,6 +139,31 @@ public sealed class DocumentRetentionServiceTests : IDisposable
         attempts.Should().HaveCount(2, "the first attempt, then the retry that ended differently");
         attempts[1].Metadata![DocumentRemovalRetries.RetryOfKey].Should().Be(attempts[0].CorrelationId);
         _records.Last().Metadata!["completeness"].Should().Be(nameof(ErasureCompleteness.Full));
+    }
+
+    [Fact]
+    public async Task APartialRemovalOutsideOneSweepsCap_KeepsItsRetryHistory()
+    {
+        // A sweep lists at most MaxDocumentsPerSweep documents, oldest first. One still being retried that a sweep does not
+        // list must not lose its history, or its next retry is recorded as a new request.
+        _config.AI.Rag.Documents.Retention.Enabled = true;
+        _vectorsRemoved = 0;
+        const string Tracked = "FFFFFFFFFFFFFFFF";
+        _staysPartial.Add(Tracked);
+        await LoadAsync(Tracked, Origin - TimeSpan.FromDays(4000));
+        using var service = CreateService(Ledger(Origin));
+        await StartAsync(service);
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+
+        // A full page of older documents fills the next sweep, so the tracked one is not listed; they are removed in full.
+        for (var i = 0; i < DocumentRetentionService.MaxDocumentsPerSweep; i++)
+            await LoadAsync($"{i:X16}", Origin - TimeSpan.FromDays(5000));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+
+        _removed.Count(id => id == Tracked).Should().Be(2, "control: it was retried once it was listed again");
+        _records.Count(r => r.Metadata!["document_id"] == Tracked && r.Metadata["phase"] == "attempt").Should().Be(1,
+            "a retry that ends as the first attempt did adds nothing, even after a sweep that did not list it");
     }
 
     [Fact]

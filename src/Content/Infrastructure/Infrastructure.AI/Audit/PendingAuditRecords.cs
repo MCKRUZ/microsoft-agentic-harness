@@ -24,7 +24,9 @@ namespace Infrastructure.AI.Audit;
 /// log line, deleted with the logs after 30 days. What the caller does about the failure is unchanged: a trail that refuses
 /// the action when its record cannot be written (changes, egress, escalations) still refuses it. Changes and egress hold
 /// their decision marked <c>not_carried_out</c>, so replay never writes an allowed decision for a request that never went
-/// out; escalation records describe events that happened either way, and are held as they are.
+/// out. The escalation trail holds only execution reports: the escalation service refuses or re-drives its other records
+/// itself, through <see cref="HashChainedJsonlWriter.AppendWithoutHoldingAsync"/>, and holding them too would write them
+/// twice.
 /// </para>
 /// <para>
 /// <strong>What is held.</strong> One file per record, <c>{UTC ticks}-{guid}.pending</c>, in the chain's

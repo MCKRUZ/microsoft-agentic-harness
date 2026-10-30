@@ -1528,7 +1528,9 @@
                                 ten, before it is held (#999). The other five audit trails hold and replay the same way,
                                 each in a <code>-pending</code> folder beside its own day-files, such as
                                 <code>governance-pending</code> (#1001); a trail that refuses the action when its record
-                                cannot be written (changes, egress, escalations) still refuses it. Each held file is the exact line the trail refused, with an operator
+                                cannot be written (changes, egress, escalations) still refuses it. The escalation trail holds
+                                only execution reports, since the escalation service refuses or re-drives its other records
+                                itself and holding them too would write them twice. Each held file is the exact line the trail refused, with an operator
                                 already replaced by their keyed reference, so it holds nothing the trail would not; it is
                                 flushed to disk and renamed into place before the request returns (the rename itself is
                                 not forced to disk, so on Linux a power cut at that moment can still lose it; a process

@@ -90,6 +90,81 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
     private static EscalationExecutionRecord BuildExecutionRecord(Guid escalationId) =>
         EscalationExecutionRecord.Succeeded(escalationId, DateTimeOffset.UtcNow, "agent-turn");
 
+    private string DayFolder => Path.Combine(_tempDir, "escalations");
+
+    private string[] Held() => Directory.Exists(_store.PendingLocation)
+        ? Directory.GetFiles(_store.PendingLocation, "*.pending")
+        : [];
+
+    private void BreakTheTrail()
+    {
+        Directory.CreateDirectory(_tempDir);
+        File.WriteAllText(DayFolder, "not a folder");
+    }
+
+    [Fact]
+    public async Task RecordOutcomeAsync_FailedThenReDrivenByReconciliation_LeavesExactlyOneOutcomeAfterReplay()
+    {
+        // The escalation service parks a resolution whose outcome append failed and re-drives the same outcome until it is
+        // written (DefaultEscalationService.Durability). Holding the failed append as well would write it a second time.
+        var outcome = BuildOutcome(Guid.NewGuid());
+        BreakTheTrail();
+        var failed = () => _store.RecordOutcomeAsync(outcome, CancellationToken.None);
+        await failed.Should().ThrowAsync<IOException>("the resolution stays parked, awaiting reconciliation");
+        File.Delete(DayFolder);
+
+        await _store.RecordOutcomeAsync(outcome, CancellationToken.None); // The reconciler's re-drive.
+        await _store.ReplayPendingAsync(CancellationToken.None);
+
+        var history = await _store.GetHistoryAsync(outcome.EscalationId, CancellationToken.None);
+        history.Count(r => r.RecordType == EscalationAuditRecordType.Outcome).Should().Be(1);
+    }
+
+    public static TheoryData<EscalationAuditRecordType, bool> HeldWhenTheAppendFails => new()
+    {
+        // Refused or re-driven by the escalation service itself.
+        { EscalationAuditRecordType.Request, false },
+        { EscalationAuditRecordType.Decision, false },
+        { EscalationAuditRecordType.Outcome, false },
+        // Already ran, and its reporter carries on: nothing else would write it.
+        { EscalationAuditRecordType.Execution, true },
+    };
+
+    [Theory]
+    [MemberData(nameof(HeldWhenTheAppendFails))]
+    public async Task EachRecordType_TheAppendFails_IsHeldOnlyWhenNothingElseWouldWriteIt(
+        EscalationAuditRecordType recordType, bool held)
+    {
+        var escalationId = Guid.NewGuid();
+        BreakTheTrail();
+
+        var append = recordType switch
+        {
+            EscalationAuditRecordType.Request => () => _store.RecordRequestAsync(BuildRequest(escalationId), CancellationToken.None),
+            EscalationAuditRecordType.Decision => () => _store.RecordDecisionAsync(escalationId, BuildDecision(), CancellationToken.None),
+            EscalationAuditRecordType.Outcome => () => _store.RecordOutcomeAsync(BuildOutcome(escalationId), CancellationToken.None),
+            _ => (Func<Task>)(() => _store.RecordExecutionAsync(BuildExecutionRecord(escalationId), CancellationToken.None)),
+        };
+        await append.Should().ThrowAsync<IOException>();
+
+        Held().Should().HaveCount(held ? 1 : 0);
+    }
+
+    [Fact]
+    public async Task RecordExecutionAsync_FailedOnce_IsReplayedIntoTheTrail()
+    {
+        var execution = BuildExecutionRecord(Guid.NewGuid());
+        BreakTheTrail();
+        var failed = () => _store.RecordExecutionAsync(execution, CancellationToken.None);
+        await failed.Should().ThrowAsync<IOException>();
+        File.Delete(DayFolder);
+
+        (await _store.ReplayPendingAsync(CancellationToken.None)).Written.Should().Be(1);
+
+        (await _store.GetHistoryAsync(execution.EscalationId, CancellationToken.None))
+            .Should().ContainSingle(r => r.RecordType == EscalationAuditRecordType.Execution);
+    }
+
     [Fact]
     public async Task RecordRequestAsync_AppendsToFile()
     {

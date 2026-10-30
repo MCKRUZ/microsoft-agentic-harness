@@ -35,6 +35,12 @@ namespace Application.Core.Compliance;
 /// loaded again since is a new request, so it is tracked by the load the age limit judged as well as by its id. Held in
 /// memory by the age-limit service: after a restart, the first retry of each document is recorded again, once.
 /// </para>
+/// <para>
+/// <strong>What is forgotten.</strong> A document fully removed, and every sweep (<see cref="ForgetSettledAsync"/>) a
+/// document whose load record is gone or newer than the load tracked: removed some other way, or loaded again. Never a
+/// document merely missing from one sweep's capped list, which would make its next retry look like a first attempt. So
+/// the tracker holds at most one entry per document still past the age limit and not fully removed.
+/// </para>
 /// </remarks>
 public sealed class DocumentRemovalRetries
 {
@@ -46,14 +52,22 @@ public sealed class DocumentRemovalRetries
     /// <summary>Gets how many documents are being tracked.</summary>
     public int Count => _tried.Count;
 
-    /// <summary>Forgets every document not in <paramref name="documentIds"/>: removed since, or loaded again.</summary>
-    /// <param name="documentIds">The documents the age limit is still trying to remove.</param>
-    public void KeepOnly(IReadOnlyCollection<string> documentIds)
+    /// <summary>
+    /// Forgets every document whose load record is gone, or no longer the load tracked: removed some other way, or loaded
+    /// again since, which makes a later removal a new request.
+    /// </summary>
+    /// <param name="lastLoadedOf">When a document was last loaded, or null when it has no load record.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once every tracked document has been checked.</returns>
+    public async Task ForgetSettledAsync(
+        Func<string, CancellationToken, Task<DateTimeOffset?>> lastLoadedOf, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(documentIds);
-        var keep = documentIds.ToHashSet(StringComparer.Ordinal);
-        foreach (var documentId in _tried.Keys.Where(id => !keep.Contains(id)))
-            _tried.TryRemove(documentId, out _);
+        ArgumentNullException.ThrowIfNull(lastLoadedOf);
+        foreach (var (documentId, tried) in _tried.ToArray())
+        {
+            if (await lastLoadedOf(documentId, cancellationToken).ConfigureAwait(false) != tried.Load)
+                _tried.TryRemove(new KeyValuePair<string, Tried>(documentId, tried));
+        }
     }
 
     /// <summary>The first attempt and last recorded outcome for this load of the document, or null when there is none.</summary>

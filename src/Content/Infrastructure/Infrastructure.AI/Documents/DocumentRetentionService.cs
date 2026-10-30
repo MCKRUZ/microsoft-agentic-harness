@@ -94,7 +94,8 @@ internal sealed class DocumentRetentionService : PeriodicSweepService
 
         var cutoff = _timeProvider.GetUtcNow() - gracePeriod;
         var expired = await _ledger.ListLoadedBeforeAsync(cutoff, MaxDocumentsPerSweep, cancellationToken);
-        _retries.KeepOnly(expired); // A document no longer listed was removed, or loaded again.
+        // Only documents known to be settled: one missing from this capped list may still be retried next sweep.
+        await _retries.ForgetSettledAsync(_ledger.GetLastLoadedAsync, cancellationToken);
         if (expired.Count == 0)
             return 0;
 
