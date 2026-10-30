@@ -12,7 +12,8 @@ namespace Presentation.FoundryHost.Tests;
 /// <summary>
 /// FoundryHost serves no erasure or export endpoint, because Foundry routes only its protocol endpoints to the container
 /// and each call reaches one session's sandbox (#1003). What it does instead is say so at startup, and name every store it
-/// was bound with that deleting a Foundry session does not reach, since those hold records with no owner.
+/// was bound with that deleting a Foundry session does not reach: those that record the caller Foundry verified as owner
+/// (#1008), and, in a warning, those that key nothing by person.
 /// </summary>
 public sealed class FoundryHostErasureTests
 {
@@ -31,34 +32,66 @@ public sealed class FoundryHostErasureTests
             .And.Contain("session files API").And.Contain(FoundryHostErasure.GuideAnchor);
     }
 
-    public static TheoryData<string, Action<AppConfig>> SharedStores => new()
+    public static TheoryData<string, Action<AppConfig>> OwnedSharedStores => new()
     {
         { "GraphProvider = neo4j", c => c.AI.Rag.GraphRag.GraphProvider = "neo4j" },
         { "GraphProvider = postgresql", c => c.AI.Rag.GraphRag.GraphProvider = "postgresql" },
-        { "GraphDatabase:Provider = neo4j", c => c.AI.Rag.GraphDatabase.Provider = "neo4j" },
         { "Provider = azure_ai_search", c =>
             {
                 c.AI.Rag.VectorStore.Provider = "azure_ai_search";
                 c.AI.Rag.VectorStore.Endpoint = "https://search.example";
             }
         },
-        { "Redis", c => c.Cache.CacheType = CacheType.RedisCache },
-        // Fails closed: a document index the template does not ship is still named.
-        { "Provider = qdrant", c => c.AI.Rag.VectorStore.Provider = "qdrant" },
-        { "observability database", c => c.Observability.PostgresConnectionString = "Host=db;Database=obs" },
     };
 
     [Theory]
-    [MemberData(nameof(SharedStores))]
-    public void Describe_AStoreSharedAcrossSessions_IsNamedInAWarning(string named, Action<AppConfig> share)
+    [MemberData(nameof(OwnedSharedStores))]
+    public void Describe_ASharedStoreThatRecordsItsOwner_SaysTheFoundryUserIdReachesIt(string named, Action<AppConfig> share)
+    {
+        // #1008: each request runs as the caller Foundry verified, so these stores record an owner an erasure can name.
+        var config = Standalone();
+        share(config);
+
+        var notices = FoundryHostErasure.Describe(config);
+
+        notices.Should().NotContain(n => n.Level == LogLevel.Warning);
+        notices.Should().ContainSingle(n => n.Message.Contains(named)).Which.Message.Should()
+            .Contain("shared by every session").And.Contain("x-agent-user-id")
+            .And.Contain("sent to a host bound to the same store").And.Contain("carry no owner")
+            .And.Contain(FoundryHostErasure.GuideAnchor);
+    }
+
+    public static TheoryData<string, Action<AppConfig>> UnownedSharedStores => new()
+    {
+        { "Redis", c => c.Cache.CacheType = CacheType.RedisCache },
+        { "observability database", c => c.Observability.PostgresConnectionString = "Host=db;Database=obs" },
+        // Fails closed: a provider the template does not ship may never write an owner, so it is not promised one.
+        { "Provider = qdrant", c => c.AI.Rag.VectorStore.Provider = "qdrant" },
+        { "GraphProvider = arangodb", c => c.AI.Rag.GraphRag.GraphProvider = "arangodb" },
+        { "GraphDatabase:Provider = neo4j", c => c.AI.Rag.GraphDatabase.Provider = "neo4j" },
+        // Without the compliance decorator, edges are written with no owner, so owner erasure leaves them.
+        { "ComplianceEnabled is off", c =>
+            {
+                c.AI.Rag.GraphRag.GraphProvider = "neo4j";
+                c.AI.Rag.GraphRag.ComplianceEnabled = false;
+            }
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(UnownedSharedStores))]
+    public void Describe_ASharedStoreThatKeysNothingByPerson_IsNamedInAWarning(string named, Action<AppConfig> share)
     {
         var config = Standalone();
         share(config);
 
-        var warnings = FoundryHostErasure.Describe(config).Where(n => n.Level == LogLevel.Warning).ToList();
+        var notices = FoundryHostErasure.Describe(config);
+        var warnings = notices.Where(n => n.Level == LogLevel.Warning).ToList();
 
         warnings.Should().ContainSingle().Which.Message.Should().Contain(named)
             .And.Contain("no owner").And.Contain("cannot be erased or copied for one person");
+        notices.Should().NotContain(n => n.Level != LogLevel.Warning && n.Message.Contains("x-agent-user-id"),
+            "a store that may never record an owner must not also be promised that erasure reaches it");
     }
 
     [Fact]
@@ -82,7 +115,7 @@ public sealed class FoundryHostErasureTests
         var config = Standalone();
         config.AI.Rag.VectorStore.Provider = "azure_ai_search";
 
-        FoundryHostErasure.Describe(config).Should().OnlyContain(n => n.Level == LogLevel.Information);
+        FoundryHostErasure.Describe(config).Should().ContainSingle();
     }
 
     [Fact]
