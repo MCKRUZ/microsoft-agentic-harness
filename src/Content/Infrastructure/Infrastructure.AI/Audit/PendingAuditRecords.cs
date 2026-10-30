@@ -22,8 +22,9 @@ namespace Infrastructure.AI.Audit;
 /// decision taken, an outbound request decided. Before #995 (compliance) and #1001 (the other five trails) a record the chain
 /// refused (busy for longer than the writer waits, a full disk, a folder that cannot be written) survived only as an error
 /// log line, deleted with the logs after 30 days. What the caller does about the failure is unchanged: a trail that refuses
-/// the action when its record cannot be written (changes, egress, escalations) still refuses it, and holds its record marked
-/// <c>not_carried_out</c>, so replay never writes an allowed decision for a request that never went out.
+/// the action when its record cannot be written (changes, egress, escalations) still refuses it. Changes and egress hold
+/// their decision marked <c>not_carried_out</c>, so replay never writes an allowed decision for a request that never went
+/// out; escalation records describe events that happened either way, and are held as they are.
 /// </para>
 /// <para>
 /// <strong>What is held.</strong> One file per record, <c>{UTC ticks}-{guid}.pending</c>, in the chain's

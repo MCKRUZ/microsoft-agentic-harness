@@ -38,7 +38,7 @@ public sealed partial class HashChainedJsonlWriter
     /// <see cref="AuditChainLocation"/> holds a record it could not write for replay, and its failure says so (#1001).
     /// </returns>
     public Task<Result> AppendAsync(string payloadJson, CancellationToken cancellationToken) =>
-        AppendCoreAsync(payloadJson, payloadJson, lockWait: null, cancellationToken);
+        AppendCoreAsync(payloadJson, null, lockWait: null, cancellationToken);
 
     /// <summary>
     /// Appends a serialized record as <see cref="AppendAsync(string, CancellationToken)"/> does, waiting no longer than
@@ -55,39 +55,42 @@ public sealed partial class HashChainedJsonlWriter
     public Task<Result> AppendAsync(string payloadJson, TimeSpan lockWait, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(lockWait, TimeSpan.Zero);
-        return AppendCoreAsync(payloadJson, payloadJson, lockWait, cancellationToken);
+        return AppendCoreAsync(payloadJson, null, lockWait, cancellationToken);
     }
 
     /// <summary>
-    /// Appends a serialized record as <see cref="AppendAsync(string, CancellationToken)"/> does, but holds
-    /// <paramref name="payloadIfHeld"/> in its place when the append fails: for a trail that refuses the action its record
-    /// could not be written for, the same record marked as not carried out.
+    /// Appends a serialized record as <see cref="AppendAsync(string, CancellationToken)"/> does, but holds what
+    /// <paramref name="payloadIfHeld"/> makes in its place when the append fails: for a trail that refuses the action its
+    /// record could not be written for, the same record marked as not carried out. Called only on failure.
     /// </summary>
     /// <param name="payloadJson">The record as it is appended when the chain accepts it.</param>
-    /// <param name="payloadIfHeld">The record as it is held, and later replayed, when the chain does not.</param>
+    /// <param name="payloadIfHeld">Makes the record as it is held, and later replayed, when the chain does not.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>As <see cref="AppendAsync(string, CancellationToken)"/>.</returns>
-    public Task<Result> AppendAsync(string payloadJson, string payloadIfHeld, CancellationToken cancellationToken)
+    public Task<Result> AppendAsync(string payloadJson, Func<string> payloadIfHeld, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payloadIfHeld);
         return AppendCoreAsync(payloadJson, payloadIfHeld, lockWait: null, cancellationToken);
     }
 
-    /// <summary>Appends a held record with the default waits, and never holds it again when the append fails.</summary>
+    /// <summary>
+    /// Appends a held record, waiting at most <see cref="LockTimeout"/> in all so one slow verification cannot stall a
+    /// replay pass that holds the pending folder, and never holds it again when the append fails.
+    /// </summary>
     internal Task<Result> AppendWithoutHoldingAsync(string payloadJson, CancellationToken cancellationToken) =>
-        AppendOnceAsync(payloadJson, lockWait: null, cancellationToken);
+        AppendOnceAsync(payloadJson, LockTimeout, cancellationToken);
 
     /// <remarks>
     /// A record whose append throws (the writer disposed at shutdown, the caller cancelling) is held as well before the
     /// exception goes on to the caller: whatever the record describes has already happened.
     /// </remarks>
     private async Task<Result> AppendCoreAsync(
-        string payloadJson, string payloadIfHeld, TimeSpan? lockWait, CancellationToken cancellationToken)
+        string payloadJson, Func<string>? payloadIfHeld, TimeSpan? lockWait, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payloadJson);
 
         // Not held: replay could never append it either.
-        if (payloadJson.AsSpan().IndexOfAny(FramingChars) >= 0 || payloadIfHeld.AsSpan().IndexOfAny(FramingChars) >= 0)
+        if (payloadJson.AsSpan().IndexOfAny(FramingChars) >= 0)
             return Result.Fail(
                 "Audit payload must not contain raw tab, carriage-return, or newline characters; chain framing is line- and tab-delimited.");
 
@@ -101,11 +104,11 @@ public sealed partial class HashChainedJsonlWriter
         }
         catch (Exception ex)
         {
-            _pending.Hold(payloadIfHeld, [$"The append threw {ex.GetType().Name}."]);
+            _pending.Hold(payloadIfHeld?.Invoke() ?? payloadJson, [$"The append threw {ex.GetType().Name}."]);
             throw;
         }
 
-        return appended.IsSuccess ? appended : _pending.Hold(payloadIfHeld, appended.Errors);
+        return appended.IsSuccess ? appended : _pending.Hold(payloadIfHeld?.Invoke() ?? payloadJson, appended.Errors);
     }
 
     /// <summary>
@@ -142,7 +145,7 @@ public sealed partial class HashChainedJsonlWriter
             OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
 
             var lengthAfterWrite = AppendLine(segmentPath, line);
-            WriteHint(chainLock, new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
+            TryWriteHint(chainLock, new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
             return Result.Success();
         }
         catch (AuditChainBusyException ex)
@@ -162,6 +165,20 @@ public sealed partial class HashChainedJsonlWriter
         finally
         {
             _semaphore.Release();
+        }
+    }
+
+    // The record is in the chain once AppendLine returns. A hint that cannot be written only makes the next append walk the
+    // chain (the hint is never an authority), so failing here would report, and hold, a record the chain already has.
+    private void TryWriteHint(FileStream chainLock, SharedHead head)
+    {
+        try
+        {
+            WriteHint(chainLock, head);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Audit record appended to {AuditLocation}, but its resume hint could not be written", _displayLocation);
         }
     }
 

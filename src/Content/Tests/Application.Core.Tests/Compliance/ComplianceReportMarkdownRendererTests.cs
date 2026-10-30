@@ -82,6 +82,33 @@ public sealed class ComplianceReportMarkdownRendererTests
         markdown.Should().Contain("3 record(s) are held for replay");
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(null, false)]
+    public void Render_AnEgressDecisionHeldAfterItsRequestWasRefused_SaysItWasNotCarriedOut(bool? notCarriedOut, bool said)
+    {
+        var report = EmptyReport() with
+        {
+            EgressDecisions = [new Domain.AI.Egress.EgressAuditRecord
+            {
+                Timestamp = Now,
+                Allowed = true,
+                Target = "fp:target",
+                Host = "api.example.com",
+                Scheme = "https",
+                Port = 443,
+                Reason = "Matched allowlist entry.",
+                AgentIdentity = new Domain.AI.Egress.EgressAuditIdentity { Tenant = "t", Agent = "a", Kind = "Agent" },
+                NotCarriedOut = notCarriedOut,
+            }],
+        };
+
+        var markdown = ComplianceReportMarkdownRenderer.Render(report);
+
+        markdown.Contains("not carried out", StringComparison.Ordinal).Should().Be(said,
+            "an auditor reading the report must not take a refused request for one that went out (#1001)");
+    }
+
     [Fact]
     public void Render_NoComplianceRequests_SaysSo()
     {

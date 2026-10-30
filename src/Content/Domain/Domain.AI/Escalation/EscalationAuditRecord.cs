@@ -30,12 +30,4 @@ public sealed record EscalationAuditRecord
     /// </list>
     /// </remarks>
     public required string Payload { get; init; }
-
-    /// <summary>
-    /// Set only on a record that was held for replay because it could not be appended when it was made (#1001): this trail
-    /// refuses the action its record cannot be written for, so the action this event was for did not go ahead. Absent on
-    /// every record appended when it was made, so earlier lines are unchanged.
-    /// </summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    public bool? NotCarriedOut { get; init; }
 }
