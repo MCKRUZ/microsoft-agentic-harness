@@ -123,12 +123,27 @@ internal static class CompositionRootTestHost
         // chain lock; the receipt folder and key per run.
         AddUnlessChosen(list, "AppConfig:AI:Erasure:AuditStoragePath",
             Path.Combine(IsolatedStateRoot.Root, $"erasure-audit-{Guid.NewGuid():N}"));
+
+        // The other five trails are kept for good too, and since #1001 each holds a record it could not append in a
+        // pending folder beside it that every host's replay service works on. Their own folders per composition as well.
+        foreach (var (key, folder) in OtherAuditTrails)
+            AddUnlessChosen(list, key, Path.Combine(IsolatedStateRoot.Root, $"{folder}-{Guid.NewGuid():N}"));
         AddUnlessChosen(list, "AppConfig:AI:Audit:ReceiptPath", Path.Combine(IsolatedStateRoot.Root, "audit-verify"));
         AddUnlessChosen(list, "AppConfig:AI:Audit:PseudonymKeyPath",
             Path.Combine(IsolatedStateRoot.Root, "keys", "audit-pseudonym.key"));
 
         return list;
     }
+
+    /// <summary>The storage setting of every audit trail besides compliance, with the folder name a composition gets for it.</summary>
+    internal static readonly (string Key, string Folder)[] OtherAuditTrails =
+    [
+        ("AppConfig:AI:Governance:AuditStoragePath", "governance-audit"),
+        ("AppConfig:AI:Governance:Escalation:AuditStoragePath", "escalation-audit"),
+        ("AppConfig:AI:Changes:AuditStoragePath", "change-audit"),
+        ("AppConfig:AI:Egress:AuditStoragePath", "egress-audit"),
+        ("AppConfig:AI:DriftDetection:AuditPath", "drift-audit-root"),
+    ];
 
     private static void AddUnlessChosen(List<KeyValuePair<string, string?>> settings, string key, string value)
     {

@@ -40,6 +40,12 @@ public class AuditArchivePathValidatorTests
     [InlineData("data/audit/drift-audit", "DriftDetection:AuditPath")]
     [InlineData(".agent-sessions/compliance", "Erasure:AuditStoragePath")]
     [InlineData(".agent-sessions/compliance-pending/archive", "Erasure:AuditStoragePath")]
+    // Every trail's pending folder (#1001) sits inside the folder its trail is configured in, so it is refused with it.
+    [InlineData(".agent-sessions/governance/governance-pending", "Governance:AuditStoragePath")]
+    [InlineData(".agent-sessions/escalations/escalations-pending", "Governance:Escalation:AuditStoragePath")]
+    [InlineData(".agent-sessions/changes/changes-pending", "Changes:AuditStoragePath")]
+    [InlineData(".agent-sessions/egress/egress-pending", "Egress:AuditStoragePath")]
+    [InlineData("data/audit/drift-audit-pending", "DriftDetection:AuditPath")]
     public void AnArchiveOverlappingALogFolder_IsRefused_NamingTheFolder(string archivePath, string overlapped)
     {
         var result = _validator.Validate(WithArchive(archivePath));

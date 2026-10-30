@@ -29,7 +29,7 @@ namespace Infrastructure.AI.Audit;
 /// <c>ToolCallObserverChain</c>, <c>DefaultToolClassificationGate</c>) — making the interface async
 /// would cascade through ~25-30 edit points in the highest-risk code in the repo, for a durability
 /// guarantee this design delivers without touching a single caller. <see cref="Log"/> blocks on
-/// <see cref="HashChainedJsonlWriter.AppendAsync"/> (<c>GetAwaiter().GetResult()</c>) rather than
+/// <see cref="HashChainedJsonlWriter.AppendAsync(string, CancellationToken)"/> (<c>GetAwaiter().GetResult()</c>) rather than
 /// duplicating its ~150 lines of hash-chain/head-recovery logic synchronously. This is safe here
 /// specifically: every host that calls this (ASP.NET Core, .NET console) has no captured
 /// <see cref="SynchronizationContext"/>, so blocking on the task cannot deadlock — it only holds a
@@ -58,13 +58,13 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Governance:AuditStoragePath} (default .agent-sessions/governance): agent id, action and decision, including approver names and reasons and memory-write keys. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Governance:AuditStoragePath} (default .agent-sessions/governance): agent id, action and decision, including approver names and reasons and memory-write keys. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Governance:AuditStoragePath}/governance-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.PeopleNames | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerifiableAuditChain, IDisposable
+public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -121,6 +121,13 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
 
     /// <inheritdoc />
     public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     /// <inheritdoc />
     public void Log(string agentId, string action, string decision)

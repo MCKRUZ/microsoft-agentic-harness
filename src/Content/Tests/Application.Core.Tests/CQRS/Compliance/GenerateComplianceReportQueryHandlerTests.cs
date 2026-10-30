@@ -5,7 +5,9 @@ using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using System.Text.Json;
 using Application.Core.CQRS.Compliance.GenerateComplianceReport;
+using Application.Core.Compliance;
 using Domain.AI.Audit;
 using Domain.AI.Changes;
 using Domain.AI.DriftDetection;
@@ -14,6 +16,7 @@ using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Observability.Models;
 using Domain.Common;
+using TrailEntry = Domain.Common.Models.AuditEntry;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -40,10 +43,11 @@ public sealed class GenerateComplianceReportQueryHandlerTests
     private readonly Mock<IDriftAuditStore> _drift = new();
     private readonly FakeTimeProvider _timeProvider = new(Now);
     private readonly Mock<IAuditChainCheckpoints> _checkpoints = new();
+    private readonly Mock<IComplianceAuditRecords> _complianceRecords = new();
 
     private GenerateComplianceReportQueryHandler CreateSut(IEnumerable<IVerifiableAuditChain>? chains = null) =>
         new(_store.Object, _governance.Object, _change.Object, _egress.Object, _escalation.Object, _drift.Object,
-            chains ?? [], _checkpoints.Object, _timeProvider, NullLogger<GenerateComplianceReportQueryHandler>.Instance);
+            _complianceRecords.Object, chains ?? [], _checkpoints.Object, _timeProvider, NullLogger<GenerateComplianceReportQueryHandler>.Instance);
 
     private static GenerateComplianceReportQuery NewQuery(string? conversationId = null) => new()
     {
@@ -78,6 +82,88 @@ public sealed class GenerateComplianceReportQueryHandlerTests
             .ReturnsAsync(Result<IReadOnlyList<EscalationAuditRecord>>.Success([]));
         _drift.Setup(d => d.GetRecordsAsync(It.IsAny<DriftAuditQuery>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyList<DriftAuditRecord>>.Success([]));
+        ComplianceTrailHolds([]);
+    }
+
+    private void ComplianceTrailHolds(IReadOnlyList<TrailEntry> records, int held = 0) =>
+        _complianceRecords.Setup(r => r.ReadAsync(It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<ComplianceTrailContents>.Success(new ComplianceTrailContents(records, held)));
+
+    private static TrailEntry TrailRecord(string action, Domain.Common.Models.AuditOutcome outcome, Dictionary<string, string> metadata, int minutes = 0) => new()
+    {
+        RequestType = "Request",
+        Action = action,
+        ExecutorId = "ref:operator-reference",
+        CorrelationId = Guid.NewGuid().ToString("N"),
+        Timestamp = Now.AddDays(-1).AddMinutes(minutes),
+        Outcome = outcome,
+        Metadata = metadata,
+    };
+
+    [Fact]
+    public async Task Handle_TheComplianceTrailsRecords_AreCountedByRequestAndOutcomeWithTheirReceipts()
+    {
+        SetUpAllSourcesEmpty();
+        ComplianceTrailHolds([
+            TrailRecord(AuditedErasure.AuditAction, Domain.Common.Models.AuditOutcome.Attempted,
+                new() { ["phase"] = "attempt", ["subject_reference"] = "ref:subject-7" }),
+            TrailRecord(AuditedErasure.AuditAction, Domain.Common.Models.AuditOutcome.Success,
+                new() { ["phase"] = "outcome", ["subject_reference"] = "ref:subject-7", ["receipt_request_id"] = "receipt-e1", ["completeness"] = "Full" }, 1),
+            TrailRecord(AuditedExport.AuditAction, Domain.Common.Models.AuditOutcome.Success,
+                new() { ["phase"] = "outcome", ["export_request_id"] = "export-x1", ["complete"] = "false" }, 2),
+            TrailRecord(AuditedDocumentRemoval.AuditAction, Domain.Common.Models.AuditOutcome.Success,
+                new() { ["phase"] = "outcome", ["document_id"] = "0123456789ABCDEF", ["receipt_request_id"] = "receipt-d1", ["completeness"] = "Partial" }, 3),
+        ]);
+
+        var report = (await CreateSut().Handle(NewQuery(), CancellationToken.None)).Value!;
+
+        var requests = report.ComplianceRequests;
+        requests.TotalRecords.Should().Be(4);
+        requests.Counts.Should().ContainSingle(c => c.Action == AuditedErasure.AuditAction && c.Outcome == "Attempted" && c.Count == 1);
+        requests.Counts.Should().ContainSingle(c => c.Action == AuditedErasure.AuditAction && c.Outcome == "Success" && c.Count == 1);
+        requests.Receipts.Select(r => (r.ReceiptId, r.Completeness)).Should().Equal(
+            ("receipt-e1", "Full"), ("export-x1", "Incomplete"), ("receipt-d1", "Partial"));
+        var shown = JsonSerializer.Serialize(requests);
+        shown.Should().NotContain("ref:subject-7").And.NotContain("ref:operator-reference").And.NotContain("0123456789ABCDEF",
+            "a report travels further than the trail, so it carries counts and receipt ids, never the id of a person or a document");
+        report.Warnings.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Handle_MoreReceiptsThanThePerSourceLimit_KeepsTheMostRecentAndSaysHowManyThereWere()
+    {
+        SetUpAllSourcesEmpty();
+        ComplianceTrailHolds([.. Enumerable.Range(0, 3).Select(i => TrailRecord(AuditedErasure.AuditAction, Domain.Common.Models.AuditOutcome.Success,
+            new() { ["receipt_request_id"] = $"receipt-{i}", ["completeness"] = "Full" }, i))]);
+
+        var report = (await CreateSut().Handle(NewQuery() with { MaxRecordsPerSource = 2 }, CancellationToken.None)).Value!;
+
+        report.ComplianceRequests.Receipts.Select(r => r.ReceiptId).Should().Equal("receipt-1", "receipt-2");
+        report.ComplianceRequests.TotalReceipts.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Handle_TheComplianceTrailCannotBeRead_IsAWarningNotAnEmptySection()
+    {
+        SetUpAllSourcesEmpty();
+        _complianceRecords.Setup(r => r.ReadAsync(It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<ComplianceTrailContents>.Fail("folder refused"));
+
+        var report = (await CreateSut().Handle(NewQuery(), CancellationToken.None)).Value!;
+
+        report.Warnings.Should().ContainSingle(w => w.Contains("compliance requests") && w.Contains("folder refused"));
+    }
+
+    [Fact]
+    public async Task Handle_RecordsStillHeldForReplay_AreAWarningSoTheCountsDoNotReadAsComplete()
+    {
+        SetUpAllSourcesEmpty();
+        ComplianceTrailHolds([], held: 2);
+
+        var report = (await CreateSut().Handle(NewQuery(), CancellationToken.None)).Value!;
+
+        report.ComplianceRequests.HeldForReplay.Should().Be(2);
+        report.Warnings.Should().ContainSingle(w => w.Contains("2 compliance record(s) are held for replay"));
     }
 
     [Fact]

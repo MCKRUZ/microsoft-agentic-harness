@@ -64,6 +64,7 @@ public sealed class ComplianceControllerReportTests : IClassFixture<TestWebAppli
         EscalationEvents = [],
         DriftFindings = [],
         ChainIntegrity = [],
+        ComplianceRequests = ComplianceRequestsSummary.Empty,
         Warnings = [],
     };
 

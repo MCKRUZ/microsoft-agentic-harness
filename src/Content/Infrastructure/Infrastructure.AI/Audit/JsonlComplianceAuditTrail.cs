@@ -35,7 +35,14 @@ namespace Infrastructure.AI.Audit;
 /// <para>
 /// <strong>A record that cannot be appended is held, not dropped (#995).</strong> When the chain is busy, the disk is
 /// full or the folder cannot be written, the record is held in <c>{Erasure:AuditStoragePath}/compliance-pending</c> and
-/// <see cref="ReplayPendingAsync"/> writes it to the chain later. See <c>JsonlComplianceAuditTrail.Pending.cs</c>.
+/// <see cref="ReplayPendingAsync"/> writes it to the chain later, as every audit trail's writer does since #1001 (see
+/// <see cref="PendingAuditRecords"/>).
+/// </para>
+/// <para>
+/// <strong>A person is not kept waiting for the chain (#999).</strong> A record is appended while an erasure or export
+/// request is answered, so the append waits at most <see cref="RequestLockWait"/> for the chain, not the writer's usual ten
+/// seconds: when this process is verifying the chain or another process is appending, the record is held and replay
+/// writes it within a minute. The record is as durable either way; only its place in the chain differs.
 /// </para>
 /// </remarks>
 [PersonalDataStore(
@@ -45,8 +52,15 @@ namespace Infrastructure.AI.Audit;
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, IVerifiableAuditChain, IDisposable
+public sealed partial class JsonlComplianceAuditTrail
+    : IComplianceAuditTrail, IComplianceAuditRecords, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
+    /// <summary>
+    /// The longest an append made while a request is answered waits for the chain before the record is held for replay
+    /// instead (#999). Long enough for an uncontended append on a slow disk, short enough that no one notices it.
+    /// </summary>
+    public static readonly TimeSpan RequestLockWait = TimeSpan.FromMilliseconds(500);
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -58,7 +72,6 @@ public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, I
     private readonly string _folder;
     private readonly HashChainedJsonlWriter _chain;
     private readonly IAuditPseudonymizer _pseudonymizer;
-    private readonly TimeProvider _clock;
     private readonly ILogger _logger;
 
     /// <summary>Initializes a new instance of the <see cref="JsonlComplianceAuditTrail"/> class.</summary>
@@ -82,9 +95,7 @@ public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, I
         _folder = chain.Segments.Folder;
         _chain = new HashChainedJsonlWriter(chain, logger, config.CurrentValue.AI.Audit.ArchivePath);
         _pseudonymizer = pseudonymizer;
-        _clock = timeProvider;
         _logger = logger;
-        _pendingFolder = PendingFolder(config.CurrentValue);
     }
 
     /// <inheritdoc />
@@ -94,9 +105,19 @@ public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, I
     public string AuditLocation => _folder;
 
     /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <summary>Makes the unique part of a held file's name. Replaced only by tests that need to predict the name.</summary>
+    internal Func<Guid> NewHeldId
+    {
+        get => _chain.Pending!.NewHeldId;
+        init => _chain.Pending!.NewHeldId = value;
+    }
+
+    /// <inheritdoc />
     /// <remarks>
-    /// A record the chain refuses, or whose append throws, is held for replay and still returned as a failure that says
-    /// so: it is not in the trail yet. Only when it cannot be held either is it lost, logged as critical.
+    /// A record the chain refuses, or whose append throws, is held for replay by the chain's writer and still returned as a
+    /// failure that says so: it is not in the trail yet. Only when it cannot be held either is it lost, logged as critical.
     /// </remarks>
     public async Task<Result> RecordAsync(AuditEntry entry, ErasureActor actor, CancellationToken cancellationToken)
     {
@@ -106,23 +127,26 @@ public sealed partial class JsonlComplianceAuditTrail : IComplianceAuditTrail, I
         // Serialized once, after the operator is replaced by their reference: a held record is this exact line, so the
         // pending folder never holds the operator's id and replay never pseudonymises a reference twice.
         var payload = JsonSerializer.Serialize(entry with { ExecutorId = RecordedExecutor(actor) }, SerializeOptions);
-        Result appended;
         try
         {
-            // The writer logs its own failures; the caller logs the returned reason once more, with its request.
-            appended = await _chain.AppendAsync(payload, cancellationToken).ConfigureAwait(false);
+            // The writer logs its own failures and holds the record; the caller logs the returned reason once more.
+            return await _chain.AppendAsync(payload, RequestLockWait, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // For example the writer disposed while the host shuts down, or the caller cancelling: the request this
-            // records has already happened, so the record is held all the same.
+            // For example the writer disposed while the host shuts down, or the caller cancelling: the writer held the
+            // record before the exception left it, since the request this records has already happened.
             _logger.LogError(MessageWithheldException.From(ex),
                 "Compliance record not written to {AuditLocation}: the append threw", _folder);
-            appended = Result.Fail($"The append threw {ex.GetType().Name}.");
+            return Result.Fail(
+                $"The append threw {ex.GetType().Name}. The writer held the record for replay unless the host log reports it lost.");
         }
-
-        return appended.IsSuccess ? appended : Hold(entry.Action, payload, appended.Errors);
     }
+
+    /// <inheritdoc />
+    /// <remarks>Run on start and every minute by <see cref="AuditRecordReplayService"/>.</remarks>
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     /// <inheritdoc />
     public Task<AuditChainVerificationResult> VerifyChainAsync(

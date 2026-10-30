@@ -100,7 +100,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
         var result = await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse("the record is not in the trail yet");
-        result.Errors.Single().Should().Contain(Pending);
+        result.Errors.Single().Should().Contain("held").And.NotContain(Pending, "the folder is in the host log, not the reason");
         HeldFiles().Should().ContainSingle();
         Directory.GetFiles(Pending, "*.tmp").Should().BeEmpty("a held record is renamed into place once flushed");
     }
@@ -264,7 +264,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     [Fact]
     public async Task ReplayPendingAsync_AHeldFileNoPassCanOpen_IsCountedStuckOnceNotEveryPass()
     {
-        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        using var outcomes = new TagCapture(AuditConventions.WriteFailures, AuditConventions.Outcome);
         BreakTheTrail();
         using var trail = NewTrail();
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
@@ -277,14 +277,14 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
             await trail.ReplayPendingAsync(CancellationToken.None);
         }
 
-        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(1,
+        outcomes.Snapshot().Count(o => o == AuditConventions.OutcomeValues.Stuck).Should().Be(1,
             "a record that cannot reach the trail must alert, but once: counted every minute it would measure time, not records");
     }
 
     [Fact]
     public async Task ReplayPendingAsync_ThePendingFolderRemovedThenRestoredStuck_IsReportedAgain()
     {
-        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        using var outcomes = new TagCapture(AuditConventions.WriteFailures, AuditConventions.Outcome);
         BreakTheTrail();
         using var trail = NewTrail();
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
@@ -300,13 +300,13 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
         using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
             await trail.ReplayPendingAsync(CancellationToken.None);
 
-        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(2);
+        outcomes.Snapshot().Count(o => o == AuditConventions.OutcomeValues.Stuck).Should().Be(2);
     }
 
     [Fact]
     public async Task ReplayPendingAsync_AStuckFileRemovedThenStuckAgain_IsReportedAgain()
     {
-        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        using var outcomes = new TagCapture(AuditConventions.WriteFailures, AuditConventions.Outcome);
         BreakTheTrail();
         using var trail = NewTrail();
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
@@ -321,7 +321,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
         using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
             await trail.ReplayPendingAsync(CancellationToken.None);
 
-        outcomes.Snapshot().Count(o => o == ComplianceConventions.OutcomeValues.Stuck).Should().Be(2,
+        outcomes.Snapshot().Count(o => o == AuditConventions.OutcomeValues.Stuck).Should().Be(2,
             "a file the process forgot once it was gone is news again when it sticks again");
     }
 
@@ -360,16 +360,16 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
-    public async Task ReplayPendingAsync_AHeldRecordWithAnUnknownAction_IsCountedUnderUnknown()
+    public async Task ReplayPendingAsync_AReplayedRecord_IsCountedUnderItsTrailNotItsContent()
     {
-        using var actions = new TagCapture(ComplianceConventions.AuditRecordsReplayed, ComplianceConventions.Action);
+        using var chains = new TagCapture(AuditConventions.RecordsReplayed, AuditConventions.Chain);
         Directory.CreateDirectory(Pending);
-        File.WriteAllText(Path.Combine(Pending, "0000000000000000000-planted.pending"), "{\"action\":\"made-up-42\"}");
+        File.WriteAllText(Path.Combine(Pending, $"{DateTimeOffset.UtcNow.UtcTicks:D19}-planted.pending"), "{\"action\":\"made-up-42\"}");
         using var trail = NewTrail();
 
         await trail.ReplayPendingAsync(CancellationToken.None);
 
-        actions.Snapshot().Should().Contain("unknown").And.NotContain("made-up-42", "a file's content must never mint a metric series");
+        chains.Snapshot().Should().Contain("compliance").And.NotContain("made-up-42", "a file's content must never mint a metric series");
     }
 
     [Fact]
@@ -388,16 +388,15 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     }
 
     [Fact]
-    public async Task RecordAsync_ADeploymentsOwnRequestKind_IsCountedUnderItsOwnName()
+    public async Task RecordAsync_AHeldRecord_IsCountedUnderTheComplianceTrail()
     {
-        using var actions = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Action);
+        using var chains = new TagCapture(AuditConventions.WriteFailures, AuditConventions.Chain);
         BreakTheTrail();
         using var trail = NewTrail();
 
         await trail.RecordAsync(Entry("attempt") with { Action = "rectification" }, ErasureActor.DataSubject, CancellationToken.None);
 
-        actions.Snapshot().Should().Contain("rectification",
-            "an action the code set is no planted file; folding it into unknown would hide a deployment's own failures");
+        chains.Snapshot().Should().Contain("compliance", "every trail's failures share one counter, told apart by the trail");
     }
 
     [Fact]
@@ -414,7 +413,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     [Fact]
     public async Task RecordAsync_AHeldAndALostRecord_AreCountedByOutcome()
     {
-        using var outcomes = new TagCapture(ComplianceConventions.AuditWriteFailures, ComplianceConventions.Outcome);
+        using var outcomes = new TagCapture(AuditConventions.WriteFailures, AuditConventions.Outcome);
         BreakTheTrail();
         using var trail = NewTrail();
         await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
@@ -423,7 +422,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
 
         await trail.RecordAsync(Entry("outcome"), ErasureActor.DataSubject, CancellationToken.None);
 
-        outcomes.Snapshot().Should().Contain([ComplianceConventions.OutcomeValues.Pending, ComplianceConventions.OutcomeValues.Lost],
+        outcomes.Snapshot().Should().Contain([AuditConventions.OutcomeValues.Pending, AuditConventions.OutcomeValues.Lost],
                 "operators alert on this counter; the request it records is never refused");
     }
 
