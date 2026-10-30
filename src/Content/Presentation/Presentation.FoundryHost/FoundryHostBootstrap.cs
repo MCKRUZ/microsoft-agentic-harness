@@ -366,14 +366,14 @@ internal static class FoundryHostBootstrap
             overrides["AppConfig__AI__Rag__GraphRag__Enabled"] = "true";
         }
 
-        // RAG vector + BM25 store (Azure AI Search). Endpoint presence is the opt-in; the API key is
-        // optional because the agent's managed identity is the preferred auth path. With no
-        // endpoint, force the in-process FAISS/FTS5 store: the vector store's config default is
-        // Azure AI Search, which would fail without an endpoint, so this keeps the container
-        // bootable standalone (RAG state is per-session, rebuilt from ingested documents). The
-        // fallback defers to an operator who configured a vector store via the native AppConfig__
-        // keys, so we never silently override a hand-configured endpoint with FAISS.
+        // RAG vector + BM25 store. An endpoint is the opt-in to Azure AI Search, given either as AZURE_SEARCH_ENDPOINT or
+        // through the native AppConfig__ key; the API key is optional because the agent's managed identity is the
+        // preferred auth path. With no endpoint, the in-process FAISS/FTS5 store is pinned explicitly so the container
+        // boots standalone (RAG state is per-session, rebuilt from ingested documents). An operator's own provider choice
+        // is never overridden.
         var searchEndpoint = readEnv("AZURE_SEARCH_ENDPOINT");
+        var nativeProviderSet = !string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Provider"));
+        var nativeEndpointSet = !string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Endpoint"));
         if (!string.IsNullOrWhiteSpace(searchEndpoint))
         {
             overrides["AppConfig__AI__Rag__VectorStore__Provider"] = "azure_ai_search";
@@ -381,10 +381,11 @@ internal static class FoundryHostBootstrap
             AddIfPresent(overrides, readEnv, "AZURE_SEARCH_API_KEY", "AppConfig__AI__Rag__VectorStore__ApiKey");
             AddIfPresent(overrides, readEnv, "AZURE_SEARCH_INDEX", "AppConfig__AI__Rag__VectorStore__IndexName");
         }
-        else if (string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Provider"))
-            && string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Endpoint")))
+        else if (!nativeProviderSet)
         {
-            overrides["AppConfig__AI__Rag__VectorStore__Provider"] = "faiss";
+            // A native endpoint with no provider meant Azure AI Search while Azure was the config default; #1012 made
+            // FAISS the default, and FAISS with an endpoint is refused at startup, so keep the endpoint's meaning.
+            overrides["AppConfig__AI__Rag__VectorStore__Provider"] = nativeEndpointSet ? "azure_ai_search" : "faiss";
         }
 
         // Distributed cache (Redis) — shared across sessions/replicas.
