@@ -281,7 +281,8 @@ internal static class FoundryHostBootstrap
     {
         // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
         // (+ gate evidence), egress decisions, and the compliance record of erasures, exports and
-        // document removals. Each is append-only forensic state worth preserving across resumes.
+        // document removals. Each is append-only forensic state worth preserving across resumes, and each keeps the records
+        // it could not append inside its own folder until replay writes them (#1001), so those persist with it.
         overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
         overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
         overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";

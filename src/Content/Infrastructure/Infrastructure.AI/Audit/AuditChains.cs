@@ -8,9 +8,17 @@ namespace Infrastructure.AI.Audit;
 /// archiver reads (#416), so the two cannot disagree about which files belong to which log.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A log's archive folder is named after its day folder (<see cref="DatedAuditSegments.ArchivedUnder"/>):
 /// <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c>, <c>drift-audit</c> and <c>compliance</c>. Renaming one of
 /// those folders moves the log away from its archive, so they are fixed here.
+/// </para>
+/// <para>
+/// Each log's held records wait beside its day folder, in the same name with <c>-pending</c> added (#1001):
+/// <c>governance-pending</c>, <c>escalations-pending</c>, <c>changes-pending</c>, <c>egress-pending</c>,
+/// <c>drift-audit-pending</c> and <c>compliance-pending</c>. Inside the log's configured folder, so every rule that keeps
+/// that folder apart (from the archive, from another log) keeps the held records apart too.
+/// </para>
 /// </remarks>
 public static class AuditChains
 {
@@ -19,28 +27,28 @@ public static class AuditChains
     /// <param name="clock">Decides which day-file a record is appended to.</param>
     /// <returns>The log's location.</returns>
     public static AuditChainLocation Governance(AppConfig config, TimeProvider clock) =>
-        BesideLegacyFile("governance", Path.Combine(config.AI.Governance.AuditStoragePath, "governance.jsonl"), clock);
+        BesideLegacyFile("governance", Path.Combine(config.AI.Governance.AuditStoragePath, "governance.jsonl"), clock, Timestamp);
 
     /// <summary>The escalation log.</summary>
     /// <param name="config">Application configuration.</param>
     /// <param name="clock">Decides which day-file a record is appended to.</param>
     /// <returns>The log's location.</returns>
     public static AuditChainLocation Escalations(AppConfig config, TimeProvider clock) =>
-        BesideLegacyFile("escalations", Path.Combine(config.AI.Governance.Escalation.AuditStoragePath, "escalations.jsonl"), clock);
+        BesideLegacyFile("escalations", Path.Combine(config.AI.Governance.Escalation.AuditStoragePath, "escalations.jsonl"), clock, Timestamp);
 
     /// <summary>The change-gate log.</summary>
     /// <param name="config">Application configuration.</param>
     /// <param name="clock">Decides which day-file a record is appended to.</param>
     /// <returns>The log's location.</returns>
     public static AuditChainLocation Changes(AppConfig config, TimeProvider clock) =>
-        BesideLegacyFile("changes", Path.Combine(config.AI.Changes.AuditStoragePath, "changes.jsonl"), clock);
+        BesideLegacyFile("changes", Path.Combine(config.AI.Changes.AuditStoragePath, "changes.jsonl"), clock, Timestamp);
 
     /// <summary>The egress decision log.</summary>
     /// <param name="config">Application configuration.</param>
     /// <param name="clock">Decides which day-file a record is appended to.</param>
     /// <returns>The log's location.</returns>
     public static AuditChainLocation Egress(AppConfig config, TimeProvider clock) =>
-        BesideLegacyFile("egress", Path.Combine(config.AI.Egress.AuditStoragePath, "egress.jsonl"), clock);
+        BesideLegacyFile("egress", Path.Combine(config.AI.Egress.AuditStoragePath, "egress.jsonl"), clock, Timestamp);
 
     /// <summary>The drift detection log, which was split by day from the start and has no earlier single file.</summary>
     /// <param name="config">Application configuration.</param>
@@ -50,7 +58,9 @@ public static class AuditChains
     {
         var folder = Path.Combine(config.AI.DriftDetection.AuditPath, "drift-audit");
         // Shared by every process writing these segments; not itself a *.jsonl segment.
-        return new AuditChainLocation("drift", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
+        return new AuditChainLocation(
+            "drift", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"), PendingBeside(folder),
+            "recorded_at");
     }
 
     /// <summary>
@@ -64,7 +74,12 @@ public static class AuditChains
     {
         // A fixed folder name inside the configured path, so the archive folder never takes its name from configuration.
         var folder = Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.TrailFolderName);
-        return new AuditChainLocation("compliance", new DatedAuditSegments(folder, legacyFile: null, clock), Path.Combine(folder, ".chain.lock"));
+        return new AuditChainLocation(
+            "compliance",
+            new DatedAuditSegments(folder, legacyFile: null, clock),
+            Path.Combine(folder, ".chain.lock"),
+            Path.Combine(config.AI.Erasure.AuditStoragePath, ErasureConfig.PendingFolderName),
+            "action");
     }
 
     /// <summary>Every log whose storage path is configured, in a fixed order.</summary>
@@ -92,6 +107,17 @@ public static class AuditChains
         return chains;
     }
 
-    private static AuditChainLocation BesideLegacyFile(string name, string legacyFile, TimeProvider clock) =>
-        new(name, DatedAuditSegments.BesideLegacyFile(legacyFile, clock), legacyFile + ".lock");
+    /// <summary>The property governance, escalation, change and egress records all carry.</summary>
+    private const string Timestamp = "timestamp";
+
+    private static AuditChainLocation BesideLegacyFile(string name, string legacyFile, TimeProvider clock, string recordProperty)
+    {
+        var segments = DatedAuditSegments.BesideLegacyFile(legacyFile, clock);
+        return new(name, segments, legacyFile + ".lock", PendingBeside(segments.Folder), recordProperty);
+    }
+
+    // A sibling of the day folder, never inside it: a file in the day folder that is not a day-file is ignored by the
+    // chain, but the archiver and the overlap checks treat that folder as the log's own.
+    private static string PendingBeside(string dayFolder) =>
+        Path.TrimEndingDirectorySeparator(dayFolder) + "-pending";
 }

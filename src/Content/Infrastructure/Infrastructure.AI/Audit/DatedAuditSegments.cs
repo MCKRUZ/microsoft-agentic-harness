@@ -58,6 +58,27 @@ public sealed class DatedAuditSegments
 
     private readonly TimeProvider _clock;
 
+    /// <summary>Decides which day a new record is appended to; also names the files a held record is kept in (#1001).</summary>
+    internal TimeProvider Clock => _clock;
+
+    /// <summary>
+    /// Whether <paramref name="path"/> can hold a record made on or after <paramref name="from"/>: any file that is not a
+    /// day-file (the earlier single file), and every day-file dated <paramref name="from"/> or later. A record is never
+    /// appended to a day-file earlier than the day it was made, but a replayed one can be in any later one.
+    /// </summary>
+    /// <param name="path">A chain file.</param>
+    /// <param name="from">The earliest day of interest, already widened by <see cref="WithClockMargin"/>.</param>
+    /// <returns>Whether the file must be read.</returns>
+    internal static bool MayHoldRecordsFrom(string path, DateOnly from) =>
+        !DateOnly.TryParseExact(Path.GetFileNameWithoutExtension(path), DateFormat, CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var day)
+        || day >= from;
+
+    /// <summary>One day before <paramref name="day"/>: margin for a host whose clock ran behind the one that made the record.</summary>
+    /// <param name="day">The day a record was made or held.</param>
+    /// <returns>The day to start reading from.</returns>
+    internal static DateOnly WithClockMargin(DateOnly day) => day > DateOnly.MinValue ? day.AddDays(-1) : day;
+
     /// <summary>Initializes the layout.</summary>
     /// <param name="folder">The folder holding the day-files.</param>
     /// <param name="legacyFile">The single file the chain was written to before it was split by day, or <c>null</c>.</param>

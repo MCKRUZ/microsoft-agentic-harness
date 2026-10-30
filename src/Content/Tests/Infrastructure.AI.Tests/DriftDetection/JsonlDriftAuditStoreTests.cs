@@ -56,6 +56,23 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
     };
 
     [Fact]
+    public async Task RecordAsync_TheChainCannotBeWritten_TheRealRecordIsHeldAndReplayedNotSetAside()
+    {
+        // #1001: replay keeps only files carrying the trail's own record property, so a real drift record must carry it.
+        var dayFolder = Path.Combine(_tempDir, "drift-audit");
+        Directory.CreateDirectory(_tempDir);
+        File.WriteAllText(dayFolder, "not a folder");
+
+        (await _store.RecordAsync(BuildRecord(), CancellationToken.None)).IsSuccess.Should().BeFalse();
+        File.Delete(dayFolder);
+        var pass = await _store.ReplayPendingAsync(CancellationToken.None);
+
+        pass.SetAside.Should().Be(0, "a drift record is a record of the drift trail");
+        pass.Written.Should().Be(1);
+        (await _store.VerifyChainAsync(checkpoint: null, CancellationToken.None)).VerifiedCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Record_AppendsToJsonlFile()
     {
         var record = BuildRecord();

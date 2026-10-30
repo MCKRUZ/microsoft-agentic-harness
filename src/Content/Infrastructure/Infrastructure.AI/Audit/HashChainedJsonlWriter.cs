@@ -5,7 +5,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Domain.AI.Audit;
 using Domain.Common;
-using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Domain.Common.Compliance;
 
@@ -69,7 +68,12 @@ namespace Infrastructure.AI.Audit;
 /// the lock only long enough to note how far each segment reaches, then reads up to there, so a line
 /// another process is half-way through writing is never read. A writer that waits more than ten seconds
 /// for the lock gives up: the append fails and the verification throws <see cref="AuditChainBusyException"/>,
-/// neither of which is reported as tampering.
+/// neither of which is reported as tampering. A caller can bound an append's wait more tightly (#999).
+/// </para>
+/// <para>
+/// <b>A failed append is held, not lost (#1001).</b> A writer built from an <see cref="AuditChainLocation"/>, as all six
+/// audit trails are, keeps a record it could not append in the location's pending folder and writes it in later through
+/// <see cref="ReplayPendingAsync"/>; see <see cref="PendingAuditRecords"/> and <c>HashChainedJsonlWriter.Pending.cs</c>.
 /// </para>
 /// <para>
 /// <b>Where the lock holds.</b> It is the operating system's file lock: a share-mode lock on Windows,
@@ -266,71 +270,6 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
     }
 
     /// <summary>
-    /// Appends a serialized record to the chain, computing and persisting its hash links.
-    /// </summary>
-    /// <param name="payloadJson">The caller's already-serialized record as a single-line JSON string.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>
-    /// <see cref="Result.Success()"/> when the record was persisted; a failure result when the
-    /// payload contains a raw framing character or the file could not be written.
-    /// </returns>
-    public async Task<Result> AppendAsync(string payloadJson, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(payloadJson);
-
-        if (payloadJson.AsSpan().IndexOfAny(FramingChars) >= 0)
-            return Result.Fail(
-                "Audit payload must not contain raw tab, carriage-return, or newline characters; chain framing is line- and tab-delimited.");
-
-        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            // Across processes: no other writer appends between reading the head and recording the new one.
-            await using var chainLock = await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false);
-            var segments = WithCurrentSegment(_orderedSegments());
-            var (head, sequence) = await LoadHeadAsync(chainLock, segments, cancellationToken).ConfigureAwait(false);
-
-            var previousHash = head.Hash;
-            var recordHash = ComputeRecordHash(sequence, previousHash, payloadJson);
-            var line = string.Concat(
-                payloadJson, FieldSeparator,
-                recordHash, FieldSeparator,
-                previousHash, FieldSeparator,
-                sequence.ToString(CultureInfo.InvariantCulture), "\n");
-
-            var segmentPath = ChooseTargetSegment(segments);
-            // Owner-only (#640, following #527's precedent): this is the tamper-evident audit log
-            // covering governance/escalation/drift/change/egress events -- the most security-relevant
-            // of the stores #640 migrated, since its tamper-evidence hash chain protects integrity but
-            // says nothing about confidentiality on a shared host.
-            OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
-
-            var lengthAfterWrite = AppendLine(segmentPath, line);
-            WriteHint(chainLock, new SharedHead(Path.GetFileName(segmentPath), lengthAfterWrite, sequence, recordHash));
-            return Result.Success();
-        }
-        catch (AuditChainBusyException ex)
-        {
-            _logger.LogError(ex, "Audit record not written to {AuditLocation}: the chain is busy", _displayLocation);
-            return Result.Fail("Failed to persist audit record: the audit chain is busy. Retry the operation.");
-        }
-        catch (AuditFolderRefusedException ex)
-        {
-            _logger.LogCritical(ex, "Audit record not written to {AuditLocation}: the folder is refused", _displayLocation);
-            return Result.Fail($"Failed to persist audit record: {ex.Message}");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogError(ex, "Failed to append audit record to {AuditLocation}", _displayLocation);
-            return Result.Fail($"Failed to persist audit record: {ex.Message}");
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
-    }
-
-    /// <summary>
     /// Walks the chain from genesis across all segments and recomputes every link, reporting
     /// whether the log is intact and, if not, the first record where it broke.
     /// </summary>
@@ -437,7 +376,7 @@ public sealed partial class HashChainedJsonlWriter : IDisposable
         // Note how far each segment reaches while no other process is mid-append, then read only that
         // far, so a half-written line from another writer is never mistaken for tampering.
         IReadOnlyList<SegmentReach> reach;
-        await using (await AcquireChainLockAsync(cancellationToken).ConfigureAwait(false))
+        await using (await AcquireChainLockAsync(LockTimeout, cancellationToken).ConfigureAwait(false))
         {
             // Lengths through open handles, not cached directory entries, so another host's appends are seen.
             // The same files the writer appends to, current segment included, so nothing can be written where

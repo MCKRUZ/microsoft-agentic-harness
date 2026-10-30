@@ -1,7 +1,7 @@
 namespace Infrastructure.AI.Audit;
 
-/// <summary>What one replay pass did with the compliance records held pending (#995).</summary>
-/// <param name="Written">Records appended to the trail in this pass.</param>
+/// <summary>What one replay pass did with the audit records held pending for one chain (#995, #1001).</summary>
+/// <param name="Written">Records appended to the chain in this pass.</param>
 /// <param name="AlreadyInTrail">
 /// Records found already in the trail and only removed from the pending folder: a previous pass appended them and stopped
 /// before removing them.

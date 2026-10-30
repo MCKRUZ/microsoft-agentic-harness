@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Core.Compliance;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
+using Application.Core.CQRS.Compliance.GenerateComplianceReport;
 using Application.Core.CQRS.Compliance.ExportSubjectData;
 using Domain.Common.Compliance;
 using FluentAssertions;
@@ -102,6 +103,26 @@ public sealed class ComplianceAuditTrailEndToEndTests : IDisposable
             r.GetProperty("action").GetString() == AuditedDocumentRemoval.AuditAction
             && r.GetProperty("executor_id").GetString() == ErasureActor.RetentionExecutor);
         await AssertTheTrailVerifiesAsync(provider, expectedRecords: 2);
+    }
+
+    [Fact]
+    public async Task ComplianceReport_AfterAnErasure_SummarisesTheTrailsRecordsWithoutTheirIds()
+    {
+        await using var provider = BuildProvider();
+        var receipt = await SendAsync(provider, new EraseSubjectDataCommand { SubjectId = Subject, OperatorId = Operator });
+
+        var report = await SendAsync(provider, new GenerateComplianceReportQuery
+        {
+            CallerId = Operator,
+            Start = DateTimeOffset.UtcNow.AddHours(-1),
+            End = DateTimeOffset.UtcNow.AddHours(1),
+        });
+
+        report.ComplianceRequests.Counts.Should().Contain(c => c.Action == AuditedErasure.AuditAction && c.Count == 1);
+        report.ComplianceRequests.Receipts.Should().ContainSingle(r => r.ReceiptId == receipt.RequestId,
+            "an operator reading the report must see which requests were handled (#1000)");
+        var shown = JsonSerializer.Serialize(report.ComplianceRequests);
+        shown.Should().NotContain(Subject).And.NotContain(Operator).And.NotContain("ref:");
     }
 
     [Fact]

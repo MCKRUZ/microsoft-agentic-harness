@@ -40,6 +40,8 @@ public sealed class DocumentRetentionServiceTests : IDisposable
     private readonly ConcurrentQueue<AuditEntry> _records = new();
     private readonly ConcurrentQueue<string> _removed = new();
     private ErasureCompleteness _completeness = ErasureCompleteness.Full;
+    private int _vectorsRemoved = 1;
+    private readonly HashSet<string> _staysPartial = new(StringComparer.Ordinal);
     private bool _loadDuringRemoval;
 
     public DocumentRetentionServiceTests()
@@ -59,7 +61,7 @@ public sealed class DocumentRetentionServiceTests : IDisposable
                 _removed.Enqueue(id);
                 if (_loadDuringRemoval)
                     await LoadAsync(id, _clock.GetUtcNow());
-                return Receipt(_completeness);
+                return Receipt(_staysPartial.Contains(id) ? ErasureCompleteness.Partial : _completeness, _vectorsRemoved);
             });
     }
 
@@ -113,6 +115,55 @@ public sealed class DocumentRetentionServiceTests : IDisposable
         await AdvanceAndSettle(TimeSpan.FromHours(1));
 
         _removed.Should().Equal("00000000000000AA", "00000000000000AA");
+    }
+
+    [Fact]
+    public async Task APartialRemovalRetriedEverySweep_IsRecordedOnceUntilItEndsDifferently()
+    {
+        // #998: a store that stays down must not add a pair of permanent records per document per sweep.
+        _config.AI.Rag.Documents.Retention.Enabled = true;
+        _completeness = ErasureCompleteness.Partial;
+        _vectorsRemoved = 0;
+        await LoadAsync("00000000000000AA", Origin - TimeSpan.FromDays(4000));
+        using var service = CreateService(Ledger(Origin));
+        await StartAsync(service);
+
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+        _completeness = ErasureCompleteness.Full;
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+
+        _removed.Should().HaveCount(4, "control: every sweep did retry the removal");
+        var attempts = _records.Where(r => r.Metadata!["phase"] == "attempt").ToList();
+        attempts.Should().HaveCount(2, "the first attempt, then the retry that ended differently");
+        attempts[1].Metadata![DocumentRemovalRetries.RetryOfKey].Should().Be(attempts[0].CorrelationId);
+        _records.Last().Metadata!["completeness"].Should().Be(nameof(ErasureCompleteness.Full));
+    }
+
+    [Fact]
+    public async Task APartialRemovalOutsideOneSweepsCap_KeepsItsRetryHistory()
+    {
+        // A sweep lists at most MaxDocumentsPerSweep documents, oldest first. One still being retried that a sweep does not
+        // list must not lose its history, or its next retry is recorded as a new request.
+        _config.AI.Rag.Documents.Retention.Enabled = true;
+        _vectorsRemoved = 0;
+        const string Tracked = "FFFFFFFFFFFFFFFF";
+        _staysPartial.Add(Tracked);
+        await LoadAsync(Tracked, Origin - TimeSpan.FromDays(4000));
+        using var service = CreateService(Ledger(Origin));
+        await StartAsync(service);
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+
+        // A full page of older documents fills the next sweep, so the tracked one is not listed; they are removed in full.
+        for (var i = 0; i < DocumentRetentionService.MaxDocumentsPerSweep; i++)
+            await LoadAsync($"{i:X16}", Origin - TimeSpan.FromDays(5000));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+        await AdvanceAndSettle(TimeSpan.FromHours(1));
+
+        _removed.Count(id => id == Tracked).Should().Be(2, "control: it was retried once it was listed again");
+        _records.Count(r => r.Metadata!["document_id"] == Tracked && r.Metadata["phase"] == "attempt").Should().Be(1,
+            "a retry that ends as the first attempt did adds nothing, even after a sweep that did not list it");
     }
 
     [Fact]
@@ -250,7 +301,7 @@ public sealed class DocumentRetentionServiceTests : IDisposable
         await reArmed.WaitAsync(Patience);
     }
 
-    private static ErasureReceipt Receipt(ErasureCompleteness completeness) => new()
+    private static ErasureReceipt Receipt(ErasureCompleteness completeness, int vectorsRemoved) => new()
     {
         RequestId = Guid.NewGuid().ToString(),
         ScopeId = "document",
@@ -259,8 +310,9 @@ public sealed class DocumentRetentionServiceTests : IDisposable
         NodesDeleted = 0,
         EdgesDeleted = 0,
         FeedbackWeightsDeleted = 0,
-        VectorEmbeddingsDeleted = 1,
+        VectorEmbeddingsDeleted = vectorsRemoved,
         Completeness = completeness,
+        CompletenessReason = completeness == ErasureCompleteness.Partial ? "vector store: unreachable" : null,
     };
 
     private sealed class CapturingSink(ConcurrentQueue<AuditEntry> records) : IAuditSink

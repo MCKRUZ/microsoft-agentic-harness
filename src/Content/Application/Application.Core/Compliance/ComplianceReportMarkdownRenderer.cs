@@ -53,6 +53,8 @@ public static class ComplianceReportMarkdownRenderer
             sb.AppendLine();
         }
 
+        AppendComplianceRequests(sb, report.ComplianceRequests);
+
         sb.AppendLine("## Sessions");
         sb.AppendLine();
         sb.AppendLine(CultureInfo.InvariantCulture, $"- Total: {report.Sessions.TotalSessions}");
@@ -80,9 +82,9 @@ public static class ComplianceReportMarkdownRenderer
         AppendSection(sb, "Governance decisions", report.GovernanceDecisions,
             r => $"{Format(r.Timestamp)} — agent `{r.AgentId}`, action `{r.Action}`: **{r.Decision}**");
         AppendSection(sb, "Change-proposal decisions", report.ChangeDecisions,
-            r => $"{Format(r.Timestamp)} — proposal `{r.ProposalId}`, gate `{r.GateKey}`: **{r.Decision}** ({r.Mode})");
+            r => $"{Format(r.Timestamp)} — proposal `{r.ProposalId}`, gate `{r.GateKey}`: **{r.Decision}** ({r.Mode}){NotCarriedOut(r.NotCarriedOut)}");
         AppendSection(sb, "Egress decisions", report.EgressDecisions,
-            r => $"{Format(r.Timestamp)} — {(r.Allowed ? "ALLOWED" : "DENIED")} {r.Host} ({r.Reason})");
+            r => $"{Format(r.Timestamp)} — {(r.Allowed ? "ALLOWED" : "DENIED")} {r.Host} ({r.Reason}){NotCarriedOut(r.NotCarriedOut)}");
         AppendSection(sb, "Escalation events", report.EscalationEvents,
             r => $"{Format(r.Timestamp)} — escalation `{r.EscalationId}`: {r.RecordType}");
         AppendSection(sb, "Drift findings", report.DriftFindings,
@@ -91,6 +93,39 @@ public static class ComplianceReportMarkdownRenderer
             r => $"{Format(r.CreatedAt)} — [{r.Source}] {r.Operation}");
 
         return sb.ToString();
+    }
+
+    // Counts and receipt ids only: the trail's executor, subject and document references stay in the trail (#1000).
+    private static void AppendComplianceRequests(StringBuilder sb, ComplianceRequestsSummary requests)
+    {
+        sb.AppendLine(CultureInfo.InvariantCulture, $"## Compliance requests ({requests.TotalRecords} records)");
+        sb.AppendLine();
+        if (requests.TotalRecords == 0)
+        {
+            sb.AppendLine("_None in this period._");
+        }
+        else
+        {
+            sb.AppendLine("| Request | Outcome | Records |");
+            sb.AppendLine("|---|---|---|");
+            foreach (var count in requests.Counts)
+                sb.AppendLine(CultureInfo.InvariantCulture, $"| {count.Action} | {count.Outcome} | {count.Count} |");
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"Receipts ({requests.Receipts.Count} of {requests.TotalReceipts}, most recent):");
+            foreach (var receipt in requests.Receipts)
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"- {Format(receipt.RecordedAt)} — {receipt.Action} `{receipt.ReceiptId}`: {receipt.Completeness}");
+        }
+
+        if (requests.HeldForReplay > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"{requests.HeldForReplay} record(s) are held for replay and not counted above yet.");
+        }
+
+        sb.AppendLine();
     }
 
     private static void AppendSection<T>(
@@ -110,6 +145,10 @@ public static class ComplianceReportMarkdownRenderer
 
         sb.AppendLine();
     }
+
+    // A decision held for replay after its trail refused the action (#1001): decided as shown, never acted on.
+    private static string NotCarriedOut(bool? notCarriedOut) =>
+        notCarriedOut == true ? " — not carried out: its record could not be written in time" : string.Empty;
 
     private static string Format(DateTimeOffset value) =>
         value.UtcDateTime.ToString(DateFormat, CultureInfo.InvariantCulture);

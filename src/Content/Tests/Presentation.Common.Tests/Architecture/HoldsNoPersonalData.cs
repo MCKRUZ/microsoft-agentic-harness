@@ -173,6 +173,9 @@ internal static class HoldsNoPersonalData
             "Writes the audit pseudonym key file (#903): 32 random bytes, base64, made once in a temporary file and moved into place. It holds the key the audit references are made with, not data about anyone.",
             "System.IO.File::Move",
             "System.IO.FileStream::.ctor"),
+        ["Infrastructure.AI/Infrastructure.AI.Audit.UnreadableComplianceAuditRecords"] = new(
+            "The compliance report's reader when a host replaced the trail with one that cannot be read back (#1000): every read fails with a fixed reason; it reads and keeps nothing.",
+            "shares Application.Core.Compliance.IComplianceAuditRecords with store Infrastructure.AI.Audit.JsonlComplianceAuditTrail"),
         ["Infrastructure.AI/Infrastructure.AI.Audit.AuditChainCheckpointStore"] = new(
             "One small JSON file per audit chain holding only the last verified sequence number and hash.",
             "System.IO.File::Move",
