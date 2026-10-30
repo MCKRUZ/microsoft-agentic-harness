@@ -39,9 +39,11 @@ namespace Application.Core.Validation;
 ///     at a placeholder; with the endpoint set but the provider left at the FAISS default, the
 ///     in-process stores are used. Either way an erasure would clear a store that holds nothing and
 ///     report the person erased while their chunks stay in the real index. Refusing to start is the
-///     only outcome that cannot certify that. The Azure key must be spelled exactly: the stores are
-///     resolved by the exact key, and the full-text store falls back to the in-process one for any
-///     other spelling. A provider a consumer registers may read the endpoint as it likes.</item>
+///     only outcome that cannot certify that. A case variant of the Azure key is refused with its own
+///     message: the stores are resolved by the exact key, and the full-text store falls back to the
+///     in-process one for any other spelling. A provider a consumer registers may read the endpoint
+///     as it likes; a key nothing registered fails the startup smoke check
+///     (<c>StartupRegistrationSmokeCheck</c>), which builds the document index.</item>
 /// </list>
 /// All class defaults satisfy every rule, so hosts that omit the section keep booting
 /// unchanged.
@@ -73,7 +75,8 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
     /// <summary>Initializes a new instance of the <see cref="RagConfigValidator"/> class.</summary>
     public RagConfigValidator()
     {
-        // Compared ignoring case so a near-miss spelling is refused too; the DI layer resolves the exact key only.
+        // Compared ignoring case so a case variant gets a message naming the fix; the DI layer resolves the exact key only.
+        // Any other key that is not registered fails the startup smoke check when the store is built.
         When(x => string.Equals(x.VectorStore.Provider, AzureAISearchProvider, StringComparison.OrdinalIgnoreCase), () =>
         {
             RuleFor(x => x.VectorStore.Provider)
@@ -97,11 +100,12 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
         {
             RuleFor(x => x.VectorStore.Provider)
                 .Must(p => !string.Equals(p, InProcessProvider, StringComparison.OrdinalIgnoreCase))
-                .WithMessage(
-                    "AppConfig:AI:Rag:VectorStore:Endpoint is set but AppConfig:AI:Rag:VectorStore:Provider is 'faiss' " +
-                    "(the default when it is not set), so the host would use its in-process stores and never the index at " +
-                    "the endpoint: erasing a person would leave their chunks in it. Set the provider to 'azure_ai_search' " +
-                    "to use the index, or clear the endpoint once that index no longer holds anyone's data.");
+                .WithMessage(x =>
+                    $"AppConfig:AI:Rag:VectorStore:Endpoint is set but AppConfig:AI:Rag:VectorStore:Provider is " +
+                    $"'{x.VectorStore.Provider}' ('faiss' is the default when it is not set), so the host would use its " +
+                    "in-process stores and never the index at the endpoint: erasing a person would leave their chunks in " +
+                    "it. Set the provider to 'azure_ai_search' to use the index, or clear the endpoint once that index no " +
+                    "longer holds anyone's data.");
         });
 
         When(x => x.GraphDatabase.Enabled, () =>
@@ -136,7 +140,7 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
             // introduced, it needs its own guard here or a collection-ignoring BM25
             // backend would silently escape this check.
             RuleFor(x => x.VectorStore.Provider)
-                .Must(p => !string.Equals(p, "azure_ai_search", StringComparison.OrdinalIgnoreCase))
+                .Must(p => !string.Equals(p, AzureAISearchProvider, StringComparison.OrdinalIgnoreCase))
                 .WithMessage(
                     "ScopedCollections requires a collection-aware store pairing. The " +
                     "'azure_ai_search' stores query one pre-provisioned index and ignore " +
