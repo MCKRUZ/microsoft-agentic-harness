@@ -56,9 +56,14 @@ conversations or users**, or beyond the 30-day window.
 This host serves no erasure or export endpoint (#1003). Foundry routes only the protocol endpoints to the container, and
 each call reaches one session's sandbox, whose `$HOME` holds everything this host writes. Erase a person's data by
 deleting their Foundry sessions (`DELETE .../agents/{agent}/endpoint/sessions/{id}`); copy it with the session files API.
-Stores promoted to external services are shared by every session and hold records with no owner, which session deletion
-does not reach; the host warns about each one at startup. The procedure, and what it does not cover (Foundry's own
-conversation history, the audit trails deleted with the session), is in the
+Stores promoted to external services are shared by every session, so session deletion does not reach them. The host
+runs on container protocol 2.0.0 and runs each request as the caller Foundry verified (`x-agent-user-id`, #1008): a
+Neo4j or PostgreSQL knowledge graph and an Azure AI Search index record that caller as owner, so an erasure or export
+naming that id, sent to a host bound to the same store, reaches them. The observability database and Redis key nothing by
+person, and a provider the template does not ship may never write an owner; the host warns about those at startup. A
+request without the header runs unscoped off the platform, but in Foundry a `/responses` request without it is
+refused with 401, as is one whose header names no usable user. The procedure, and what it does not cover (Foundry's own conversation
+history, the audit trails deleted with the session, records with no owner), is in the
 [security guide](../../../../documentation/security/08-data-protection.html#foundry-erasure).
 
 ## Environment variables
