@@ -174,11 +174,15 @@ public sealed class EveryRetainedStoreIsOnTheReceiptTests : IDisposable
         bool ageLimitOn, bool everyWriterSharesTheRecord, string reasonEnd)
     {
         // #901. The last case: the limit is switched on but refused over shared stores, so the receipt must not claim it.
+        // The stores are made shared explicitly: since #1012 the default index is the in-process FAISS one, over which the
+        // limit is never refused.
         await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
             ["AppConfig:AI:Rag:Documents:Retention:Enabled"] = ageLimitOn.ToString(),
             ["AppConfig:AI:Rag:Documents:LoadLedgerSharedByEveryWriter"] = everyWriterSharesTheRecord.ToString(),
+            ["AppConfig:AI:Rag:VectorStore:Provider"] = "azure_ai_search",
+            ["AppConfig:AI:Rag:VectorStore:Endpoint"] = "https://shared-index.search.windows.net",
         });
         await using var scope = provider.CreateAsyncScope();
 
