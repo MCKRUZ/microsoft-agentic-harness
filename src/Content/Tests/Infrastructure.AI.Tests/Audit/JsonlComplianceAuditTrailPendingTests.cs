@@ -100,7 +100,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
         var result = await trail.RecordAsync(Entry("attempt"), ErasureActor.DataSubject, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse("the record is not in the trail yet");
-        result.Errors.Single().Should().Contain(Pending);
+        result.Errors.Single().Should().Contain("held").And.NotContain(Pending, "the folder is in the host log, not the reason");
         HeldFiles().Should().ContainSingle();
         Directory.GetFiles(Pending, "*.tmp").Should().BeEmpty("a held record is renamed into place once flushed");
     }
@@ -364,7 +364,7 @@ public sealed class JsonlComplianceAuditTrailPendingTests : IDisposable
     {
         using var chains = new TagCapture(AuditConventions.RecordsReplayed, AuditConventions.Chain);
         Directory.CreateDirectory(Pending);
-        File.WriteAllText(Path.Combine(Pending, "0000000000000000000-planted.pending"), "{\"action\":\"made-up-42\"}");
+        File.WriteAllText(Path.Combine(Pending, $"{DateTimeOffset.UtcNow.UtcTicks:D19}-planted.pending"), "{\"action\":\"made-up-42\"}");
         using var trail = NewTrail();
 
         await trail.ReplayPendingAsync(CancellationToken.None);

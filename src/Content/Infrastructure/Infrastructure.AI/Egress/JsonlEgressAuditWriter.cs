@@ -181,8 +181,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
             filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
         if (query.End.HasValue)
             filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        // A decision held after its request was refused (#1001) is no allowed request: it never went out.
         if (query.Allowed.HasValue)
-            filtered = filtered.Where(r => r.Allowed == query.Allowed.Value);
+            filtered = filtered.Where(r => r.Allowed == query.Allowed.Value && !(r.Allowed && r.NotCarriedOut == true));
         if (!string.IsNullOrEmpty(query.Host))
             filtered = filtered.Where(r => r.Host == query.Host);
 

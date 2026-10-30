@@ -133,7 +133,8 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
         var appended = await writer.AppendAsync(Record("held-1"), CancellationToken.None);
 
         appended.IsSuccess.Should().BeFalse("the record is not in the chain yet");
-        appended.Errors.Single().Should().Contain(chain.PendingPath);
+        appended.Errors.Single().Should().Contain("held").And.NotContain(chain.PendingPath,
+            "the reason can reach a caller, such as an egress refusal; the folder is in the host log");
         Held(chain.PendingPath).Should().ContainSingle();
 
         Repair(chain);
@@ -172,6 +173,58 @@ public sealed class HashChainedJsonlWriterHoldTests : IDisposable
 
         appended.IsSuccess.Should().BeFalse();
         Held(chain.PendingPath).Should().BeEmpty("a caller with its own durable retry would otherwise see the record twice");
+    }
+
+    private static string HeldName(int index) =>
+        $"{DateTimeOffset.UtcNow.UtcTicks + index:D19}-{Guid.NewGuid():N}.pending";
+
+    [Fact]
+    public async Task ReplayPendingAsync_ABacklogLongerThanOnePass_DrainsOverSeveralPasses()
+    {
+        var chain = Chain("drift");
+        Directory.CreateDirectory(chain.PendingPath);
+        for (var i = 0; i < PendingAuditRecords.MaxFilesPerPass + 3; i++)
+            File.WriteAllText(Path.Combine(chain.PendingPath, HeldName(i)), Record($"backlog-{i}"));
+        using var writer = new HashChainedJsonlWriter(chain, NullLogger.Instance);
+
+        var first = await writer.ReplayPendingAsync(CancellationToken.None);
+        var second = await writer.ReplayPendingAsync(CancellationToken.None);
+
+        first.Written.Should().Be(PendingAuditRecords.MaxFilesPerPass, "one pass reads no more than its cap");
+        first.Remaining.Should().Be(3);
+        second.Written.Should().Be(3);
+        (await writer.VerifyChainAsync(CancellationToken.None)).VerifiedCount.Should().Be(PendingAuditRecords.MaxFilesPerPass + 3);
+    }
+
+    [Fact]
+    public async Task ReplayPendingAsync_AHeldFileLargerThanAnyRecord_IsSetAsideUnread()
+    {
+        var chain = Chain("drift");
+        Directory.CreateDirectory(chain.PendingPath);
+        File.WriteAllText(Path.Combine(chain.PendingPath, HeldName(0)), new string('x', (int)PendingAuditRecords.MaxHeldFileBytes + 1));
+        using var writer = new HashChainedJsonlWriter(chain, NullLogger.Instance);
+        var reads = 0;
+        var read = writer.Pending!.ReadHeldFile;
+        writer.Pending.ReadHeldFile = path => { reads++; return read(path); };
+
+        var pass = await writer.ReplayPendingAsync(CancellationToken.None);
+
+        pass.SetAside.Should().Be(1);
+        reads.Should().Be(0, "reading a file of any size whole could exhaust memory and wedge the trail's queue");
+    }
+
+    [Fact]
+    public async Task ReplayPendingAsync_AHeldFileWithNoHoldTimeInItsName_IsSetAside()
+    {
+        var chain = Chain("drift");
+        Directory.CreateDirectory(chain.PendingPath);
+        File.WriteAllText(Path.Combine(chain.PendingPath, "copied-by-hand.pending"), Record("timeless"));
+        using var writer = new HashChainedJsonlWriter(chain, NullLogger.Instance);
+
+        var pass = await writer.ReplayPendingAsync(CancellationToken.None);
+
+        pass.SetAside.Should().Be(1, "without a hold time every pass would read the whole chain looking for it");
+        (await writer.VerifyChainAsync(CancellationToken.None)).VerifiedCount.Should().Be(0);
     }
 
     [Fact]

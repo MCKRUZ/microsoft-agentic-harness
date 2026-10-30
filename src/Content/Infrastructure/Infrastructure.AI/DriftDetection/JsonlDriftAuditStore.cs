@@ -25,7 +25,7 @@ namespace Infrastructure.AI.DriftDetection;
 /// efficient range queries; <see cref="GetRecordsAsync"/> resolves only the files in range.
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller as a keyed reference (#903; records written earlier hold the raw id). Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {DriftDetection:AuditPath}/drift-audit-pending until replay writes it to the chain, then deleted.",
+    "Hash-chained JSONL day-files under {DriftDetection:AuditPath}/drift-audit (default data/audit): drift detections, resolutions, baseline changes and operator actions with the caller as a keyed reference (#903; records written earlier hold the raw id). Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {DriftDetection:AuditPath}/drift-audit-pending until replay writes it to the chain, then deleted; an operator's attempt record is not held, since the operation is refused without it.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,
@@ -85,12 +85,18 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditCha
         _chain.ReplayPendingAsync(cancellationToken);
 
     /// <inheritdoc />
-    public async Task<Result> RecordAsync(DriftAuditRecord record, CancellationToken ct)
+    public Task<Result> RecordAsync(DriftAuditRecord record, CancellationToken ct) => AppendAsync(record, held: true, ct);
+
+    /// <inheritdoc />
+    public Task<Result> RecordBeforeActingAsync(DriftAuditRecord record, CancellationToken ct) =>
+        AppendAsync(record, held: false, ct);
+
+    private async Task<Result> AppendAsync(DriftAuditRecord record, bool held, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(record);
 
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var result = await _chain.AppendAsync(json, ct);
+        var result = held ? await _chain.AppendAsync(json, ct) : await _chain.AppendWithoutHoldingAsync(json, ct);
         if (!result.IsSuccess)
             return result;
 

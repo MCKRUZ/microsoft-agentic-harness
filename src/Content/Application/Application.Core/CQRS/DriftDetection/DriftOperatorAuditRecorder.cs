@@ -52,7 +52,8 @@ internal static class DriftOperatorAuditRecorder
     {
         try
         {
-            var result = await auditStore.RecordAsync(new DriftAuditRecord
+            // Never held for replay: refused here, the attempt would otherwise attribute a mutation that never ran (#1001).
+            var result = await auditStore.RecordBeforeActingAsync(new DriftAuditRecord
             {
                 RecordId = Guid.NewGuid(),
                 // Attempt records correlate by ActionId; the produced artifact does not exist yet.

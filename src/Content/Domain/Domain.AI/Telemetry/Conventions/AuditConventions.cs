@@ -12,6 +12,9 @@ public static class AuditConventions
     /// <summary>Audit records held pending that were later written to their trail.</summary>
     public const string RecordsReplayed = "agent.audit.records_replayed";
 
+    /// <summary>Audit records still held for replay after the last pass, per trail.</summary>
+    public const string RecordsHeld = "agent.audit.records_held";
+
     /// <summary>
     /// The trail a record belongs to: <c>governance</c>, <c>escalations</c>, <c>changes</c>, <c>egress</c>, <c>drift</c> or
     /// <c>compliance</c>. Always set from code, never from a record's content, so it cannot add a time series.

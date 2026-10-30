@@ -139,8 +139,7 @@ public sealed partial class JsonlComplianceAuditTrail
             _logger.LogError(MessageWithheldException.From(ex),
                 "Compliance record not written to {AuditLocation}: the append threw", _folder);
             return Result.Fail(
-                $"The append threw {ex.GetType().Name}. The writer held the record in {PendingLocation} for replay unless " +
-                "the host log reports it lost.");
+                $"The append threw {ex.GetType().Name}. The writer held the record for replay unless the host log reports it lost.");
         }
     }
 

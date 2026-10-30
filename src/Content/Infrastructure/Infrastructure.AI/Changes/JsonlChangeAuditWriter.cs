@@ -190,8 +190,9 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
             filtered = filtered.Where(r => r.ProposalId == query.ProposalId);
         if (!string.IsNullOrEmpty(query.GateKey))
             filtered = filtered.Where(r => r.GateKey == query.GateKey);
+        // A decision held after its transition was refused (#1001) never took effect, so it answers no decision filter.
         if (query.Decision.HasValue)
-            filtered = filtered.Where(r => r.Decision == query.Decision.Value);
+            filtered = filtered.Where(r => r.Decision == query.Decision.Value && r.NotCarriedOut != true);
         if (!string.IsNullOrEmpty(query.CorrelationId))
             filtered = filtered.Where(r => r.CorrelationId == query.CorrelationId);
 

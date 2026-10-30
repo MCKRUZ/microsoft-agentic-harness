@@ -33,6 +33,10 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .Callback<DriftAuditRecord, CancellationToken>((r, _) => _audited.Add(r))
             .ReturnsAsync(Result.Success());
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .Callback<DriftAuditRecord, CancellationToken>((r, _) => _audited.Add(r))
+            .ReturnsAsync(Result.Success());
         _handler = new RecalculateDriftBaselineCommandHandler(
             _driftService.Object,
             _baselineStore.Object,
@@ -174,6 +178,9 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
     {
         _auditStore
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("audit store unavailable"));
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Fail("audit store unavailable"));
         var id = Guid.NewGuid();
         SetupLookup(id, DriftTestData.CreateBaseline(baselineId: id));

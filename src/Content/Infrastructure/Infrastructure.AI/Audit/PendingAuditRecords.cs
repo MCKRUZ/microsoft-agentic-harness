@@ -144,7 +144,8 @@ public sealed partial class PendingAuditRecords
             _logger.LogWarning(
                 "Audit record for the {AuditChain} trail not yet written ({Reason}); held in {PendingLocation} to be written by replay.",
                 _chainName, why, Folder);
-            return Result.Fail($"{why} The record is held in {Folder} and will be written to the trail by replay.");
+            // The folder is logged above, not returned: the reason can reach a caller (an egress or change refusal).
+            return Result.Fail($"The {_chainName} audit record could not be appended; it is held and will be written to the trail by replay.");
         }
 
         var heldWhy = string.Join("; ", held.Errors);
@@ -153,7 +154,7 @@ public sealed partial class PendingAuditRecords
             "Audit record for the {AuditChain} trail not written ({Reason}) and could not be held in {PendingLocation}: " +
             "{HoldReason}. Only the caller's error log line remains.",
             _chainName, why, Folder, heldWhy);
-        return Result.Fail($"{why} The record could not be held for replay either: {heldWhy}");
+        return Result.Fail($"The {_chainName} audit record could not be appended, and could not be held for replay either.");
     }
 
     private Result WritePending(string payload)

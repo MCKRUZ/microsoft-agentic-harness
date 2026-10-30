@@ -13,6 +13,18 @@ public sealed partial class PendingAuditRecords
     private const string ReplayLockName = ".replay.lock";
 
     /// <summary>
+    /// The most held files one pass reads, oldest first. A backlog drains over several passes instead of one pass reading
+    /// every held file; the rest wait for the next pass, a minute later.
+    /// </summary>
+    internal const int MaxFilesPerPass = 500;
+
+    /// <summary>
+    /// The largest held file read back: the largest record the chain resumes past (one MiB). A larger file is no record
+    /// this application wrote, and reading it whole could exhaust memory, so it is set aside unread.
+    /// </summary>
+    internal const long MaxHeldFileBytes = 1024 * 1024;
+
+    /// <summary>
     /// Appends every held record to <paramref name="chain"/>, oldest first, and removes each once it is in the chain. Run on
     /// start and every minute by <see cref="AuditRecordReplayService"/>.
     /// </summary>
@@ -36,12 +48,24 @@ public sealed partial class PendingAuditRecords
         {
             var (held, setAside) = ReadHeld();
             if (held.Count == 0)
-                return new PendingRecordsReplay(0, 0, setAside, HeldFiles().Count, SkippedBecause: null);
+                return Finished(new PendingRecordsReplay(0, 0, setAside, HeldFiles().Count, SkippedBecause: null));
 
             var inTrail = await AlreadyInTrailAsync(chain, held, cancellationToken).ConfigureAwait(false);
             var (written, alreadyInTrail) = await AppendHeldAsync(chain, held, inTrail, cancellationToken).ConfigureAwait(false);
-            return new PendingRecordsReplay(written, alreadyInTrail, setAside, HeldFiles().Count, SkippedBecause: null);
+            return Finished(new PendingRecordsReplay(written, alreadyInTrail, setAside, HeldFiles().Count, SkippedBecause: null));
         }
+    }
+
+    // What is still held after a pass is published as a gauge, and a backlog that outlasts one pass's cap is a warning.
+    private PendingRecordsReplay Finished(PendingRecordsReplay pass)
+    {
+        AuditMetrics.ReportHeld(_chainName, pass.Remaining);
+        if (pass.Remaining > MaxFilesPerPass)
+            _logger.LogWarning(
+                "{Remaining} {AuditChain} audit records are held in {PendingLocation}, more than one replay pass writes; " +
+                "the trail is falling behind.",
+                pass.Remaining, _chainName, Folder);
+        return pass;
     }
 
     /// <summary>How many records are held now; zero when the folder does not exist or cannot be listed.</summary>
@@ -86,7 +110,7 @@ public sealed partial class PendingAuditRecords
         var held = new List<HeldRecord>();
         var setAside = 0;
         var stuckThisPass = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var path in HeldFiles())
+        foreach (var path in HeldFiles().Take(MaxFilesPerPass))
         {
             try
             {
@@ -142,17 +166,29 @@ public sealed partial class PendingAuditRecords
     /// <summary>The held record in <paramref name="path"/>, or null once a file that is no record has been set aside.</summary>
     private HeldRecord? ReadOne(string path)
     {
-        var payload = ReadHeldFile(path);
-        if (IsRecord(payload, _recordProperty))
-            return new HeldRecord(path, payload, HeldOn(path));
+        // Named by this application, with the time it was held: without one, the duplicate check would read the whole chain.
+        var heldOn = HeldOn(path);
+        if (heldOn == DateOnly.MinValue)
+            return SetAside(path, "has no hold time in its name");
 
-        // Not a record the chain would accept: keeping it in the queue would stop every record after it.
+        if (new FileInfo(path).Length > MaxHeldFileBytes)
+            return SetAside(path, $"is larger than {MaxHeldFileBytes} bytes");
+
+        var payload = ReadHeldFile(path);
+        return IsRecord(payload, _recordProperty)
+            ? new HeldRecord(path, payload, heldOn)
+            : SetAside(path, "is not a record");
+    }
+
+    // Not a record the chain would accept: keeping it in the queue would stop every record after it.
+    private HeldRecord? SetAside(string path, string why)
+    {
         var setAsideAs = SetAsideName(path);
         File.Move(path, setAsideAs, overwrite: false);
         CountFailure(AuditConventions.OutcomeValues.Lost);
         _logger.LogCritical(
-            "Held {AuditChain} audit record {PendingFile} is not a record and was set aside as {SetAsideFile}; it is not in the trail.",
-            _chainName, path, setAsideAs);
+            "Held {AuditChain} audit record {PendingFile} {Why} and was set aside as {SetAsideFile}; it is not in the trail.",
+            _chainName, path, why, setAsideAs);
         return null;
     }
 

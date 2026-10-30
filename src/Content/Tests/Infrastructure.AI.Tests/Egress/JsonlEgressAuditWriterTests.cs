@@ -49,6 +49,8 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
         var replayed = (await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None)).Value!.Single();
         replayed.Allowed.Should().BeTrue("the decision itself is unchanged");
         replayed.NotCarriedOut.Should().BeTrue("an auditor must not read a refused request as one that went out");
+        (await _sut.GetRecordsAsync(new EgressAuditQuery { Allowed = true }, CancellationToken.None)).Value!
+            .Should().BeEmpty("a request that never went out is no allowed request");
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Telemetry;
@@ -28,4 +29,27 @@ public static class AuditMetrics
     public static Counter<long> RecordsReplayed { get; } =
         AppInstrument.Meter.CreateCounter<long>(
             AuditConventions.RecordsReplayed, "{record}", "Held audit records later written to their trail");
+
+    private static readonly ConcurrentDictionary<string, int> HeldByChain = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Records still held for replay, per trail (<see cref="AuditConventions.Chain"/>), as the last replay pass in this process
+    /// left them. Alert on one that keeps growing: the trail is not catching up.
+    /// </summary>
+    public static ObservableGauge<int> RecordsHeld { get; } =
+        AppInstrument.Meter.CreateObservableGauge(
+            AuditConventions.RecordsHeld,
+            () => HeldByChain.Select(held =>
+                new Measurement<int>(held.Value, new KeyValuePair<string, object?>(AuditConventions.Chain, held.Key))),
+            "{record}",
+            "Audit records still held for replay, per trail");
+
+    /// <summary>Publishes how many records <paramref name="chain"/> still holds after a replay pass.</summary>
+    /// <param name="chain">The trail's name.</param>
+    /// <param name="held">Records still held.</param>
+    public static void ReportHeld(string chain, int held)
+    {
+        _ = RecordsHeld; // The gauge must exist before anything is measured.
+        HeldByChain[chain] = held;
+    }
 }
