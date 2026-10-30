@@ -37,6 +37,8 @@ public sealed class ComplianceEndToEndTests
         receipt.GetProperty("host").GetString().Should().Be(Name,
             "the receipt speaks for this host only, and must say so");
         Statuses(receipt).Should().NotContain(["Failed", "Skipped"]);
+        receipt.GetProperty("completeness").GetString().Should().Be("Full",
+            "the shipped host's stores can all find and erase the person (#1012)");
         // The bundle runs this host keeps in memory are on its receipt (#990), and this person's one was removed.
         receipt.GetProperty("stores").EnumerateArray()
             .Should().ContainSingle(s => s.GetProperty("store").GetString() == "bundle runs")

@@ -43,4 +43,28 @@ public sealed class DocumentIndexStartupTests
             Environment.SetEnvironmentVariable(Endpoint, priorEndpoint);
         }
     }
+
+    [Fact]
+    public void AzureAISearchWithItsEndpoint_StartsTheHost()
+    {
+        // The control for the refusals: building the Azure stores at startup makes no call to the index, so a host
+        // configured for one still starts.
+        var priorProvider = Environment.GetEnvironmentVariable(Provider);
+        var priorEndpoint = Environment.GetEnvironmentVariable(Endpoint);
+        Environment.SetEnvironmentVariable(Provider, "azure_ai_search");
+        Environment.SetEnvironmentVariable(Endpoint, "https://svc.search.windows.net");
+        try
+        {
+            using var factory = new WebApplicationFactory<Program>();
+
+            var act = () => factory.Server;
+
+            act.Should().NotThrow();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Provider, priorProvider);
+            Environment.SetEnvironmentVariable(Endpoint, priorEndpoint);
+        }
+    }
 }
