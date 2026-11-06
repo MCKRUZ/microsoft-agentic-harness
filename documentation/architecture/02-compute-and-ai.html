@@ -52,6 +52,10 @@
                         <a class="sidebar-link" href="06-operations.html"><span class="sidebar-link-num">06</span> Operations &amp; Cost</a>
                     </div>
                     <div class="sidebar-group">
+                        <div class="sidebar-group-title">Decision</div>
+                        <a class="sidebar-link" href="07-harness-vs-managed-agents.html"><span class="sidebar-link-num">07</span> Harness vs. Managed Agents</a>
+                    </div>
+                    <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
                         <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
                         <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
@@ -374,7 +378,8 @@
                                 Foundry &mdash; either server-managed (persistent state) or built at runtime from a
                                 Foundry project endpoint &mdash; while keeping the harness middleware (OpenTelemetry, function-invocation limits) via the
                                 client-factory hook. Content safety is unaffected by the client type: it runs on the turn
-                                request in the MediatR pipeline, not on the chat client.
+                                request in the MediatR pipeline, not on the chat client. For when to use Foundry&rsquo;s managed agents instead of the harness, see
+                                <a href="07-harness-vs-managed-agents.html">Harness vs. Managed Agents</a>.
                             </p>
                         </div>
                     </div>
