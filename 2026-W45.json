@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-09T13:52:49.929Z",
+  "repo": "MCKRUZ/microsoft-agentic-harness",
+  "window": {
+    "label": "2026-W45",
+    "since": "2026-11-02T00:00:00.000Z",
+    "until": "2026-11-09T00:00:00.000Z",
+    "until_exclusive": true,
+    "days": 7,
+    "iso_week_of_since": "2026-W45"
+  },
+  "instrument": {
+    "script": "scripts/rails/collect-review-metrics.mjs",
+    "git_ref": "origin/main",
+    "window_end_commit": "88a24aea480fc8483a8024313e5cd5b7dbfafd4d"
+  },
+  "definitions": {
+    "version": 1,
+    "window": "PRs whose mergedAt is in [since, until) UTC; per_week values = count * 7 / window days",
+    "review_fix_commit": {
+      "rule": "a non-merge PR commit (parents < 2) whose subject matches scope OR whose description (subject minus type prefix) matches description",
+      "subject": "first line of the full commit message (never GraphQL messageHeadline, which truncates)",
+      "scope": "/^(?:review(?:\\([^)]*\\))?|\\w+\\((?:[^)]*[,/ ])?review-(?:fix(?:es)?|follow-?ups?)\\))!?:/i",
+      "type_prefix": "/^\\w+(?:\\([^)]*\\))?!?:\\s*/",
+      "description": "/\\bfindings?\\b|\\b(?:review\\w*|correctness|run-gates|grader)\\b[^,;]{0,25}\\badvisor(?:y|ies)\\b|\\badvisor(?:y|ies)\\b[^,;]{0,40}\\breview(?:ers?|s)?\\b|\\b(?:review(?:ers?|s)?|grader|run-gates)\\b[^,;]{0,30}?\\b(?:found|flagged|caught|raised|follow-?ups?|fix(?:es)?|cleanups?|hardening)\\b|\\b(?:review(?:ers?|s)?|simplify|grader|run-gates)\\s+(?:round|pass)\\b|\\b(?:found|flagged|caught|raised)\\b[^,;]{0,35}?\\b(?:review(?:ers?|s)?|grader|run-gates|gates?|CI)\\b|\\bgates?\\s+(?:found|flagged|caught)\\b|\\b(?:after|per|from|act on|address(?:es|ed)?|appl(?:y|ies|ied))\\s+(?:the\\s+|a\\s+)?(?:[\\w#/'-]+\\s+){0,3}?(?:[\\w/]+-)?review(?:ers?)?\\b(?!\\s+(?:cycle|skill|receipts?|process|rails?|agents?|bridge|artifacts?|content|models?|gates?)\\b)|\\((?:#\\d+\\s+|PR\\s+#?\\d+\\s+)?\\/?(?:code-|security-|correctness-)?(?:review|simplify)(?:\\s+fix(?:es)?)?(?:,[^)]*)?\\)|\\bround[- ]?\\d+[a-z]?\\b|\\b(?:\\d+(?:st|nd|rd|th)|second|third|fourth|fifth|sixth|final)[- ](?:(?:\\/?code-review|security-review|correctness-review|review|\\/?simplify|run-gates|grader)\\s+)?(?:round|pass)\\b(?!-)|\\breview(?:er)?'s\\b[^,;]{0,30}?\\bgaps?\\b|\\/simplify\\b|\\bsimplify\\s+(?:review|findings?|fix(?:es)?|cleanups?)\\b/i",
+      "share": "review-fix commits / non-merge commits, over all PRs merged in the window"
+    },
+    "revert": {
+      "regex": "/^(?:Revert\\b|revert(?:\\([^)]*\\))?!?:)/",
+      "source": "git log <ref> --since --until (all commits reachable from main, not first-parent)"
+    },
+    "incident_label": "/^incident(?::.*)?$/",
+    "weekly_file": "/^(\\d{4}-W\\d{2})\\.json$/",
+    "ci_runs": {
+      "workflows": [
+        ".github/workflows/correctness-review.yml",
+        ".github/workflows/security-review.yml",
+        ".github/workflows/grader.yml"
+      ],
+      "matching": "workflow runs with event=pull_request, head_branch = PR head branch, created_at in [PR createdAt, PR mergedAt]",
+      "runs": "every matched run, any conclusion (latest attempt only, as the runs API lists it)",
+      "verdict_runs": "matched runs that concluded success or failure (excludes cancelled-by-concurrency and skipped)",
+      "rounds_to_pass_ci": "ci_correctness_runs = correctness-review runs per PR, any conclusion (the definition behind the review-process plan's §0 figure of 2.02); ci_correctness_verdict_runs = verdict_runs only"
+    },
+    "verdict_comments": {
+      "author_logins": [
+        "github-actions",
+        "github-actions[bot]"
+      ],
+      "kind": {
+        "correctness": "/^\\s*(?:<!--\\s*correctness-review\\s*-->\\s*)?##\\s*Correctness review\\b/i",
+        "grader": "/^\\s*(?:<!--\\s*grader(?:-verdict)?\\s*-->\\s*)?##\\s*Grader verdict\\b/i",
+        "security": "/^\\s*(?:<!--[^>]*-->\\s*)?##\\s*Security review\\b/i"
+      },
+      "correctness": {
+        "order": "inline Blocking-defects section, else heading Blocking-defects section (\"none\" = correct, any other content = defects-found), else first token",
+        "inline_section": "/\\*\\*Blocking defects:?\\*\\*:?[ \\t]*([^\\n]*)/i",
+        "heading_section": "/^#{2,4}[ \\t]*Blocking defects[ \\t]*:?[ \\t]*\\n([\\s\\S]*?)(?=^#{2,4}[ \\t]|(?![\\s\\S]))/im",
+        "section_none": "/^\\W*none\\b/i",
+        "token": "/\\b(DEFECTS FOUND|CORRECT)\\b/"
+      },
+      "grader": "/\\bLOOKS (GOOD|RISKY)\\b/",
+      "security": "/\\b(PASS|BLOCK)\\b/",
+      "final_per_pr": "verdict of the last comment of that kind on the PR"
+    },
+    "conventions": {
+      "tier_label": "/^tier:([012])$/",
+      "review_rounds": "/^Review-rounds:[ \\t]*(\\d+|cap)[ \\t]*$/im",
+      "reviewed_minutes": "/^Reviewed:[ \\t]*(\\d+(?:\\.\\d+)?)[ \\t]*min\\b/im in a PR comment by human_reviewer; last one wins",
+      "signoff": "/^Reviewed-by:[ \\t]*@MCKRUZ[ \\t]+([0-9a-f]{7,40})[ \\t]+[—–-]/im",
+      "finding_marker": "/^\\s*<!--\\s*rail:(correctness|security|deep-review)\\s+sha=([0-9a-f]{7,40})\\s+anchor=(\\S+)\\s+class=([a-z0-9-]+)\\s+tag=(important|nit|pre-existing)\\s*-->/i on the first comment of an inline review thread",
+      "severity_tag": "/^\\s*\\[(Important|Nit|Pre-existing)\\]/i",
+      "disposition": "/^Disposition:[ \\t]*(fixed|wrong|intentional|didnt-matter)[ \\t]*(?:—|–|--?)[ \\t]*(\\S.*)$/im in any reply on the finding's thread; last one wins"
+    },
+    "noise_rate": "(wrong + didnt-matter) / (fixed + wrong + intentional + didnt-matter), over marker-carrying findings",
+    "human_reviewer": "MCKRUZ",
+    "matt_comments": {
+      "rule": "issue comments, non-empty review bodies and inline comments authored by human_reviewer, minus those matching convention_comment. UPPER BOUND: agents post with the same token, so their comments are counted too",
+      "convention_comment": "/^\\s*(?:Disposition:|Reviewed:|Reviewed-by:)/i"
+    },
+    "no_data": "\"no data\" means the convention that produces the value has not been used in the window. It is never written for a failed API call (the run fails instead) and never for a real zero",
+    "percentile": "linear interpolation between closest ranks: rank = p/100 * (n-1) over ascending values (numpy default, Excel PERCENTILE.INC); median = p50",
+    "checks": "required = live rules/branches/main and committed .github/rulesets/*.json targeting the default branch; declared = static read of pull_request-triggered workflow job names (matrix expanded) plus literal commit-status contexts; observed = check runs and statuses on the head commit of every PR in the window",
+    "claude_md_bytes": "size of CLAUDE.md at the last first-parent commit on main before until"
+  },
+  "aggregates": {
+    "pr_count": 1,
+    "prs_per_week": 1,
+    "open_to_merge_hours": {
+      "n": 1,
+      "mean": 0.5,
+      "median": 0.5,
+      "p90": 0.5,
+      "max": 0.5
+    },
+    "changed_lines": {
+      "n": 1,
+      "mean": 884,
+      "median": 884,
+      "p90": 884,
+      "max": 884
+    },
+    "changed_files": {
+      "n": 1,
+      "mean": 8,
+      "median": 8,
+      "p90": 8,
+      "max": 8
+    },
+    "commits_per_pr": {
+      "n": 1,
+      "mean": 1,
+      "median": 1,
+      "p90": 1,
+      "max": 1
+    },
+    "prs_with_truncated_commit_list": 0,
+    "review_fix": {
+      "commits": 0,
+      "non_merge_commits": 1,
+      "share": 0,
+      "per_pr": {
+        "n": 1,
+        "mean": 0,
+        "median": 0,
+        "p90": 0,
+        "max": 0
+      },
+      "prs_with_at_least": {
+        "1": 0,
+        "2": 0,
+        "3": 0
+      },
+      "share_of_prs_with_at_least": {
+        "1": 0,
+        "2": 0,
+        "3": 0
+      },
+      "per_week": 0
+    },
+    "ci": {
+      "correctness-review": {
+        "runs_per_pr": {
+          "n": 1,
+          "mean": 2,
+          "median": 2,
+          "p90": 2,
+          "max": 2
+        },
+        "verdict_runs_per_pr": {
+          "n": 1,
+          "mean": 1,
+          "median": 1,
+          "p90": 1,
+          "max": 1
+        },
+        "runs_total": 2,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 1,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      },
+      "security-review": {
+        "runs_per_pr": {
+          "n": 1,
+          "mean": 2,
+          "median": 2,
+          "p90": 2,
+          "max": 2
+        },
+        "verdict_runs_per_pr": {
+          "n": 1,
+          "mean": 1,
+          "median": 1,
+          "p90": 1,
+          "max": 1
+        },
+        "runs_total": 2,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 1,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      },
+      "grader": {
+        "runs_per_pr": {
+          "n": 1,
+          "mean": 1,
+          "median": 1,
+          "p90": 1,
+          "max": 1
+        },
+        "verdict_runs_per_pr": {
+          "n": 1,
+          "mean": 1,
+          "median": 1,
+          "p90": 1,
+          "max": 1
+        },
+        "runs_total": 1,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 0,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      }
+    },
+    "rounds_to_pass": {
+      "ci_correctness_runs": {
+        "n": 1,
+        "mean": 2,
+        "median": 2,
+        "p90": 2,
+        "max": 2
+      },
+      "ci_correctness_verdict_runs": {
+        "n": 1,
+        "mean": 1,
+        "median": 1,
+        "p90": 1,
+        "max": 1
+      },
+      "local": "no data"
+    },
+    "verdicts": {
+      "correctness": {
+        "comments": {},
+        "final_per_pr": {},
+        "prs_without_comment": 1
+      },
+      "grader": {
+        "comments": {},
+        "final_per_pr": {},
+        "prs_without_comment": 1
+      },
+      "security": {
+        "comments": {},
+        "final_per_pr": {},
+        "prs_without_comment": 1
+      }
+    },
+    "matt_comments": {
+      "total": 0,
+      "prs_with_any": 0
+    },
+    "findings": {
+      "by_tag": "no data",
+      "by_disposition": "no data",
+      "by_reviewer": "no data",
+      "noise_rate": "no data"
+    },
+    "matt_minutes_by_tier": "no data",
+    "tier_distribution": "no data",
+    "tier2_signoffs": "no data"
+  },
+  "guardrails": {
+    "reverts": {
+      "count": 0,
+      "per_week": 0,
+      "commits": []
+    },
+    "incident_issues_opened": "no data",
+    "incident_labels": "no data",
+    "open_breakers": {
+      "count": 0,
+      "issues": []
+    }
+  },
+  "gates": {
+    "checks": {
+      "required_live": [
+        "OWASP Agentic Top-10 Gate",
+        "build-and-test",
+        "correctness-review",
+        "frontend (Presentation.Dashboard)",
+        "frontend (Presentation.WebUI)",
+        "security-review"
+      ],
+      "required_committed": [
+        "OWASP Agentic Top-10 Gate",
+        "build-and-test",
+        "correctness-review",
+        "frontend (Presentation.Dashboard)",
+        "frontend (Presentation.WebUI)",
+        "security-review"
+      ],
+      "required_not_declared": [],
+      "required_not_observed": [],
+      "committed_not_live": [],
+      "live_not_committed": [],
+      "committed_not_declared": [],
+      "observed_not_required": [
+        "Links, anchors, and sidebar consistency",
+        "grader"
+      ]
+    },
+    "convention_labels": {
+      "tier:0": true,
+      "tier:1": true,
+      "tier:2": true,
+      "rails:breaker": true,
+      "incident": false,
+      "risk:high": true,
+      "accepted-risk:correctness": true,
+      "accepted-risk:security": true
+    },
+    "claude_md_bytes": 12202
+  },
+  "telemetry_health": {
+    "weekly_files_seen": 2,
+    "missing_weeks_before_this_one": []
+  },
+  "warnings": [],
+  "prs": [
+    {
+      "number": 1020,
+      "created_at": "2026-11-06T20:39:01Z",
+      "merged_at": "2026-11-06T21:08:55Z",
+      "open_to_merge_hours": 0.5,
+      "tier": null,
+      "changed_lines": 884,
+      "changed_files": 8,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    }
+  ]
+}
