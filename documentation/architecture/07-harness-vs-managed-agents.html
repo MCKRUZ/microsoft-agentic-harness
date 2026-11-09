@@ -192,7 +192,9 @@
                     <p>
                         The harness competes with the first kind and <strong>runs on</strong> the second. It already ships a host for
                         Microsoft Foundry&rsquo;s hosted agents (<code>Presentation.FoundryHost</code>), so Microsoft can operate the
-                        infrastructure while you keep every harness control except sandboxed code execution. The six situations below
+                        infrastructure while you keep the harness&rsquo;s tool governance, input screening, skills and retrieval. Two things
+                        do not carry over: sandboxed code execution, and the steps that hang off a turn request (token budgets, the turn
+                        timeout and post-turn learning), because Foundry&rsquo;s runtime calls the agent directly. The six situations below
                         are about the first kind: what you can and cannot control when the vendor owns the loop.
                     </p>
 
@@ -404,8 +406,10 @@
                                     <code>Presentation.FoundryHost</code>.</p>
                                 <ul>
                                     <li>Microsoft runs the compute, sessions, isolation and identity.</li>
-                                    <li>Every harness control except sandboxed code execution survives, because it is your code running.</li>
-                                    <li>One documented loss: sandboxed tool execution is switched off (see the decision guide).</li>
+                                    <li>Tool governance, input screening, skills and retrieval run, because it is your code running.</li>
+                                    <li>Two documented losses: sandboxed tool execution is switched off (see the decision guide), and the
+                                        steps that hang off a turn request (token budgets, the turn timeout, post-turn learning) do not run,
+                                        since Foundry&rsquo;s runtime calls the agent directly.</li>
                                 </ul>
                             </div>
                             <span class="tier-price">Best for: Azure shops that need harness controls without running servers</span>

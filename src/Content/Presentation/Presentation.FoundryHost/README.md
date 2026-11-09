@@ -2,9 +2,10 @@
 
 Packages the full agentic harness as an **Azure AI Foundry hosted agent** — a container Foundry
 Agent Service starts, scales, and exposes over the OpenAI-compatible `/responses` protocol. Unlike a
-Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so the
-harness's in-process pipeline — skills, governance, tool-output compression, prerequisite gating,
-telemetry — survives intact.
+Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so
+skills, tool governance, tool-output compression, prerequisite gating and telemetry all run here.
+Foundry's runtime calls the agent directly rather than sending a turn request, so the steps that
+hang off a turn request need this host's help (see the capability notes below).
 
 The host reuses the same composition root every other host uses (`GetServices`), builds the agent
 through `IAgentFactory` exactly as the desktop and web hosts do, and hands it to the Foundry hosting
@@ -108,8 +109,23 @@ never overwrites.
 
 The `Foundry` profile sets `Sandbox:Enabled=false`. Docker-in-Micro-VM is unavailable and the
 process sandbox's Windows Job-Object limits don't apply on the Linux runtime, so sandboxed tool
-execution is the one harness capability degraded under hosted agents. The closed-by-default model
-means such tools are refused with a clear capability message rather than running unsandboxed.
+execution is switched off under hosted agents. The closed-by-default model means such tools are
+refused with a clear capability message rather than running unsandboxed.
+
+### Capability note: the turn pipeline
+
+Every other host runs a turn as `ExecuteAgentTurnCommand`, and the MediatR pipeline in front of its
+handler does work on the way in and out. Foundry's runtime calls the agent directly, so this host
+re-creates the parts that guard the request:
+
+- **Input screening.** `FoundryInputScreening` sends the text of every user and system message in a
+  run through `ScreenUserInputCommand`, so the prompt-injection scan and content safety screen it
+  exactly as they screen a turn elsewhere. A refusal is answered as the agent's reply and the agent
+  never runs. A screening outage fails the run when `BlockWhenUnavailable` is on.
+- **Tool admission, trace claims and owner.** `FoundryRequestScope` arms them per request.
+
+The steps that hang off a turn request do **not** run here: token budgets, the turn timeout, and
+post-turn learning (knowledge extraction, work-episode capture, skill-effectiveness tracking).
 
 ## Deploy
 
