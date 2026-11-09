@@ -34,6 +34,13 @@ namespace Presentation.FoundryHost;
 ///   the next turn.</description></item>
 /// </list>
 /// <para>
+/// <strong>A refused conversation stays refused.</strong> The replayed history is screened whole, the agent's own
+/// earlier replies included: the stored input may hold assistant turns the caller wrote, and nothing marks which replies
+/// the agent really produced. So a conversation that once carried refused text, or a file, image or link, is refused on
+/// every later turn, and the caller must start a new one. Skipping refused history instead would hand it to the model
+/// unscreened on the next turn, which is the gap this class closes.
+/// </para>
+/// <para>
 /// <strong>A refusal</strong> is answered as the agent's reply, carrying the pipeline's reason, and the agent never runs.
 /// A request carrying a file, an image or a link is refused too: the screening reads text only, and no other host
 /// accepts such content. When content safety cannot screen the text and the deployment blocks unscreenable text, the run
@@ -104,6 +111,8 @@ internal static class FoundryInputScreening
         if (reading.Text.Length == 0)
             return null;
 
+        // A scope of its own: the request scope FoundryRequestScope opens is local to that middleware. Per-request state
+        // on this host (the caller's knowledge scope, tool-call claims) is ambient, so it reaches this scope too.
         await using var scope = provider.CreateAsyncScope();
         var result = await scope.ServiceProvider.GetRequiredService<IMediator>()
             .Send(new ScreenUserInputCommand(reading.Text), cancellationToken)
