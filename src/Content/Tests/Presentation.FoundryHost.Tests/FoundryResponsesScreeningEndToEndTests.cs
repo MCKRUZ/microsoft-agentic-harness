@@ -1,7 +1,5 @@
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Microsoft.Agents.AI;
@@ -40,17 +38,16 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     /// <inheritdoc />
     public async Task InitializeAsync()
     {
-        var port = FreePort();
         var builder = WebApplication.CreateBuilder();
-        // Outside Foundry the hosting library leaves the listen address alone, so it is set here.
-        builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+        // Outside Foundry the hosting library leaves the listen address alone; port 0 lets the OS pick a free one.
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
         var served = FoundryInputScreening.Wrap(new ChatClientAgent(_model), _host.Provider);
         builder.Services.AddFoundryResponses(served, new FileSystemAgentSessionStore(_host.Folder("sessions")));
 
         _app = builder.Build();
         _app.MapFoundryResponses();
         await _app.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+        _client = new HttpClient { BaseAddress = new Uri(_app.Urls.First()) };
     }
 
     /// <inheritdoc />
@@ -124,6 +121,23 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AnAttackSplitByALineBreakInToolCallArguments_NeverReachesTheModel()
+    {
+        // The arguments travel as JSON text, where a line break is written as a backslash and an "n". The scan must
+        // read the decoded words, as the model will.
+        var arguments = new JsonObject { ["query"] = Attack.Replace("all ", "all\n") }.ToJsonString();
+        var input = new JsonArray(
+            new JsonObject { ["type"] = "function_call", ["call_id"] = "call-1", ["name"] = "lookup", ["arguments"] = arguments },
+            new JsonObject { ["type"] = "function_call_output", ["call_id"] = "call-1", ["output"] = "none" },
+            Message("user", Benign));
+
+        var (status, body) = await PostAsync(new JsonObject { ["input"] = input });
+
+        status.Should().Be(HttpStatusCode.OK, body);
+        _model.Calls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task ARefusedAttack_DoesNotComeBackInTheNextTurn()
     {
         var (_, refused) = await PostAsync(new JsonObject { ["input"] = Attack });
@@ -170,12 +184,5 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
         using var content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await _client!.PostAsync("/responses", content);
         return (response.StatusCode, await response.Content.ReadAsStringAsync());
-    }
-
-    private static int FreePort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }

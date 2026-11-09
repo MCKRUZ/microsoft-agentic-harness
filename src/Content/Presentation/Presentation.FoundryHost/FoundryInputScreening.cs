@@ -125,9 +125,11 @@ internal static class FoundryInputScreening
             || history is null)
             return messages;
 
-        // InvokingAsync returns the history followed by the request messages, and only reads: storing is InvokedAsync.
-        return await history
-            .InvokingAsync(new ChatHistoryProvider.InvokingContext(agent, session, messages), cancellationToken)
+        // InvokingAsync only reads (storing is InvokedAsync). It is asked for the history alone and the run's messages are
+        // added here, so the screening never depends on a provider handing the request messages back.
+        var replayed = await history
+            .InvokingAsync(new ChatHistoryProvider.InvokingContext(agent, session, []), cancellationToken)
             .ConfigureAwait(false);
+        return replayed.Concat(messages);
     }
 }

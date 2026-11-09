@@ -26,6 +26,9 @@ internal sealed class ScreeningTestHost : IDisposable
     public const string Benign = "What is the capital of France?";
     public const string Unscreenable = "outage-marker: the content safety service cannot be reached";
 
+    /// <summary>The reason the stand-in content safety service gives for a refusal.</summary>
+    public const string ContentSafetyReason = "Blocked by the test's content safety service.";
+
     private readonly string _home = Path.Combine(Path.GetTempPath(), "foundry-screening-" + Guid.NewGuid().ToString("N"));
 
     public ScreeningTestHost()
@@ -72,9 +75,6 @@ internal sealed class ScreeningTestHost : IDisposable
             return ValueTask.FromResult(new ContentSafetyResult(blocked, blocked ? ContentSafetyReason : null, blocked ? "Hate" : null));
         }
     }
-
-    /// <summary>The reason the stand-in content safety service gives for a refusal.</summary>
-    public const string ContentSafetyReason = "Blocked by the test's content safety service.";
 }
 
 /// <summary>
@@ -116,7 +116,13 @@ internal sealed class RecordingChatClient : IChatClient
     {
         Interlocked.Increment(ref _calls);
         _seen.Enqueue(options?.Instructions ?? string.Empty);
+        // Raw text as well as the JSON form: JSON escapes some characters, which could hide a leaked attack from the check.
         foreach (var message in messages)
+        {
+            _seen.Enqueue(message.Text);
+            foreach (var result in message.Contents.OfType<FunctionResultContent>())
+                _seen.Enqueue(result.Result?.ToString() ?? string.Empty);
             _seen.Enqueue(System.Text.Json.JsonSerializer.Serialize(message, AIJsonUtilities.DefaultOptions));
+        }
     }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 
 namespace Presentation.FoundryHost;
@@ -13,8 +14,8 @@ namespace Presentation.FoundryHost;
 /// tool result in the request's input is caller text, not the agent's own output. So nothing is skipped by role.
 /// </para>
 /// <para>
-/// Text, reasoning text and a string tool result are read as they are. Any other content is read as its JSON form, so
-/// a string inside it (tool-call arguments, a structured tool result) is screened too. Files, images and links are
+/// Text, reasoning text and a string tool result are read as they are. From any other content every string in its JSON
+/// form is read, unescaped, so a string inside it (tool-call arguments, a structured tool result) is screened too. Files, images and links are
 /// flagged instead: the screening reads text only, and content it cannot read is refused rather than passed.
 /// </para>
 /// </remarks>
@@ -50,7 +51,17 @@ internal static class FoundryCallerText
         TextContent text => text.Text,
         TextReasoningContent reasoning => reasoning.Text,
         FunctionResultContent { Result: string result } => result,
-        _ => JsonSerializer.Serialize(content, AIJsonUtilities.DefaultOptions),
+        _ => string.Join("\n", StringsIn(JsonSerializer.SerializeToNode(content, AIJsonUtilities.DefaultOptions))),
+    };
+
+    // The strings themselves, not the serialized JSON: escaping turns a line break into a backslash and an "n", and
+    // the injection scan must read the text the model will read.
+    private static IEnumerable<string> StringsIn(JsonNode? node) => node switch
+    {
+        JsonObject obj => obj.SelectMany(property => StringsIn(property.Value).Prepend(property.Key)),
+        JsonArray array => array.SelectMany(StringsIn),
+        JsonValue value when value.TryGetValue(out string? text) => [text],
+        _ => [],
     };
 
     private static void AddIfText(List<string> pieces, string? text)

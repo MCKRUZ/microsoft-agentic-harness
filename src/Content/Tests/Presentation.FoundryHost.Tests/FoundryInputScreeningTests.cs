@@ -85,6 +85,20 @@ public sealed class FoundryInputScreeningTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_AnAttackSplitByALineBreakInToolCallArguments_IsRefused()
+    {
+        // The scan must read the text the model reads. Serialized JSON would show this line break as a backslash and an
+        // "n", which the scan does not treat as the space between two words.
+        var call = new ChatMessage(
+            ChatRole.Assistant,
+            [new FunctionCallContent("call-1", "lookup", new Dictionary<string, object?> { ["query"] = Attack.Replace("all ", "all\n") })]);
+
+        await _served.RunAsync([call, new ChatMessage(ChatRole.User, Benign)]);
+
+        _model.Calls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task RunAsync_AFile_IsRefusedBecauseItCannotBeScreened()
     {
         var withFile = new ChatMessage(

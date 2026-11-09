@@ -124,7 +124,8 @@ re-creates the parts that guard the request:
   whatever its role (the caller writes assistant turns and tool results too); the request's
   `instructions`; and the earlier turns Foundry replays when a request continues a conversation.
   Replayed turns are screened again on every run, because the platform stores a request's input
-  even when the answer was a refusal; the cost grows with conversation length. A request carrying a
+  even when the answer was a refusal; the cost grows with conversation length, and a conversation
+  that once carried refused input stays refused, so the caller must start a new one. A request carrying a
   file, an image or a link is refused, since the screening reads text only. A refusal is answered as
   the agent's reply and the agent never runs. A screening outage fails the run when
   `BlockWhenUnavailable` is on.
