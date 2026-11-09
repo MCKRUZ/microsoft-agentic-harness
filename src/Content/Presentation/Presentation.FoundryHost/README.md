@@ -118,10 +118,16 @@ Every other host runs a turn as `ExecuteAgentTurnCommand`, and the MediatR pipel
 handler does work on the way in and out. Foundry's runtime calls the agent directly, so this host
 re-creates the parts that guard the request:
 
-- **Input screening.** `FoundryInputScreening` sends the text of every user and system message in a
-  run through `ScreenUserInputCommand`, so the prompt-injection scan and content safety screen it
-  exactly as they screen a turn elsewhere. A refusal is answered as the agent's reply and the agent
-  never runs. A screening outage fails the run when `BlockWhenUnavailable` is on.
+- **Input screening.** `FoundryInputScreening` sends all caller text through `ScreenUserInputCommand`,
+  so the prompt-injection scan and content safety screen it exactly as they screen a turn elsewhere.
+  Caller text reaches the agent three ways, and all three are screened: every message in the request,
+  whatever its role (the caller writes assistant turns and tool results too); the request's
+  `instructions`; and the earlier turns Foundry replays when a request continues a conversation.
+  Replayed turns are screened again on every run, because the platform stores a request's input
+  even when the answer was a refusal; the cost grows with conversation length. A request carrying a
+  file, an image or a link is refused, since the screening reads text only. A refusal is answered as
+  the agent's reply and the agent never runs. A screening outage fails the run when
+  `BlockWhenUnavailable` is on.
 - **Tool admission, trace claims and owner.** `FoundryRequestScope` arms them per request.
 
 The steps that hang off a turn request do **not** run here: token budgets, the turn timeout, and

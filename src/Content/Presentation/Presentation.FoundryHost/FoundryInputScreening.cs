@@ -14,26 +14,38 @@ namespace Presentation.FoundryHost;
 /// <para>
 /// <strong>Why this host needs it.</strong> Every other host runs a turn as <c>ExecuteAgentTurnCommand</c>, and the
 /// mediator's pipeline screens that request on the way to the handler. Foundry's runtime calls the agent directly, so
-/// that pipeline never runs here (the same reason <see cref="FoundryRequestScope"/> exists). Before this wrapper, an
-/// attack or harmful text reached the model unscreened on this host alone.
+/// that pipeline never runs here (the same reason <see cref="FoundryRequestScope"/> exists).
 /// </para>
 /// <para>
 /// <strong>How.</strong> Each run sends <see cref="ScreenUserInputCommand"/> through the mediator, so the screening is the
 /// pipeline itself, with the deployment's configuration, metrics and audit, not a copy that could drift from it.
 /// </para>
 /// <para>
-/// <strong>What is screened.</strong> On this host the caller writes the instructions as well as the question, so the
-/// text of every user and system message in the run is screened. Assistant and tool messages are not: the first are the
-/// agent's own output, and tool output is not screened on any host.
+/// <strong>What is screened.</strong> Foundry's handler hands caller text to the agent three ways, and all three are
+/// screened before the agent runs:
 /// </para>
+/// <list type="bullet">
+///   <item><description>the run's messages, whatever their role (see <see cref="FoundryCallerText"/>);</description></item>
+///   <item><description>the request's <c>instructions</c>, which arrive in the run options, not as a message. On this
+///   host the caller writes them, so they are screened, unlike an operator's system prompt on other hosts (#951);</description></item>
+///   <item><description>the conversation so far, which the handler replays through a history provider in the run
+///   options when a request continues an earlier one. It is screened again on every run because the platform stores a
+///   request's input even when the answer was a refusal, so a refused attack would otherwise come back unscreened in
+///   the next turn.</description></item>
+/// </list>
 /// <para>
 /// <strong>A refusal</strong> is answered as the agent's reply, carrying the pipeline's reason, and the agent never runs.
-/// When content safety cannot screen the text and the deployment blocks unscreenable text, the run fails instead, as a
-/// turn does on every other host.
+/// A request carrying a file, an image or a link is refused too: the screening reads text only, and no other host
+/// accepts such content. When content safety cannot screen the text and the deployment blocks unscreenable text, the run
+/// fails instead, as a turn does on every other host.
 /// </para>
 /// </remarks>
 internal static class FoundryInputScreening
 {
+    /// <summary>The reply to a request carrying content the screening cannot read.</summary>
+    internal const string UnscreenableContentRefusal =
+        "This agent accepts text only: requests carrying files, images or links are refused because they cannot be screened.";
+
     /// <summary>Returns <paramref name="agent"/> wrapped so every run, streamed or not, is screened first.</summary>
     /// <param name="agent">The agent the host serves.</param>
     /// <param name="provider">The harness's composition root, which resolves the mediator for each run.</param>
@@ -55,7 +67,7 @@ internal static class FoundryInputScreening
         AgentRunOptions? options, AIAgent inner, CancellationToken cancellationToken)
     {
         var input = messages as IReadOnlyCollection<ChatMessage> ?? [.. messages];
-        var refusal = await ScreenAsync(provider, input, cancellationToken).ConfigureAwait(false);
+        var refusal = await ScreenAsync(provider, inner, input, session, options, cancellationToken).ConfigureAwait(false);
         if (refusal is not null)
             return new AgentResponse(new ChatMessage(ChatRole.Assistant, refusal));
 
@@ -67,7 +79,7 @@ internal static class FoundryInputScreening
         AgentRunOptions? options, AIAgent inner, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var input = messages as IReadOnlyCollection<ChatMessage> ?? [.. messages];
-        var refusal = await ScreenAsync(provider, input, cancellationToken).ConfigureAwait(false);
+        var refusal = await ScreenAsync(provider, inner, input, session, options, cancellationToken).ConfigureAwait(false);
         if (refusal is not null)
         {
             yield return new AgentResponseUpdate(ChatRole.Assistant, refusal);
@@ -81,22 +93,41 @@ internal static class FoundryInputScreening
 
     /// <summary>Screens the caller's text; returns the refusal to answer with, or null when the run may go ahead.</summary>
     private static async Task<string?> ScreenAsync(
-        IServiceProvider provider, IReadOnlyCollection<ChatMessage> messages, CancellationToken cancellationToken)
+        IServiceProvider provider, AIAgent agent, IReadOnlyCollection<ChatMessage> messages, AgentSession? session,
+        AgentRunOptions? options, CancellationToken cancellationToken)
     {
-        var callerText = string.Join(
-            "\n\n",
-            messages
-                .Where(m => m.Role == ChatRole.User || m.Role == ChatRole.System)
-                .Select(m => m.Text)
-                .Where(text => !string.IsNullOrWhiteSpace(text)));
-        if (callerText.Length == 0)
+        var everything = await WithReplayedHistoryAsync(agent, messages, session, options, cancellationToken)
+            .ConfigureAwait(false);
+        var reading = FoundryCallerText.Read(everything, (options as ChatClientAgentRunOptions)?.ChatOptions?.Instructions);
+        if (reading.HasUnscreenableContent)
+            return UnscreenableContentRefusal;
+        if (reading.Text.Length == 0)
             return null;
 
         await using var scope = provider.CreateAsyncScope();
         var result = await scope.ServiceProvider.GetRequiredService<IMediator>()
-            .Send(new ScreenUserInputCommand(callerText), cancellationToken)
+            .Send(new ScreenUserInputCommand(reading.Text), cancellationToken)
             .ConfigureAwait(false);
 
         return result.IsSuccess ? null : string.Join(" ", result.Errors);
+    }
+
+    /// <summary>
+    /// The run's messages preceded by the conversation the handler replays through a history provider in the run
+    /// options, or the run's messages alone when there is none.
+    /// </summary>
+    private static async ValueTask<IEnumerable<ChatMessage>> WithReplayedHistoryAsync(
+        AIAgent agent, IReadOnlyCollection<ChatMessage> messages, AgentSession? session, AgentRunOptions? options,
+        CancellationToken cancellationToken)
+    {
+        if (options?.AdditionalProperties is not { } properties
+            || !AdditionalPropertiesExtensions.TryGetValue(properties, out ChatHistoryProvider? history)
+            || history is null)
+            return messages;
+
+        // InvokingAsync returns the history followed by the request messages, and only reads: storing is InvokedAsync.
+        return await history
+            .InvokingAsync(new ChatHistoryProvider.InvokingContext(agent, session, messages), cancellationToken)
+            .ConfigureAwait(false);
     }
 }
