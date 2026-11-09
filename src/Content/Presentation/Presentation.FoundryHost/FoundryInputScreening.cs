@@ -87,7 +87,7 @@ internal static class FoundryInputScreening
         }
 
         await foreach (var update in inner.RunStreamingAsync(input, session, options, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+                           .ConfigureAwait(false))
             yield return update;
     }
 

@@ -22,7 +22,8 @@ namespace Presentation.FoundryHost;
 internal static class FoundryCallerText
 {
     /// <summary>The caller text read from a request, and whether it carried content the screening cannot read.</summary>
-    /// <param name="Text">The caller's text, one piece per paragraph; empty when there is none.</param>
+    /// <param name="Text">The caller's text, one piece per paragraph; empty when there is none, and not read at all when
+    /// the request carried content the screening cannot read, since such a request is refused whatever its text.</param>
     /// <param name="HasUnscreenableContent">True when a message carried a file, an image or a link.</param>
     internal sealed record Reading(string Text, bool HasUnscreenableContent);
 
@@ -31,19 +32,14 @@ internal static class FoundryCallerText
     /// <param name="instructions">The request's own instructions, or null when it set none.</param>
     internal static Reading Read(IEnumerable<ChatMessage> messages, string? instructions)
     {
-        var pieces = new List<string>();
-        var unscreenable = false;
-        AddIfText(pieces, instructions);
+        var contents = messages.SelectMany(m => m.Contents).ToList();
+        if (contents.Any(c => c is DataContent or UriContent or HostedFileContent))
+            return new Reading(string.Empty, HasUnscreenableContent: true);
 
-        foreach (var content in messages.SelectMany(m => m.Contents))
-        {
-            if (content is DataContent or UriContent or HostedFileContent)
-                unscreenable = true;
-            else
-                AddIfText(pieces, TextOf(content));
-        }
-
-        return new Reading(string.Join("\n\n", pieces), unscreenable);
+        var text = string.Join(
+            "\n\n",
+            contents.Select(TextOf).Prepend(instructions).Where(piece => !string.IsNullOrWhiteSpace(piece)));
+        return new Reading(text, HasUnscreenableContent: false);
     }
 
     private static string? TextOf(AIContent content) => content switch
@@ -63,10 +59,4 @@ internal static class FoundryCallerText
         JsonValue value when value.TryGetValue(out string? text) => [text],
         _ => [],
     };
-
-    private static void AddIfText(List<string> pieces, string? text)
-    {
-        if (!string.IsNullOrWhiteSpace(text))
-            pieces.Add(text);
-    }
 }

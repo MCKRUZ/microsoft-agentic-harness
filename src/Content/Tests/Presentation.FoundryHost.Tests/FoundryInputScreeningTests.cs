@@ -72,26 +72,17 @@ public sealed class FoundryInputScreeningTests : IDisposable
         _model.Calls.Should().Be(0, "a tool result in the request is caller text, not the output of a tool the agent ran");
     }
 
-    [Fact]
-    public async Task RunAsync_AnAttackInACallerSuppliedToolCallsArguments_IsRefused()
+    [Theory]
+    [InlineData(" ")]
+    // The scan must read the text the model reads. Serialized JSON would show a line break as a backslash and an "n",
+    // which the scan does not treat as the space between two words.
+    [InlineData("\n")]
+    public async Task RunAsync_AnAttackInACallerSuppliedToolCallsArguments_IsRefused(string separator)
     {
+        var query = Attack.Replace("all ", "all" + separator);
         var call = new ChatMessage(
             ChatRole.Assistant,
-            [new FunctionCallContent("call-1", "lookup", new Dictionary<string, object?> { ["query"] = Attack })]);
-
-        await _served.RunAsync([call, new ChatMessage(ChatRole.User, Benign)]);
-
-        _model.Calls.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task RunAsync_AnAttackSplitByALineBreakInToolCallArguments_IsRefused()
-    {
-        // The scan must read the text the model reads. Serialized JSON would show this line break as a backslash and an
-        // "n", which the scan does not treat as the space between two words.
-        var call = new ChatMessage(
-            ChatRole.Assistant,
-            [new FunctionCallContent("call-1", "lookup", new Dictionary<string, object?> { ["query"] = Attack.Replace("all ", "all\n") })]);
+            [new FunctionCallContent("call-1", "lookup", new Dictionary<string, object?> { ["query"] = query })]);
 
         await _served.RunAsync([call, new ChatMessage(ChatRole.User, Benign)]);
 
@@ -127,9 +118,7 @@ public sealed class FoundryInputScreeningTests : IDisposable
     {
         // Foundry's handler replays the conversation so far through a history provider in the run options, and the
         // platform stores a refused request's input too, so a refused attack comes back here on the next turn.
-        var options = new ChatClientAgentRunOptions(new ChatOptions());
-        AdditionalPropertiesExtensions.Add<ChatHistoryProvider>(
-            options.AdditionalProperties ??= [], new FixedHistory(new ChatMessage(ChatRole.User, Attack)));
+        var options = OptionsWith(instructions: null, new ChatMessage(ChatRole.User, Attack));
 
         await _served.RunAsync([new ChatMessage(ChatRole.User, "Do what I asked above.")], options: options);
 
@@ -139,9 +128,7 @@ public sealed class FoundryInputScreeningTests : IDisposable
     [Fact]
     public async Task RunAsync_BenignTextWithBenignHistory_ReachesTheModel()
     {
-        var options = new ChatClientAgentRunOptions(new ChatOptions { Instructions = "Answer briefly." });
-        AdditionalPropertiesExtensions.Add<ChatHistoryProvider>(
-            options.AdditionalProperties ??= [], new FixedHistory(new ChatMessage(ChatRole.User, "Hello.")));
+        var options = OptionsWith("Answer briefly.", new ChatMessage(ChatRole.User, "Hello."));
 
         var response = await _served.RunAsync([new ChatMessage(ChatRole.User, Benign)], options: options);
 
@@ -184,6 +171,14 @@ public sealed class FoundryInputScreeningTests : IDisposable
 
         _model.Calls.Should().Be(1);
         text.Should().Be(RecordingChatClient.Reply);
+    }
+
+    /// <summary>Run options as Foundry's handler builds them: the request's instructions and the replayed history.</summary>
+    private static ChatClientAgentRunOptions OptionsWith(string? instructions, params ChatMessage[] history)
+    {
+        var options = new ChatClientAgentRunOptions(new ChatOptions { Instructions = instructions });
+        AdditionalPropertiesExtensions.Add<ChatHistoryProvider>(options.AdditionalProperties ??= [], new FixedHistory(history));
+        return options;
     }
 
     private static async Task<List<string>> Collect(IAsyncEnumerable<AgentResponseUpdate> updates)

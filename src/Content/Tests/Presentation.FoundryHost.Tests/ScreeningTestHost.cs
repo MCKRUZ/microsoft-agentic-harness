@@ -3,11 +3,8 @@ using System.Runtime.CompilerServices;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Domain.AI.Models;
-using Domain.Common.Config;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Presentation.Common.Extensions;
 
 namespace Presentation.FoundryHost.Tests;
 
@@ -34,20 +31,15 @@ internal sealed class ScreeningTestHost : IDisposable
     public ScreeningTestHost()
     {
         Directory.CreateDirectory(_home);
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(name => name == "HOME" ? _home : null)
-            .ToDictionary(o => o.Key.Replace("__", ":"), o => (string?)o.Value);
-        overrides["AppConfig:AI:Governance:EnablePromptInjectionDetection"] = "true";
-        overrides["AppConfig:AI:Governance:InjectionBlockThreshold"] = "Low";
-        overrides["AppConfig:AI:ContentSafety:BlockWhenUnavailable"] = "true";
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(overrides).Build();
-
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.RegisterConfigSections(configuration);
-        var appConfig = configuration.GetSection("AppConfig").Get<AppConfig>() ?? new AppConfig();
-        services.BuildGlobalSolutionServices(appConfig, includeHealthChecksUI: false);
-        services.AddSingleton<ITextContentSafetyService, MarkerContentSafetyService>();
-        Provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        Provider = HostComposition.Build(
+            _home,
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Governance:EnablePromptInjectionDetection"] = "true",
+                ["AppConfig:AI:Governance:InjectionBlockThreshold"] = "Low",
+                ["AppConfig:AI:ContentSafety:BlockWhenUnavailable"] = "true",
+            },
+            services => services.AddSingleton<ITextContentSafetyService, MarkerContentSafetyService>());
     }
 
     /// <summary>The composed services.</summary>

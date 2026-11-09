@@ -1,12 +1,9 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Azure.AI.AgentServer.Core;
-using Domain.Common.Config;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Presentation.Common.Extensions;
 using Tests.Common;
 using Xunit;
 
@@ -33,17 +30,7 @@ public sealed class FoundryRequestOwnershipTests : IDisposable
     public FoundryRequestOwnershipTests()
     {
         Directory.CreateDirectory(_home);
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(name => name == "HOME" ? _home : null);
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(overrides.ToDictionary(o => o.Key.Replace("__", ":"), o => (string?)o.Value))
-            .Build();
-
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.RegisterConfigSections(configuration);
-        var appConfig = configuration.GetSection("AppConfig").Get<AppConfig>() ?? new AppConfig();
-        services.BuildGlobalSolutionServices(appConfig, includeHealthChecksUI: false);
-        _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        _provider = HostComposition.Build(_home);
     }
 
     /// <inheritdoc />

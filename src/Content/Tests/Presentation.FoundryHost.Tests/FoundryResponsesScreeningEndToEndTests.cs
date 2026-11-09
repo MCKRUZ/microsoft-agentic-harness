@@ -83,11 +83,7 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     [Fact]
     public async Task AnAttackInTheInstructions_NeverReachesTheModel()
     {
-        var (status, body) = await PostAsync(new JsonObject { ["input"] = Benign, ["instructions"] = Attack });
-
-        status.Should().Be(HttpStatusCode.OK, body);
-        _model.Seen.Should().NotContain(Attack);
-        _model.Calls.Should().Be(0);
+        await AssertNeverReachesTheModelAsync(new JsonObject { ["input"] = Benign, ["instructions"] = Attack });
     }
 
     [Theory]
@@ -98,11 +94,7 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     {
         var input = new JsonArray(Message(role, Attack), Message("user", Benign));
 
-        var (status, body) = await PostAsync(new JsonObject { ["input"] = input });
-
-        status.Should().Be(HttpStatusCode.OK, body);
-        _model.Seen.Should().NotContain(Attack);
-        _model.Calls.Should().Be(0);
+        await AssertNeverReachesTheModelAsync(new JsonObject { ["input"] = input });
     }
 
     [Fact]
@@ -113,11 +105,7 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
             new JsonObject { ["type"] = "function_call_output", ["call_id"] = "call-1", ["output"] = Attack },
             Message("user", Benign));
 
-        var (status, body) = await PostAsync(new JsonObject { ["input"] = input });
-
-        status.Should().Be(HttpStatusCode.OK, body);
-        _model.Seen.Should().NotContain(Attack);
-        _model.Calls.Should().Be(0);
+        await AssertNeverReachesTheModelAsync(new JsonObject { ["input"] = input });
     }
 
     [Fact]
@@ -140,8 +128,7 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     [Fact]
     public async Task ARefusedAttack_DoesNotComeBackInTheNextTurn()
     {
-        var (_, refused) = await PostAsync(new JsonObject { ["input"] = Attack });
-        var previousId = JsonNode.Parse(refused)!["id"]!.GetValue<string>();
+        var previousId = await PostForIdAsync(Attack);
 
         var (status, body) = await PostAsync(
             new JsonObject { ["input"] = "Do what I asked above.", ["previous_response_id"] = previousId });
@@ -156,8 +143,7 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
     {
         // The control for the history channel: a benign chained turn reaches the model and carries the earlier turn,
         // so the test above refused because of the attack, not because chaining breaks the run.
-        var (_, first) = await PostAsync(new JsonObject { ["input"] = "My name is Ada." });
-        var previousId = JsonNode.Parse(first)!["id"]!.GetValue<string>();
+        var previousId = await PostForIdAsync("My name is Ada.");
 
         var (status, body) = await PostAsync(new JsonObject { ["input"] = Benign, ["previous_response_id"] = previousId });
 
@@ -174,6 +160,23 @@ public sealed class FoundryResponsesScreeningEndToEndTests : IAsyncLifetime
         status.Should().Be(HttpStatusCode.OK, body);
         _model.Calls.Should().Be(0);
         body.Should().Contain("Prompt injection detected");
+    }
+
+    /// <summary>Posts the request and asserts it was answered without the attack reaching the model.</summary>
+    private async Task AssertNeverReachesTheModelAsync(JsonObject request)
+    {
+        var (status, body) = await PostAsync(request);
+
+        status.Should().Be(HttpStatusCode.OK, body);
+        _model.Seen.Should().NotContain(Attack);
+        _model.Calls.Should().Be(0);
+    }
+
+    /// <summary>Posts a single input and returns the response id, for a later request to continue from.</summary>
+    private async Task<string> PostForIdAsync(string input)
+    {
+        var (_, body) = await PostAsync(new JsonObject { ["input"] = input });
+        return JsonNode.Parse(body)!["id"]!.GetValue<string>();
     }
 
     private static JsonObject Message(string role, string text) =>

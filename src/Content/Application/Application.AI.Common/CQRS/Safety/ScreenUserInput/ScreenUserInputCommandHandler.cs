@@ -4,12 +4,9 @@ using MediatR;
 namespace Application.AI.Common.CQRS.Safety.ScreenUserInput;
 
 /// <summary>
-/// Handles <see cref="ScreenUserInputCommand"/>. Reaching the handler means the pipeline let the text through.
+/// Handles <see cref="ScreenUserInputCommand"/>. The screening is done by the pipeline behaviors in front of it, which
+/// return their failure without calling it, so reaching the handler means the text was let through.
 /// </summary>
-/// <remarks>
-/// The screening happens in the behaviors in front of the handler, so there is nothing left to do here. A behavior that
-/// refuses the text returns its failure without calling the handler.
-/// </remarks>
 public sealed class ScreenUserInputCommandHandler : IRequestHandler<ScreenUserInputCommand, Result>
 {
     /// <inheritdoc />
