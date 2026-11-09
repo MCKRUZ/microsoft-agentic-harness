@@ -378,7 +378,9 @@
                                 Foundry &mdash; either server-managed (persistent state) or built at runtime from a
                                 Foundry project endpoint &mdash; while keeping the harness middleware (OpenTelemetry, function-invocation limits) via the
                                 client-factory hook. Content safety is unaffected by the client type: it runs on the turn
-                                request in the MediatR pipeline, not on the chat client. For when to use Foundry&rsquo;s managed agents instead of the harness, see
+                                request in the MediatR pipeline, not on the chat client. The Foundry hosted-agent host sends no
+                                turn request, because Foundry&rsquo;s runtime calls the agent directly, so it sends each request&rsquo;s
+                                caller text through the same screening before the agent runs. For when to use Foundry&rsquo;s managed agents instead of the harness, see
                                 <a href="07-harness-vs-managed-agents.html">Harness vs. Managed Agents</a>.
                             </p>
                         </div>

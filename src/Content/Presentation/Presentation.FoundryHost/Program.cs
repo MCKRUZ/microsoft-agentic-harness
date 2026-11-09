@@ -25,8 +25,11 @@ namespace Presentation.FoundryHost;
 /// This host packages the full agentic harness as a Foundry <b>hosted agent</b>: a container that
 /// Foundry Agent Service starts, scales, and exposes over the OpenAI-compatible <c>/responses</c>
 /// protocol. Unlike a Foundry <i>prompt agent</i> (where the platform owns the loop), a hosted agent
-/// runs <i>your</i> code, so the harness's in-process pipeline — skills, governance, tool-output
-/// compression, prerequisite gating, telemetry — survives intact.
+/// runs <i>your</i> code, so skills, tool governance, tool-output compression, prerequisite gating and
+/// telemetry all run here. Foundry's runtime calls the agent directly rather than sending a turn
+/// request, so the host re-creates what guards the request: input screening
+/// (<see cref="FoundryInputScreening"/>) and per-request admission and ownership
+/// (<see cref="FoundryRequestScope"/>). Token budgets, the turn timeout and post-turn learning do not run here.
 /// </para>
 /// <para>
 /// The host reuses the same composition root every other host uses
@@ -251,11 +254,15 @@ public static class Program
         var skillIds = FoundryHostBootstrap.ResolveSkillIds(definition);
 
         var factory = provider.GetRequiredService<IAgentFactory>();
-        return await factory
+        var built = await factory
             .CreateAgentFromSkillsAsync(
                 skillIds,
                 new SkillAgentOptions { OwningAgentId = definition.Id },
                 cancellationToken)
             .ConfigureAwait(false);
+
+        // Foundry's runtime calls the agent directly, never the turn pipeline that screens every other host's input,
+        // so the screening is put in front of the agent here (see FoundryInputScreening).
+        return FoundryInputScreening.Wrap(built, provider);
     }
 }

@@ -2,9 +2,10 @@
 
 Packages the full agentic harness as an **Azure AI Foundry hosted agent** — a container Foundry
 Agent Service starts, scales, and exposes over the OpenAI-compatible `/responses` protocol. Unlike a
-Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so the
-harness's in-process pipeline — skills, governance, tool-output compression, prerequisite gating,
-telemetry — survives intact.
+Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so
+skills, tool governance, tool-output compression, prerequisite gating and telemetry all run here.
+Foundry's runtime calls the agent directly rather than sending a turn request, so the steps that
+hang off a turn request need this host's help (see the capability notes below).
 
 The host reuses the same composition root every other host uses (`GetServices`), builds the agent
 through `IAgentFactory` exactly as the desktop and web hosts do, and hands it to the Foundry hosting
@@ -108,8 +109,30 @@ never overwrites.
 
 The `Foundry` profile sets `Sandbox:Enabled=false`. Docker-in-Micro-VM is unavailable and the
 process sandbox's Windows Job-Object limits don't apply on the Linux runtime, so sandboxed tool
-execution is the one harness capability degraded under hosted agents. The closed-by-default model
-means such tools are refused with a clear capability message rather than running unsandboxed.
+execution is switched off under hosted agents. The closed-by-default model means such tools are
+refused with a clear capability message rather than running unsandboxed.
+
+### Capability note: the turn pipeline
+
+Every other host runs a turn as `ExecuteAgentTurnCommand`, and the MediatR pipeline in front of its
+handler does work on the way in and out. Foundry's runtime calls the agent directly, so this host
+re-creates the parts that guard the request:
+
+- **Input screening.** `FoundryInputScreening` sends all caller text through `ScreenUserInputCommand`,
+  so the prompt-injection scan and content safety screen it exactly as they screen a turn elsewhere.
+  Caller text reaches the agent three ways, and all three are screened: every message in the request,
+  whatever its role (the caller writes assistant turns and tool results too); the request's
+  `instructions`; and the earlier turns Foundry replays when a request continues a conversation.
+  Replayed turns are screened again on every run, because the platform stores a request's input
+  even when the answer was a refusal; the cost grows with conversation length, and a conversation
+  that once carried refused input stays refused, so the caller must start a new one. A request carrying a
+  file, an image or a link is refused, since the screening reads text only. A refusal is answered as
+  the agent's reply and the agent never runs. A screening outage fails the run when
+  `BlockWhenUnavailable` is on.
+- **Tool admission, trace claims and owner.** `FoundryRequestScope` arms them per request.
+
+The steps that hang off a turn request do **not** run here: token budgets, the turn timeout, and
+post-turn learning (knowledge extraction, work-episode capture, skill-effectiveness tracking).
 
 ## Deploy
 
