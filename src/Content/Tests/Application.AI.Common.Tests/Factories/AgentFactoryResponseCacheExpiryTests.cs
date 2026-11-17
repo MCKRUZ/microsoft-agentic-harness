@@ -1,6 +1,8 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Tests.Fakes;
 using Domain.AI.Agents;
@@ -23,6 +25,7 @@ namespace Application.AI.Common.Tests.Factories;
 public sealed class AgentFactoryResponseCacheExpiryTests
 {
     private readonly List<DistributedCacheEntryOptions> _writes = [];
+    private readonly AmbientRequestScope _ambientScope = new();
     private readonly AppConfig _config = new()
     {
         AI = new AIConfig
@@ -41,6 +44,10 @@ public sealed class AgentFactoryResponseCacheExpiryTests
         _config.Cache.ChatResponseExpiry = TimeSpan.FromMinutes(20);
         var before = DateTimeOffset.UtcNow;
 
+        // The response cache only serves a known caller (AgentFactoryResponseCacheIsolationTests).
+        using var request = _ambientScope.BeginScope(new ServiceCollection()
+            .AddSingleton(Mock.Of<IKnowledgeScope>(s => s.UserId == "user-a" && s.TenantId == "tenant-1"))
+            .BuildServiceProvider());
         var agent = await CreateFactory().CreateAgentAsync(new AgentExecutionContext
         {
             Name = "agent",
@@ -101,7 +108,7 @@ public sealed class AgentFactoryResponseCacheExpiryTests
             contextFactory.Object,
             Mock.Of<ISkillMetadataRegistry>(),
             chatClients.Object,
-            new ServiceCollection().BuildServiceProvider(),
+            new ServiceCollection().AddSingleton<IAmbientRequestScope>(_ambientScope).BuildServiceProvider(),
             new InMemorySkillCompletionTracker());
     }
 }
