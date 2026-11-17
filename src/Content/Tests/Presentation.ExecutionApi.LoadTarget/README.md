@@ -111,11 +111,38 @@ The useful custom metrics: `run_queue_wait` (server-side time a background run s
 
 ## Machine safety
 
-The runner refuses to start with less than 6 GB of free memory, starts a fresh target per scenario and
-always stops it, puts a hard time limit on each scenario (10 minutes for smoke up to 90 for soak), and
-will not run `stress` or `soak` without `-ConfirmHeavy`. Load generator and target share one machine,
-so on a small box k6 itself can become the bottleneck: if k6's CPU sits near 100%, the numbers
-describe k6, not the API.
+Every protection applies only to the processes the runner starts; nothing else on the machine changes.
+
+- It refuses to start while ComfyUI is running (port 8188, or a process started from a `ComfyUI`
+  folder) or with less than 6 GB of free memory.
+- The build, the target, k6 and dotnet-counters run at below-normal priority on at most two thirds of
+  the cores, so the desktop always keeps the rest. The target and k6 are told that core count, so their
+  thread pools are sized to it.
+- A watchdog checks every 2 seconds and stops the whole run if free memory falls below 4 GB, ComfyUI
+  starts, or the run passes its overall limit. Scenarios not yet run are reported as `not run`.
+- Time limits, in minutes:
+
+  | Profile | Whole run | Each scenario |
+  |---|---|---|
+  | `smoke` | 20 | 10 |
+  | `baseline` | 60 | 20 |
+  | `stress` | 90 | 30 |
+  | `soak` | 80 | 90 (the run limit stops it first) |
+
+- It starts a fresh target per scenario and always stops it, and will not run `stress` or `soak`
+  without `-ConfirmHeavy`.
+
+Load generator and target share one machine, so k6 itself can become the bottleneck: if k6's CPU sits
+near 100%, the numbers describe k6, not the API.
+
+## Scenario rules
+
+- **Ask a new question every run.** `startBundleRun` does this for you. The chat response cache answers
+  a repeated question from memory, so a fixed question makes every run after a caller's first measure
+  the cache, not the harness.
+- **Pace every loop.** End each iteration with `paceIteration(startedAt)`, which holds it to at least
+  4 seconds. An iteration that ends early (a refused start, the `instant` model) otherwise repeats at
+  once, and the scenario measures its own throttling instead of the API.
 
 ## Prerequisites
 
