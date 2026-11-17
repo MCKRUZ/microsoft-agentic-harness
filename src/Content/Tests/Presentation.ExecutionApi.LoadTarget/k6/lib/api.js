@@ -5,12 +5,24 @@
 
 import http from 'k6/http';
 import { sleep } from 'k6';
-import { BASE_URL, BUNDLE_ZIP, TARGET } from './config.js';
+import { BASE_URL, BUNDLE_ZIP, TARGET, modelAnswerMs } from './config.js';
 import {
-  classify, between, runEndToEnd, runExecution, runQueueWait, runSucceeded, streamDuration, streamFirstByte,
+  cachedAnswers, classify, between, runEndToEnd, runExecution, runQueueWait, runsRecorded, runSucceeded,
+  streamDuration, streamFirstByte,
 } from './metrics.js';
 
-const TERMINAL = ['Succeeded', 'Failed', 'Cancelled', 'Blocked'];
+// A run that finished in under a quarter of the model's answer time was answered from the response cache.
+// Not judged with a near-instant model, where every run is fast.
+const MODEL_ANSWER_MS = modelAnswerMs();
+function answeredFromCache(elapsedMs) {
+  return MODEL_ANSWER_MS >= 1000 && elapsedMs < MODEL_ANSWER_MS / 4;
+}
+
+// Statuses that end a wait. Blocked is not terminal on the host: a parked run keeps its slot and its
+// workflow lock. It ends the wait here because no load-test run should ever park; it is recorded as a
+// failure, and the workflow-runs scenario submits a fresh workflow per run, so a parked run cannot
+// stall the VU that started it.
+const END_WAIT = ['Succeeded', 'Failed', 'Cancelled', 'Blocked'];
 
 function params(caller, name, extra = {}) {
   return {
@@ -89,7 +101,7 @@ export function awaitBundleRun(caller, handle, jobId, startedAtMs, intervalSecon
   while (Date.now() < deadline) {
     sleep(intervalSeconds);
     const record = pollBundleRun(caller, handle, jobId);
-    if (record && TERMINAL.includes(record.status)) {
+    if (record && END_WAIT.includes(record.status)) {
       recordRun(record, startedAtMs);
       return record;
     }
@@ -99,11 +111,13 @@ export function awaitBundleRun(caller, handle, jobId, startedAtMs, intervalSecon
 }
 
 function recordRun(record, startedAtMs) {
+  runsRecorded.add(1);
   runEndToEnd.add(Date.now() - startedAtMs);
   const wait = between(record.createdAt, record.startedAt);
   const exec = between(record.startedAt, record.completedAt);
   if (wait !== null) runQueueWait.add(wait);
   if (exec !== null) runExecution.add(exec);
+  if (record.status === 'Succeeded' && exec !== null && answeredFromCache(exec)) cachedAnswers.add(1);
   // A bundle run whose agent turn failed still reports Succeeded at the run level, with the failure in
   // result.conversationSucceeded, so success has to read both.
   const conversationOk = !record.result || record.result.conversationSucceeded !== false;
@@ -124,12 +138,19 @@ export function readBundleStream(caller, streamUrl) {
   streamDuration.add(res.timings.duration);
   const finished = typeof res.body === 'string' && res.body.includes('RUN_FINISHED');
   runSucceeded.add(finished);
+  if (finished && answeredFromCache(res.timings.duration)) cachedAnswers.add(1);
   return finished;
 }
 
 /**
  * Submits a one-step workflow whose only step is an LLM call. Returns the workflow id or null. The
  * step names the deployment the target provides a skill for (see LoadTargetEnvironment.WorkflowAgent).
+ *
+ * A workflow run takes no input, so the step sends the same messages every time it runs, and the chat
+ * response cache answers repeat runs from memory. Each call therefore submits a workflow with a question
+ * of its own in the step's system prompt; submit one per run. The host currently drops an LlmCall step's
+ * system prompt before the model call (RunConversationCommand.SystemPrompt is never forwarded), so until
+ * that is fixed repeat runs can still be cached; cached_answers reports it and fails the scenario.
  */
 export function submitWorkflow(caller) {
   const definition = {
@@ -137,7 +158,7 @@ export function submitWorkflow(caller) {
     steps: [{
       name: 'answer',
       type: 'LlmCall',
-      configuration: { type: 'llm_call', systemPrompt: 'Answer briefly.', modelDeploymentKey: TARGET.workflowAgent },
+      configuration: { type: 'llm_call', systemPrompt: freshQuestion(), modelDeploymentKey: TARGET.workflowAgent },
     }],
     edges: [],
   };
@@ -146,10 +167,14 @@ export function submitWorkflow(caller) {
   return classify(res, 'submit-workflow', [201]) ? res.json('workflowId') : null;
 }
 
-/** Starts a workflow run. 400 is the per-owner cap, 409 an already-active conflict. */
+/**
+ * Starts a workflow run. 400 is the per-owner cap. 409 (the workflow already has a run in progress) is
+ * left unexpected on purpose: every workflow here is run once, so a 409 means a run was left holding its
+ * workflow, and counting it as a refusal would hide that.
+ */
 export function startWorkflowRun(caller, workflowId) {
   const res = http.post(`${BASE_URL}/api/workflows/${workflowId}/runs`, null, params(caller, 'start-workflow-run'));
-  return classify(res, 'start-workflow-run', [202], [400, 409]) ? res.json('jobId') : null;
+  return classify(res, 'start-workflow-run', [202], [400]) ? res.json('jobId') : null;
 }
 
 /** Opens a workflow progress stream and reads it to the end. 503 is the documented host-wide cap. */
@@ -168,7 +193,7 @@ export function awaitWorkflowRun(caller, workflowId, jobId, startedAtMs, interva
   const deadline = Date.now() + maxSeconds * 1000;
   while (Date.now() < deadline) {
     const res = http.get(`${BASE_URL}/api/workflows/${workflowId}/runs/${jobId}`, params(caller, 'poll-workflow'));
-    if (classify(res, 'poll-workflow', [200]) && TERMINAL.includes(res.json('status'))) {
+    if (classify(res, 'poll-workflow', [200]) && END_WAIT.includes(res.json('status'))) {
       recordRun(res.json(), startedAtMs);
       return res.json();
     }

@@ -38,13 +38,19 @@ export const options = {
   thresholds: thresholds(CORRECTNESS, NO_THROTTLING, latency(['poll'])),
 };
 
-/** One run per pooled caller to poll. Runs need not finish: a poll costs the same whatever the status. */
+/**
+ * One run per pooled caller to poll. Each is started as a live-stream run whose stream is never opened:
+ * a streamed run executes only on its stream's connection, so it stays reserved and does no agent work,
+ * and the storm measures the poll path alone. (Background runs would execute on the dispatch slots for
+ * the whole storm.) A poll costs the same whatever the run's status. The load target keeps unopened
+ * reservations for 30 minutes, longer than any storm.
+ */
 export function setup() {
   const runs = [];
   for (let i = 0; i < POOL; i++) {
     const caller = callerAt(i);
     const handle = registerBundle(caller);
-    const run = handle && startBundleRun(caller, handle, false);
+    const run = handle && startBundleRun(caller, handle, true);
     runs.push(run ? { handle, jobId: run.jobId } : null);
   }
   return { runs };

@@ -40,6 +40,29 @@ export function callerAt(index) {
 export const CALLER_COUNT = callers.length;
 
 /**
+ * How long a scenario waits, after its last stage, for runs already started to finish. k6 hard-stops a
+ * scenario at the end of its stages plus gracefulStop (30 s by default); a run still queued then is cut
+ * off and never recorded, which drops the longest waits and biases every percentile low. Scenarios whose
+ * iterations wait on a run set it to this.
+ */
+export const GRACEFUL_STOP = '5m';
+
+/**
+ * Background runs the host executes at once (BundleExecutionConfig.MaxConcurrentDispatchedBundleRuns,
+ * whose default the load target does not change). Scenarios that build a queue use it to estimate how
+ * long the queue takes to drain.
+ */
+export const DISPATCH_SLOTS = 4;
+
+/** Roughly how long one model answer takes on the target, in milliseconds. */
+export function modelAnswerMs() {
+  const m = TARGET.model;
+  const [h, min, sec] = m.timeToFirstToken.split(':').map(Number);
+  const firstToken = ((h * 60 + min) * 60 + sec) * 1000;
+  return firstToken + (m.tokensPerSecond > 0 ? (m.responseTokens / m.tokensPerSecond) * 1000 : 0);
+}
+
+/**
  * Load levels per profile. smoke proves every scenario works end to end in about a minute; baseline is
  * the reference measurement; stress ramps far past it to find where the host bends; soak holds a
  * moderate load for an hour to expose leaks. Scenarios read the numbers they need from here, so a

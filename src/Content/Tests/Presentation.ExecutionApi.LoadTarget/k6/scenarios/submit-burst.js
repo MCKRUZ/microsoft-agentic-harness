@@ -5,7 +5,7 @@
 // run_execution should stay flat if the slots, not the runs, are the constraint. Every VU is its own
 // caller with one run in flight, so neither the rate limiter nor the per-owner cap should ever fire.
 
-import { callerForVu, load } from '../lib/config.js';
+import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
 import { awaitBundleRun, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
@@ -22,6 +22,7 @@ export const options = {
         { duration: '20s', target: 0 },
       ],
       gracefulRampDown: '5m',
+      gracefulStop: GRACEFUL_STOP,
     },
   },
   thresholds: thresholds(CORRECTNESS, NO_THROTTLING, latency(['register', 'start-run', 'poll']), {

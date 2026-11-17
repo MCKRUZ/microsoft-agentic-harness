@@ -70,10 +70,17 @@ public static class LoadTargetEnvironment
         return root;
     }
 
-    private static IEnumerable<(string Key, string Value)> Settings(
+    /// <summary>The settings <see cref="Apply"/> writes, as environment-variable names and values.</summary>
+    /// <param name="options">The parsed options.</param>
+    /// <param name="issuer">The local issuer whose tenant and client ids the host must expect.</param>
+    /// <param name="workflowSkills">The folder holding the skill the workflow step resolves.</param>
+    internal static IEnumerable<(string Key, string Value)> Settings(
         LoadTargetOptions options, LocalTokenIssuer issuer, string workflowSkills)
     {
         yield return ("AppConfig__AI__BundleExecution__Enabled", "true");
+        // poll-storm polls live-stream runs whose stream it never opens, so they do no agent work; the
+        // default 5-minute reservation window would expire them mid-storm and turn its polls into 404s.
+        yield return ("AppConfig__AI__BundleExecution__StreamReservationTtl", "00:30:00");
         yield return ("AppConfig__AI__BundleExecution__Auth__AllowAnonymous", "false");
         yield return ("AppConfig__AI__BundleExecution__Auth__TenantId", issuer.TenantId);
         yield return ("AppConfig__AI__BundleExecution__Auth__ClientId", issuer.ClientId);

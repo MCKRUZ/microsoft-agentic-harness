@@ -9,7 +9,7 @@
 // Meant for PROFILE=soak (60 minutes). Shorter profiles run it as a quick check of the scenario itself.
 
 import exec from 'k6/execution';
-import { callerForVu, load } from '../lib/config.js';
+import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
 import { awaitBundleRun, readBundleStream, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
@@ -19,9 +19,11 @@ const STREAM_VUS = Math.max(1, Math.floor(level.vus / 2));
 
 export const options = {
   scenarios: {
-    background: { executor: 'constant-vus', vus: BACKGROUND_VUS, duration: level.duration, exec: 'background' },
+    background: {
+      executor: 'constant-vus', vus: BACKGROUND_VUS, duration: level.duration, exec: 'background', gracefulStop: GRACEFUL_STOP,
+    },
     streams: {
-      executor: 'constant-vus', vus: STREAM_VUS, duration: level.duration, exec: 'streams', gracefulStop: '5m',
+      executor: 'constant-vus', vus: STREAM_VUS, duration: level.duration, exec: 'streams', gracefulStop: GRACEFUL_STOP,
     },
   },
   thresholds: thresholds(CORRECTNESS, NO_THROTTLING, latency(['start-run', 'start-stream-run', 'poll']), {

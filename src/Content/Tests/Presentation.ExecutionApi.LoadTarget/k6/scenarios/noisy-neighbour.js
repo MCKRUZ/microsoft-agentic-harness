@@ -7,7 +7,7 @@
 // and rate window (429); both are expected and are counted, not failed.
 
 import { sleep } from 'k6';
-import { callerAt, load } from '../lib/config.js';
+import { GRACEFUL_STOP, callerAt, load } from '../lib/config.js';
 import { awaitBundleRun, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, latency, thresholds } from '../lib/thresholds.js';
 
@@ -22,6 +22,7 @@ export const options = {
       duration: level.duration,
       exec: 'heavy',
       tags: { tier: 'heavy' },
+      gracefulStop: GRACEFUL_STOP,
     },
     light: {
       executor: 'constant-vus',
@@ -30,6 +31,7 @@ export const options = {
       exec: 'light',
       tags: { tier: 'light' },
       startTime: '10s', // let the heavy caller fill the queue first
+      gracefulStop: GRACEFUL_STOP,
     },
   },
   thresholds: thresholds(CORRECTNESS, latency(['start-run', 'poll']), {

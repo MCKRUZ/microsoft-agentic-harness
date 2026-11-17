@@ -21,15 +21,15 @@
       - refuses to start while ComfyUI is running, or with less than 6 GB of free memory;
       - the build, the load target, k6 and dotnet-counters run at below-normal priority on at most two
         thirds of the cores, so the desktop keeps the rest;
-      - a watchdog checks every 2 seconds and stops the whole run if free memory falls below 4 GB,
-        ComfyUI starts, or the run passes its overall time limit;
+      - a watchdog stops the whole run if free memory falls below 4 GB or the run passes its overall
+        time limit (checked every 2 seconds), or if ComfyUI starts (checked every 15 seconds);
       - every scenario also has its own time limit;
       - the heavy profiles (stress, soak) need -ConfirmHeavy.
 
     Time limits (minutes)   whole run   each scenario
-      smoke                     20            10
+      smoke                     30            10
       baseline                  60            20
-      stress                    90            30
+      stress                   120            30
       soak                      80            90 (one scenario; the run limit stops it first)
 
     Prerequisites (checked at start):
@@ -102,18 +102,39 @@ $Callers = 405
 $MinimumFreeMemoryGb = 6
 $ReadySignal = 'LOAD TARGET READY'
 $ScenarioTimeoutMinutes = @{ smoke = 10; baseline = 20; stress = 30; soak = 90 }
-# The whole run, build included. Baseline runs 8 scenarios of about 4 minutes each; stress about 6.
-$RunTimeLimitMinutes = @{ smoke = 20; baseline = 60; stress = 90; soak = 80 }
+# The whole run, build included. Expected: smoke about 15 minutes, baseline about 40, stress about 90
+# (each scenario waits up to 5 minutes for runs already started, and spike waits for its backlog to drain).
+$RunTimeLimitMinutes = @{ smoke = 30; baseline = 60; stress = 120; soak = 80 }
 $BuildTimeoutMinutes = 10
 $AbortFreeMemoryGb = 4
 $WatchIntervalMs = 2000
+# Free memory is read every watchdog tick; the ComfyUI check is slower and changes rarely, so less often.
+$ComfyUiCheckSeconds = 15
 $ComfyUiPort = 8188
-# The load processes share at most two thirds of the cores, so the desktop always keeps the rest.
-$LoadCores = [Math]::Max(2, [int][Math]::Floor([Environment]::ProcessorCount * 2 / 3))
+# The load processes share at most two thirds of the cores, so the desktop always keeps the rest. An
+# affinity mask holds at most 64 cores, and shifting 1 left by 64 wraps to an empty mask, so cap at 63.
+$LoadCores = [Math]::Min(63, [Math]::Max(2, [int][Math]::Floor([Environment]::ProcessorCount * 2 / 3)))
 $LoadAffinity = [IntPtr](([long]1 -shl $LoadCores) - 1)
 $script:RunDeadline = (Get-Date).AddMinutes($RunTimeLimitMinutes[$LoadProfile])
 $script:AbortReason = $null
 $script:K6Process = $null
+$script:NextComfyUiCheck = [datetime]::MinValue
+
+# Reading free memory through WMI every two seconds would put WMI work on the machine being measured;
+# GlobalMemoryStatusEx is a single cheap system call.
+Add-Type -Namespace LoadRun -Name Memory -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)]
+public struct Status { public uint Length; public uint Load; public ulong TotalPhys; public ulong AvailPhys;
+    public ulong TotalPageFile; public ulong AvailPageFile; public ulong TotalVirtual; public ulong AvailVirtual;
+    public ulong AvailExtendedVirtual; }
+[DllImport("kernel32.dll", SetLastError = true)]
+static extern bool GlobalMemoryStatusEx(ref Status status);
+public static ulong AvailableBytes() {
+    var status = new Status { Length = (uint)Marshal.SizeOf<Status>() };
+    if (!GlobalMemoryStatusEx(ref status)) throw new System.ComponentModel.Win32Exception();
+    return status.AvailPhys;
+}
+'@
 $Counters = 'System.Runtime,Microsoft.AspNetCore.Hosting,Microsoft.AspNetCore.Server.Kestrel,Microsoft.AspNetCore.RateLimiting'
 
 function Get-DefaultScenarios {
@@ -149,7 +170,7 @@ function Assert-Prerequisites {
     }
 }
 
-function Get-FreeMemoryGb { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
+function Get-FreeMemoryGb { [LoadRun.Memory]::AvailableBytes() / 1GB }
 
 function Assert-FreeMemory {
     $freeGb = Get-FreeMemoryGb
@@ -163,11 +184,12 @@ function Assert-FreeMemory {
 # process started from a ComfyUI folder (the portable build runs a python.exe whose command line does not
 # name ComfyUI). Matching the word "comfy" anywhere would also catch the comfy-mcp server, which is harmless.
 function Get-ComfyUiEvidence {
-    $listener = Get-NetTCPConnection -LocalPort $ComfyUiPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($listener) { return "process $($listener.OwningProcess) is listening on port $ComfyUiPort" }
-    $process = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'ComfyUI.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -match '(?i)\\ComfyUI[^\\]*\\' } | Select-Object -First 1
-    if ($process) { return "process $($process.ProcessId) is running from $($process.ExecutablePath)" }
+    $listening = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+        Where-Object Port -eq $ComfyUiPort | Select-Object -First 1
+    if ($listening) { return "something is listening on port $ComfyUiPort" }
+    $process = Get-Process -Name python, ComfyUI -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -match '(?i)\\ComfyUI[^\\]*\\' } | Select-Object -First 1
+    if ($process) { return "process $($process.Id) is running from $($process.Path)" }
     return $null
 }
 
@@ -181,8 +203,11 @@ function Get-RunAbortReason {
     if ((Get-Date) -ge $script:RunDeadline) { return "the run reached its $($RunTimeLimitMinutes[$LoadProfile])-minute limit" }
     $freeGb = Get-FreeMemoryGb
     if ($freeGb -lt $AbortFreeMemoryGb) { return ('free memory fell to {0:N1} GB' -f $freeGb) }
-    $comfy = Get-ComfyUiEvidence
-    if ($comfy) { return "ComfyUI started ($comfy)" }
+    if ((Get-Date) -ge $script:NextComfyUiCheck) {
+        $script:NextComfyUiCheck = (Get-Date).AddSeconds($ComfyUiCheckSeconds)
+        $comfy = Get-ComfyUiEvidence
+        if ($comfy) { return "ComfyUI started ($comfy)" }
+    }
     return $null
 }
 
@@ -207,7 +232,10 @@ function Start-LoadProcess([string] $FilePath, [string[]] $ArgumentList, [hashta
         $process.ProcessorAffinity = $LoadAffinity
     }
     catch {
-        if (-not $process.HasExited) { throw }
+        if ($process.HasExited) { return $process }
+        # Nothing tracks the process until it is returned, so a failure here must not leave it running.
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        throw
     }
     return $process
 }

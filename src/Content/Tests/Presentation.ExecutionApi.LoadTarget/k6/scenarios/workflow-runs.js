@@ -6,7 +6,7 @@
 // should start counting 503s on the stream: that is the host-wide cap working, not an error. Compare
 // with stream-soak, where bundle streams have no host-wide cap.
 
-import { callerForVu, load } from '../lib/config.js';
+import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
 import { awaitWorkflowRun, readWorkflowStream, startWorkflowRun, submitWorkflow, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
@@ -23,6 +23,7 @@ export const options = {
         { duration: '20s', target: 0 },
       ],
       gracefulRampDown: '5m',
+      gracefulStop: GRACEFUL_STOP,
     },
   },
   thresholds: thresholds(
@@ -30,21 +31,21 @@ export const options = {
     { run_succeeded: ['rate>0.99'] }),
 };
 
-let workflowId = null;
+// Submit, start, stream and one or two polls: up to five calls an iteration against the per-caller
+// window of 60 a minute, so iterations are held to six seconds rather than the default four.
+const MIN_ITERATION_SECONDS = 6;
 
 export default function () {
   const caller = callerForVu(__VU);
-  workflowId = workflowId || submitWorkflow(caller);
-  if (!workflowId) {
-    return;
-  }
-
+  const iterationStarted = Date.now();
+  // A fresh workflow every run: its question is new, so the response cache cannot answer it.
+  const workflowId = submitWorkflow(caller);
   const startedAt = Date.now();
-  const jobId = startWorkflowRun(caller, workflowId);
+  const jobId = workflowId && startWorkflowRun(caller, workflowId);
   if (jobId) {
     // Watch the run live when the host has stream capacity; either way, confirm the outcome by polling.
     readWorkflowStream(caller, workflowId, jobId);
     awaitWorkflowRun(caller, workflowId, jobId, startedAt);
   }
-  paceIteration(startedAt);
+  paceIteration(iterationStarted, MIN_ITERATION_SECONDS);
 }

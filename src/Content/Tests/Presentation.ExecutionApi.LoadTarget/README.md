@@ -118,16 +118,21 @@ Every protection applies only to the processes the runner starts; nothing else o
 - The build, the target, k6 and dotnet-counters run at below-normal priority on at most two thirds of
   the cores, so the desktop always keeps the rest. The target and k6 are told that core count, so their
   thread pools are sized to it.
-- A watchdog checks every 2 seconds and stops the whole run if free memory falls below 4 GB, ComfyUI
-  starts, or the run passes its overall limit. Scenarios not yet run are reported as `not run`.
+- A watchdog stops the whole run if free memory falls below 4 GB or the run passes its overall limit
+  (checked every 2 seconds), or if ComfyUI starts (checked every 15 seconds). Scenarios not yet run are
+  reported as `not run`.
 - Time limits, in minutes:
 
-  | Profile | Whole run | Each scenario |
-  |---|---|---|
-  | `smoke` | 20 | 10 |
-  | `baseline` | 60 | 20 |
-  | `stress` | 90 | 30 |
-  | `soak` | 80 | 90 (the run limit stops it first) |
+  | Profile | Expected | Whole run | Each scenario |
+  |---|---|---|---|
+  | `smoke` | ~15 | 30 | 10 |
+  | `baseline` | ~40 | 60 | 20 |
+  | `stress` | ~90 | 120 | 30 |
+  | `soak` | ~65 | 80 | 90 (the run limit stops it first) |
+
+  Each scenario waits up to 5 minutes after its last stage for runs already started, so their longest
+  waits are recorded rather than cut off, and `spike` waits for its backlog to drain before it measures
+  recovery.
 
 - It starts a fresh target per scenario and always stops it, and will not run `stress` or `soak`
   without `-ConfirmHeavy`.

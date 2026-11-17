@@ -43,16 +43,30 @@ public sealed record LoadTargetOptions(
         for (var i = 0; i < args.Count; i++)
         {
             var name = args[i];
-            if (name is "--enable-tool-invocation" or "--with-telemetry")
+            if (Flags.Contains(name))
+            {
                 flags.Add(name);
-            else if (name.StartsWith("--", StringComparison.Ordinal) && i + 1 < args.Count)
-                values[name] = args[++i];
-            else
+                continue;
+            }
+
+            // A misspelled option must fail here: accepted silently, its default would surface much later
+            // as a confusing failure (too few callers for a stress ramp, say).
+            if (!ValueOptions.Contains(name))
                 return (null, $"Unrecognised argument '{name}'.");
+            if (i + 1 >= args.Count || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                return (null, $"{name} needs a value.");
+            values[name] = args[++i];
         }
 
         return Build(values, flags);
     }
+
+    private static readonly HashSet<string> Flags =
+        new(["--enable-tool-invocation", "--with-telemetry"], StringComparer.OrdinalIgnoreCase);
+
+    private static readonly HashSet<string> ValueOptions = new(
+        ["--out", "--port", "--model", "--failure-rate", "--callers", "--tenants", "--token-lifetime-minutes"],
+        StringComparer.OrdinalIgnoreCase);
 
     private static (LoadTargetOptions? Options, string? Error) Build(
         IReadOnlyDictionary<string, string> values, IReadOnlySet<string> flags)
@@ -66,7 +80,8 @@ public sealed record LoadTargetOptions(
 
         if (values.TryGetValue("--failure-rate", out var rateText))
         {
-            if (!double.TryParse(rateText, NumberStyles.Float, CultureInfo.InvariantCulture, out var rate) || rate is < 0 or > 1)
+            // Written as "not within", so NaN (which parses, and fails every comparison) is rejected too.
+            if (!double.TryParse(rateText, NumberStyles.Float, CultureInfo.InvariantCulture, out var rate) || !(rate is >= 0 and <= 1))
                 return (null, "--failure-rate must be a number from 0 to 1.");
             model = model!.WithTransientFailureRate(rate);
         }

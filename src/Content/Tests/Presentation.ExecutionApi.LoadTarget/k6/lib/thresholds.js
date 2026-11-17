@@ -9,6 +9,7 @@
 export const CORRECTNESS = {
   server_errors: ['count==0'],
   unexpected_status: ['count==0'],
+  cached_answers: ['count==0'],
 };
 
 /** Added by scenarios that stay inside every limit, where any 429 means a limit misfired. */

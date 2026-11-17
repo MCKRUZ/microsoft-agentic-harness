@@ -21,6 +21,10 @@
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Presentation.ExecutionApi.Tests" />
+  </ItemGroup>
+
   <!--
     Same reason as Presentation.ExecutionApi.Tests: AppConfigHelper.LoadAppConfig anchors on
     AppContext.BaseDirectory (this project's output) and requires appsettings.json there.

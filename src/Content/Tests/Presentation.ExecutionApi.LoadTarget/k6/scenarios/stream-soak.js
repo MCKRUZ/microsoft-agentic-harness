@@ -6,7 +6,7 @@
 // `rampTo` agent conversations at once. Watch stream_first_byte (does the run start promptly?),
 // stream_duration against the model's own time, and the host's memory and thread-pool counters.
 
-import { callerForVu, load } from '../lib/config.js';
+import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
 import { readBundleStream, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
@@ -23,6 +23,7 @@ export const options = {
         { duration: '20s', target: 0 },
       ],
       gracefulRampDown: '5m',
+      gracefulStop: GRACEFUL_STOP,
     },
   },
   thresholds: thresholds(CORRECTNESS, NO_THROTTLING, latency(['register', 'start-stream-run']), {

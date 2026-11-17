@@ -19,6 +19,15 @@ export const capacityRefusals = new Counter('capacity_refusals');
 /** Any status that is neither expected success nor a documented refusal (e.g. 401, 404, 409 where none should occur). */
 export const unexpectedStatus = new Counter('unexpected_status');
 
+/**
+ * Runs that finished far faster than the model can answer: the chat response cache answered them, so they
+ * measured the cache, not the harness. Must stay zero; a scenario that trips it is not measuring the host.
+ */
+export const cachedAnswers = new Counter('cached_answers');
+
+/** Runs whose outcome was recorded. Lets a threshold insist a phase produced data at all. */
+export const runsRecorded = new Counter('runs_recorded');
+
 /** Share of runs that ended Succeeded with the conversation itself succeeding. */
 export const runSucceeded = new Rate('run_succeeded');
 
