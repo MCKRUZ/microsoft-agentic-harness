@@ -530,3 +530,18 @@ against an implementation that concatenated the name onto a root.
 ```bash
 dotnet test src/Content/Tests/Presentation.ExecutionApi.Tests
 ```
+
+### Load and stress testing
+
+`src/Content/Tests/Presentation.ExecutionApi.LoadTarget/` runs this host under load: the real API on
+real Kestrel, a latency-tunable simulated model in place of Azure OpenAI, locally minted tokens in place
+of Entra, and k6 scenarios for every path (polling, background and streamed runs, registration,
+workflows, the documented limits, a spike and an hour-long soak). One command runs them and collects
+the results:
+
+```powershell
+./scripts/load/Invoke-ExecutionApiLoad.ps1
+```
+
+Its README covers the profiles, what each scenario proves, how to read the results, and the
+machine-safety rules.
