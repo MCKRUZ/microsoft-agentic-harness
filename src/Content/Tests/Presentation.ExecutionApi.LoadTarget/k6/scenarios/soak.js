@@ -10,7 +10,7 @@
 
 import exec from 'k6/execution';
 import { callerForVu, load } from '../lib/config.js';
-import { awaitBundleRun, readBundleStream, registerBundle, startBundleRun } from '../lib/api.js';
+import { awaitBundleRun, readBundleStream, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -74,6 +74,7 @@ export function background() {
   if (run) {
     awaitBundleRun(caller, handle, run.jobId, startedAt);
   }
+  paceIteration(startedAt);
 }
 
 export function streams() {
@@ -82,8 +83,10 @@ export function streams() {
     return;
   }
   tagPhase();
+  const startedAt = Date.now();
   const run = startBundleRun(caller, handle, true);
   if (run) {
     readBundleStream(caller, run.streamUrl);
   }
+  paceIteration(startedAt);
 }

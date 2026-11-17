@@ -8,7 +8,7 @@
 
 import { sleep } from 'k6';
 import { callerAt, load } from '../lib/config.js';
-import { awaitBundleRun, registerBundle, startBundleRun } from '../lib/api.js';
+import { awaitBundleRun, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -60,4 +60,5 @@ export function light() {
   if (run) {
     awaitBundleRun(caller, handle, run.jobId, startedAt);
   }
+  paceIteration(startedAt);
 }

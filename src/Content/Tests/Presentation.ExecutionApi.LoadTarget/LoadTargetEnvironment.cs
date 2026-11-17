@@ -89,16 +89,18 @@ public static class LoadTargetEnvironment
         // A workflow's LlmCall step is admitted against the caller's envelope as the reserved plan
         // capability llm_call; without it every workflow-runs step is refused before the model is called.
         yield return ("AppConfig__AI__BundleExecution__Envelopes__Default__AllowedTools__0", PlanCapabilities.LlmCall);
+        // Granting llm_call is not enough on its own: below the Autonomous ceiling a granted capability
+        // still needs approval, and with no approver configured every step ends refused.
+        yield return ("AppConfig__AI__BundleExecution__Envelopes__Default__AutonomyCeiling", "Autonomous");
         yield return ("AppConfig__AI__Skills__AdditionalPaths__0", workflowSkills);
 
         if (!options.EnableToolInvocation)
             yield break;
 
-        // The demo tool, granted to every caller, with the one ceiling that permits tool execution.
-        // The README is explicit that echo_* tools are fixtures for smoke tests and must never be
-        // granted where it matters; a throwaway load target is exactly where they belong.
+        // The demo tool, granted to every caller. The README is explicit that echo_* tools are fixtures
+        // for smoke tests and must never be granted where it matters; a throwaway load target is exactly
+        // where they belong.
         yield return ("AppConfig__AI__BundleExecution__Envelopes__Default__AllowedTools__1", EchoCalculateTool.ToolName);
-        yield return ("AppConfig__AI__BundleExecution__Envelopes__Default__AutonomyCeiling", "Autonomous");
     }
 
     /// <summary>Describes the model profile in one line, for the start-up banner.</summary>

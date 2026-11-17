@@ -8,7 +8,7 @@
 
 import exec from 'k6/execution';
 import { CALLER_COUNT, callerForVu, load } from '../lib/config.js';
-import { awaitBundleRun, registerBundle, startBundleRun } from '../lib/api.js';
+import { awaitBundleRun, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -62,4 +62,5 @@ export default function () {
   if (run) {
     awaitBundleRun(caller, handle, run.jobId, startedAt);
   }
+  paceIteration(startedAt);
 }

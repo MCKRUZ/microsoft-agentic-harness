@@ -7,7 +7,7 @@
 // with stream-soak, where bundle streams have no host-wide cap.
 
 import { callerForVu, load } from '../lib/config.js';
-import { awaitWorkflowRun, readWorkflowStream, startWorkflowRun, submitWorkflow } from '../lib/api.js';
+import { awaitWorkflowRun, readWorkflowStream, startWorkflowRun, submitWorkflow, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -41,11 +41,10 @@ export default function () {
 
   const startedAt = Date.now();
   const jobId = startWorkflowRun(caller, workflowId);
-  if (!jobId) {
-    return;
+  if (jobId) {
+    // Watch the run live when the host has stream capacity; either way, confirm the outcome by polling.
+    readWorkflowStream(caller, workflowId, jobId);
+    awaitWorkflowRun(caller, workflowId, jobId, startedAt);
   }
-
-  // Watch the run live when the host has stream capacity; either way, confirm the outcome by polling.
-  readWorkflowStream(caller, workflowId, jobId);
-  awaitWorkflowRun(caller, workflowId, jobId, startedAt);
+  paceIteration(startedAt);
 }

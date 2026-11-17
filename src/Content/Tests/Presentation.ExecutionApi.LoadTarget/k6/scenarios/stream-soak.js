@@ -7,7 +7,7 @@
 // stream_duration against the model's own time, and the host's memory and thread-pool counters.
 
 import { callerForVu, load } from '../lib/config.js';
-import { readBundleStream, registerBundle, startBundleRun } from '../lib/api.js';
+import { readBundleStream, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -41,8 +41,10 @@ export default function () {
     return;
   }
 
+  const startedAt = Date.now();
   const run = startBundleRun(caller, handle, true);
   if (run) {
     readBundleStream(caller, run.streamUrl);
   }
+  paceIteration(startedAt);
 }

@@ -34,13 +34,40 @@ export function deleteBundle(caller, handle) {
 }
 
 /**
+ * The shortest time one iteration of a looping scenario may take. Each iteration makes about three calls
+ * against a per-caller window of 60 a minute; without a floor, an iteration that ends early (a refused
+ * start, a fast failure, the instant model) repeats at once and the scenario measures its own throttling.
+ */
+export const MIN_ITERATION_SECONDS = 4;
+
+/** Sleeps out whatever is left of `minSeconds` since `startedAtMs`. */
+export function paceIteration(startedAtMs, minSeconds = MIN_ITERATION_SECONDS) {
+  const left = minSeconds - (Date.now() - startedAtMs) / 1000;
+  if (left > 0) {
+    sleep(left);
+  }
+}
+
+// Module state is per VU: each VU runs its own copy of this file.
+let questionsAsked = 0;
+
+/**
+ * A question this VU has not asked before. The chat response cache answers a repeated question from
+ * memory, so a fixed question makes every run after a caller's first measure the cache, not the harness.
+ */
+function freshQuestion() {
+  questionsAsked += 1;
+  return `Give a one-line answer. (vu ${__VU}, question ${questionsAsked})`;
+}
+
+/**
  * Starts a run. Returns { jobId, streamUrl } or null. 400 is the documented per-owner active-run cap,
  * so it is a capacity refusal rather than an error.
  */
 export function startBundleRun(caller, handle, stream) {
   const res = http.post(
     `${BASE_URL}/api/bundles/${handle}/runs`,
-    JSON.stringify({ userMessages: ['Give a one-line answer.'], maxTurns: 1, stream }),
+    JSON.stringify({ userMessages: [freshQuestion()], maxTurns: 1, stream }),
     params(caller, stream ? 'start-stream-run' : 'start-run', { headers: { 'Content-Type': 'application/json' } }));
   return classify(res, stream ? 'start-stream-run' : 'start-run', [202], [400])
     ? { jobId: res.json('jobId'), streamUrl: res.json('streamUrl') }

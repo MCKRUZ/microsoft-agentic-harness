@@ -6,7 +6,7 @@
 // caller with one run in flight, so neither the rate limiter nor the per-owner cap should ever fire.
 
 import { callerForVu, load } from '../lib/config.js';
-import { awaitBundleRun, registerBundle, startBundleRun } from '../lib/api.js';
+import { awaitBundleRun, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
@@ -43,4 +43,5 @@ export default function () {
   if (run) {
     awaitBundleRun(caller, handle, run.jobId, startedAt);
   }
+  paceIteration(startedAt);
 }
