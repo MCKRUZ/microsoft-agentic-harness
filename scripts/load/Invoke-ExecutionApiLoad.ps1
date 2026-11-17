@@ -16,8 +16,21 @@
       target.log        the load target's console output
       counters.csv      thread pool, GC, allocation, Kestrel and rate-limiter counters, once a second
 
-    Machine protection: the script refuses to start with less than 6 GB of free memory, puts a hard
-    time limit on every scenario, and the heavy profiles (stress, soak) need -ConfirmHeavy.
+    Machine protection, all of it confined to the processes this script starts (nothing on the machine
+    is changed outside them, and nothing outlives the run):
+      - refuses to start while ComfyUI is running, or with less than 6 GB of free memory;
+      - the build, the load target, k6 and dotnet-counters run at below-normal priority on at most two
+        thirds of the cores, so the desktop keeps the rest;
+      - a watchdog checks every 2 seconds and stops the whole run if free memory falls below 4 GB,
+        ComfyUI starts, or the run passes its overall time limit;
+      - every scenario also has its own time limit;
+      - the heavy profiles (stress, soak) need -ConfirmHeavy.
+
+    Time limits (minutes)   whole run   each scenario
+      smoke                     20            10
+      baseline                  60            20
+      stress                    90            30
+      soak                      80            90 (one scenario; the run limit stops it first)
 
     Prerequisites (checked at start):
       k6               winget install k6 --source winget
@@ -89,6 +102,18 @@ $Callers = 405
 $MinimumFreeMemoryGb = 6
 $ReadySignal = 'LOAD TARGET READY'
 $ScenarioTimeoutMinutes = @{ smoke = 10; baseline = 20; stress = 30; soak = 90 }
+# The whole run, build included. Baseline runs 8 scenarios of about 4 minutes each; stress about 6.
+$RunTimeLimitMinutes = @{ smoke = 20; baseline = 60; stress = 90; soak = 80 }
+$BuildTimeoutMinutes = 10
+$AbortFreeMemoryGb = 4
+$WatchIntervalMs = 2000
+$ComfyUiPort = 8188
+# The load processes share at most two thirds of the cores, so the desktop always keeps the rest.
+$LoadCores = [Math]::Max(2, [int][Math]::Floor([Environment]::ProcessorCount * 2 / 3))
+$LoadAffinity = [IntPtr](([long]1 -shl $LoadCores) - 1)
+$script:RunDeadline = (Get-Date).AddMinutes($RunTimeLimitMinutes[$LoadProfile])
+$script:AbortReason = $null
+$script:K6Process = $null
 $Counters = 'System.Runtime,Microsoft.AspNetCore.Hosting,Microsoft.AspNetCore.Server.Kestrel,Microsoft.AspNetCore.RateLimiting'
 
 function Get-DefaultScenarios {
@@ -124,18 +149,93 @@ function Assert-Prerequisites {
     }
 }
 
+function Get-FreeMemoryGb { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
+
 function Assert-FreeMemory {
-    $freeGb = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
+    $freeGb = Get-FreeMemoryGb
     if ($freeGb -lt $MinimumFreeMemoryGb) {
         throw ('Only {0:N1} GB of memory is free; the load run needs at least {1} GB. Close something and retry.' -f $freeGb, $MinimumFreeMemoryGb)
     }
     Write-Host ('Free memory: {0:N1} GB' -f $freeGb)
 }
 
+# ComfyUI holds GPU and system memory the load run would compete with. It is found by its port, or by a
+# process started from a ComfyUI folder (the portable build runs a python.exe whose command line does not
+# name ComfyUI). Matching the word "comfy" anywhere would also catch the comfy-mcp server, which is harmless.
+function Get-ComfyUiEvidence {
+    $listener = Get-NetTCPConnection -LocalPort $ComfyUiPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) { return "process $($listener.OwningProcess) is listening on port $ComfyUiPort" }
+    $process = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'ComfyUI.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -match '(?i)\\ComfyUI[^\\]*\\' } | Select-Object -First 1
+    if ($process) { return "process $($process.ProcessId) is running from $($process.ExecutablePath)" }
+    return $null
+}
+
+function Assert-ComfyUiStopped {
+    $evidence = Get-ComfyUiEvidence
+    if ($evidence) { throw "ComfyUI is running ($evidence). Stop it before a load run." }
+}
+
+# Anything that must stop the whole run, not only the current scenario.
+function Get-RunAbortReason {
+    if ((Get-Date) -ge $script:RunDeadline) { return "the run reached its $($RunTimeLimitMinutes[$LoadProfile])-minute limit" }
+    $freeGb = Get-FreeMemoryGb
+    if ($freeGb -lt $AbortFreeMemoryGb) { return ('free memory fell to {0:N1} GB' -f $freeGb) }
+    $comfy = Get-ComfyUiEvidence
+    if ($comfy) { return "ComfyUI started ($comfy)" }
+    return $null
+}
+
+# Starts a process of this run at below-normal priority on the load cores. Environment values apply to this
+# start only and are restored straight after, so nothing is left in the caller's shell.
+function Start-LoadProcess([string] $FilePath, [string[]] $ArgumentList, [hashtable] $Redirect = @{}, [hashtable] $Environment = @{}) {
+    $saved = @{}
+    foreach ($name in $Environment.Keys) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name)
+        [Environment]::SetEnvironmentVariable($name, $Environment[$name])
+    }
+    try {
+        $process = Start-Process $FilePath -ArgumentList $ArgumentList -PassThru -NoNewWindow @Redirect
+        # Without touching Handle now, ExitCode can read back empty once the process has exited.
+        $null = $process.Handle
+    }
+    finally {
+        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+    }
+    try {
+        $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+        $process.ProcessorAffinity = $LoadAffinity
+    }
+    catch {
+        if (-not $process.HasExited) { throw }
+    }
+    return $process
+}
+
+# Waits for a process while the watchdog runs. Returns $null when it exits on its own, or why it was stopped.
+function Wait-UnderWatch([System.Diagnostics.Process] $Process, [int] $TimeoutMinutes) {
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    while (-not $Process.WaitForExit($WatchIntervalMs)) {
+        $script:AbortReason = Get-RunAbortReason
+        $reason = if ($script:AbortReason) { $script:AbortReason }
+            elseif ((Get-Date) -ge $deadline) { "it hit its $TimeoutMinutes-minute limit" }
+        if ($reason) {
+            Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+            return $reason
+        }
+    }
+    return $null
+}
+
 function Build-Target {
     Write-Host 'Building the load target (Release)...'
-    & dotnet build (Join-Path $TargetProject 'Presentation.ExecutionApi.LoadTarget.csproj') -c Release --nologo -v quiet -m:4
-    if ($LASTEXITCODE -ne 0) { throw "Building the load target failed (exit $LASTEXITCODE)." }
+    # No build servers, so no MSBuild or compiler process lingers after the build.
+    $arguments = @('build', "`"$(Join-Path $TargetProject 'Presentation.ExecutionApi.LoadTarget.csproj')`"", '-c', 'Release',
+        '--nologo', '-v', 'quiet', '-m:2', '--disable-build-servers')
+    $build = Start-LoadProcess dotnet $arguments
+    $stopped = Wait-UnderWatch $build $BuildTimeoutMinutes
+    if ($stopped) { throw "The build was stopped: $stopped." }
+    if ($build.ExitCode -ne 0) { throw "Building the load target failed (exit $($build.ExitCode))." }
 }
 
 function Start-Target([string] $OutDir) {
@@ -146,8 +246,9 @@ function Start-Target([string] $OutDir) {
     if ($WithTelemetry) { $arguments += '--with-telemetry' }
 
     $log = Join-Path $OutDir 'target.log'
-    $process = Start-Process dotnet -ArgumentList $arguments -PassThru -NoNewWindow `
-        -RedirectStandardOutput $log -RedirectStandardError (Join-Path $OutDir 'target.err.log')
+    $redirect = @{ RedirectStandardOutput = $log; RedirectStandardError = (Join-Path $OutDir 'target.err.log') }
+    # The runtime sizes its thread pool from the processor count it sees at start, so tell it the load cores.
+    $process = Start-LoadProcess dotnet $arguments $redirect @{ DOTNET_PROCESSOR_COUNT = "$LoadCores" }
     Wait-ForReady $process $log
     return [pscustomobject]@{ Process = $process; Fixtures = $fixtures }
 }
@@ -157,6 +258,11 @@ function Wait-ForReady([System.Diagnostics.Process] $Process, [string] $Log) {
     while ((Get-Date) -lt $deadline) {
         if ($Process.HasExited) { throw "The load target exited during start-up (exit $($Process.ExitCode)); see $Log." }
         if ((Test-Path $Log) -and (Select-String -Path $Log -Pattern $ReadySignal -SimpleMatch -Quiet)) { return }
+        $script:AbortReason = Get-RunAbortReason
+        if ($script:AbortReason) {
+            Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+            throw "start-up was stopped: $($script:AbortReason)."
+        }
         Start-Sleep -Milliseconds 500
     }
     Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
@@ -167,8 +273,8 @@ function Start-Counters([int] $ProcessId, [string] $OutDir) {
     if (-not (Get-Command dotnet-counters -ErrorAction SilentlyContinue)) { return $null }
     $arguments = @('collect', '--process-id', $ProcessId, '--refresh-interval', '1', '--format', 'csv',
         '--output', "`"$(Join-Path $OutDir 'counters.csv')`"", '--counters', $Counters)
-    return Start-Process dotnet-counters -ArgumentList $arguments -PassThru -NoNewWindow `
-        -RedirectStandardOutput (Join-Path $OutDir 'counters.log') -RedirectStandardError (Join-Path $OutDir 'counters.err.log')
+    $redirect = @{ RedirectStandardOutput = (Join-Path $OutDir 'counters.log'); RedirectStandardError = (Join-Path $OutDir 'counters.err.log') }
+    return Start-LoadProcess dotnet-counters $arguments $redirect
 }
 
 function Invoke-K6([string] $Name, [string] $Fixtures, [string] $OutDir) {
@@ -176,32 +282,26 @@ function Invoke-K6([string] $Name, [string] $Fixtures, [string] $OutDir) {
     $arguments = @('run', '--quiet', '-e', "FIXTURES=`"$Fixtures`"", '-e', "PROFILE=$LoadProfile",
         '--summary-export', "`"$(Join-Path $OutDir 'summary.json')`"", "`"$(Join-Path $ScenarioDir "$Name.js")`"")
 
-    # The dashboard export is configured only through the environment; set it for k6's start, then restore.
-    $saved = @{ K6_WEB_DASHBOARD = $env:K6_WEB_DASHBOARD; K6_WEB_DASHBOARD_EXPORT = $env:K6_WEB_DASHBOARD_EXPORT }
-    try {
-        $env:K6_WEB_DASHBOARD = 'true'
-        $env:K6_WEB_DASHBOARD_EXPORT = Join-Path $OutDir 'report.html'
-        $k6 = Start-Process $K6Path -ArgumentList $arguments -PassThru -NoNewWindow `
-            -RedirectStandardOutput (Join-Path $OutDir 'k6.log') -RedirectStandardError (Join-Path $OutDir 'k6.err.log')
-        # Without touching Handle now, ExitCode can read back empty once the process has exited.
-        $null = $k6.Handle
-    }
-    finally {
-        $env:K6_WEB_DASHBOARD = $saved.K6_WEB_DASHBOARD
-        $env:K6_WEB_DASHBOARD_EXPORT = $saved.K6_WEB_DASHBOARD_EXPORT
-    }
+    $redirect = @{ RedirectStandardOutput = (Join-Path $OutDir 'k6.log'); RedirectStandardError = (Join-Path $OutDir 'k6.err.log') }
+    # The dashboard export is configured only through the environment. GOMAXPROCS keeps k6's scheduler to the
+    # load cores it is pinned to.
+    $environment = @{ K6_WEB_DASHBOARD = 'true'; K6_WEB_DASHBOARD_EXPORT = (Join-Path $OutDir 'report.html'); GOMAXPROCS = "$LoadCores" }
+    $k6 = Start-LoadProcess $K6Path $arguments $redirect $environment
+    $script:K6Process = $k6
 
-    $timeoutMs = $ScenarioTimeoutMinutes[$LoadProfile] * 60 * 1000
-    if (-not $k6.WaitForExit($timeoutMs)) {
-        Stop-Process -Id $k6.Id -Force -ErrorAction SilentlyContinue
-        Write-Warning "$Name hit the $($ScenarioTimeoutMinutes[$LoadProfile])-minute limit and was stopped."
-        return 'timed out'
+    $stopped = Wait-UnderWatch $k6 $ScenarioTimeoutMinutes[$LoadProfile]
+    if ($stopped) {
+        Write-Warning "$Name was stopped: $stopped."
+        return "stopped: $stopped"
     }
     # k6 exits 0 when every threshold passed and 99 when one failed; anything else is a script error.
     switch ($k6.ExitCode) { 0 { 'passed' } 99 { 'thresholds failed' } default { "k6 error (exit $($k6.ExitCode))" } }
 }
 
 function Stop-Target($Target, $CountersProcess) {
+    # k6 too: after Ctrl+C or an error it would otherwise keep firing at a stopped target until its own end.
+    if ($script:K6Process -and -not $script:K6Process.HasExited) { Stop-Process -Id $script:K6Process.Id -Force -ErrorAction SilentlyContinue }
+    $script:K6Process = $null
     if ($Target -and -not $Target.Process.HasExited) { Stop-Process -Id $Target.Process.Id -Force -ErrorAction SilentlyContinue }
     if ($CountersProcess) {
         # dotnet-counters ends on its own once the process it watches exits; give it a moment to flush.
@@ -232,13 +332,24 @@ function Invoke-Scenario([string] $Name, [string] $RunDir) {
 if (-not $Scenario) { $Scenario = Get-DefaultScenarios }
 $K6Path = Resolve-K6
 Assert-Prerequisites
+Assert-ComfyUiStopped
 Assert-FreeMemory
+Write-Host ("Load processes: below-normal priority, {0} of {1} cores. Whole run stops after {2} minutes." -f `
+    $LoadCores, [Environment]::ProcessorCount, $RunTimeLimitMinutes[$LoadProfile])
 Build-Target
 
 $runDir = Join-Path $RepoRoot ("artifacts\load\{0:yyyyMMdd-HHmmss}-$LoadProfile" -f (Get-Date))
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
-$results = foreach ($name in $Scenario) { Invoke-Scenario $name $runDir }
+$results = foreach ($name in $Scenario) {
+    if (-not $script:AbortReason) { $script:AbortReason = Get-RunAbortReason }
+    if ($script:AbortReason) {
+        [pscustomobject]@{ Scenario = $name; Result = "not run: $($script:AbortReason)" }
+        continue
+    }
+    Invoke-Scenario $name $runDir
+}
 
 Write-Host "`nResults: $runDir"
+if ($script:AbortReason) { Write-Warning "The run was stopped early: $($script:AbortReason)." }
 $results | Format-Table -AutoSize | Out-String | Write-Host
 if ($results | Where-Object Result -ne 'passed') { exit 1 }
