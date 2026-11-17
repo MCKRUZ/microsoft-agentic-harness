@@ -1,11 +1,11 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
-using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Compliance;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services;
 
@@ -30,11 +30,11 @@ namespace Application.AI.Common.Services;
 /// write is dropped. Hosts with no signed-in caller (the console, the eval runner) therefore get no response cache.
 /// </para>
 /// <para>
-/// The tenant and user, canonicalized as the knowledge graph's stores canonicalize them, are hashed with HMAC-SHA256
-/// under a random key that exists only in this process. A plain hash of a guessable id would let anyone who can read a
-/// shared Redis cache confirm whose entries are whose; this key cannot be recomputed outside the process. The cost is
-/// that hosts sharing one Redis cache do not share hits, and entries written before a restart are no longer reachable
-/// and simply expire.
+/// The tenant and user, trimmed but with case kept, are hashed with HMAC-SHA256 under a random key that exists only in
+/// this process. A plain hash of a guessable id would let anyone who can read a shared Redis cache confirm whose entries
+/// are whose; this key cannot be recomputed outside the process. The cost is that no two processes share hits, even
+/// replicas of one host behind a load balancer, and entries written before a restart are no longer reachable and simply
+/// expire.
 /// </para>
 /// </remarks>
 [PersonalDataChannel("Files chat response cache entries under the writing caller; the chat response cache (AgentFactory) describes what it holds.")]
@@ -48,17 +48,21 @@ public sealed class CallerScopedDistributedCache : IDistributedCache
 
     private readonly IDistributedCache _inner;
     private readonly IAmbientRequestScope _ambientScope;
+    private readonly ILogger _logger;
 
     /// <summary>Initializes a new instance of the <see cref="CallerScopedDistributedCache"/> class.</summary>
     /// <param name="inner">The cache entries are stored in.</param>
     /// <param name="ambientScope">The request scope the current caller's <see cref="IKnowledgeScope"/> is read from.</param>
-    public CallerScopedDistributedCache(IDistributedCache inner, IAmbientRequestScope ambientScope)
+    /// <param name="logger">Records operations skipped because the caller could not be read.</param>
+    public CallerScopedDistributedCache(IDistributedCache inner, IAmbientRequestScope ambientScope, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(ambientScope);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _inner = inner;
         _ambientScope = ambientScope;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -115,16 +119,25 @@ public sealed class CallerScopedDistributedCache : IDistributedCache
         catch (ObjectDisposedException)
         {
             // Work that outlived its request scope has no caller left to file under; a cache must not fail the turn.
+            _logger.LogDebug("Chat response cache skipped: the request scope that held the caller was already disposed.");
             return null;
         }
 
-        var user = ScopeIdentity.Canonicalize(caller?.UserId);
+        var user = Trimmed(caller?.UserId);
         if (user is null)
             return null;
 
-        // Each part is length-prefixed, so no pair of ids, whatever characters they hold, encodes like another pair.
-        var tenant = ScopeIdentity.Canonicalize(caller!.TenantId) ?? string.Empty;
-        var identity = Encoding.UTF8.GetBytes($"{tenant.Length}:{tenant}{user.Length}:{user}");
+        // Each part is length-prefixed and hashed as its exact UTF-16 code units, so no pair of ids, whatever
+        // characters they hold (including unpaired surrogates), encodes like another pair.
+        var tenant = Trimmed(caller!.TenantId) ?? string.Empty;
+        var identity = MemoryMarshal.AsBytes($"{tenant.Length}:{tenant}{user.Length}:{user}".AsSpan());
         return $"{Convert.ToHexStringLower(HMACSHA256.HashData(ProcessKey, identity))}:{key}";
     }
+
+    /// <summary>
+    /// The id with surrounding whitespace removed, or <see langword="null"/> when nothing is left. Case is kept on
+    /// purpose: identity providers may issue ids that differ only in case to different people, and folding them would
+    /// let one person read another's entries, where keeping case can at worst cost a cache hit.
+    /// </summary>
+    private static string? Trimmed(string? id) => string.IsNullOrWhiteSpace(id) ? null : id.Trim();
 }

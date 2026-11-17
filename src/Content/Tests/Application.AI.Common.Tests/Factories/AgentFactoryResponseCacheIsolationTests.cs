@@ -104,8 +104,11 @@ public sealed class AgentFactoryResponseCacheIsolationTests
             await agent.RunAsync(Question);
         using (BeginRequest(new Caller("user-b", "tenant-1")))
             await agent.RunAsync(Question);
+        using (BeginRequest(new Caller("user-a", "tenant-1")))
+            await agent.RunAsync(Question);
 
-        _model.RequestHistory.Should().HaveCount(2, "a shared agent must not serve the user it was built for to everyone");
+        _model.RequestHistory.Should().HaveCount(2,
+            "a shared agent must not serve one user's answer to another, and must still serve each user their own");
     }
 
     private const string Question = "What is the capital of France?";

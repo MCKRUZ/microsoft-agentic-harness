@@ -245,7 +245,8 @@ public partial class AgentFactory
         {
             chatClientBuilder = chatClientBuilder.UseDistributedCache(new Services.CallerScopedDistributedCache(
                 new Services.ExpiringDistributedCache(_distributedCache, ChatResponseExpiry, TimeProvider.System),
-                ambientScope));
+                ambientScope,
+                _loggerFactory.CreateLogger<Services.CallerScopedDistributedCache>()));
         }
 
         return chatClientBuilder.Build();

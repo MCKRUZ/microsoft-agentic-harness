@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Services;
@@ -5,6 +7,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -43,12 +46,51 @@ public sealed class CallerScopedDistributedCacheTests
     }
 
     [Fact]
-    public void Get_ForTheSameCallerSpelledDifferently_ReturnsTheEntry()
+    public void Get_ForTheSameCallerWithSurroundingWhitespace_ReturnsTheEntry()
     {
-        using (As("User-A", "Tenant-1")) Cache().Set("k", Value, NoExpiry);
+        using (As("user-a", "tenant-1")) Cache().Set("k", Value, NoExpiry);
 
-        using (As(" user-a ", "tenant-1")) Cache().Get("k").Should().Equal(Value,
-            "ids are canonicalized the way the knowledge graph's scoped stores canonicalize them");
+        using (As(" user-a ", " tenant-1 ")) Cache().Get("k").Should().Equal(Value);
+    }
+
+    [Fact]
+    public void Get_ForAUserIdThatDiffersOnlyInCase_Misses()
+    {
+        using (As("AbC123", "tenant-1")) Cache().Set("k", Value, NoExpiry);
+
+        using (As("abc123", "tenant-1")) Cache().Get("k").Should().BeNull(
+            "an identity provider may give ids that differ only in case to different people");
+    }
+
+    [Fact]
+    public void Get_ForIdsThatDifferOnlyInAnUnpairedSurrogate_Misses()
+    {
+        using (As("x\uD800", "tenant-1")) Cache().Set("k", Value, NoExpiry);
+
+        using (As("x\uD801", "tenant-1")) Cache().Get("k").Should().BeNull(
+            "ids a lossy text encoding would turn into the same bytes are still different callers");
+    }
+
+    [Fact]
+    public void Set_FilesTheEntryUnderAKeyedHash_NotAPlainHashOfTheIds()
+    {
+        string? stored = null;
+        var inner = new Mock<IDistributedCache>();
+        inner.Setup(c => c.Set(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<DistributedCacheEntryOptions>()))
+            .Callback<string, byte[], DistributedCacheEntryOptions>((key, _, _) => stored = key);
+
+        using (As("user-a", "tenant-1"))
+            new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance).Set("k", Value, NoExpiry);
+
+        const string identity = "8:tenant-16:user-a";
+        var guessable = new[]
+        {
+            Convert.ToHexStringLower(SHA256.HashData(MemoryMarshal.AsBytes(identity.AsSpan()))),
+            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity))),
+        };
+        stored.Should().NotBeNull().And.EndWith(":k");
+        guessable.Should().NotContain(stored![..^2],
+            "anyone who can read a shared cache could recompute a plain hash of a guessable id");
     }
 
     [Fact]
@@ -99,7 +141,7 @@ public sealed class CallerScopedDistributedCacheTests
     public async Task Refresh_ForwardsTheScopedKey()
     {
         var inner = new Mock<IDistributedCache>();
-        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope);
+        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance);
 
         using (As("user-a", "tenant-1"))
         {
@@ -126,7 +168,7 @@ public sealed class CallerScopedDistributedCacheTests
         string situation, Func<CallerScopedDistributedCacheTests, IDisposable> begin)
     {
         var inner = new Mock<IDistributedCache>(MockBehavior.Strict);
-        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope);
+        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance);
 
         using (begin(this))
         {
@@ -143,7 +185,7 @@ public sealed class CallerScopedDistributedCacheTests
         inner.VerifyNoOtherCalls();
     }
 
-    private CallerScopedDistributedCache Cache() => new(_inner, _ambientScope);
+    private CallerScopedDistributedCache Cache() => new(_inner, _ambientScope, NullLogger.Instance);
 
     private IDisposable As(string? user, string? tenant) => _ambientScope.BeginScope(
         new ServiceCollection()
