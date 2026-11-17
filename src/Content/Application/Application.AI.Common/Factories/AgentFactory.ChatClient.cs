@@ -235,9 +235,17 @@ public partial class AgentFactory
                     _loggerFactory.CreateLogger<Middleware.SkillPrerequisiteMiddleware>()));
         }
 
-        // Every cached response expires (#901): the caching client sets no expiry of its own.
-        chatClientBuilder = chatClientBuilder.UseDistributedCache(new Services.ExpiringDistributedCache(
-            _distributedCache, ChatResponseExpiry, TimeProvider.System));
+        // Every cached response expires (#901): the caching client sets no expiry of its own. And every cached response
+        // belongs to the caller who wrote it: the caching client keys on the conversation alone, so without the scoping
+        // two users, or two tenants, asking the same thing would share one entry. A host with no ambient request scope
+        // has no way to tell callers apart, so it gets no response cache at all.
+        var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
+        if (ambientScope is not null)
+        {
+            chatClientBuilder = chatClientBuilder.UseDistributedCache(new Services.CallerScopedDistributedCache(
+                new Services.ExpiringDistributedCache(_distributedCache, ChatResponseExpiry, TimeProvider.System),
+                ambientScope));
+        }
 
         return chatClientBuilder.Build();
     }
