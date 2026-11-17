@@ -63,6 +63,15 @@ public sealed class CallerScopedDistributedCacheTests
     }
 
     [Fact]
+    public void Get_ForATenantIdThatDiffersOnlyInCase_Misses()
+    {
+        using (As("user-a", "Contoso")) Cache().Set("k", Value, NoExpiry);
+
+        using (As("user-a", "contoso")) Cache().Get("k").Should().BeNull(
+            "tenant ids keep their case for the same reason user ids do");
+    }
+
+    [Fact]
     public void Get_ForIdsThatDifferOnlyInAnUnpairedSurrogate_Misses()
     {
         using (As("x\uD800", "tenant-1")) Cache().Set("k", Value, NoExpiry);
@@ -80,7 +89,7 @@ public sealed class CallerScopedDistributedCacheTests
             .Callback<string, byte[], DistributedCacheEntryOptions>((key, _, _) => stored = key);
 
         using (As("user-a", "tenant-1"))
-            new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance).Set("k", Value, NoExpiry);
+            new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger<CallerScopedDistributedCache>.Instance).Set("k", Value, NoExpiry);
 
         const string identity = "8:tenant-16:user-a";
         var guessable = new[]
@@ -141,7 +150,7 @@ public sealed class CallerScopedDistributedCacheTests
     public async Task Refresh_ForwardsTheScopedKey()
     {
         var inner = new Mock<IDistributedCache>();
-        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance);
+        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger<CallerScopedDistributedCache>.Instance);
 
         using (As("user-a", "tenant-1"))
         {
@@ -168,7 +177,7 @@ public sealed class CallerScopedDistributedCacheTests
         string situation, Func<CallerScopedDistributedCacheTests, IDisposable> begin)
     {
         var inner = new Mock<IDistributedCache>(MockBehavior.Strict);
-        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger.Instance);
+        var cache = new CallerScopedDistributedCache(inner.Object, _ambientScope, NullLogger<CallerScopedDistributedCache>.Instance);
 
         using (begin(this))
         {
@@ -185,7 +194,7 @@ public sealed class CallerScopedDistributedCacheTests
         inner.VerifyNoOtherCalls();
     }
 
-    private CallerScopedDistributedCache Cache() => new(_inner, _ambientScope, NullLogger.Instance);
+    private CallerScopedDistributedCache Cache() => new(_inner, _ambientScope, NullLogger<CallerScopedDistributedCache>.Instance);
 
     private IDisposable As(string? user, string? tenant) => _ambientScope.BeginScope(
         new ServiceCollection()

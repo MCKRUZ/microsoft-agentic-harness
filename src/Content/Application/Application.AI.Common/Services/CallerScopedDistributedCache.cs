@@ -48,13 +48,13 @@ public sealed class CallerScopedDistributedCache : IDistributedCache
 
     private readonly IDistributedCache _inner;
     private readonly IAmbientRequestScope _ambientScope;
-    private readonly ILogger _logger;
+    private readonly ILogger<CallerScopedDistributedCache> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="CallerScopedDistributedCache"/> class.</summary>
     /// <param name="inner">The cache entries are stored in.</param>
     /// <param name="ambientScope">The request scope the current caller's <see cref="IKnowledgeScope"/> is read from.</param>
-    /// <param name="logger">Records operations skipped because the caller could not be read.</param>
-    public CallerScopedDistributedCache(IDistributedCache inner, IAmbientRequestScope ambientScope, ILogger logger)
+    /// <param name="logger">Records operations skipped because the request scope holding the caller was already disposed.</param>
+    public CallerScopedDistributedCache(IDistributedCache inner, IAmbientRequestScope ambientScope, ILogger<CallerScopedDistributedCache> logger)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(ambientScope);
