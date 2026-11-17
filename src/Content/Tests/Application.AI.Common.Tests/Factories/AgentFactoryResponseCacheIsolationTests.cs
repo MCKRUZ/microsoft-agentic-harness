@@ -8,6 +8,7 @@ using Domain.AI.Agents;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -90,20 +91,45 @@ public sealed class AgentFactoryResponseCacheIsolationTests
             "an answer that cannot be attributed to a caller must not be shared between unattributed requests");
     }
 
+    [Fact]
+    public async Task OneSharedAgent_AskedByTwoUsers_ReachesTheModelForEach()
+    {
+        // Agents are cached per conversation and reused across requests, so the caller must be read on each call,
+        // never captured when the agent and its cache were built.
+        AIAgent agent;
+        using (BeginRequest(new Caller("user-a", "tenant-1")))
+            agent = await CreateAgent();
+
+        using (BeginRequest(new Caller("user-a", "tenant-1")))
+            await agent.RunAsync(Question);
+        using (BeginRequest(new Caller("user-b", "tenant-1")))
+            await agent.RunAsync(Question);
+
+        _model.RequestHistory.Should().HaveCount(2, "a shared agent must not serve the user it was built for to everyone");
+    }
+
+    private const string Question = "What is the capital of France?";
+
     private async Task AskAs(Caller? caller)
+    {
+        using var scope = BeginRequest(caller);
+        var agent = await CreateAgent();
+        await agent.RunAsync(Question);
+    }
+
+    private IDisposable BeginRequest(Caller? caller)
     {
         var requestServices = new ServiceCollection();
         if (caller is not null)
             requestServices.AddSingleton<IKnowledgeScope>(caller);
-
-        using var scope = _ambientScope.BeginScope(requestServices.BuildServiceProvider());
-        var agent = await CreateFactory().CreateAgentAsync(new AgentExecutionContext
-        {
-            Name = "agent",
-            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI,
-        });
-        await agent.RunAsync("What is the capital of France?");
+        return _ambientScope.BeginScope(requestServices.BuildServiceProvider());
     }
+
+    private Task<AIAgent> CreateAgent() => CreateFactory().CreateAgentAsync(new AgentExecutionContext
+    {
+        Name = "agent",
+        AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI,
+    });
 
     private AgentFactory CreateFactory()
     {

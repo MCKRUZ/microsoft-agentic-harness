@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Compliance;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,12 +27,25 @@ namespace Application.AI.Common.Services;
 /// The caller is read per operation from <see cref="IKnowledgeScope"/> in the ambient request scope, never captured at
 /// construction: agents, and the chat clients inside them, are cached and shared across requests. An operation with no
 /// ambient request scope, no knowledge scope, or no user is unattributed, and is not cached at all: a read misses and a
-/// write is dropped. The tenant and user are hashed into the key so neither is stored in clear in a shared cache.
+/// write is dropped. Hosts with no signed-in caller (the console, the eval runner) therefore get no response cache.
+/// </para>
+/// <para>
+/// The tenant and user, canonicalized as the knowledge graph's stores canonicalize them, are hashed with HMAC-SHA256
+/// under a random key that exists only in this process. A plain hash of a guessable id would let anyone who can read a
+/// shared Redis cache confirm whose entries are whose; this key cannot be recomputed outside the process. The cost is
+/// that hosts sharing one Redis cache do not share hits, and entries written before a restart are no longer reachable
+/// and simply expire.
 /// </para>
 /// </remarks>
 [PersonalDataChannel("Files chat response cache entries under the writing caller; the chat response cache (AgentFactory) describes what it holds.")]
 public sealed class CallerScopedDistributedCache : IDistributedCache
 {
+    /// <summary>
+    /// The key callers are hashed under: random, held only in this process's memory, and never stored. Nobody who can
+    /// read the shared cache can recompute which entries belong to a given person.
+    /// </summary>
+    private static readonly byte[] ProcessKey = RandomNumberGenerator.GetBytes(32);
+
     private readonly IDistributedCache _inner;
     private readonly IAmbientRequestScope _ambientScope;
 
@@ -93,12 +107,24 @@ public sealed class CallerScopedDistributedCache : IDistributedCache
     /// </summary>
     private string? ScopedKey(string key)
     {
-        var caller = _ambientScope.Current?.GetService<IKnowledgeScope>();
-        if (caller is null || string.IsNullOrWhiteSpace(caller.UserId))
+        IKnowledgeScope? caller;
+        try
+        {
+            caller = _ambientScope.Current?.GetService<IKnowledgeScope>();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Work that outlived its request scope has no caller left to file under; a cache must not fail the turn.
+            return null;
+        }
+
+        var user = ScopeIdentity.Canonicalize(caller?.UserId);
+        if (user is null)
             return null;
 
-        // A separator no identifier contains, so ("ab", "c") and ("a", "bc") never hash alike.
-        var identity = Encoding.UTF8.GetBytes($"{caller.TenantId}\u001f{caller.UserId}");
-        return $"{Convert.ToHexStringLower(SHA256.HashData(identity))}:{key}";
+        // Each part is length-prefixed, so no pair of ids, whatever characters they hold, encodes like another pair.
+        var tenant = ScopeIdentity.Canonicalize(caller!.TenantId) ?? string.Empty;
+        var identity = Encoding.UTF8.GetBytes($"{tenant.Length}:{tenant}{user.Length}:{user}");
+        return $"{Convert.ToHexStringLower(HMACSHA256.HashData(ProcessKey, identity))}:{key}";
     }
 }
