@@ -34,7 +34,10 @@ public static class SqliteSecureDelete
     /// <summary>The statement that turns secure delete on for one connection.</summary>
     public const string Pragma = "PRAGMA secure_delete = ON;";
 
-    /// <summary>Creates a connection that turns secure delete on every time it opens.</summary>
+    /// <summary>
+    /// Creates a connection that turns secure delete on, and sets the <see cref="SqliteLockWait"/> lock wait, every time it
+    /// opens.
+    /// </summary>
     /// <param name="connectionString">The SQLite connection string.</param>
     /// <returns>An unopened connection.</returns>
     public static SqliteConnection CreateConnection(string connectionString)
@@ -43,7 +46,10 @@ public static class SqliteSecureDelete
         connection.StateChange += (sender, args) =>
         {
             if (args.CurrentState == ConnectionState.Open && sender is DbConnection opened)
+            {
                 Apply(opened);
+                SqliteLockWait.Apply(opened);
+            }
         };
         return connection;
     }
@@ -117,9 +123,14 @@ public static class SqliteSecureDelete
     /// <param name="connection">An open connection to the database just erased from.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when the log was emptied or there was none.</returns>
+    /// <remarks>
+    /// The connection's lock wait (<see cref="SqliteLockWait"/>) is suspended for the checkpoint: a reader holding the log
+    /// should make an erasure report "not emptied, retry" at once, not hold the eraser for up to 30 seconds first.
+    /// </remarks>
     public static async Task<bool> TryTruncateWriteAheadLogAsync(DbConnection connection, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(connection);
+        await using var noWait = await SqliteLockWait.SuspendAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

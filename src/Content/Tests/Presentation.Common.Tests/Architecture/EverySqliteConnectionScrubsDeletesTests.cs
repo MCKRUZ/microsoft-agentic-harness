@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,7 +66,7 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
     }
 
     [Fact]
-    public async Task EverySqliteContextTheHostRegisters_HasSecureDeleteOn()
+    public async Task EverySqliteContextTheHostRegisters_HasSecureDeleteAndTheLockWaitOn()
     {
         var (services, _) = CompositionRootTestHost.ComposeServices(new Dictionary<string, string?>
         {
@@ -87,6 +88,7 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
 
         var checkedContexts = new List<string>();
         var missing = new List<string>();
+        var noLockWait = new List<string>();
         foreach (var factoryType in factories)
         {
             var factory = provider.GetRequiredService(factoryType);
@@ -100,16 +102,25 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
                 continue; // Its path must sit under the application directory; opening it here would write there.
 
             await context.Database.OpenConnectionAsync();
-            await using var command = context.Database.GetDbConnection().CreateCommand();
-            command.CommandText = "PRAGMA secure_delete;";
-            var value = Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            var connection = context.Database.GetDbConnection();
             checkedContexts.Add(name);
-            if (value != 1)
+            if (await PragmaAsync(connection, "secure_delete") != 1)
                 missing.Add(name);
+            if (await PragmaAsync(connection, "busy_timeout") != SqliteLockWait.TimeoutMilliseconds)
+                noLockWait.Add(name);
         }
 
         string.Join(", ", missing).Should().BeEmpty("every SQLite context must turn secure delete on when it connects");
+        string.Join(", ", noLockWait).Should().BeEmpty(
+            "every SQLite context must wait for the write lock inside SQLite, not in the driver's 150 ms sleeps");
         checkedContexts.Should().Contain(["ConversationDbContext", "PlannerDbContext", "ScheduleDbContext", "PromptUsageDbContext"],
             "a floor, so this cannot pass by checking nothing");
+    }
+
+    private static async Task<int> PragmaAsync(System.Data.Common.DbConnection connection, string name)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA {name};";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
     }
 }
