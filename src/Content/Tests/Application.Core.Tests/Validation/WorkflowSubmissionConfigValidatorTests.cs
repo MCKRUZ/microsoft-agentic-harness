@@ -23,6 +23,14 @@ public sealed class WorkflowSubmissionConfigValidatorTests
         _validator.Validate(new WorkflowSubmissionConfig()).IsValid.Should().BeTrue();
     }
 
+    [Fact]
+    public void Default_MaxConcurrentDispatchedRuns_MatchesTheBundleDispatcher()
+    {
+        // The two background dispatchers share one design and the same cost profile: a run mostly waits
+        // on the model. Raising one and not the other would leave workflow runs queuing behind four slots.
+        new WorkflowSubmissionConfig().MaxConcurrentDispatchedRuns.Should().Be(16);
+    }
+
     [Theory]
     [InlineData(nameof(WorkflowSubmissionConfig.MaxRequestBytes))]
     [InlineData(nameof(WorkflowSubmissionConfig.MaxSteps))]

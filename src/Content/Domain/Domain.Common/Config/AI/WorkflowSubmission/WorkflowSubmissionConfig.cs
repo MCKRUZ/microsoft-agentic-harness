@@ -260,9 +260,15 @@ public class WorkflowSubmissionConfig
     /// that queues one. Per-caller fair scheduling is a separate piece of work; raising this reduces
     /// how long anyone waits but does not decide who waits.
     /// </para>
+    /// <para>
+    /// <strong>Sizing.</strong> Matches the bundle dispatcher's default and for the same reason: a run is
+    /// mostly waiting on the model, so throughput is roughly this value divided by the run's duration,
+    /// and the practical ceiling is the model provider's concurrent-request allowance, not the host.
+    /// See <c>BundleExecutionConfig.MaxConcurrentDispatchedBundleRuns</c> for the measurements.
+    /// </para>
     /// </remarks>
-    /// <value>Default: 4</value>
-    public int MaxConcurrentDispatchedRuns { get; set; } = 4;
+    /// <value>Default: 16</value>
+    public int MaxConcurrentDispatchedRuns { get; set; } = 16;
 
     /// <summary>
     /// How many progress streams may be open across the host at once.

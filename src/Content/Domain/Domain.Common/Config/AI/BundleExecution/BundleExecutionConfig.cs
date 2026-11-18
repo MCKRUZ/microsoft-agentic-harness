@@ -189,9 +189,17 @@ public class BundleExecutionConfig
     /// Only governs background (non-streaming) dispatch. A streaming run is never enqueued — it executes
     /// on the caller's own connection and is bounded separately by <see cref="MaxConcurrentStreamsPerCaller"/>.
     /// </para>
+    /// <para>
+    /// <strong>Sizing.</strong> A run spends nearly all its time waiting on the model, so a slot costs the
+    /// host little and throughput is roughly this value divided by the run's duration. At the former
+    /// default of 4, a 50-caller load test was capped at 0.73 runs a second and 91 of 601 runs had not
+    /// started after five minutes; at 32 every run finished at 1.79 a second. The ceiling that matters is
+    /// usually the model provider's quota: every slot can hold a model call open, so set this no higher
+    /// than the deployment's concurrent-request allowance, or the extra slots turn into throttled calls.
+    /// </para>
     /// </remarks>
-    /// <value>Default: 4</value>
-    public int MaxConcurrentDispatchedBundleRuns { get; set; } = 4;
+    /// <value>Default: 16</value>
+    public int MaxConcurrentDispatchedBundleRuns { get; set; } = 16;
 
     /// <summary>
     /// Maximum number of bundle runs one caller may have queued or executing at once, across both
