@@ -29,7 +29,7 @@ namespace Presentation.ExecutionApi.Tests.Concurrency;
 /// </para>
 /// </remarks>
 [Trait("Category", "Concurrency")]
-public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostLimitTests.LimitedHost>
+public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostLimitTests.LimitedHost>, IAsyncLifetime
 {
     private const int HostLimit = 3;
     private const int PerCallerLimit = 2;
@@ -37,11 +37,25 @@ public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostL
 
     private readonly LimitedHost _host;
     private readonly HttpClient _client;
+    private readonly List<Task<HttpResponseMessage>> _streams = [];
 
     public BundleStreamHostLimitTests(LimitedHost host)
     {
         _host = host;
         _client = host.CreateClient();
+    }
+
+    /// <inheritdoc />
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    /// <summary>
+    /// Opens the gate and waits for this test's streams to finish, so a test that fails part-way cannot leave
+    /// streams holding the host's slots when the next test starts.
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        _host.Gate.Open();
+        await Task.WhenAll(_streams).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
@@ -52,7 +66,7 @@ public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostL
         await _host.Gate.WaitForParkedAsync(HostLimit);
 
         var latecomer = NewCaller();
-        var refused = await OpenStream(latecomer);
+        var refused = await AnsweredPromptly(OpenStream(latecomer));
         var poll = await _client.SendAsync(Authenticated(HttpMethod.Get, "/api/bundles/no-handle/runs/no-job", latecomer));
 
         refused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests,
@@ -79,7 +93,7 @@ public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostL
         var busyStreams = Enumerable.Range(0, PerCallerLimit).Select(_ => OpenStream(busy)).ToList();
         await _host.Gate.WaitForParkedAsync(PerCallerLimit);
 
-        var overOwnLimit = await OpenStream(busy);
+        var overOwnLimit = await AnsweredPromptly(OpenStream(busy));
         overOwnLimit.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, "the caller already holds their allowance");
 
         var other = OpenStream(NewCaller());
@@ -93,10 +107,21 @@ public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostL
 
     private static string NewCaller() => $"caller-{Guid.NewGuid():N}";
 
-    private Task<HttpResponseMessage> OpenStream(string caller) =>
-        _client.SendAsync(
+    /// <summary>
+    /// A refusal is answered at once, while an admitted stream parks in the gate until the test opens it. A
+    /// stream the limiter wrongly admits would otherwise hang the test until the client's 100-second timeout.
+    /// </summary>
+    private static Task<HttpResponseMessage> AnsweredPromptly(Task<HttpResponseMessage> response) =>
+        response.WaitAsync(TimeSpan.FromSeconds(10));
+
+    private Task<HttpResponseMessage> OpenStream(string caller)
+    {
+        var stream = _client.SendAsync(
             Authenticated(HttpMethod.Get, "/api/bundles/no-handle/runs/no-job/stream", caller),
             HttpCompletionOption.ResponseHeadersRead);
+        _streams.Add(stream);
+        return stream;
+    }
 
     /// <summary>
     /// The rate limiter gives a permit back after the response is written, so the client can see a response a
@@ -132,8 +157,18 @@ public sealed class BundleStreamHostLimitTests : IClassFixture<BundleStreamHostL
         private readonly SemaphoreSlim _parked = new(0);
         private TaskCompletionSource _opened = Completed();
 
-        /// <summary>Parks every stream request that arrives from now until <see cref="Open"/>.</summary>
-        public void Block() => Volatile.Write(ref _opened, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        /// <summary>
+        /// Parks every stream request that arrives from now until <see cref="Open"/>, forgetting any request an
+        /// earlier test left parked so its count cannot satisfy this test's wait.
+        /// </summary>
+        public void Block()
+        {
+            while (_parked.Wait(0))
+            {
+            }
+
+            Volatile.Write(ref _opened, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        }
 
         /// <summary>Lets every parked request through, and every later one.</summary>
         public void Open() => Volatile.Read(ref _opened).TrySetResult();

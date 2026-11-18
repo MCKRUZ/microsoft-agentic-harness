@@ -441,10 +441,12 @@
                             </tr>
                             <tr>
                                 <td>Live streams</td>
-                                <td><code>MaxConcurrentStreamsPerCaller</code>, default 4</td>
+                                <td><code>MaxConcurrentStreamsPerCaller</code>, default 4; <code>MaxConcurrentStreams</code> host-wide, default 64</td>
                                 <td>
                                     Concurrency, not rate — each open connection holds a permit for its whole lifetime.
-                                    Excess is rejected <code>429</code> immediately rather than queued.
+                                    The host-wide limit stops many callers, each within their own allowance, from
+                                    together driving unbounded agent conversations. Excess is rejected <code>429</code>
+                                    immediately rather than queued.
                                 </td>
                             </tr>
                         </tbody>

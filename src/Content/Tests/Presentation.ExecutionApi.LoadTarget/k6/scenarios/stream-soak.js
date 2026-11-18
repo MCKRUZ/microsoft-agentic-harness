@@ -1,16 +1,17 @@
 // stream-soak: many callers each hold a live stream open for a whole run, back to back.
 //
 // Proves: what many simultaneous live bundle streams cost the host. A streamed run executes inline on
-// its connection and is never queued, and the host caps streams only per caller
-// (MaxConcurrentStreamsPerCaller) with no host-wide ceiling. So at `rampTo` VUs the host is running
-// `rampTo` agent conversations at once. Watch stream_first_byte (does the run start promptly?),
+// its connection and is never queued, so at N VUs the host is running N agent conversations at once.
+// The host refuses streams past MaxConcurrentStreams (64), so the VUs stop at that limit: this measures
+// the cost of a full host, not the refusal. Watch stream_first_byte (does the run start promptly?),
 // stream_duration against the model's own time, and the host's memory and thread-pool counters.
 
-import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
+import { GRACEFUL_STOP, STREAM_HOST_LIMIT, callerForVu, load } from '../lib/config.js';
 import { readBundleStream, registerBundle, startBundleRun, paceIteration } from '../lib/api.js';
 import { CORRECTNESS, NO_THROTTLING, latency, thresholds } from '../lib/thresholds.js';
 
 const level = load();
+const streams = Math.min(level.rampTo, STREAM_HOST_LIMIT);
 
 export const options = {
   scenarios: {
@@ -18,8 +19,8 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '20s', target: level.rampTo },
-        { duration: level.duration, target: level.rampTo },
+        { duration: '20s', target: streams },
+        { duration: level.duration, target: streams },
         { duration: '20s', target: 0 },
       ],
       gracefulRampDown: '5m',
