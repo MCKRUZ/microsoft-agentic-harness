@@ -17,8 +17,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Neo4j;
 /// </summary>
 public sealed class Neo4jStoreFixture : IAsyncLifetime
 {
-    private readonly IContainer _neo4j = new ContainerBuilder()
-        .WithImage("neo4j:5.20")
+    private readonly IContainer _neo4j = new ContainerBuilder("neo4j:5.20")
         .WithEnvironment("NEO4J_AUTH", "neo4j/testpassword")
         .WithPortBinding(7687, true)
         .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Started."))

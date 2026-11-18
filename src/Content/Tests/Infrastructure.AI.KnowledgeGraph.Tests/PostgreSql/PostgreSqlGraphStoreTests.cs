@@ -24,8 +24,7 @@ public sealed class PostgreSqlStoreFixture : IAsyncLifetime
     // Compound wait: "PostgreSQL init process complete; ready for start up." only appears after the
     // init server has already shut down, so when both conditions are satisfied (that message present AND
     // pg_isready passes), the real server is the one answering.
-    private readonly IContainer _postgres = new ContainerBuilder()
-        .WithImage("postgres:16")
+    private readonly IContainer _postgres = new ContainerBuilder("postgres:16")
         .WithEnvironment("POSTGRES_PASSWORD", "postgres")
         .WithPortBinding(5432, true)
         .WithWaitStrategy(Wait.ForUnixContainer()
