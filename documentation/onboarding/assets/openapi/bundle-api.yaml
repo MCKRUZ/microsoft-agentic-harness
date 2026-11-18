@@ -238,7 +238,7 @@ paths:
 
         * `stream: false` (default) — the run is enqueued and executed by the host's background
           dispatcher. Poll `statusUrl` for the result. The dispatcher drains its queue with **bounded
-          parallelism** — up to `MaxConcurrentDispatchedBundleRuns` runs at once (default 4), host-wide,
+          parallelism** — up to `MaxConcurrentDispatchedBundleRuns` runs at once (default 16), host-wide,
           across every caller — so an unrelated caller's run does not wait behind yours. A host that
           sets the degree to `1` restores strictly serial dispatch.
         * `stream: true` — the run is **reserved but not enqueued**. Nothing executes until you open
