@@ -92,7 +92,7 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
         try
         {
             using var checkpoint = _connection.CreateCommand();
-            checkpoint.CommandText = "PRAGMA busy_timeout = 0; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;";
+            checkpoint.CommandText = SqliteLockWait.NoWaitPragma + " PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;";
             checkpoint.ExecuteNonQuery();
         }
         catch (Exception ex)

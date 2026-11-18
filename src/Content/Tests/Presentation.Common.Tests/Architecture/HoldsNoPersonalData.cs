@@ -29,15 +29,8 @@ internal static class HoldsNoPersonalData
             "Turns SQLite secure delete on for each connection an Entity Framework context opens; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
         ["Infrastructure.AI.RAG/Infrastructure.AI.RAG.Sqlite.SqliteLockWait"] = new(
-            "Sets and reads SQLite's busy timeout on connections their callers own, so writers wait for the write lock inside SQLite; it reads and writes no rows.",
-            "Microsoft.Data.Sqlite.SqliteConnection::get_DefaultTimeout",
-            "System.Data.Common.DbCommand::DisposeAsync",
-            "System.Data.Common.DbCommand::ExecuteNonQuery",
-            "System.Data.Common.DbCommand::ExecuteNonQueryAsync",
-            "System.Data.Common.DbCommand::ExecuteScalarAsync",
-            "System.Data.Common.DbCommand::set_CommandText",
-            "System.Data.Common.DbConnection::CreateCommand",
-            "System.Data.Common.DbConnection::get_State"),
+            "Builds the busy-timeout statement from a connection's configured timeout; it runs no command and reads and writes no rows.",
+            "Microsoft.Data.Sqlite.SqliteConnection::get_DefaultTimeout"),
         ["Infrastructure.AI/Infrastructure.AI.Extensions.SqliteDatabaseFacadeExtensions"] = new(
             "Runs a write-ahead-log checkpoint after an erasure on the calling store's database; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),

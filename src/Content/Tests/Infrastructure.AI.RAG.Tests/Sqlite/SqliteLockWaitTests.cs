@@ -8,10 +8,13 @@ namespace Infrastructure.AI.RAG.Tests.Sqlite;
 
 /// <summary>
 /// <see cref="SqliteLockWait"/>: every connection the harness makes waits for SQLite's write lock inside SQLite, and the
-/// one caller that must not wait, the write-ahead-log truncation after an erasure, still fails at once.
+/// one kind of command that must not wait, a write-ahead-log checkpoint after an erasure, still fails at once.
 /// </summary>
 public sealed class SqliteLockWaitTests : IDisposable
 {
+    /// <summary>Microsoft.Data.Sqlite's default command timeout, which the lock wait follows when nothing is configured.</summary>
+    private const int DriverDefaultTimeoutMilliseconds = 30_000;
+
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "lock-wait-" + Guid.NewGuid().ToString("N"));
 
     public SqliteLockWaitTests() => Directory.CreateDirectory(_directory);
@@ -39,10 +42,10 @@ public sealed class SqliteLockWaitTests : IDisposable
         using var connection = SqliteSecureDelete.CreateConnection($"Data Source={Path.Combine(_directory, "a.db")};Pooling=False");
 
         connection.Open();
-        BusyTimeout(connection).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds);
+        BusyTimeout(connection).Should().Be(DriverDefaultTimeoutMilliseconds);
         connection.Close();
         connection.Open();
-        BusyTimeout(connection).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds);
+        BusyTimeout(connection).Should().Be(DriverDefaultTimeoutMilliseconds);
     }
 
     [Fact]
@@ -83,23 +86,8 @@ public sealed class SqliteLockWaitTests : IDisposable
 
         emptied.Should().BeFalse();
         clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "a busy log is reported at once, not after the lock wait");
-        BusyTimeout(writer).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds,
+        BusyTimeout(writer).Should().Be(DriverDefaultTimeoutMilliseconds,
             "the connection goes back to waiting for the lock once the checkpoint is done");
-    }
-
-    [Fact]
-    public async Task SuspendAsync_TurnsTheWaitOffThenRestoresWhateverWasSetBefore()
-    {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(_directory, "b.db")}");
-        connection.Open();
-        Execute(connection, "PRAGMA busy_timeout = 1234;");
-
-        await using (await SqliteLockWait.SuspendAsync(connection, CancellationToken.None))
-        {
-            BusyTimeout(connection).Should().Be(0);
-        }
-
-        BusyTimeout(connection).Should().Be(1234, "the previous value is restored, not the harness default");
     }
 
     private static long BusyTimeout(SqliteConnection connection)

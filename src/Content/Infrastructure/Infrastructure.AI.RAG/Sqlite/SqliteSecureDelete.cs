@@ -15,7 +15,7 @@ namespace Infrastructure.AI.RAG.Sqlite;
 /// text, which makes a right-to-erasure deletion cosmetic. <c>PRAGMA secure_delete = ON</c> overwrites it, but it is a
 /// per-connection setting, so it has to be applied every time a connection opens. Every SQLite connection in the
 /// harness goes through this type: hand-written ones via <see cref="CreateConnection"/>, Entity Framework ones via the
-/// interceptor that calls <see cref="Apply"/>. <c>EverySqliteConnectionScrubsDeletesTests</c> holds that in place.
+/// interceptor; both call <see cref="ConfigureOpened"/>. <c>EverySqliteConnectionScrubsDeletesTests</c> holds that in place.
 /// </para>
 /// <para>
 /// In write-ahead-log mode (which Entity Framework sets when it creates a database) the overwritten page lands in the log
@@ -56,17 +56,9 @@ public static class SqliteSecureDelete
     /// <param name="connection">An open SQLite connection.</param>
     public static void ConfigureOpened(DbConnection connection)
     {
-        Apply(connection);
-        SqliteLockWait.Apply(connection);
-    }
-
-    /// <summary>Turns secure delete on for an open connection.</summary>
-    /// <param name="connection">An open SQLite connection.</param>
-    public static void Apply(DbConnection connection)
-    {
         ArgumentNullException.ThrowIfNull(connection);
         using var command = connection.CreateCommand();
-        command.CommandText = Pragma;
+        command.CommandText = Pragma + " " + SqliteLockWait.PragmaFor(connection);
         command.ExecuteNonQuery();
     }
 
@@ -130,16 +122,38 @@ public static class SqliteSecureDelete
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when the log was emptied or there was none.</returns>
     /// <remarks>
-    /// The connection's lock wait (<see cref="SqliteLockWait"/>) is suspended for the checkpoint: a reader holding the log
-    /// should make an erasure report "not emptied, retry" at once, not hold the eraser for up to 30 seconds first.
+    /// <para>
+    /// The connection's lock wait (<see cref="SqliteLockWait"/>) is off for the checkpoint: a reader holding the log should
+    /// make an erasure report "not emptied, retry" at once, not hold the eraser for up to 30 seconds first.
+    /// </para>
+    /// <para>
+    /// The wait is put back afterwards, uncancellably: a long-lived connection (the graph backend holds one for its
+    /// lifetime) is never reopened, so a skipped restore would leave it on the driver's 150 ms sleeps until it closes. It
+    /// is skipped when the connection is no longer open, so a failure that closed it is not masked by this one.
+    /// </para>
     /// </remarks>
     public static async Task<bool> TryTruncateWriteAheadLogAsync(DbConnection connection, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        await using var noWait = await SqliteLockWait.SuspendAsync(connection, cancellationToken);
+        await ExecuteAsync(connection, SqliteLockWait.NoWaitPragma, cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            return !await reader.ReadAsync(cancellationToken) || reader.GetInt64(0) == 0;
+        }
+        finally
+        {
+            if (connection.State == ConnectionState.Open)
+                await ExecuteAsync(connection, SqliteLockWait.PragmaFor(connection), CancellationToken.None);
+        }
+    }
+
+    private static async Task ExecuteAsync(DbConnection connection, string sql, CancellationToken cancellationToken)
+    {
         await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return !await reader.ReadAsync(cancellationToken) || reader.GetInt64(0) == 0;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
