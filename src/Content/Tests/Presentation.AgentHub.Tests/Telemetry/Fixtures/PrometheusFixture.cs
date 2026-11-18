@@ -58,8 +58,7 @@ public sealed class PrometheusFixture : IAsyncLifetime
 
         await _network.CreateAsync();
 
-        _collector = new ContainerBuilder()
-            .WithImage("otel/opentelemetry-collector-contrib:0.123.0")
+        _collector = new ContainerBuilder("otel/opentelemetry-collector-contrib:0.123.0")
             .WithName($"collector-{Guid.NewGuid():N}")
             .WithNetwork(_network)
             .WithNetworkAliases("otel-collector")
@@ -67,8 +66,8 @@ public sealed class PrometheusFixture : IAsyncLifetime
             .WithPortBinding(4318, true)
             .WithPortBinding(8889, true)
             .WithResourceMapping(
-                RepoRoot.Combine("scripts", "otel-collector", "config.yaml"),
-                "/etc/otelcol-contrib/")
+                FilePath.Of(RepoRoot.Combine("scripts", "otel-collector", "config.yaml")),
+                DirectoryPath.Of("/etc/otelcol-contrib/"))
             .WithEnvironment("DEPLOYMENT_ENVIRONMENT", "test")
             .WithEnvironment("TEMPO_ENDPOINT", "localhost:4317")
             .WithEnvironment("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=00000000-0000-0000-0000-000000000000")
@@ -96,12 +95,11 @@ public sealed class PrometheusFixture : IAsyncLifetime
         var promConfigPath = Path.Combine(promConfigDir, "prometheus.yml");
         await File.WriteAllTextAsync(promConfigPath, promConfig);
 
-        _prometheus = new ContainerBuilder()
-            .WithImage("prom/prometheus:v2.53.0")
+        _prometheus = new ContainerBuilder("prom/prometheus:v2.53.0")
             .WithName($"prometheus-{Guid.NewGuid():N}")
             .WithNetwork(_network)
             .WithPortBinding(9090, true)
-            .WithResourceMapping(promConfigPath, "/etc/prometheus/")
+            .WithResourceMapping(FilePath.Of(promConfigPath), DirectoryPath.Of("/etc/prometheus/"))
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilMessageIsLogged("Server is ready to receive web requests",
                     o => o.WithTimeout(ContainerReadinessTimeout)))
