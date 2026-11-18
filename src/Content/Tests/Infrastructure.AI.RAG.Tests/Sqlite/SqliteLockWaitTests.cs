@@ -61,12 +61,26 @@ public sealed class SqliteLockWaitTests : IDisposable
     }
 
     [Fact]
+    public void CreateConnection_NoTimeoutConfigured_WaitsWithoutLimitRatherThanNotAtAll()
+    {
+        // The driver reads Default Timeout=0 as "retry forever". Copied as busy_timeout = 0 it would turn the wait off and
+        // put the connection back on the 150 ms sleeps this exists to remove.
+        using var connection = SqliteSecureDelete.CreateConnection(
+            $"Data Source={Path.Combine(_directory, "d.db")};Default Timeout=0");
+
+        connection.Open();
+
+        BusyTimeout(connection).Should().Be(int.MaxValue);
+    }
+
+    [Fact]
     public async Task TruncateWriteAheadLog_ReaderHoldsTheLog_FailsAtOnceAndRestoresTheLockWait()
     {
         // An erasure that cannot empty the log must say so and ask for a retry straight away. With the lock wait left on
         // the checkpoint would sit in SQLite's busy handler for 30 seconds before reporting the same thing.
         var file = Path.Combine(_directory, "busy.db");
-        using var writer = SqliteSecureDelete.CreateConnection($"Data Source={file};Pooling=False");
+        // A non-default timeout, so the restore is shown to put back this connection's own wait, not a fixed 30 seconds.
+        using var writer = SqliteSecureDelete.CreateConnection($"Data Source={file};Pooling=False;Default Timeout=7");
         writer.Open();
         Execute(writer, "PRAGMA journal_mode=WAL; CREATE TABLE t(v TEXT); INSERT INTO t VALUES('x'), ('y');");
 
@@ -86,7 +100,7 @@ public sealed class SqliteLockWaitTests : IDisposable
 
         emptied.Should().BeFalse();
         clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "a busy log is reported at once, not after the lock wait");
-        BusyTimeout(writer).Should().Be(DriverDefaultTimeoutMilliseconds,
+        BusyTimeout(writer).Should().Be(7000,
             "the connection goes back to waiting for the lock once the checkpoint is done");
     }
 

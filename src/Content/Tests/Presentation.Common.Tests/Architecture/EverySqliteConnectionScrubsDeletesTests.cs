@@ -31,9 +31,6 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
     private const string NewConnection = "Microsoft.Data.Sqlite.SqliteConnection::.ctor";
 
     /// <summary>The only production types allowed to open SQLite, because each turns secure delete on.</summary>
-    // The hosts' SQLite connection strings set no timeout, so every context waits Microsoft.Data.Sqlite's default.
-    private const int DriverDefaultTimeoutMilliseconds = 30_000;
-
     private static readonly string[] Sanctioned =
     [
         PersistenceScan.KeyOf("Infrastructure.AI.RAG", "Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
@@ -108,7 +105,7 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
             checkedContexts.Add(name);
             if (await PragmaAsync(connection, "secure_delete") != 1)
                 missing.Add(name);
-            if (await PragmaAsync(connection, "busy_timeout") != DriverDefaultTimeoutMilliseconds)
+            if (await PragmaAsync(connection, "busy_timeout") != ((SqliteConnection)connection).DefaultTimeout * 1000)
                 noLockWait.Add(name);
         }
 

@@ -19,9 +19,10 @@ namespace Infrastructure.AI.RAG.Sqlite;
 /// <para>
 /// <c>PRAGMA busy_timeout</c> hands the wait to SQLite's own busy handler, which retries after 1, 2, 5, 10 ms and so on,
 /// so a writer starts soon after the lock frees. The wait is the connection's own default command timeout
-/// (<c>Default Timeout</c> in the connection string, 30 seconds unless set), so a consumer who shortens it to fail fast
-/// still fails fast. The driver checks that timeout only between statements, so one command of several statements can
-/// wait up to the timeout on each; a single statement waits no longer than before.
+/// (<c>Default Timeout</c> in the connection string, 30 seconds unless set), so a consumer who shortens that to fail fast
+/// still fails fast. A timeout set per command instead (for example Entity Framework's <c>CommandTimeout</c>) is not
+/// seen here: the busy wait still follows <c>Default Timeout</c>, so set both when shortening. The driver checks its
+/// timeout only between statements, so one command of several statements can wait up to the timeout on each.
 /// </para>
 /// <para>
 /// Set by <see cref="SqliteSecureDelete.ConfigureOpened"/>, which runs on every SQLite connection the harness opens
@@ -40,7 +41,19 @@ public static class SqliteLockWait
     public static string PragmaFor(DbConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        var milliseconds = ((SqliteConnection)connection).DefaultTimeout * 1000;
-        return string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {milliseconds};");
+        return string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {TimeoutMilliseconds(connection)};");
     }
+
+    /// <summary>
+    /// The connection's default command timeout in milliseconds. The driver reads 0 as "no limit", so that maps to the
+    /// longest wait SQLite accepts rather than to 0, which would turn the wait off. A wrapped connection (a profiler, for
+    /// instance) that is not itself a <see cref="SqliteConnection"/> gets the driver's 30-second default.
+    /// </summary>
+    private static int TimeoutMilliseconds(DbConnection connection)
+    {
+        var seconds = connection is SqliteConnection sqlite ? sqlite.DefaultTimeout : DriverDefaultTimeoutSeconds;
+        return seconds <= 0 ? int.MaxValue : (int)Math.Min(seconds * 1000L, int.MaxValue);
+    }
+
+    private const int DriverDefaultTimeoutSeconds = 30;
 }
