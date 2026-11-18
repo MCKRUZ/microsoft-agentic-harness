@@ -52,7 +52,7 @@ export const GRACEFUL_STOP = '5m';
  * whose default the load target does not change). Scenarios that build a queue use it to estimate how
  * long the queue takes to drain.
  */
-export const DISPATCH_SLOTS = 4;
+export const DISPATCH_SLOTS = 16;
 
 /** Roughly how long one model answer takes on the target, in milliseconds. */
 export function modelAnswerMs() {

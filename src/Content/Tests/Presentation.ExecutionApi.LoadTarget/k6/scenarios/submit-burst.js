@@ -1,7 +1,7 @@
 // submit-burst: many callers each start background runs and wait for them.
 //
 // Proves: how the host behaves when demand exceeds its background dispatch slots
-// (MaxConcurrentDispatchedBundleRuns, default 4). Watch run_queue_wait climb as VUs exceed the slots;
+// (MaxConcurrentDispatchedBundleRuns, default 16). Watch run_queue_wait climb as VUs exceed the slots;
 // run_execution should stay flat if the slots, not the runs, are the constraint. Every VU is its own
 // caller with one run in flight, so neither the rate limiter nor the per-owner cap should ever fire.
 
