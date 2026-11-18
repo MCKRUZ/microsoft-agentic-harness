@@ -30,7 +30,7 @@ internal static class HoldsNoPersonalData
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
         ["Infrastructure.AI.RAG/Infrastructure.AI.RAG.Sqlite.SqliteLockWait"] = new(
             "Builds the busy-timeout statement from a connection's configured timeout; it runs no command and reads and writes no rows.",
-            "Microsoft.Data.Sqlite.SqliteConnection::get_DefaultTimeout"),
+            "Microsoft.Data.Sqlite.SqliteConnection::get_DefaultTimeout", "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder::.ctor", "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder::get_DefaultTimeout", "System.Data.Common.DbConnection::get_ConnectionString"),
         ["Infrastructure.AI/Infrastructure.AI.Extensions.SqliteDatabaseFacadeExtensions"] = new(
             "Runs a write-ahead-log checkpoint after an erasure on the calling store's database; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),

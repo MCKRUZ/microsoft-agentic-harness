@@ -1,4 +1,7 @@
+using System.Data;
+using System.Data.Common;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
@@ -13,7 +16,7 @@ namespace Infrastructure.AI.RAG.Tests.Sqlite;
 public sealed class SqliteLockWaitTests : IDisposable
 {
     /// <summary>Microsoft.Data.Sqlite's default command timeout, which the lock wait follows when nothing is configured.</summary>
-    private const int DriverDefaultTimeoutMilliseconds = 30_000;
+    private static readonly int DriverDefaultTimeoutMilliseconds = new SqliteConnectionStringBuilder().DefaultTimeout * 1000;
 
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "lock-wait-" + Guid.NewGuid().ToString("N"));
 
@@ -73,6 +76,27 @@ public sealed class SqliteLockWaitTests : IDisposable
         BusyTimeout(connection).Should().Be(int.MaxValue);
     }
 
+    [Theory]
+    [InlineData(5, 5_000)]
+    [InlineData(0, int.MaxValue)] // the driver retries forever
+    [InlineData(-1, 0)] // the driver gives up at the first busy
+    [InlineData(3_000_000, int.MaxValue)] // milliseconds past int.MaxValue must not wrap negative and turn the wait off
+    public void TimeoutMillisecondsFor_ReadsTheTimeoutAsTheDriverDoes(int seconds, int expected)
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:") { DefaultTimeout = seconds };
+
+        SqliteLockWait.TimeoutMillisecondsFor(connection).Should().Be(expected);
+    }
+
+    [Fact]
+    public void TimeoutMillisecondsFor_WrappedConnection_ReadsTheConfiguredTimeout()
+    {
+        // A profiler's wrapper is not a SqliteConnection; a consumer who shortened the timeout must still fail fast.
+        using var connection = new ConnectionStringOnly("Data Source=:memory:;Default Timeout=4");
+
+        SqliteLockWait.TimeoutMillisecondsFor(connection).Should().Be(4_000);
+    }
+
     [Fact]
     public async Task TruncateWriteAheadLog_ReaderHoldsTheLog_FailsAtOnceAndRestoresTheLockWait()
     {
@@ -116,5 +140,21 @@ public sealed class SqliteLockWaitTests : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>A wrapper connection that is not a <see cref="SqliteConnection"/> and carries only a connection string.</summary>
+    private sealed class ConnectionStringOnly(string connectionString) : DbConnection
+    {
+        [AllowNull]
+        public override string ConnectionString { get; set; } = connectionString;
+        public override string Database => throw new NotSupportedException();
+        public override string DataSource => throw new NotSupportedException();
+        public override string ServerVersion => throw new NotSupportedException();
+        public override ConnectionState State => ConnectionState.Closed;
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+        public override void Close() { }
+        public override void Open() => throw new NotSupportedException();
+        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) => throw new NotSupportedException();
+        protected override DbCommand CreateDbCommand() => throw new NotSupportedException();
     }
 }

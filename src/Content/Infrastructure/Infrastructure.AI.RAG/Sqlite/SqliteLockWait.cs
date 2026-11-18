@@ -25,6 +25,11 @@ namespace Infrastructure.AI.RAG.Sqlite;
 /// timeout only between statements, so one command of several statements can wait up to the timeout on each.
 /// </para>
 /// <para>
+/// SQLite's wait runs inside one native call, so a cancellation token is not seen until it ends; the driver's own loop
+/// checked it between sleeps. A request cancelled while another writer holds the lock can therefore take up to the
+/// timeout to stop, and with <c>Default Timeout=0</c> it waits for the lock however long that takes.
+/// </para>
+/// <para>
 /// Set by <see cref="SqliteSecureDelete.ConfigureOpened"/>, which runs on every SQLite connection the harness opens
 /// (<c>EverySqliteConnectionScrubsDeletesTests</c> holds that in place). A write-ahead-log checkpoint must not wait, so it
 /// runs <see cref="NoWaitPragma"/> first.
@@ -38,22 +43,28 @@ public static class SqliteLockWait
     /// <summary>The statement that sets <paramref name="connection"/>'s lock wait to its default command timeout.</summary>
     /// <param name="connection">A SQLite connection.</param>
     /// <returns>The <c>PRAGMA busy_timeout</c> statement for this connection.</returns>
-    public static string PragmaFor(DbConnection connection)
-    {
-        ArgumentNullException.ThrowIfNull(connection);
-        return string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {TimeoutMilliseconds(connection)};");
-    }
+    public static string PragmaFor(DbConnection connection) =>
+        string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {TimeoutMillisecondsFor(connection)};");
 
     /// <summary>
-    /// The connection's default command timeout in milliseconds. The driver reads 0 as "no limit", so that maps to the
-    /// longest wait SQLite accepts rather than to 0, which would turn the wait off. A wrapped connection (a profiler, for
-    /// instance) that is not itself a <see cref="SqliteConnection"/> gets the driver's 30-second default.
+    /// The lock wait, in milliseconds, that matches how the driver reads <paramref name="connection"/>'s default command
+    /// timeout. The driver reads 0 as "no limit", so it maps to the longest wait SQLite accepts rather than to 0, which
+    /// would turn the wait off; it gives up at the first busy on a negative value, so that maps to no wait.
     /// </summary>
-    private static int TimeoutMilliseconds(DbConnection connection)
+    /// <param name="connection">A SQLite connection, or a wrapper around one (a profiler, for instance), whose timeout is
+    /// then read from its connection string.</param>
+    /// <returns>The value for <c>PRAGMA busy_timeout</c>.</returns>
+    public static int TimeoutMillisecondsFor(DbConnection connection)
     {
-        var seconds = connection is SqliteConnection sqlite ? sqlite.DefaultTimeout : DriverDefaultTimeoutSeconds;
-        return seconds <= 0 ? int.MaxValue : (int)Math.Min(seconds * 1000L, int.MaxValue);
+        ArgumentNullException.ThrowIfNull(connection);
+        var seconds = connection is SqliteConnection sqlite
+            ? sqlite.DefaultTimeout
+            : new SqliteConnectionStringBuilder(connection.ConnectionString).DefaultTimeout;
+        return seconds switch
+        {
+            0 => int.MaxValue,
+            < 0 => 0,
+            _ => (int)Math.Min(seconds * 1000L, int.MaxValue),
+        };
     }
-
-    private const int DriverDefaultTimeoutSeconds = 30;
 }

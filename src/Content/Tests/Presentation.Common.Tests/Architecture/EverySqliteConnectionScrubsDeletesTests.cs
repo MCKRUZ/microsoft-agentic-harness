@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Infrastructure.AI.RAG.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -105,7 +106,7 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
             checkedContexts.Add(name);
             if (await PragmaAsync(connection, "secure_delete") != 1)
                 missing.Add(name);
-            if (await PragmaAsync(connection, "busy_timeout") != ((SqliteConnection)connection).DefaultTimeout * 1000)
+            if (await PragmaAsync(connection, "busy_timeout") != SqliteLockWait.TimeoutMillisecondsFor(connection))
                 noLockWait.Add(name);
         }
 
