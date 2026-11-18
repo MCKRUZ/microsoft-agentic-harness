@@ -34,10 +34,7 @@ public static class SqliteSecureDelete
     /// <summary>The statement that turns secure delete on for one connection.</summary>
     public const string Pragma = "PRAGMA secure_delete = ON;";
 
-    /// <summary>
-    /// Creates a connection that turns secure delete on, and sets the <see cref="SqliteLockWait"/> lock wait, every time it
-    /// opens.
-    /// </summary>
+    /// <summary>Creates a connection that runs <see cref="ConfigureOpened"/> every time it opens.</summary>
     /// <param name="connectionString">The SQLite connection string.</param>
     /// <returns>An unopened connection.</returns>
     public static SqliteConnection CreateConnection(string connectionString)
@@ -46,12 +43,21 @@ public static class SqliteSecureDelete
         connection.StateChange += (sender, args) =>
         {
             if (args.CurrentState == ConnectionState.Open && sender is DbConnection opened)
-            {
-                Apply(opened);
-                SqliteLockWait.Apply(opened);
-            }
+                ConfigureOpened(opened);
         };
         return connection;
+    }
+
+    /// <summary>
+    /// Applies every per-connection setting the harness requires to a connection that has just opened: secure delete and
+    /// the <see cref="SqliteLockWait"/> lock wait. The one place both connection paths (hand-written and Entity Framework)
+    /// call, so a setting added here reaches every SQLite connection.
+    /// </summary>
+    /// <param name="connection">An open SQLite connection.</param>
+    public static void ConfigureOpened(DbConnection connection)
+    {
+        Apply(connection);
+        SqliteLockWait.Apply(connection);
     }
 
     /// <summary>Turns secure delete on for an open connection.</summary>

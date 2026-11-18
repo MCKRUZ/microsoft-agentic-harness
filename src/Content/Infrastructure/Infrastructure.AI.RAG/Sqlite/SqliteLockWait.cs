@@ -1,5 +1,7 @@
+using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using Microsoft.Data.Sqlite;
 
 namespace Infrastructure.AI.RAG.Sqlite;
 
@@ -17,30 +19,29 @@ namespace Infrastructure.AI.RAG.Sqlite;
 /// </para>
 /// <para>
 /// <c>PRAGMA busy_timeout</c> hands the wait to SQLite's own busy handler, which retries after 1, 2, 5, 10 ms and so on,
-/// so a writer starts soon after the lock frees. The timeout matches the driver's default 30-second command timeout, so
-/// the longest a writer can wait for the lock is unchanged; only how quickly it notices the lock is free changes.
+/// so a writer starts soon after the lock frees. The wait is the connection's own default command timeout
+/// (<c>Default Timeout</c> in the connection string, 30 seconds unless set), so a consumer who shortens it to fail fast
+/// still fails fast. The driver checks that timeout only between statements, so one command of several statements can
+/// wait up to the timeout on each; a single statement waits no longer than before.
 /// </para>
 /// <para>
-/// Applied wherever <see cref="SqliteSecureDelete"/> is, which is every SQLite connection the harness opens
-/// (<c>EverySqliteConnectionScrubsDeletesTests</c> holds both in place). A caller that must not wait, such as the
-/// write-ahead-log truncation after an erasure, turns it off around its own command with <see cref="SuspendAsync"/>.
+/// Applied by <see cref="SqliteSecureDelete.ConfigureOpened"/>, which runs on every SQLite connection the harness opens
+/// (<c>EverySqliteConnectionScrubsDeletesTests</c> holds that in place). A caller that must not wait, such as a
+/// write-ahead-log checkpoint, turns it off around its own command with <see cref="SuspendAsync"/>.
 /// </para>
 /// </remarks>
 public static class SqliteLockWait
 {
-    /// <summary>How long a connection waits for the write lock before SQLite reports the database busy.</summary>
-    public const int TimeoutMilliseconds = 30_000;
+    /// <summary>The wait a connection gets when its connection string sets no timeout: the driver's 30-second default.</summary>
+    public const int DefaultTimeoutMilliseconds = 30_000;
 
-    /// <summary>The statement that sets the wait for one connection.</summary>
-    public const string Pragma = "PRAGMA busy_timeout = 30000;";
-
-    /// <summary>Sets the lock wait on an open connection.</summary>
+    /// <summary>Sets the lock wait on an open connection to its default command timeout.</summary>
     /// <param name="connection">An open SQLite connection.</param>
     public static void Apply(DbConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
         using var command = connection.CreateCommand();
-        command.CommandText = Pragma;
+        command.CommandText = SetStatement(TimeoutFor(connection));
         command.ExecuteNonQuery();
     }
 
@@ -55,7 +56,7 @@ public static class SqliteLockWait
     {
         ArgumentNullException.ThrowIfNull(connection);
         var previous = await ReadAsync(connection, cancellationToken);
-        await SetAsync(connection, 0, cancellationToken);
+        await ExecuteAsync(connection, SetStatement(0), cancellationToken);
         return new Restore(connection, previous);
     }
 
@@ -71,17 +72,28 @@ public static class SqliteLockWait
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
-    private static async Task SetAsync(DbConnection connection, int milliseconds, CancellationToken cancellationToken)
+    private static int TimeoutFor(DbConnection connection) =>
+        connection is SqliteConnection sqlite ? sqlite.DefaultTimeout * 1000 : DefaultTimeoutMilliseconds;
+
+    private static string SetStatement(int milliseconds) =>
+        string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {milliseconds};");
+
+    private static async Task ExecuteAsync(DbConnection connection, string sql, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {milliseconds};");
+        command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private sealed class Restore(DbConnection connection, int previous) : IAsyncDisposable
     {
-        // Not cancellable: a restore skipped because the caller's request was cancelled would leave a pooled connection
-        // reporting busy at once for whoever uses it next.
-        public async ValueTask DisposeAsync() => await SetAsync(connection, previous, CancellationToken.None);
+        // Not cancellable: a long-lived connection (the graph backend holds one for its lifetime) is never reopened, so a
+        // skipped restore would leave it reporting busy at once, back on the driver's 150 ms sleeps, until it closes.
+        // Skipped when the connection is no longer open, so a failure that closed it is not masked by this one.
+        public async ValueTask DisposeAsync()
+        {
+            if (connection.State == ConnectionState.Open)
+                await ExecuteAsync(connection, SetStatement(previous), CancellationToken.None);
+        }
     }
 }

@@ -106,7 +106,7 @@ public sealed class EverySqliteConnectionScrubsDeletesTests : IDisposable
             checkedContexts.Add(name);
             if (await PragmaAsync(connection, "secure_delete") != 1)
                 missing.Add(name);
-            if (await PragmaAsync(connection, "busy_timeout") != SqliteLockWait.TimeoutMilliseconds)
+            if (await SqliteLockWait.ReadAsync(connection, CancellationToken.None) != SqliteLockWait.DefaultTimeoutMilliseconds)
                 noLockWait.Add(name);
         }
 

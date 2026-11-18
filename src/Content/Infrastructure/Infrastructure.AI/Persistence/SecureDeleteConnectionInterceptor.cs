@@ -24,19 +24,13 @@ public sealed class SecureDeleteConnectionInterceptor : DbConnectionInterceptor
 
     /// <inheritdoc />
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData) =>
-        Configure(connection);
+        SqliteSecureDelete.ConfigureOpened(connection);
 
     /// <inheritdoc />
     public override Task ConnectionOpenedAsync(
         DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        Configure(connection);
+        SqliteSecureDelete.ConfigureOpened(connection);
         return Task.CompletedTask;
-    }
-
-    private static void Configure(DbConnection connection)
-    {
-        SqliteSecureDelete.Apply(connection);
-        SqliteLockWait.Apply(connection);
     }
 }

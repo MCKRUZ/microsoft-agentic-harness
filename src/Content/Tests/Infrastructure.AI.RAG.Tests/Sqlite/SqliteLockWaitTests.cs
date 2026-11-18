@@ -35,13 +35,26 @@ public sealed class SqliteLockWaitTests : IDisposable
     {
         // Without it, a writer that finds the lock taken sleeps 150 ms in the driver before looking again, which is what
         // made saves slow under load. The setting is per connection, so every open must apply it.
-        using var connection = SqliteSecureDelete.CreateConnection($"Data Source={Path.Combine(_directory, "a.db")}");
+        // Pooling off, so the reopen gets a fresh native handle that remembers nothing from the first open.
+        using var connection = SqliteSecureDelete.CreateConnection($"Data Source={Path.Combine(_directory, "a.db")};Pooling=False");
 
         connection.Open();
-        BusyTimeout(connection).Should().Be(SqliteLockWait.TimeoutMilliseconds);
+        BusyTimeout(connection).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds);
         connection.Close();
         connection.Open();
-        BusyTimeout(connection).Should().Be(SqliteLockWait.TimeoutMilliseconds);
+        BusyTimeout(connection).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds);
+    }
+
+    [Fact]
+    public void CreateConnection_HonoursAConfiguredTimeout()
+    {
+        // A consumer who shortens the timeout so contended writes fail fast must not have it lengthened to 30 seconds.
+        using var connection = SqliteSecureDelete.CreateConnection(
+            $"Data Source={Path.Combine(_directory, "c.db")};Default Timeout=5");
+
+        connection.Open();
+
+        BusyTimeout(connection).Should().Be(5000);
     }
 
     [Fact]
@@ -70,7 +83,7 @@ public sealed class SqliteLockWaitTests : IDisposable
 
         emptied.Should().BeFalse();
         clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "a busy log is reported at once, not after the lock wait");
-        BusyTimeout(writer).Should().Be(SqliteLockWait.TimeoutMilliseconds,
+        BusyTimeout(writer).Should().Be(SqliteLockWait.DefaultTimeoutMilliseconds,
             "the connection goes back to waiting for the lock once the checkpoint is done");
     }
 
