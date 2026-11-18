@@ -25,9 +25,14 @@ public record RunConversationCommand : IRequest<ConversationResult>, IHasTimeout
 	public required string AgentName { get; init; }
 
 	/// <summary>
-	/// Optional system prompt override for this conversation.
-	/// When set, takes precedence over the agent's default system prompt.
+	/// Optional instructions for this conversation, appended to the agent's own instructions on every turn.
 	/// </summary>
+	/// <remarks>
+	/// Appended, never a replacement: the agent's own instructions carry its guardrails, and a caller-supplied
+	/// prompt must not be able to drop them. Each turn receives it as <see cref="ExecuteAgentTurn.ExecuteAgentTurnCommand.SystemPromptOverride"/>,
+	/// which the turn deliberately does not screen (#951). A caller that takes this text from someone other than
+	/// the operator must screen it first; the planner's model-call step does, through <c>ScreenUserInputCommand</c>.
+	/// </remarks>
 	public string? SystemPrompt { get; init; }
 
 	/// <summary>

@@ -1,3 +1,4 @@
+using Application.AI.Common.CQRS.Safety.ScreenUserInput;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
@@ -5,6 +6,7 @@ using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.AI;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Planner;
+using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Planner.StepExecutors;
@@ -67,6 +69,10 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
     private LlmCallStepExecutor BuildExecutor(
         IConversationBudgetTracker budget, int tokensPerStep, PlanId? currentPlanId = null)
     {
+        // Every step's system prompt passes content screening; LlmCallStepExecutorTests covers a refusal.
+        _sender
+            .Setup(s => s.Send(It.IsAny<ScreenUserInputCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
         _sender
             .Setup(s => s.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
             .Returns<object, CancellationToken>(async (c, _) =>
