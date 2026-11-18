@@ -1,4 +1,5 @@
 using Application.AI.Common;
+using Application.AI.Common.CQRS.Safety.ScreenUserInput;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
@@ -217,6 +218,10 @@ public sealed class PlanRunLlmCallScopeTests
     {
         public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
         {
+            // The step screens its system prompt first; that pass is not a turn, so it binds and records nothing.
+            if (request is ScreenUserInputCommand)
+                return Task.FromResult((TResponse)(object)Result.Success());
+
             var command = (RunConversationCommand)(object)request!;
 
             scopedContext.Initialize(command.AgentName, command.ConversationId, turnNumber: 1);

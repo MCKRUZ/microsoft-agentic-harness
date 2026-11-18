@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.CQRS.Safety.ScreenUserInput;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
@@ -7,6 +8,7 @@ using Application.AI.Common.Services.Governance;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
+using Domain.Common;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -137,6 +139,10 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
             };
         }
 
+        var refusal = await ScreenSystemPromptAsync(step, config.SystemPrompt, ct);
+        if (refusal is not null)
+            return refusal;
+
         var sw = Stopwatch.StartNew();
 
         // Per-step, never shared: this id keys the agent cache, skill-completion tracking, and the
@@ -228,6 +234,52 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
             Status = StepExecutionStatus.Failed,
             Duration = TimeSpan.Zero,
             ErrorMessage = admission.DeniedMessage!,
+            IsPolicyDenial = true
+        };
+    }
+
+    /// <summary>
+    /// Sends the step's system prompt through the request pipeline's content screening and, when it is
+    /// refused, produces the failed step result. Returns null when the prompt may go to the model.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The prompt reaches the model as instructions appended to the agent's own, and the turn does not
+    /// screen those (#951: they are normally operator-written settings). A step's prompt is not: it comes
+    /// from whoever submitted the workflow or from the planner's model output, and it may have been stored
+    /// before any check existed. Screening here, at the last point before the model call, covers every
+    /// source at once. The prompt-injection scan and content safety run exactly as they do for a user
+    /// message, because <see cref="ScreenUserInputCommand"/> is the same pipeline.
+    /// </para>
+    /// <para>
+    /// A refusal is a policy denial: the same prompt would be refused again, so the plan must not retry
+    /// it. A blank prompt has nothing to screen and is skipped (the command rejects empty text).
+    /// </para>
+    /// </remarks>
+    private async Task<StepExecutionResult?> ScreenSystemPromptAsync(
+        PlanStep step, string systemPrompt, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(systemPrompt))
+            return null;
+
+        Result screening;
+        await using (var screeningScope = _scopeFactory.CreateAsyncScope())
+        {
+            var sender = screeningScope.ServiceProvider.GetRequiredService<ISender>();
+            screening = await sender.Send(new ScreenUserInputCommand(systemPrompt), ct);
+        }
+
+        if (screening.IsSuccess)
+            return null;
+
+        _logger.LogWarning(
+            "LlmCall step {Step} refused: its system prompt failed content screening ({FailureType})",
+            step.Name, screening.FailureType);
+        return new StepExecutionResult
+        {
+            Status = StepExecutionStatus.Failed,
+            Duration = TimeSpan.Zero,
+            ErrorMessage = string.Join("; ", screening.Errors),
             IsPolicyDenial = true
         };
     }

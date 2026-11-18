@@ -221,6 +221,36 @@ public class AgentPipelineIntegrationTests
     }
 
     [Fact]
+    public async Task RunConversation_WithSystemPrompt_BuildsTheAgentWithThatPromptAppended()
+    {
+        // Issue #1024: a workflow step's system prompt was set on the command and then dropped before
+        // the turn, so every step with the same user message got the same instructions and the same
+        // cached answer. The prompt must reach the agent the turn is built from.
+        var seen = new List<SkillAgentOptions>();
+        using var provider = BuildPipeline(cache =>
+            cache
+                .Setup(c => c.GetOrCreateAsync(
+                    It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+                .Callback<string, IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                    (_, _, options, _) => seen.Add(options))
+                .ReturnsAsync(new TestableAIAgent("ok")));
+
+        using var scope = provider.CreateScope();
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+        var result = await mediator.Send(new RunConversationCommand
+        {
+            AgentName = "step-agent",
+            SystemPrompt = "Answer only in French.",
+            UserMessages = ["What is the capital of Spain?"]
+        });
+
+        result.Success.Should().BeTrue();
+        seen.Should().ContainSingle()
+            .Which.AdditionalContext.Should().Be("Answer only in French.");
+    }
+
+    [Fact]
     public async Task ExecuteAgentTurn_Standalone_SetsAgentContext()
     {
         // Arrange

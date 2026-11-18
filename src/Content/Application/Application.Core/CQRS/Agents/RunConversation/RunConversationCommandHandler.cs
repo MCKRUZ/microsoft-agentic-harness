@@ -336,6 +336,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				{
 					AgentName = agentName,
 					UserMessage = userMessage,
+					SystemPromptOverride = request.SystemPrompt,
 
 					// The seed is used only by the first turn; from then on each turn carries the one
 					// before it, and UpdatedHistory already includes whatever was passed in — so the
