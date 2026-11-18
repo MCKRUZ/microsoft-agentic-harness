@@ -252,8 +252,10 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// message, because <see cref="ScreenUserInputCommand"/> is the same pipeline.
     /// </para>
     /// <para>
-    /// A refusal is a policy denial: the same prompt would be refused again, so the plan must not retry
-    /// it. A blank prompt has nothing to screen and is skipped (the command rejects empty text).
+    /// A refusal (content blocked or governance blocked) is a policy denial: the same prompt would be
+    /// refused again, so the plan must not retry it. Any other screening failure is an ordinary step
+    /// failure the plan may retry. A blank prompt has nothing to screen and is skipped (the command
+    /// rejects empty text).
     /// </para>
     /// </remarks>
     private async Task<StepExecutionResult?> ScreenSystemPromptAsync(
@@ -272,15 +274,20 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         if (screening.IsSuccess)
             return null;
 
+        // Only the pipeline's own refusals are verdicts on the text. Any other failure says nothing about
+        // the prompt, so it stays an ordinary, retryable step failure.
+        var refused = screening.FailureType
+            is ResultFailureType.ContentBlocked or ResultFailureType.GovernanceBlocked;
+
         _logger.LogWarning(
-            "LlmCall step {Step} refused: its system prompt failed content screening ({FailureType})",
+            "LlmCall step {Step} stopped: screening its system prompt failed ({FailureType})",
             step.Name, screening.FailureType);
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
             Duration = TimeSpan.Zero,
             ErrorMessage = string.Join("; ", screening.Errors),
-            IsPolicyDenial = true
+            IsPolicyDenial = refused
         };
     }
 
