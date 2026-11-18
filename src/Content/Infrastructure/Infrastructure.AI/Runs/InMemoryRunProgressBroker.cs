@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Application.AI.Common.Interfaces.Runs;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Runs;
 using Domain.Common.Config;
@@ -191,6 +192,7 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         if (!TryReserve(principal, limits.MaxConcurrentProgressStreams, limits.MaxProgressStreamsPerOwner))
             return null;
 
+        DispatchMetrics.ProgressStreamsActive.Add(1);
         var subscription = new Subscription(this, jobId, principal, Math.Max(1, limits.ProgressBufferSize));
         _watchers.GetOrAdd(jobId, static _ => new ConcurrentDictionary<Subscription, byte>())[subscription] = 0;
 
@@ -225,6 +227,7 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         // finds nothing to prune.
         Interlocked.Decrement(ref _openSubscriptions);
         ReleasePrincipal(principal);
+        DispatchMetrics.ProgressStreamsActive.Add(-1);
 
         if (!_watchers.TryGetValue(jobId, out var subscribers))
             return;

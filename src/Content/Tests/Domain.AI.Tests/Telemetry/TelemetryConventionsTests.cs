@@ -129,4 +129,18 @@ public sealed class TelemetryConventionsTests
         SafetyConventions.CategoryValues.Jailbreak.Should().Be("jailbreak");
         SafetyConventions.CategoryValues.PromptInjection.Should().Be("prompt-injection");
     }
+
+    [Theory]
+    [InlineData(DispatchConventions.Queue, "agent.dispatch.queue")]
+    [InlineData(DispatchConventions.BundleRunQueue, "bundle_run")]
+    [InlineData(DispatchConventions.WorkflowRunQueue, "workflow_run")]
+    [InlineData(DispatchConventions.ChangeProposalQueue, "change_proposal")]
+    [InlineData(DispatchConventions.QueueDepth, "agent.dispatch.queue_depth")]
+    [InlineData(DispatchConventions.QueueWait, "agent.dispatch.queue_wait")]
+    [InlineData(DispatchConventions.ProgressStreamsActive, "agent.dispatch.progress_streams_active")]
+    public void DispatchConventions_HaveExpectedValues(string actual, string expected)
+    {
+        // Dashboards and alerts query these names; renaming one silently empties every chart built on it.
+        actual.Should().Be(expected);
+    }
 }

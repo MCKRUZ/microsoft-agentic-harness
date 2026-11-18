@@ -457,7 +457,8 @@ public static class OpenTelemetryServiceCollectionExtensions
 
     /// <summary>
     /// Configures the base meter provider with the harness meter, ASP.NET Core
-    /// hosting/Kestrel meters, runtime instrumentation, and Prometheus export.
+    /// hosting, Kestrel and rate-limiting meters (the last reports 429s and open stream permits),
+    /// runtime instrumentation, and Prometheus export.
     /// The <see cref="ResourceBuilder"/> is resolved from DI via deferred configuration.
     /// </summary>
     private static void ConfigureMeterProviderBuilder(MeterProviderBuilder builder, AppConfig appConfig)
@@ -466,6 +467,7 @@ public static class OpenTelemetryServiceCollectionExtensions
             .AddMeter(AppInstrument.Meter.Name)
             .AddMeter("Microsoft.AspNetCore.Hosting")
             .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
+            .AddMeter("Microsoft.AspNetCore.RateLimiting")
             .SetExemplarFilter(ExemplarFilterType.TraceBased)
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
