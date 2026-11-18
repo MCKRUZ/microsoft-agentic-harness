@@ -28,6 +28,8 @@ namespace Domain.Common.Config.AI.BundleExecution;
 /// ├── MaxCompressionRatio           — Reject when uncompressed/compressed exceeds this (bomb guard)
 /// ├── AllowBundleDeclaredMcpServers — Allow a bundle's own REMOTE (http/sse) MCP server declarations
 /// ├── StdioMcpServers               — Allow + configure a bundle's own LOCAL (stdio) MCP servers, sandboxed
+/// ├── MaxConcurrentStreamsPerCaller — How many live streams one caller may hold open at once
+/// ├── MaxConcurrentStreams          — How many live streams the host holds open at once, across all callers
 /// ├── MaxConcurrentDispatchedBundleRuns — How many background bundle runs the host executes at once, across all callers
 /// └── MaxActiveBundleRunsPerOwner   — Cap on how many bundle runs one caller may have queued or executing at once
 /// </code>
@@ -128,6 +130,32 @@ public class BundleExecutionConfig
     public int MaxConcurrentStreamsPerCaller { get; set; } = 4;
 
     /// <summary>
+    /// The maximum number of live streams the host holds open at once, across all callers. Excess connection
+    /// attempts are refused with 429, not queued. Must be positive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="MaxConcurrentStreamsPerCaller"/> bounds one caller; this bounds the host. Without it, many
+    /// callers each staying within their own allowance could together open any number of streams, and every
+    /// one drives a live agent conversation on its connection. Streamed runs never pass through the background
+    /// dispatcher, so <see cref="MaxConcurrentDispatchedBundleRuns"/> does not bound them either. The two
+    /// stream caps mirror the workflow progress-stream pair
+    /// (<c>WorkflowSubmission:MaxConcurrentProgressStreams</c> and <c>MaxProgressStreamsPerOwner</c>).
+    /// </para>
+    /// <para>
+    /// <strong>Sizing.</strong> Every open stream can hold a model call open, so the ceiling that matters is
+    /// usually the model provider's concurrent-request allowance, shared with the background dispatch slots.
+    /// Set this so that it plus <see cref="MaxConcurrentDispatchedBundleRuns"/> stays within that allowance, or
+    /// the extra streams turn into throttled calls.
+    /// </para>
+    /// <para>
+    /// Read once at startup, like <see cref="MaxConcurrentStreamsPerCaller"/>: changing it needs a restart.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 64</value>
+    public int MaxConcurrentStreams { get; set; } = 64;
+
+    /// <summary>
     /// How often the background cleanup sweeper runs its pass over expired handles (deleting their staging
     /// directories) and expired run records. This is the belt-and-suspenders backstop that guarantees a
     /// staging directory is removed even if no explicit delete arrives. Must be positive.
@@ -187,7 +215,8 @@ public class BundleExecutionConfig
     /// </para>
     /// <para>
     /// Only governs background (non-streaming) dispatch. A streaming run is never enqueued — it executes
-    /// on the caller's own connection and is bounded separately by <see cref="MaxConcurrentStreamsPerCaller"/>.
+    /// on the caller's own connection and is bounded separately by <see cref="MaxConcurrentStreamsPerCaller"/>
+    /// and <see cref="MaxConcurrentStreams"/>.
     /// </para>
     /// <para>
     /// <strong>Sizing.</strong> A run spends nearly all its time waiting on the model, so a slot costs the

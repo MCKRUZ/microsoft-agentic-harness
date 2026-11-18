@@ -44,4 +44,13 @@ public sealed class ShippedDispatchLimitTests : IClassFixture<WebApplicationFact
         config.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns
             .Should().Be(new WorkflowSubmissionConfig().MaxConcurrentDispatchedRuns);
     }
+
+    [Fact]
+    public void HostWideBundleStreamLimit_InShippedHost_IsTheClassDefault()
+    {
+        var config = _factory.Services.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
+
+        config.AI.BundleExecution.MaxConcurrentStreams
+            .Should().Be(new BundleExecutionConfig().MaxConcurrentStreams);
+    }
 }

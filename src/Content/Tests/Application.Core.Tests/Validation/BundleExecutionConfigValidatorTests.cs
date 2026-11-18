@@ -104,6 +104,19 @@ public class BundleExecutionConfigValidatorTests
         result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxConcurrentStreamsPerCaller));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Validate_NonPositiveMaxConcurrentStreams_HasError(int maxStreams)
+    {
+        var config = new BundleExecutionConfig { MaxConcurrentStreams = maxStreams };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxConcurrentStreams));
+    }
+
     [Fact]
     public async Task Validate_ZeroMaxArchiveBytes_HasError()
     {
