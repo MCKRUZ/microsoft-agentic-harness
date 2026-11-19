@@ -11,13 +11,18 @@ services:
       dockerfile: src/Content/Presentation/Presentation.AgentHub/Dockerfile
     ports:
       # Bound to loopback only, not "8080:8080" (which Docker publishes on every host interface).
-      # Auth:Disabled + Auth:AllowOutsideDevelopment are both true in this mode (see README's "What
-      # this does not include") — publishing on 0.0.0.0 would put an unauthenticated agent surface
+      # Sign-in is off in this mode (Auth:Disabled from the image, Auth:AllowOutsideDevelopment set
+      # below; see README's "What this does not include") — publishing on 0.0.0.0 would put an unauthenticated agent surface
       # (turns, tools, sandbox, provider key) on the network by default, contradicting this repo's
       # own documented guidance to run this behind a private network or reverse proxy. Change this
       # to "0.0.0.0:8080:8080" (or a specific private interface) only once that boundary exists.
       - "127.0.0.1:8080:8080"
     environment:
+      # Runs without sign-in, deliberately. The image turns sign-in off but leaves this override to
+      # the deployment (#947), so a bare `docker run` of the image refuses to start instead of
+      # serving everyone as one identity. It is set here, next to the loopback-only port above;
+      # remove both together once a real sign-in provider is configured.
+      Auth__AllowOutsideDevelopment: "true"
       # LLM provider — required. See .env.example for the full set and OpenRouter setup notes.
       AppConfig__AI__AgentFramework__Endpoint: ${AGENT_FRAMEWORK_ENDPOINT}
       AppConfig__AI__AgentFramework__ApiKey: ${AGENT_FRAMEWORK_API_KEY}

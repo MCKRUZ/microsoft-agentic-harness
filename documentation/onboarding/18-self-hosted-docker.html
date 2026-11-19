@@ -311,18 +311,30 @@ curl http://localhost:8080/health/subsystems</code></pre>
                     <h2 id="auth">Authentication: off by default, and why</h2>
                     <p>
                         The harness normally requires signing in through Microsoft Entra. A self-hosted deployment
-                        usually has no Entra tenant at all, so the container ships with two settings that together
-                        turn sign-in off entirely:
+                        usually has no Entra tenant at all, so two settings together turn sign-in off entirely. The
+                        image carries the first; the shipped compose file sets the second, beside its loopback-only port:
                     </p>
                     <div class="code-block">
                         <div class="code-block-header">
-                            <span class="code-block-lang">appsettings.Container.json</span>
+                            <span class="code-block-lang">appsettings.Container.json (in the image)</span>
                         </div>
                         <pre><code>"Auth": {
-  "Disabled": true,
-  "AllowOutsideDevelopment": true
+  "Disabled": true
 }</code></pre>
                     </div>
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-lang">deploy/agenthub/docker-compose.yml</span>
+                        </div>
+                        <pre><code>environment:
+  Auth__AllowOutsideDevelopment: "true"</code></pre>
+                    </div>
+                    <p>
+                        The split is deliberate. Running the image on its own, with <code>docker run</code> and none of
+                        the compose file's settings, makes the host refuse to start rather than serve without sign-in on
+                        every interface. Running without sign-in is a decision whoever deploys the image makes, in the
+                        file they deploy with.
+                    </p>
                     <p>
                         Both flags are required together, deliberately. Outside the Development environment
                         <code>Auth:Disabled</code> alone makes the host <strong>refuse to start</strong>, naming the

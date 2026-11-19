@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Presentation.AgentHub.Auth;
+using Tests.Common;
 using OpenTelemetry.Metrics;
 using Xunit;
 
@@ -34,6 +35,39 @@ public sealed class AuthBypassStartupRefusalTests
     }
 
     [Fact]
+    public void Start_ShippedContainerSettingsAlone_RefusesWithTheReason()
+    {
+        // #947: the image runs under the Container environment, and its own settings turn sign-in off. They must not also
+        // carry the override, or a bare `docker run` of the image serves every caller as one identity with no sign-in.
+        // The override belongs to whoever deploys the image (the shipped compose file sets it beside its loopback-only
+        // port), so with no deployment settings at all the host refuses.
+        var act = () => Boot("Container", authFromSettingsFilesOnly: true);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Auth:Disabled=true*'Container'*Refusing to start*Auth:AllowOutsideDevelopment=true*");
+    }
+
+    [Fact]
+    public void Start_ShippedContainerSettingsWithTheShippedComposeOverride_StartsSelfHosted()
+    {
+        // #947: the override moved from the image into the shipped compose file, so the self-hosted install (#591) now
+        // depends on that file spelling it correctly. Read the value the compose file actually sets and boot the image's
+        // settings with only that, so a typo in the key, its casing or its value fails here instead of at someone's
+        // first `docker compose up`.
+        var compose = File.ReadAllText(RepoRoot.Combine("deploy", "agenthub", "docker-compose.yml"));
+        var match = System.Text.RegularExpressions.Regex.Match(
+            compose, @"^\s+Auth__AllowOutsideDevelopment:\s*""?(?<value>[^""\s]+)""?\s*$",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        match.Success.Should().BeTrue("the shipped compose file sets the override the image leaves out");
+        var scheme = Boot("Container", allowOutsideDevelopment: match.Groups["value"].Value == "true",
+            authFromSettingsFilesOnly: true);
+
+        scheme.Should().Be(SelfHostedAuthHandler.SchemeName,
+            "the image's settings plus the compose file's override start the low-privilege self-hosted sign-in bypass");
+    }
+
+    [Fact]
     public void Start_SignInBypassedOutsideDevelopmentWithTheOverride_StartsSelfHostedAndLogsCritical()
     {
         // The control: the same host with the deliberate override starts (the self-hosted deployment of #591), under the
@@ -47,11 +81,13 @@ public sealed class AuthBypassStartupRefusalTests
             e.Level == LogLevel.Critical && e.Message.Contains("Auth:AllowOutsideDevelopment=true"));
     }
 
-    private static string? Boot(string environment, bool allowOutsideDevelopment, ILoggerProvider? logs = null)
+    private static string? Boot(
+        string environment, bool allowOutsideDevelopment = false, ILoggerProvider? logs = null,
+        bool authFromSettingsFilesOnly = false)
     {
         var variables = new Dictionary<string, string?>
         {
-            ["Auth__Disabled"] = "true",
+            ["Auth__Disabled"] = authFromSettingsFilesOnly ? null : "true",
             ["Auth__AllowOutsideDevelopment"] = allowOutsideDevelopment ? "true" : null,
             ["DisableAzureConfigSources"] = "true",
             ["AppConfig__AI__AgentFramework__ClientType"] = "Echo",
