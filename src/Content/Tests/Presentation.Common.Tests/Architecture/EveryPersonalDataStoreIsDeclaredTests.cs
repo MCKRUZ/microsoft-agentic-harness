@@ -130,6 +130,7 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
         ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "the orchestrator deletes the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, deleted with the owner's nodes",
+        ["Infrastructure.AI.KnowledgeGraph.WorkMemory.GraphWorkEpisodeStore"] = "episodes are owner-stamped graph nodes, deleted with the owner's nodes",
         ["Infrastructure.AI.RAG.GraphRag.CrossSessionMemoryStore"] = "the orchestrator calls ICrossSessionMemoryStore.PurgeByOwnerAsync",
         ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "cross-session memory's purge deletes the owner's memory nodes from this backend",
         ["Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"] = "the run store's erasure removes the person's finished runs and tells EvalSubmissionReclaimListener, which releases their submissions",
@@ -227,6 +228,7 @@ public sealed partial class EveryPersonalDataStoreIsDeclaredTests
         ["Infrastructure.AI.KnowledgeGraph.PostgreSql.PostgreSqlGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.InMemory.InMemoryGraphStore"] = "KnowledgeGraphExporter reads the owner's nodes and edges through IKnowledgeGraphStore",
         ["Infrastructure.AI.KnowledgeGraph.Learnings.GraphLearningsStore"] = "learnings are owner-stamped graph nodes, which KnowledgeGraphExporter reads with the owner's other nodes",
+        ["Infrastructure.AI.KnowledgeGraph.WorkMemory.GraphWorkEpisodeStore"] = "episodes are owner-stamped graph nodes, which KnowledgeGraphExporter reads with the owner's other nodes",
         ["Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend"] = "its only owner-stamped rows are cross-session memory nodes, which CrossSessionMemoryStore exports from this backend",
         ["Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"] = "EvalRunSubmissionExporter reads the submissions of the person's runs, found through the run store's records",
     };

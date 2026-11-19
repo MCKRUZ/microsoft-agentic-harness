@@ -1,15 +1,22 @@
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.WorkMemory;
 using Application.AI.Common.Services;
 using Domain.AI.WorkMemory;
+using Domain.Common.Compliance;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.WorkMemory;
+using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.KnowledgeGraph.Tests.WorkMemory;
 
 public sealed class InMemoryWorkEpisodeStoreTests
 {
-    private readonly InMemoryWorkEpisodeStore _sut = new(new AmbientRequestScope());
+    private readonly AmbientRequestScope _ambient = new();
+    private readonly InMemoryWorkEpisodeStore _sut;
+
+    public InMemoryWorkEpisodeStoreTests() => _sut = new InMemoryWorkEpisodeStore(_ambient);
 
     private static WorkEpisode BuildEpisode(
         Guid? id = null,
@@ -82,5 +89,51 @@ public sealed class InMemoryWorkEpisodeStoreTests
         var result = await _sut.SearchAsync(new WorkEpisodeSearchCriteria { Limit = 1 }, CancellationToken.None);
 
         result.Value.Should().ContainSingle().Which.EpisodeId.Should().Be(newer.EpisodeId);
+    }
+
+    /// <summary>
+    /// #968: an episode now names its owner, so owner erasure must remove the person's episodes, in every tenant, and
+    /// nobody else's, including the episodes saved with no caller in flight.
+    /// </summary>
+    [Fact]
+    public async Task EraseSubject_RemovesOnlyThatOwnersEpisodes_InEveryTenant()
+    {
+        var mineHere = await SaveAsAsync("user-a", "tenant-1");
+        var mineThere = await SaveAsAsync("user-a", "tenant-2");
+        var theirs = await SaveAsAsync("user-b", "tenant-1");
+        var nobodys = BuildEpisode();
+        await _sut.SaveAsync(nobodys, CancellationToken.None);
+
+        var removed = await _sut.EraseSubjectAsync(new ErasureSubject("USER-A", []), CancellationToken.None);
+
+        removed.Should().Be(2);
+        (await _sut.GetAsync(mineHere.EpisodeId, CancellationToken.None)).Value.Should().BeNull();
+        (await _sut.GetAsync(mineThere.EpisodeId, CancellationToken.None)).Value.Should().BeNull();
+        (await _sut.GetAsync(theirs.EpisodeId, CancellationToken.None)).Value.Should().NotBeNull();
+        (await _sut.GetAsync(nobodys.EpisodeId, CancellationToken.None)).Value.Should().NotBeNull();
+    }
+
+    /// <summary>#968: the owner's copy of their data includes their episodes and nobody else's.</summary>
+    [Fact]
+    public async Task ExportSubject_ReturnsOnlyThatOwnersEpisodes()
+    {
+        var mine = await SaveAsAsync("user-a", "tenant-1");
+        await SaveAsAsync("user-b", "tenant-1");
+        await _sut.SaveAsync(BuildEpisode(), CancellationToken.None);
+
+        var records = await _sut.ExportSubjectAsync(new ExportSubject("user-a", []), CancellationToken.None);
+
+        records.Should().ContainSingle().Which.GetProperty("episodeId").GetGuid().Should().Be(mine.EpisodeId);
+    }
+
+    private async Task<WorkEpisode> SaveAsAsync(string userId, string tenantId)
+    {
+        var episode = BuildEpisode();
+        await using var services = new ServiceCollection()
+            .AddSingleton(Mock.Of<IKnowledgeScope>(k => k.UserId == userId && k.TenantId == tenantId))
+            .BuildServiceProvider();
+        using (_ambient.BeginScope(services))
+            await _sut.SaveAsync(episode, CancellationToken.None);
+        return episode;
     }
 }

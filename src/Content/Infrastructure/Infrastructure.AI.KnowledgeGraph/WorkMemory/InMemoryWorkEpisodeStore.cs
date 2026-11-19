@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.WorkMemory;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.WorkMemory;
 using Domain.Common;
+using Domain.Common.Compliance;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.KnowledgeGraph.WorkMemory;
@@ -19,7 +20,14 @@ namespace Infrastructure.AI.KnowledgeGraph.WorkMemory;
 /// are taken from the ambient request scope's <see cref="IKnowledgeScope"/> and overwrite whatever the
 /// caller put on the episode, so work-memory synthesis can keep each user's lessons with that user (#968).
 /// </remarks>
-public sealed class InMemoryWorkEpisodeStore : IWorkEpisodeStore
+[PersonalDataStore(
+    "Work-memory episodes held in process memory; lost at restart. Each episode keeps a turn's user message, the agent's response summary, its outcome and token counts, stamped with the owner and tenant of the caller who saved it. Owner erasure removes the person's episodes and the owner's export returns them; episodes saved with no caller in flight carry no owner and are reached by neither.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
+public sealed partial class InMemoryWorkEpisodeStore : IWorkEpisodeStore
 {
     private readonly ConcurrentDictionary<Guid, WorkEpisode> _episodes = new();
     private readonly IAmbientRequestScope _ambientScope;
