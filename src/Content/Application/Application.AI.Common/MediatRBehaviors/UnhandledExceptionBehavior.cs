@@ -1,5 +1,7 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Agent;
+using Application.Common.Exceptions.ExceptionTypes;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -21,6 +23,16 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// Unlike the Presentation-layer exception filter, this behavior has access to the
 /// full MediatR request type and agent execution context, enabling richer structured
 /// logging for debugging agent failures.
+/// </para>
+/// <para>
+/// <strong>An expected rejection is not logged as an error (#963).</strong> A screening refusal
+/// (<see cref="IScreeningRefusal"/>) or a <see cref="ValidationException"/> is the pipeline working, not
+/// failing, so a burst of hostile or oversized input must not raise error-rate alerts. A refusal that is a
+/// verdict on the text, and a validation rejection, are logged at Information without a stack trace; a
+/// screening outage, which says nothing about the text but does mean the screening service is down, is
+/// logged at Warning with its exception. Everything is still rethrown. The request's own validation runs in
+/// <c>RequestValidationBehavior</c>, which is registered earlier and so wraps this behavior; a validation
+/// rejection reaches here only from a request this one sends on.
 /// </para>
 /// </remarks>
 /// <typeparam name="TRequest">The MediatR request type.</typeparam>
@@ -57,6 +69,11 @@ public sealed class UnhandledExceptionBehavior<TRequest, TResponse>
         {
             return await next();
         }
+        catch (Exception ex) when (ex is IScreeningRefusal or ValidationException)
+        {
+            LogExpectedRejection(ex);
+            throw;
+        }
         catch (Exception ex)
         {
             if (_agentContext.IsActive())
@@ -75,5 +92,22 @@ public sealed class UnhandledExceptionBehavior<TRequest, TResponse>
 
             throw;
         }
+    }
+
+    private void LogExpectedRejection(Exception ex)
+    {
+        var agent = _agentContext.IsActive() ? _agentContext.GetDisplayIdentifier() : null;
+
+        if (ex is IScreeningRefusal { IsVerdict: false })
+        {
+            _logger.LogWarning(ex,
+                "{RequestName} was refused because the text could not be screened. Agent: {AgentDisplay}",
+                RequestTypeName, agent);
+            return;
+        }
+
+        _logger.LogInformation(
+            "{RequestName} was rejected ({RejectionType}). Agent: {AgentDisplay}",
+            RequestTypeName, ex.GetType().Name, agent);
     }
 }

@@ -1,5 +1,7 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.MediatRBehaviors;
+using Application.Common.Exceptions.ExceptionTypes;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -118,6 +120,50 @@ public class UnhandledExceptionBehaviorTests
         loggerMock.Verify(
             l => l.Log(
                 LogLevel.Error,
+                It.IsAny<EventId>(),
+                It.IsAny<It.IsAnyType>(),
+                It.IsAny<Exception?>(),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Each expected rejection with the one level it must be logged at (#963): never Error, since a burst of
+    /// hostile or oversized input would otherwise raise error-rate alerts while nothing failed.
+    /// </summary>
+    public static TheoryData<Exception, LogLevel> ExpectedRejections => new()
+    {
+        { new ContentSafetyException("blocked", "Hate"), LogLevel.Information },
+        { new PromptInjectionBlockedException("injection"), LogLevel.Information },
+        { new ValidationException("too long"), LogLevel.Information },
+        // An outage says nothing about the text but does mean screening is down: worth a warning.
+        { new ContentSafetyUnavailableException("screening down"), LogLevel.Warning },
+    };
+
+    [Theory]
+    [MemberData(nameof(ExpectedRejections))]
+    public async Task Handle_ExpectedRejection_LogsBelowErrorAndRethrows(Exception rejection, LogLevel expectedLevel)
+    {
+        var loggerMock = new Mock<ILogger<UnhandledExceptionBehavior<TestRequest, string>>>();
+        var behavior = new UnhandledExceptionBehavior<TestRequest, string>(loggerMock.Object, _agentContext.Object);
+
+        var act = async () => await behavior.Handle(
+            new TestRequest(),
+            () => throw rejection,
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<Exception>()).Which.Should().BeSameAs(rejection);
+        loggerMock.Verify(
+            l => l.Log(
+                expectedLevel,
+                It.IsAny<EventId>(),
+                It.IsAny<It.IsAnyType>(),
+                It.IsAny<Exception?>(),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
+        loggerMock.Verify(
+            l => l.Log(
+                It.Is<LogLevel>(level => level != expectedLevel),
                 It.IsAny<EventId>(),
                 It.IsAny<It.IsAnyType>(),
                 It.IsAny<Exception?>(),
