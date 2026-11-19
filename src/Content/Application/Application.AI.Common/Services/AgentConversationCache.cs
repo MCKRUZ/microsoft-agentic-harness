@@ -64,11 +64,26 @@ internal sealed class AgentConversationCache : IAgentConversationCache
                 return cached.Agent;
 
             // Not dropped before the build: the Set calls below replace it (finalising the old trace
-            // writer), so a failed build leaves the working agent in place. Never Evict here — the
-            // conversation carries on, so its unlocked skills and registration history stay.
-            _logger.LogDebug(
-                "Rebuilding agent for conversation {ConversationId}: build inputs changed since it was cached",
-                conversationId);
+            // writer), so a failed build leaves the working agent in place.
+            if (cached.Fingerprint.IsSameAgent(fingerprint))
+            {
+                // The same agent with changed inputs (a deployment, a temperature, an edited manifest):
+                // the conversation carries on, so its unlocked skills and registration history stay.
+                _logger.LogDebug(
+                    "Rebuilding agent for conversation {ConversationId}: build inputs changed since it was cached",
+                    conversationId);
+            }
+            else
+            {
+                // A different agent: the conversation was reassigned, most likely on another host whose
+                // Evict cannot reach this process (#763). Forget what the old agent unlocked and
+                // registered, exactly as Evict does, so every host converges on its next turn.
+                ForgetConversationState(conversationId);
+                _logger.LogInformation(
+                    "Rebuilding agent for conversation {ConversationId}: it now belongs to a different agent, " +
+                    "so the previous agent's unlocked skills and registration history were cleared",
+                    conversationId);
+            }
         }
 
         // Flow the conversation id into the agent build so the skill-prerequisite middleware
@@ -128,9 +143,17 @@ internal sealed class AgentConversationCache : IAgentConversationCache
     public void Evict(string conversationId)
     {
         Invalidate(conversationId);
+        ForgetConversationState(conversationId);
+    }
+
+    /// <summary>
+    /// Clears this process's per-conversation registration history and skill-prerequisite completion
+    /// state, so a re-created conversation reusing the same id, or one now bound to a different agent,
+    /// starts with no unlocked skills and no leaked entries.
+    /// </summary>
+    private void ForgetConversationState(string conversationId)
+    {
         _registrationTracker.Evict(conversationId);
-        // Clear skill-prerequisite completion state keyed by this conversation so a re-created
-        // conversation reusing the same id starts with no unlocked skills and no leaked entries.
         _completionTracker.ClearConversation(conversationId);
     }
 

@@ -19,6 +19,14 @@ namespace Application.AI.Common.Interfaces;
 /// overlapping requests with different inputs would replace each other's agent. Explicit eviction via
 /// <see cref="Evict"/> should be called when the conversation ends; a 30-minute sliding TTL handles
 /// abandoned sessions.
+/// <para>
+/// <strong>Per process.</strong> The cache, and the skill-completion and registration state it clears, live
+/// in one host's memory; an <see cref="Evict"/> on one host does not reach another. A reassignment still
+/// converges on every host (#763): the next turn arrives built for a different agent, and the cache treats
+/// that as Evict-shaped, clearing the old agent's unlocked skills and registration history before
+/// rebuilding. What is not shared is ordinary skill-prerequisite progress: a conversation whose turns land on
+/// different hosts sees each host's own unlock state.
+/// </para>
 /// </remarks>
 public interface IAgentConversationCache
 {

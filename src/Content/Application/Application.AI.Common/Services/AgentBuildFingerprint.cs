@@ -85,6 +85,21 @@ internal sealed class AgentBuildFingerprint
                 || options.MiddlewareTypes is { Count: > 0 }
                 || options.AdditionalProperties is { Count: > 0 });
 
+    /// <summary>
+    /// Whether <paramref name="other"/> was captured for the same agent, as opposed to the same build. A
+    /// different <see cref="SkillAgentOptions.OwningAgentId"/> is a different agent. With no owning agent on
+    /// either side the turn handler uses the agent name itself as the skill id, so a different skill list is
+    /// a different agent too (#763).
+    /// </summary>
+    /// <remarks>
+    /// The same agent with an edited manifest (a skill added, new instructions) is the same agent: its
+    /// conversation carries on. A manifest deleted or added mid-conversation changes the owning agent from
+    /// or to null, so it reads as a different agent, which only costs the conversation its unlocked skills.
+    /// </remarks>
+    public bool IsSameAgent(AgentBuildFingerprint other)
+        => _options.OwningAgentId == other._options.OwningAgentId
+           && (_options.OwningAgentId is not null || _skillIds.AsSpan().SequenceEqual(other._skillIds));
+
     /// <summary>Whether <paramref name="other"/> was captured from the same build inputs.</summary>
     public bool Matches(AgentBuildFingerprint other)
         => !_hasUncomparableInputs

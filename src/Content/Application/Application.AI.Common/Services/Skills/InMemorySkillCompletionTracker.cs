@@ -10,7 +10,8 @@ namespace Application.AI.Common.Services.Skills;
 /// <remarks>
 /// State is held in memory and not persisted. When the process restarts, all completion
 /// state is lost. This is intentional — prerequisites are conversation-scoped and don't
-/// need to survive restarts.
+/// need to survive restarts. It is also per process: in a multi-host deployment, a conversation whose
+/// turns land on different hosts sees each host's own unlock state (see <c>IAgentConversationCache</c>).
 /// </remarks>
 public sealed class InMemorySkillCompletionTracker : ISkillCompletionTracker
 {
