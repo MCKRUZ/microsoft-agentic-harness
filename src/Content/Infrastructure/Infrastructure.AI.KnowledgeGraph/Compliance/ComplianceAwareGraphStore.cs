@@ -293,8 +293,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
 
     // Stamps temporal metadata and the tenant. OwnerId is intentionally NOT defaulted: ownership is
     // authoritative from the writer (KnowledgeMemoryService sets OwnerId = the user; shared
-    // subsystems — corpus ingestion, learnings, skill memory — leave it null on purpose so records
-    // stay shared WITHIN their tenant). TenantId, by contrast, IS defaulted to the caller's tenant:
+    // subsystems — corpus ingestion, skill memory — leave it null on purpose so records stay shared
+    // WITHIN their tenant; GraphLearningsStore stamps the writing caller, so a learning written in a
+    // request is owned by that user, and a background one stays owner-less). TenantId, by contrast, IS defaulted to the caller's tenant:
     // that is what scopes a tenant's ingested corpus to that tenant. A write with no tenant context
     // (background/system, CurrentTenantId == null) stays global, visible across all tenants.
     private GraphNode StampNode(GraphNode node, DateTimeOffset now, string? tenantId)
