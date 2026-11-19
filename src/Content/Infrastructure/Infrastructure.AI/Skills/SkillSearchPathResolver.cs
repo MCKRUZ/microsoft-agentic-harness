@@ -71,7 +71,24 @@ internal static class SkillSearchPathResolver
                 continue;
             }
 
-            if (fileReader.DirectoryExists(abs))
+            bool exists;
+            try
+            {
+                exists = fileReader.DirectoryExists(abs);
+            }
+            catch (ArgumentException ex)
+            {
+                // The sandbox's input validation rejects the path (shell metacharacters such as "R;D",
+                // or traversal sequences). Skip this root rather than end discovery of the others (#831).
+                // An error, not a warning: no skills at all are loaded from a root configured this way.
+                // A SkillPathRefusedException is not caught and still propagates.
+                logger.LogError(ex,
+                    "Skill root {Path} contains characters the skill sandbox rejects, so no skills are loaded from it",
+                    abs);
+                continue;
+            }
+
+            if (exists)
                 resolved.Add(abs);
             else
                 logger.LogWarning("Skill path not found, skipping: {Path}", abs);
