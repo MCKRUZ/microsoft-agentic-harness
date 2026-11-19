@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Bundles;
 using Domain.AI.Bundles;
+using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
 
@@ -35,8 +36,20 @@ namespace Infrastructure.AI.Bundles;
 /// during the survey, never the reverse, so the two cannot deadlock. Mirrors
 /// <c>InMemoryRunJobStore</c>'s identical trade-off for workflow/plan runs.
 /// </para>
+/// <para>
+/// <strong>Personal data (#990).</strong> A record names its caller and keeps the messages they sent and the agent's final
+/// answer, so the store is in the personal-data inventory, erases the person's finished runs and copies all of theirs for
+/// export. A run still in flight is kept, as the workflow run store keeps one; see <c>EraseSubjectAsync</c>.
+/// </para>
 /// </remarks>
-public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
+[PersonalDataStore(
+    "In-memory bundle API run records: the caller's id, the conversation id, the messages they sent, the agent's final answer, the capability envelope, status, timestamps and a scrubbed error code. Held in process memory only; a finished run is dropped BundleExecution:RunRecordTtl (30 minutes) after it ends, a streaming reservation nobody connected to after BundleExecution:StreamReservationTtl (5 minutes), and a run in flight is kept until it ends. Owner erasure removes the person's finished runs and keeps those in flight, which the receipt lists. Reached only by an erasure or export request served by the same host process as the bundle API.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
+public sealed partial class InMemoryBundleRunJobStore : IBundleRunJobStore
 {
     private sealed class JobEntry(BundleRunRecord record, DateTimeOffset expiresAt)
     {

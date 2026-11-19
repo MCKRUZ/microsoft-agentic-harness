@@ -1,0 +1,18 @@
+# Known-clean: fix: check eval override keys against what the invoker reads for that case
+id: CLEAN-884
+kind: clean
+pr: 884
+base_sha: e28b7679e2242d1e7b6a9d406ae861334246f78b
+head_sha_before_fix: 9389a313e8d5741beffe9b93c328a6f8f24c30cf
+fix_sha: null
+expected: null
+caught_by: null
+scope: correctness
+valid_until: null
+notes: >-
+  Single-commit PR validating eval override keys against the keys the invoker actually reads for
+  each case, via a shared TryResolveRouterKey (6 files, +142/-17 under src/; base is the head's
+  parent). correctness-review check run 118294546026 concluded success; comment bottom line
+  "**Bottom line:** CORRECT." with only an advisory. No later fix found: git log origin/main
+  --no-merges --since=2026-10-19T20:51:57Z on the PR's src/ files returned nothing; gh search prs
+  "#884" hit only #740, an older PR, so it is search noise (grep-based, not exhaustive).

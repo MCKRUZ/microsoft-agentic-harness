@@ -42,7 +42,7 @@ The agent keeps its own tools, context and control flow. Training changes the mo
 
 ### 2. Governance
 
-- **Inferred, high confidence:** content safety, token budgets and the tool-call chokepoint wrap the `IChatClient` inside `AgentFactory`, above the endpoint, so a different base URL does not remove them.
+- **Verified in code (corrects an earlier inference):** none of these wrap the `IChatClient`. Content safety and token budgets are MediatR behaviors on the turn request (`ContentSafetyBehavior`, `TokenBudgetBehavior`), and the tool-call chokepoint is `GovernedAIFunction` around each tool. None sits at the endpoint, so a different base URL does not remove them, provided each rollout turn is dispatched through the mediator. Content safety screens only the turn's input text, never the model's completions, and screens nothing at all under the default `AllowAll` provider.
 - **Verified risks that are new:**
   - The gateway holds raw prompts, completions and token IDs in its own store (an in-process dictionary in `events.py`), outside the harness's audit and redaction path.
   - An empty gateway `key` disables authentication and only logs a warning.
@@ -89,7 +89,7 @@ The Skill Training Loop (the SkillOpt port) edits a skill's *text*; Agent Lightn
 One harness agent, one dataset scored by a deterministic metric, the local Docker Desktop Kubernetes cluster and the RTX 5090. Success means all of:
 
 1. The reward rises over a fixed number of training steps.
-2. Content safety and the tool-call chokepoint still fire on every rollout.
+2. Content safety (on each rollout turn's input) and the tool-call chokepoint still fire on every rollout.
 3. No production data or credentials are reachable from a rollout.
 
 If the Responses API or streaming is required for the target agents, or the governance controls cannot be kept, record a no-go instead.

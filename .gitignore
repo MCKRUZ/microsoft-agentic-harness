@@ -80,6 +80,9 @@ nul
 test-results/
 .claude/research/
 
+## Execution API load-test results (scripts/load/Invoke-ExecutionApiLoad.ps1)
+artifacts/load/
+
 ## deep-implement artifacts
 **/implementation/code_review/
 **/implementation/deep_implement_config.json

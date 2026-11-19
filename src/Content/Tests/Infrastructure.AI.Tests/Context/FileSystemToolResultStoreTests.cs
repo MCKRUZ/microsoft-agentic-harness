@@ -570,11 +570,10 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         }
         else
         {
-            await act.Should().NotThrowAsync();
-            // SanitizeSessionSegment replaces ':' with '~' unconditionally (Windows refuses ':' as a
-            // directory-NAME character outside the drive-separator position rejected above) — the real
-            // created directory is "C~"/"C~foo", not the raw sessionId.
-            Directory.Exists(Path.Combine(_tempDir, sessionId.Replace(':', '~'))).Should().BeTrue();
+            var stored = await act.Should().NotThrowAsync();
+            // The scope folder is a direct child of the storage root, whatever name it was given.
+            var scopeFolder = Path.GetDirectoryName(Path.GetDirectoryName(stored.Subject.FullContentPath!))!;
+            Path.GetDirectoryName(scopeFolder).Should().Be(_tempDir);
         }
 
         Directory.Exists(Path.Combine(_tempDir, "..", "foo")).Should().BeFalse();

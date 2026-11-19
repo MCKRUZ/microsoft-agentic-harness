@@ -64,6 +64,20 @@ public sealed class AuditPseudonymKeyValidatorTests
         result.Errors.Should().ContainSingle().Which.ErrorMessage.Should().Contain("outside the audit folders");
     }
 
+    [Theory]
+    [InlineData("compliance")]
+    [InlineData("compliance-pending")]
+    public void Validate_KeyFileInsideAComplianceTrailFolder_Fails(string folder)
+    {
+        // The compliance trail's own folders are guarded, not the shared folder they sit in (.agent-sessions by default,
+        // which holds the default key folder too).
+        var config = Config(keyPath: Path.Combine(".agent-sessions", folder, "audit.key"));
+
+        var result = _validator.Validate(config);
+
+        result.Errors.Should().ContainSingle().Which.ErrorMessage.Should().Contain("Erasure:AuditStoragePath");
+    }
+
     [Fact]
     public void Validate_KeyFileInsideTheArchive_Fails()
     {

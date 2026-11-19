@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Execution API as a load-test target: the real host composition on real Kestrel, with only the
+    model (a SimulatedModelChatClientFactory) and the token signing key (a local RSA key in place of
+    Entra) swapped. Driven by the k6 scenarios in ./k6 through scripts/load/Invoke-ExecutionApiLoad.ps1.
+
+    An executable, not a test project: it contains no tests and must never be handed to the test runner,
+    which would boot a long-running server inside `dotnet test`.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
+    <RootNamespace>Presentation.ExecutionApi.LoadTarget</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Presentation.ExecutionApi.Tests" />
+  </ItemGroup>
+
+  <!--
+    Same reason as Presentation.ExecutionApi.Tests: AppConfigHelper.LoadAppConfig anchors on
+    AppContext.BaseDirectory (this project's output) and requires appsettings.json there.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\Presentation\Presentation.ExecutionApi\appsettings.json"
+             Link="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Presentation\Presentation.ExecutionApi\appsettings.Development.json"
+             Link="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Presentation\Presentation.ExecutionApi\Presentation.ExecutionApi.csproj" />
+    <ProjectReference Include="..\Tests.AI.Fakes\Tests.AI.Fakes.csproj" />
+    <ProjectReference Include="..\Tests.Common\Tests.Common.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -35,6 +35,10 @@ public sealed class PushDriftEvaluationCommandHandlerTests
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .Callback<DriftAuditRecord, CancellationToken>((r, _) => _audited.Add(r))
             .ReturnsAsync(Result.Success());
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .Callback<DriftAuditRecord, CancellationToken>((r, _) => _audited.Add(r))
+            .ReturnsAsync(Result.Success());
         _handler = new PushDriftEvaluationCommandHandler(
             _driftService.Object,
             _auditStore.Object,
@@ -117,6 +121,9 @@ public sealed class PushDriftEvaluationCommandHandlerTests
         _auditStore
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Fail("audit store unavailable"));
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("audit store unavailable"));
         SetupPipelineSuccess(DriftTestData.CreateScore());
 
         var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
@@ -135,6 +142,9 @@ public sealed class PushDriftEvaluationCommandHandlerTests
     {
         _auditStore
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new UnauthorizedAccessException("AuditPath is not writable"));
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new UnauthorizedAccessException("AuditPath is not writable"));
         SetupPipelineSuccess(DriftTestData.CreateScore());
 
@@ -209,6 +219,12 @@ public sealed class PushDriftEvaluationCommandHandlerTests
         var call = 0;
         _auditStore
             .Setup(s => s.RecordAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
+            .Returns<DriftAuditRecord, CancellationToken>((_, _) =>
+                ++call == 1
+                    ? Task.FromResult(Result.Success())
+                    : throw new IOException("disk full"));
+        _auditStore
+            .Setup(s => s.RecordBeforeActingAsync(It.IsAny<DriftAuditRecord>(), It.IsAny<CancellationToken>()))
             .Returns<DriftAuditRecord, CancellationToken>((_, _) =>
                 ++call == 1
                     ? Task.FromResult(Result.Success())

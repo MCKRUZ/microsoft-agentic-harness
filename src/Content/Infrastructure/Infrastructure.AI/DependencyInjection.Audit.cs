@@ -15,14 +15,14 @@ namespace Infrastructure.AI;
 public static partial class DependencyInjection
 {
     /// <summary>
-    /// Registers audit-chain verification: forwards each of the four hash-chained audit writers
+    /// Registers audit-chain verification: forwards each of the five hash-chained audit writers
     /// owned by this project as an <see cref="IVerifiableAuditChain"/> (pointing at the existing
     /// singleton, not a new instance) and, when enabled, the scheduled
     /// <see cref="AuditChainVerificationService"/>.
     /// </summary>
     /// <remarks>
-    /// The forwarding registrations must run after the change, egress, escalation, and drift
-    /// audit writers are registered. A fifth chain, the governance audit writer, is registered
+    /// The forwarding registrations must run after the change, egress, escalation, drift and
+    /// compliance audit writers are registered. A sixth chain, the governance audit writer, is registered
     /// separately by <c>Infrastructure.AI.Governance/DependencyInjection.cs</c> (#407) — this method
     /// does not need to know about it: <see cref="AuditChainVerificationService"/> resolves every
     /// <see cref="IVerifiableAuditChain"/> registration via <c>IEnumerable&lt;&gt;</c>, from whichever
@@ -46,6 +46,8 @@ public static partial class DependencyInjection
             (IVerifiableAuditChain)sp.GetRequiredService<IEscalationAuditStore>());
         services.AddSingleton<IVerifiableAuditChain>(sp =>
             (IVerifiableAuditChain)sp.GetRequiredService<IDriftAuditStore>());
+        services.AddSingleton<IVerifiableAuditChain>(sp =>
+            (IVerifiableAuditChain)sp.GetRequiredService<Application.Core.Compliance.IComplianceAuditTrail>());
 
         // Registered whether or not scheduled verification runs: the compliance report reads checkpoints
         // too, and with verification off there are simply none to read.

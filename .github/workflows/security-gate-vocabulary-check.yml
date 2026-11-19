@@ -44,3 +44,10 @@ jobs:
 
       - name: Run the vocabulary regression suite
         run: bash .github/scripts/security-gate-scope.test.sh
+
+      # Same failure class, other end: a trigger label that does not exist can never be
+      # applied, so the rail keyed on it silently never fires (risk:high did, until 2026-10-27).
+      - name: Check every rail label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/check-rail-labels.sh "$GITHUB_REPOSITORY"

@@ -117,9 +117,11 @@
                         to tell a genuine instruction from a hostile one.
                     </p>
                     <p>
-                        Because of that, the harness treats <strong>all model-adjacent text as untrusted</strong> and
+                        Because of that, the harness treats <strong>model-adjacent text as untrusted</strong> and
                         screens it with deterministic controls. It does not trust the model to recognize an attack and
-                        decline. Three checkpoints sit around every request:
+                        decline. Three checkpoints sit around the requests that opt in to them (the input checks act
+                        on requests that implement <code>IContentScreenable</code>, the output check on tool
+                        responses):
                     </p>
 
                     <table>
@@ -132,14 +134,14 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td><strong>Input content safety</strong></td>
-                                <td>Before the handler (request goes in)</td>
-                                <td>The incoming content, for unsafe material — blocked before it reaches the LLM</td>
-                            </tr>
-                            <tr>
                                 <td><strong>Prompt-injection scan</strong></td>
                                 <td>Before the handler (request goes in)</td>
                                 <td>The content, for hostile instructions hidden in what the agent will read</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Input content safety</strong></td>
+                                <td>Before the handler (request goes in), after the injection scan</td>
+                                <td>The request's input, for harmful material (Hate, SelfHarm, Sexual, Violence) — blocked before it reaches the LLM. Only with the Azure provider: the default <code>AllowAll</code> provider screens nothing</td>
                             </tr>
                             <tr>
                                 <td><strong>Output sanitization</strong></td>
@@ -158,8 +160,8 @@
 
                     <h2 id="input-content-safety">Input content safety</h2>
                     <p>
-                        The first checkpoint screens incoming content <em>before</em> the handler runs, so unsafe text
-                        never reaches the model.
+                        This checkpoint screens incoming content <em>before</em> the handler runs, so unsafe text
+                        never reaches the model. It runs just after the prompt-injection scan described below.
                     </p>
 
                     <div class="def">
@@ -175,11 +177,26 @@
                     </div>
 
                     <p>
-                        If the screen comes back unsafe, the request is stopped right there: the behavior returns
+                        If the screen comes back blocked, the request is stopped right there: the behavior returns
                         <code>Result.ContentBlocked()</code> (or throws <code>ContentSafetyException</code>), so the
-                        request never reaches the LLM. Every outcome — blocked or allowed — is recorded to metrics via
-                        <code>ContentSafetyMetrics.Evaluations</code>, so you can see screening rates and block rates
-                        in your dashboards.
+                        request never reaches the LLM. Every outcome is recorded to
+                        <code>ContentSafetyMetrics.Evaluations</code> (<code>agent.safety.evaluations</code>, tagged with
+                        the outcome), and each block also to <code>ContentSafetyMetrics.Blocks</code>
+                        (<code>agent.safety.blocks</code>, tagged with the category), so you can see screening rates and
+                        block rates in your dashboards.
+                    </p>
+
+                    <p>
+                        What gets screened depends on <code>AppConfig:AI:ContentSafety</code>. The default
+                        <code>Provider</code>, <code>AllowAll</code>, screens nothing: every request passes, and the host
+                        logs a startup warning saying so outside Development. Set it to <code>AzureAIContentSafety</code>
+                        with an <code>Endpoint</code> to have Azure AI Content Safety score the text for Hate, SelfHarm,
+                        Sexual and Violence (narrowed by <code>Categories</code>) and block at
+                        <code>BlockAtSeverity</code> (4 by default). If the service cannot be reached, the evaluation is
+                        recorded as <code>unscreened</code> — never as a pass or a block — and, with
+                        <code>BlockWhenUnavailable</code> on (the default), the request is refused as a service failure
+                        (HTTP 503 where errors pass through <code>GlobalExceptionMiddleware</code>). Turn it off and the
+                        request goes on unscreened.
                     </p>
 
                     <div class="callout callout-info">
@@ -188,17 +205,22 @@
                             <div class="callout-title">"Opt-in" is deliberate, not a gap</div>
                             <p style="margin: 0">
                                 Only requests implementing <code>IContentScreenable</code> are screened, and each
-                                declares its own <code>ScreeningTarget</code>. That lets a request say "screen my input
-                                only", "screen both directions", and so on — screening is targeted at the requests that
-                                actually carry model-adjacent text, rather than blindly wrapping everything.
+                                declares its own <code>ScreeningTarget</code>. Today that is the agent turn
+                                (<code>ExecuteAgentTurnCommand</code>) and the document search query
+                                (<code>SearchDocumentsQuery</code>). Only the input is ever screened: a target of
+                                <code>Both</code> screens the input too, and nothing in the harness screens model output or
+                                ingested documents. A deployment that needs either screened adds that itself.
                             </p>
                         </div>
                     </div>
 
                     <h2 id="prompt-injection">Prompt-injection scanning</h2>
                     <p>
-                        The second input checkpoint looks specifically for hostile instructions hidden in the content
-                        the agent is about to read.
+                        The other input checkpoint looks specifically for hostile instructions hidden in the content
+                        the agent is about to read. It runs first, ahead of content safety: the scan is local and
+                        free, while content safety may be a metered call to an external service, so text the scan
+                        refuses is never sent out. Content safety does not look for injection at all; Azure scores
+                        only the four harm categories.
                     </p>
 
                     <div class="callout callout-jargon">
@@ -259,9 +281,9 @@
                         <div class="def-desc">
                             A post-execution MediatR behavior in
                             <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/ResponseSanitizationBehavior.cs</code>.
-                            It is active when both <code>GovernanceConfig.Enabled</code> and
-                            <code>EnableResponseSanitization</code> are set. It extracts the tool output from the
-                            response and runs it through a composite sanitizer.
+                            It is active when <code>GovernanceConfig.EnableResponseSanitization</code> is set (the
+                            default), independently of <code>GovernanceConfig.Enabled</code>. It extracts the tool output
+                            from the response and runs it through a composite sanitizer.
                         </div>
                     </div>
 
@@ -364,6 +386,8 @@
                         <code>src/Content/Application/Application.AI.Common/DependencyInjection.cs</code>. Registration
                         order is the execution order: the behaviors registered first wrap the ones registered after
                         them, so they run outermost on the way in and (for the post-execution ones) last on the way out.
+                        The generic <code>Application.Common</code> behaviors (validation, authorization, idempotency,
+                        caching, tracing, timeout) are registered before these and wrap them all.
                     </p>
                     <p>
                         For the agent request path, the verified order is:
@@ -371,8 +395,8 @@
 
                     <ol>
                         <li><strong>AuditTrail</strong> — records the request as it enters</li>
-                        <li><strong>ContentSafety</strong> — input screening (this page)</li>
                         <li><strong>PromptInjection</strong> — input injection scan (this page)</li>
+                        <li><strong>ContentSafety</strong> — input screening (this page)</li>
                         <li><em>… the request handler runs …</em></li>
                         <li><strong>ResponseSanitization</strong> — output sanitization on the way back out (this page)</li>
                     </ol>
@@ -435,14 +459,18 @@
                         <div class="callout-body">
                             <div class="callout-title">The toggles and thresholds in your hands</div>
                             <p style="margin: 0">
-                                The mechanisms ship closed-by-default; you tune them through
-                                <code>GovernanceConfig</code>. <code>EnablePromptInjectionDetection</code> turns the
-                                input injection scan on or off, and <code>InjectionBlockThreshold</code> sets how
-                                severe a detection must be to block. <code>Enabled</code> plus
-                                <code>EnableResponseSanitization</code> turn on output sanitization, and
+                                Content safety ships allow-all: it screens nothing until you configure it under
+                                <code>AppConfig:AI:ContentSafety</code> — <code>Provider</code> (set it to
+                                <code>AzureAIContentSafety</code>), <code>Endpoint</code>, <code>ApiKey</code> or Entra
+                                <code>Auth</code>, <code>Categories</code>, <code>BlockAtSeverity</code> (default 4) and
+                                <code>BlockWhenUnavailable</code> (default on). The injection scan and output sanitization are
+                                tuned through <code>GovernanceConfig</code>. <code>EnablePromptInjectionDetection</code>
+                                (on in the shipped <code>appsettings.json</code> files) turns the input injection scan on or
+                                off, and <code>InjectionBlockThreshold</code> sets how severe a detection must be to block.
+                                <code>EnableResponseSanitization</code> (on by default) turns on output sanitization, and
                                 <code>ResponseBlockThreshold</code> sets the threat level at which a sanitized response
                                 is blocked rather than passed through. Watch
-                                <code>ContentSafetyMetrics.Evaluations</code> and
+                                <code>ContentSafetyMetrics.Evaluations</code> (including its <code>unscreened</code> outcome) and
                                 <code>GovernanceMetrics.ResponseSanitizations</code> to see what is actually being
                                 caught before you loosen any threshold.
                             </p>

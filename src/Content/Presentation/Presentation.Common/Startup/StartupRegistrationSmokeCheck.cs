@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Prompts.Interfaces;
@@ -88,6 +89,13 @@ public sealed class StartupRegistrationSmokeCheck : IHostedService
         CheckRoot<IAgentFactory>(failures, "IAgentFactory");
         CheckRoot<IToolChainBuilder>(failures, "IToolChainBuilder");
         CheckRoot<IPromptRegistry>(failures, "IPromptRegistry");
+
+        // The document index, built now from the configuration startup validation just checked (#1012). The provider key
+        // resolves exactly, so a misspelt or unregistered one would otherwise boot and fail only when a person's erasure,
+        // or the first search, asked for the index. Building it here also fixes the store to the validated settings: a
+        // later reload cannot swap it for one validation never saw.
+        CheckRoot<IVectorStore>(failures, "IVectorStore (AppConfig:AI:Rag:VectorStore:Provider must name a registered store)");
+        CheckRoot<IBm25Store>(failures, "IBm25Store");
 
         // Scoped services must be resolved inside a scope, never from the root provider.
         using (var scope = _serviceProvider.CreateScope())

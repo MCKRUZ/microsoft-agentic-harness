@@ -2,9 +2,10 @@
 
 Packages the full agentic harness as an **Azure AI Foundry hosted agent** — a container Foundry
 Agent Service starts, scales, and exposes over the OpenAI-compatible `/responses` protocol. Unlike a
-Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so the
-harness's in-process pipeline — skills, governance, tool-output compression, prerequisite gating,
-telemetry — survives intact.
+Foundry *prompt agent* (where the platform owns the loop), a hosted agent runs *your* code, so
+skills, tool governance, tool-output compression, prerequisite gating and telemetry all run here.
+Foundry's runtime calls the agent directly rather than sending a turn request, so the steps that
+hang off a turn request need this host's help (see the capability notes below).
 
 The host reuses the same composition root every other host uses (`GetServices`), builds the agent
 through `IAgentFactory` exactly as the desktop and web hosts do, and hands it to the Foundry hosting
@@ -24,14 +25,47 @@ Foundry runs each conversation in its own **session** — a VM-isolated sandbox 
   the harness to *not* re-persist it, so Foundry remains the single source of truth.
 - **Only `$HOME`/`/files` are guaranteed to persist** — *not* the container's app/publish
   directory. So the host re-roots the harness's per-session disk stores under `$HOME/agent-state`:
-  the planner database, the JSONL audit trails (drift, escalation, change proposals + evidence,
-  egress), offloaded tool results, subagent delegation records and mailbox, the embedded (Kuzu)
-  graph database, and file logs. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
+  the planner database, the JSONL audit trails (drift, governance, escalation, change proposals +
+  evidence, egress, and the compliance trail of erasures, exports and document removals at
+  `compliance/`, with its folder of records held for replay at `compliance-pending/`; every other trail keeps its
+  held records inside its own folder too, for example `governance/governance-pending/`), the audit
+  verification checkpoints (`audit-verify/`; without them a chain cut off while the container was
+  down verifies as intact), the audit pseudonym key (`keys/audit-pseudonym.key`; without it every
+  restart made a new key, so person references written before and after a restart could not be
+  matched), the erasure journal (`erasure/`; without it an erasure that failed part-way cannot be
+  finished), the conversation, document-ledger and schedule databases, workflow state
+  (`workflows/`), execution traces (`traces/`), offloaded tool results, subagent delegation
+  records and mailbox, the embedded (Kuzu) graph database, and file logs. Stores that are off by
+  default are rooted too, so turning one on lands it here. Four are not: durable governance state,
+  whose database must stay inside the application directory (`GovernanceStatePaths` refuses any
+  other); prompt usage, configured by a whole connection string an override would replace (point
+  `AppConfig:AI:PromptUsage:ConnectionString` yourself, as `Data Source=` followed by the absolute
+  path of a file under `$HOME/agent-state`, in a folder that already exists, since SQLite does not
+  create it); and
+  skill-training checkpoints and the eval dashboard's run reports, which the personal-data
+  inventory records as holding no personal data. Setting `AppConfig:AI:Audit:PseudonymKey` from a
+  secret store replaces the key file and is still the right choice when more than one instance
+  writes the trails. (RAG's FAISS vector index and FTS5 BM25 store are in-memory only —
   there is no on-disk index to root; they rebuild from ingested documents.)
 
 **Net effect:** out of the box, every conversation gets durable, idle-surviving memory with **zero
 external services**. External managed stores are needed *only* to share knowledge **across different
 conversations or users**, or beyond the 30-day window.
+
+## Erasing and exporting a person's data
+
+This host serves no erasure or export endpoint (#1003). Foundry routes only the protocol endpoints to the container, and
+each call reaches one session's sandbox, whose `$HOME` holds everything this host writes. Erase a person's data by
+deleting their Foundry sessions (`DELETE .../agents/{agent}/endpoint/sessions/{id}`); copy it with the session files API.
+Stores promoted to external services are shared by every session, so session deletion does not reach them. The host
+runs on container protocol 2.0.0 and runs each request as the caller Foundry verified (`x-agent-user-id`, #1008): a
+Neo4j or PostgreSQL knowledge graph and an Azure AI Search index record that caller as owner, so an erasure or export
+naming that id, sent to a host bound to the same store, reaches them. The observability database and Redis key nothing by
+person, and a provider the template does not ship may never write an owner; the host warns about those at startup. A
+request without the header runs unscoped off the platform, but in Foundry a `/responses` request without it is
+refused with 401, as is one whose header names no usable user. The procedure, and what it does not cover (Foundry's own conversation
+history, the audit trails deleted with the session, records with no owner), is in the
+[security guide](../../../../documentation/security/08-data-protection.html#foundry-erasure).
 
 ## Environment variables
 
@@ -41,7 +75,7 @@ conversations or users**, or beyond the 30-day window.
 |---|---|
 | `FOUNDRY_PROJECT_ENDPOINT` | Foundry project endpoint used for model inference. |
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model deployment the agent runs against. |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Telemetry sink; presence auto-enables the Azure Monitor exporter. |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Telemetry sink. By default its presence turns on the harness's Azure Monitor exporter, and the Foundry hosting layer exports its own traces and logs to it. Set the opt-out `EnableFromHostConnectionString` to `false` and FoundryHost removes it before startup, so nothing is sent to Foundry's resource; where to set it and how each source spells it is in the [security guide](../../../../documentation/security/08-data-protection.html#foundry-telemetry-opt-out). FoundryHost logs which applies. |
 | `FOUNDRY_AGENT_ID` | (Optional) which discovered `AGENT.md` to expose. Defaults to `default`. |
 | `HOME` | Persistent session storage root. The host roots all local state under `$HOME/agent-state`. |
 
@@ -75,8 +109,30 @@ never overwrites.
 
 The `Foundry` profile sets `Sandbox:Enabled=false`. Docker-in-Micro-VM is unavailable and the
 process sandbox's Windows Job-Object limits don't apply on the Linux runtime, so sandboxed tool
-execution is the one harness capability degraded under hosted agents. The closed-by-default model
-means such tools are refused with a clear capability message rather than running unsandboxed.
+execution is switched off under hosted agents. The closed-by-default model means such tools are
+refused with a clear capability message rather than running unsandboxed.
+
+### Capability note: the turn pipeline
+
+Every other host runs a turn as `ExecuteAgentTurnCommand`, and the MediatR pipeline in front of its
+handler does work on the way in and out. Foundry's runtime calls the agent directly, so this host
+re-creates the parts that guard the request:
+
+- **Input screening.** `FoundryInputScreening` sends all caller text through `ScreenUserInputCommand`,
+  so the prompt-injection scan and content safety screen it exactly as they screen a turn elsewhere.
+  Caller text reaches the agent three ways, and all three are screened: every message in the request,
+  whatever its role (the caller writes assistant turns and tool results too); the request's
+  `instructions`; and the earlier turns Foundry replays when a request continues a conversation.
+  Replayed turns are screened again on every run, because the platform stores a request's input
+  even when the answer was a refusal; the cost grows with conversation length, and a conversation
+  that once carried refused input stays refused, so the caller must start a new one. A request carrying a
+  file, an image or a link is refused, since the screening reads text only. A refusal is answered as
+  the agent's reply and the agent never runs. A screening outage fails the run when
+  `BlockWhenUnavailable` is on.
+- **Tool admission, trace claims and owner.** `FoundryRequestScope` arms them per request.
+
+The steps that hang off a turn request do **not** run here: token budgets, the turn timeout, and
+post-turn learning (knowledge extraction, work-episode capture, skill-effectiveness tracking).
 
 ## Deploy
 

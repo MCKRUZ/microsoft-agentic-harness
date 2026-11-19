@@ -1,4 +1,5 @@
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.Runs;
 using Application.Core.CQRS.Evaluation.Runs;
@@ -51,7 +52,7 @@ public sealed class EvalRunHandlerTests
         _config.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner = 10;
 
         _monitor = new StaticMonitor(_config);
-        _runs = new InMemoryRunJobStore(_monitor, _time);
+        _runs = new InMemoryRunJobStore(_monitor, _time, [], NullLogger<InMemoryRunJobStore>.Instance);
         _catalog.Publish("alpha", "/data/alpha.yaml");
 
         // Lets the queue observe whether the submission was already stored when the run was handed to
@@ -309,7 +310,7 @@ public sealed class EvalRunHandlerTests
 
     private Task<Domain.Common.Result<CancelEvalRunResult>> Cancel(string jobId, string owner) =>
         new CancelEvalRunCommandHandler(
-                _runs, new InMemoryRunProgressBroker(_monitor, _time), _monitor, _time,
+                _runs, new InMemoryRunProgressBroker(_monitor, _time), Mock.Of<IEscalationService>(), _monitor, _time,
                 NullLogger<CancelEvalRunCommandHandler>.Instance)
             .Handle(new CancelEvalRunCommand { JobId = jobId, OwnerId = owner }, CancellationToken.None);
 

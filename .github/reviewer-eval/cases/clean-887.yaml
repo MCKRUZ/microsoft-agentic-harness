@@ -1,0 +1,18 @@
+# Known-clean: fix: redact templated logging scopes without changing their type
+id: CLEAN-887
+kind: clean
+pr: 887
+base_sha: 45c481f2a0bf82633c980d3c249b076b5ff3ba19
+head_sha_before_fix: b3ee445f272bf9d54160e8973b37f5afeec63594
+fix_sha: null
+expected: null
+caught_by: null
+scope: correctness
+valid_until: null
+notes: >-
+  Single-commit PR making RedactingLogger.BeginScope redact templated scopes without changing the
+  scope state's type (2 files, +151/-8 under src/; base is the head's parent). correctness-review
+  check run 118340799465 concluded success; comment bottom line "**Bottom line:** CORRECT." with no
+  blocking defects. No later fix found: git log origin/main --no-merges --since=2026-10-19T22:45:30Z
+  on the PR's src/ files returned nothing, and gh search prs "#887" hit only #911, whose match is a
+  line number ("Retention.cs:887-904"), not a reference (grep-based, not exhaustive).

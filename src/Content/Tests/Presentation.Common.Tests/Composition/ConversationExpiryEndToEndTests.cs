@@ -206,7 +206,7 @@ public sealed class ConversationExpiryEndToEndTests : IDisposable
 
     private int SpilledFiles(string conversationId)
     {
-        var directory = Path.Combine(_workingDir, "spills", conversationId);
+        var directory = Path.Combine(_workingDir, "spills", Infrastructure.AI.Context.FileSystemToolResultStore.ScopeDirectoryName(conversationId));
         return Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count() : 0;
     }
 

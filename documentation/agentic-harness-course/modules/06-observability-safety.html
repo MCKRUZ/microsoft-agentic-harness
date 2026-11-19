@@ -123,6 +123,10 @@
     </p>
 
     <p class="animate-in">
+      One catch: the bouncer only checks what it is configured to check. The harness ships with the <code>AllowAll</code> provider, which lets everything through (and logs a startup warning outside Development). Real screening needs <code>AppConfig:AI:ContentSafety:Provider</code> set to <code>AzureAIContentSafety</code>, which scores the text for four harm categories &mdash; Hate, SelfHarm, Sexual, Violence &mdash; and blocks at <code>BlockAtSeverity</code> (4 by default). Prompt injection is a separate checkpoint, <code>PromptInjectionBehavior</code>, which runs just before this one.
+    </p>
+
+    <p class="animate-in">
       Watch both scenarios play out: a flagged message that gets blocked, then a clean message that sails through.
     </p>
 
@@ -130,8 +134,8 @@
       {"highlight":"flow-actor-1","label":"User sends a message to the agent"},
       {"highlight":"flow-actor-2","label":"MediatR pipeline starts processing the request","packet":true,"from":"actor-1","to":"actor-2"},
       {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens the input text","packet":true,"from":"actor-2","to":"actor-3"},
-      {"highlight":"flow-actor-3","label":"FLAGGED: potential prompt injection detected"},
-      {"highlight":"flow-actor-3","label":"Pipeline halts. Agent never sees the message. Violation metric incremented."},
+      {"highlight":"flow-actor-3","label":"BLOCKED: the Azure provider scores the text at or above BlockAtSeverity in a harm category (e.g. Violence)"},
+      {"highlight":"flow-actor-3","label":"Pipeline halts. Agent never sees the message. agent.safety.blocks is incremented, tagged with the category."},
       {"highlight":"flow-actor-1","label":"Now a clean message arrives from the user"},
       {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens it and approves","packet":true,"from":"actor-1","to":"actor-3"},
       {"highlight":"flow-actor-4","label":"Message reaches the agent handler. Conversation continues normally.","packet":true,"from":"actor-3","to":"actor-4"}
@@ -169,45 +173,46 @@
     <h3 class="animate-in">The Code Behind the Bouncer</h3>
 
     <p class="animate-in">
-      <code>ContentSafetyBehavior</code> is a <span class="term" data-definition="A pipeline behavior is a piece of code that wraps around a command handler, running before and/or after it. Think of it as a checkpoint on an assembly line that can inspect, modify, or reject items before they reach the next station.">pipeline behavior</span> &mdash; it sits in the MediatR pipeline and inspects every command that implements <code>IContentScreenable</code>.
+      <code>ContentSafetyBehavior</code> is a <span class="term" data-definition="A pipeline behavior is a piece of code that wraps around a command handler, running before and/or after it. Think of it as a checkpoint on an assembly line that can inspect, modify, or reject items before they reach the next station.">pipeline behavior</span> &mdash; it sits in the MediatR pipeline and inspects every command that implements <code>IContentScreenable</code> with a screening target of <code>Input</code> or <code>Both</code>. Today that is the agent turn (<code>ExecuteAgentTurnCommand</code>) and the document search query (<code>SearchDocumentsQuery</code>). It screens the request's input only; nothing screens the model's output.
     </p>
 
     <div class="translation-block animate-in">
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    <span class="code-keyword">where</span> TRequest : notnull</span>
+<span class="code-line"><span class="code-keyword">public sealed class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt; <span class="code-keyword">where</span> TRequest : notnull</span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-function">ContentSafetyBehavior</span>(ITextContentSafetyService safety, IObservabilityStore observabilityStore)</span>
-<span class="code-line">    { _safety = safety; _observabilityStore = observabilityStore; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-function">ContentSafetyBehavior</span>(ITextContentSafetyService safetyService,</span>
+<span class="code-line">        IObservabilityStore observabilityStore, IOptions&lt;AppConfig&gt; config) { <span class="code-comment">/* store the three */</span> }</span>
 <span class="code-line"></span>
 <span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(TRequest request, RequestHandlerDelegate&lt;TResponse&gt; next, CancellationToken ct)</span>
 <span class="code-line">    {</span>
-<span class="code-line">        <span class="code-comment">// Runtime opt-in: only requests that implement IContentScreenable get screened</span></span>
-<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IContentScreenable screenable) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IContentScreenable { ScreeningTarget: ContentScreeningTarget.Input <span class="code-keyword">or</span> ContentScreeningTarget.Both } screenable)</span>
+<span class="code-line">            <span class="code-keyword">return await</span> next();</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">var</span> content = screenable.ContentToScreen;</span>
-<span class="code-line">        ContentSafetyMetrics.Evaluations.<span class="code-function">Add</span>(1);  <span class="code-comment">// every screen, pass or fail</span></span>
-<span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">if</span> (!<span class="code-keyword">string</span>.<span class="code-function">IsNullOrWhiteSpace</span>(content))</span>
+<span class="code-line">        ContentSafetyResult result;</span>
+<span class="code-line">        <span class="code-keyword">try</span></span>
 <span class="code-line">        {</span>
-<span class="code-line">            <span class="code-keyword">var</span> result = <span class="code-keyword">await</span> _safety.<span class="code-function">ScreenContentAsync</span>(content, ct);</span>
-<span class="code-line"></span>
-<span class="code-line">            <span class="code-keyword">if</span> (!result.IsSafe)</span>
-<span class="code-line">            {</span>
-<span class="code-line">                _logger.<span class="code-function">LogWarning</span>(<span class="code-string">"Content safety block: {Categories}"</span>, <span class="code-keyword">string</span>.<span class="code-function">Join</span>(<span class="code-string">", "</span>, result.Categories));</span>
-<span class="code-line">                <span class="code-keyword">await</span> _observabilityStore.<span class="code-function">RecordSafetyEventAsync</span>(screenable, result, ct);</span>
-<span class="code-line">                ContentSafetyMetrics.Blocks.<span class="code-function">Add</span>(1);</span>
-<span class="code-line"></span>
-<span class="code-line">                <span class="code-comment">// Prefer returning a structured Result.ContentBlocked rather than throwing</span></span>
-<span class="code-line">                <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(result, <span class="code-keyword">out var</span> failure)) <span class="code-keyword">return</span> failure;</span>
-<span class="code-line">                <span class="code-keyword">throw new</span> ContentSafetyException(result.Reason, result.Category);</span>
-<span class="code-line">            }</span>
+<span class="code-line">            result = <span class="code-keyword">await</span> _safetyService.<span class="code-function">ScreenAsync</span>(screenable.ContentToScreen, ct);</span>
+<span class="code-line">        }</span>
+<span class="code-line">        <span class="code-keyword">catch</span> (ContentSafetyUnavailableException)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            <span class="code-keyword">await</span> <span class="code-function">RecordAsync</span>(request, SafetyConventions.OutcomeValues.Unscreened, category: <span class="code-keyword">null</span>, ct);</span>
+<span class="code-line">            <span class="code-keyword">if</span> (_config.Value.AI.ContentSafety.BlockWhenUnavailable) <span class="code-keyword">throw</span>;</span>
+<span class="code-line">            <span class="code-keyword">return await</span> next();</span>
 <span class="code-line">        }</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">return await</span> next();</span>
+<span class="code-line">        <span class="code-keyword">await</span> <span class="code-function">RecordAsync</span>(request, result.IsBlocked ? SafetyConventions.OutcomeValues.Block : SafetyConventions.OutcomeValues.Pass,</span>
+<span class="code-line">            result.Category, ct);</span>
+<span class="code-line">        <span class="code-keyword">if</span> (!result.IsBlocked) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">        ContentSafetyMetrics.Blocks.<span class="code-function">Add</span>(1, <span class="code-comment">/* phase and filter tags, then */</span></span>
+<span class="code-line">            <span class="code-keyword">new</span> KeyValuePair&lt;<span class="code-keyword">string</span>, <span class="code-keyword">object</span>?&gt;(SafetyConventions.Category, result.Category ?? <span class="code-string">"unknown"</span>));</span>
+<span class="code-line">        <span class="code-keyword">var</span> reason = result.BlockReason ?? <span class="code-string">"Content blocked by safety policy."</span>;</span>
+<span class="code-line">        <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(<span class="code-keyword">nameof</span>(Result.ContentBlocked), reason, <span class="code-keyword">out var</span> blocked))</span>
+<span class="code-line">            <span class="code-keyword">return</span> blocked;</span>
+<span class="code-line">        <span class="code-keyword">throw new</span> ContentSafetyException(reason, result.Category);</span>
 <span class="code-line">    }</span>
 <span class="code-line">}</span>
         </code></pre>
@@ -216,35 +221,38 @@
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
           <p class="tl">This is a safety checkpoint registered as a pipeline behavior.</p>
-          <p class="tl">It plugs into MediatR so it runs automatically &mdash; no manual wiring.</p>
-          <p class="tl">Constraint is just <code>notnull</code>; the screening opt-in happens at runtime, not by generic constraint.</p>
+          <p class="tl">It plugs into MediatR so it runs automatically. The constraint is just <code>notnull</code>; the opt-in happens at runtime.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Constructor takes the safety service and an observability store (to record safety events to Postgres).</p>
-          <p class="tl">&nbsp;</p>
+          <p class="tl">The constructor takes the screening service, an observability store (to record safety events to Postgres)&hellip;</p>
+          <p class="tl">&hellip;and the app configuration, read for the outage policy. There is no logger.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">The Handle method runs for every command.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Runtime opt-in: only screen if the request implements <code>IContentScreenable</code>. Otherwise pass through immediately.</p>
+          <p class="tl">Runtime opt-in: only requests that implement <code>IContentScreenable</code> with a target of <code>Input</code> or <code>Both</code> get screened (<code>Both</code> still screens the input only).</p>
+          <p class="tl">Everything else passes straight through.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Read the content directly from the property (not a method).</p>
-          <p class="tl">Bump the &ldquo;evaluations&rdquo; counter on every screen so you can see how often safety runs &mdash; pass or fail.</p>
+          <p class="tl">Hold the verdict here.</p>
+          <p class="tl">Try to screen&hellip;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If there is actual content to check&hellip;</p>
+          <p class="tl">Send the request's text to the configured provider and wait for the verdict.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Send the content to the safety service and wait for the verdict.</p>
+          <p class="tl">If the provider could not be reached&hellip;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If the verdict says the content is NOT safe&hellip;</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Log a warning with the flagged categories.</p>
-          <p class="tl">Record the safety event to the observability store so Sessions dashboard can show it.</p>
-          <p class="tl">Bump the &ldquo;blocks&rdquo; counter &mdash; Prometheus tracks both evaluations and blocks separately.</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Prefer returning a structured failure (<code>Result.ContentBlocked</code>) if the response type supports it. Cleaner than an exception.</p>
-          <p class="tl">Otherwise fall back to throwing a typed exception so the outer handler can map it.</p>
+          <p class="tl">Record the evaluation as &ldquo;unscreened&rdquo; &mdash; an outage is not a pass and not a block.</p>
+          <p class="tl">With <code>BlockWhenUnavailable</code> on (the default), refuse: the error surfaces as a service failure (HTTP 503 on hosts behind the global exception middleware).</p>
+          <p class="tl">With it off, let the request through unscreened.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
+          <p class="tl">Record the evaluation (<code>agent.safety.evaluations</code>, tagged with the outcome) and the session's safety event&hellip;</p>
+          <p class="tl">&hellip;with the harm category, if any.</p>
+          <p class="tl">If the verdict is not a block, call <code>next()</code> and let the message continue.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If we got here, the content passed safety checks. Call <code>next()</code> to let the message continue.</p>
+          <p class="tl">Blocked: bump <code>agent.safety.blocks</code>&hellip;</p>
+          <p class="tl">&hellip;tagged with the harm category.</p>
+          <p class="tl">Use the provider's reason, or a generic one.</p>
+          <p class="tl">Prefer returning a structured failure (<code>Result.ContentBlocked</code>) if the response type supports it&hellip;</p>
+          <p class="tl">&hellip;so the caller gets a clean result instead of an exception.</p>
+          <p class="tl">Otherwise throw a typed exception so the outer handler can map it.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
         </div>
@@ -505,8 +513,8 @@
       <!-- Question 2 -->
       <div class="quiz-question-block"
            data-correct="option-2c"
-           data-explanation-right="Exactly. The ContentSafetyBehavior returns a structured Result.ContentBlocked failure (or throws ContentSafetyException as a fallback). Either way the pipeline halts &mdash; the agent handler never executes. The block is recorded to the observability store and ContentSafetyMetrics.Blocks is incremented for monitoring."
-           data-explanation-wrong="Not quite. Look at the ContentSafetyBehavior code &mdash; when IsSafe is false, the behavior tries TryCreateFailure first, falls back to throwing ContentSafetyException, and either way the pipeline halts. The agent never sees the message.">
+           data-explanation-right="Exactly. The ContentSafetyBehavior returns a structured Result.ContentBlocked failure (or throws ContentSafetyException as a fallback). Either way the pipeline halts &mdash; the agent handler never executes. The block is recorded to the observability store and ContentSafetyMetrics.Blocks (agent.safety.blocks, tagged with the category) is incremented for monitoring."
+           data-explanation-wrong="Not quite. Look at the ContentSafetyBehavior code &mdash; when result.IsBlocked is true, the behavior tries TryCreateFailure first, falls back to throwing ContentSafetyException, and either way the pipeline halts. The agent never sees the message.">
         <h3 class="quiz-question">What happens when ContentSafetyBehavior flags a message as unsafe?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">

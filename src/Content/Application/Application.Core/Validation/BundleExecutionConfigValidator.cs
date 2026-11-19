@@ -71,6 +71,10 @@ public sealed class BundleExecutionConfigValidator : AbstractValidator<BundleExe
             .GreaterThanOrEqualTo(1)
             .WithMessage("MaxConcurrentStreamsPerCaller must be >= 1 — a non-positive cap would deny every stream.");
 
+        RuleFor(x => x.MaxConcurrentStreams)
+            .GreaterThan(0)
+            .WithMessage("MaxConcurrentStreams must be > 0 — a non-positive host limit would refuse every stream, leaving polling as the only way to follow a run.");
+
         RuleFor(x => x.MaxConcurrentDispatchedBundleRuns)
             .GreaterThan(0)
             .WithMessage("MaxConcurrentDispatchedBundleRuns must be > 0 — a non-positive degree would leave every accepted background run queued and never executed.");

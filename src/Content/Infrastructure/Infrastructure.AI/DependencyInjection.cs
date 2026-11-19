@@ -239,7 +239,23 @@ public static partial class DependencyInjection
         // --- Content safety and audit ---
 
         RegisterContentSafety(services);
+        services.AddHostedService<DataAtRest.DataAtRestStartupCheck>();
         services.AddSingleton<IAuditSink, StructuredLogAuditSink>();
+
+        // The durable proof of every erasure, data export and document removal (#969). The log sink above keeps its line
+        // for operators' log tooling; that line is deleted with the logs, this record is kept with the other audit trails.
+        // RegisterAuditChainVerification adds it to scheduled verification.
+        services.TryAddSingleton(TimeProvider.System); // picks the trail's day-file
+        services.AddSingleton<Application.Core.Compliance.IComplianceAuditTrail, JsonlComplianceAuditTrail>();
+        services.AddRetainedPersonalData<Application.Core.Compliance.IComplianceAuditTrail>("compliance audit trail");
+        // The compliance report reads the same trail back (#1000); the existing singleton, not a second writer of the chain.
+        // A replacement trail that cannot be read back makes the report say so, rather than fail it.
+        services.AddSingleton<Application.Core.Compliance.IComplianceAuditRecords>(sp =>
+            sp.GetRequiredService<Application.Core.Compliance.IComplianceAuditTrail>() as Application.Core.Compliance.IComplianceAuditRecords
+            ?? new UnreadableComplianceAuditRecords());
+        // A record any audit trail could not append is held beside it; this writes it in on start and every minute
+        // (#995, #1001). It replays every registered IVerifiableAuditChain that holds records, governance's included.
+        services.AddHostedService<AuditRecordReplayService>();
 
         // --- Skills and agents ---
 
@@ -324,6 +340,15 @@ public static partial class DependencyInjection
         services.AddSingleton<InMemoryBundleHandleStore>();
         services.AddSingleton<IBundleHandleStore>(sp => sp.GetRequiredService<InMemoryBundleHandleStore>());
         services.AddSingleton<IBundleRunJobStore, InMemoryBundleRunJobStore>();
+
+        // Both name the caller, so erasure removes the person's (keeping what a run in flight uses, which the receipt
+        // lists) and their copy includes them (#990).
+        services.AddPersonalDataEraser<IBundleRunJobStore>();
+        services.AddPersonalDataExporter<IBundleRunJobStore>();
+        services.AddSingleton<Application.AI.Common.Interfaces.Compliance.IKeptRunSource>(sp => sp.GetRequiredService<IBundleRunJobStore>());
+        services.AddPersonalDataEraser<IBundleHandleStore>();
+        services.AddPersonalDataExporter<IBundleHandleStore>();
+        services.AddSingleton<Application.AI.Common.Interfaces.Compliance.IKeptRunSource>(sp => sp.GetRequiredService<IBundleHandleStore>());
         services.AddSingleton<IBundleRunDispatchQueue, InMemoryBundleRunDispatchQueue>();
 
         // The shared engine that drives a run to terminal under its envelope + overlay. Both the background

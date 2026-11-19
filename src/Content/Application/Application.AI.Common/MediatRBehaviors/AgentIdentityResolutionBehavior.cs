@@ -15,7 +15,8 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// <see cref="IAgentExecutionContext"/> for the current request. Runs immediately
 /// after <see cref="AgentContextPropagationBehavior{TRequest, TResponse}"/> so the
 /// agent id is set before identity resolution begins; downstream behaviors
-/// (audit, content safety, tool permission, governance) see a fully-stamped context.
+/// (audit, prompt-injection and content screening, and the tool governance run during the turn) see a
+/// fully-stamped context.
 /// </summary>
 /// <remarks>
 /// <para>

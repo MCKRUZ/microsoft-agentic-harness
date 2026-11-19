@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Bundles;
 using Domain.AI.Bundles;
+using Domain.Common.Compliance;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,13 +24,24 @@ namespace Infrastructure.AI.Bundles;
 /// guarantee the security posture requires.
 /// </para>
 /// <para>
+/// <strong>Personal data (#990).</strong> Each handle names who staged it, so the store is in the personal-data inventory,
+/// erases and exports by owner, and keeps a handle a run still holds a lease on until that run releases it.
+/// </para>
+/// <para>
 /// Each handle's mutable state (expiry, lease count, removal flag) is guarded by a lock on its entry, so
 /// concurrent reads, run acquisitions, releases, and sweeps agree on whether — and when — a directory may
 /// be deleted. The map itself is concurrent; entries are removed with a compare-and-remove so a sweep can
 /// never delete an entry a concurrent acquisition has just revived.
 /// </para>
 /// </remarks>
-public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
+[PersonalDataStore(
+    "In-memory staged bundle handles: the id of the person who staged each bundle, with the agent, skill and plugin definitions it holds and where they were extracted. Held in process memory only; a handle expires BundleExecution:HandleTtl (30 minutes) after it was last used, extended by every read and run, and one a run holds a lease on is kept until that run releases it. Owner erasure removes the person's handles and deletes their staging folders, a leased one as soon as its run releases it, which the receipt lists. Reached only by an erasure or export request served by the same host process as the bundle API.",
+    PersonalDataCategories.Identifiers,
+    PersonalDataKey.Owner,
+    RetentionBasis.Volatile,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
+public sealed partial class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
 {
     private sealed class HandleEntry(StagedBundle bundle, string ownerId)
     {
@@ -138,6 +150,16 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
         if (!_entries.TryGetValue(handle, out var entry))
             return false;
 
+        MarkRemoved(handle, entry);
+        return true;
+    }
+
+    /// <summary>
+    /// Marks <paramref name="entry"/> removed and, when no run holds a lease on it, evicts it and deletes its staging
+    /// directory now; otherwise the last lease's release does. Returns whether it was evicted now.
+    /// </summary>
+    private bool MarkRemoved(string handle, HandleEntry entry)
+    {
         var deletePath = default(string);
         lock (entry)
         {
@@ -146,10 +168,7 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
                 deletePath = entry.Bundle.StagedRootDirectory;
         }
 
-        if (deletePath is not null)
-            EvictAndDelete(handle, entry, deletePath);
-
-        return true;
+        return deletePath is not null && EvictAndDelete(handle, entry, deletePath);
     }
 
     /// <inheritdoc />

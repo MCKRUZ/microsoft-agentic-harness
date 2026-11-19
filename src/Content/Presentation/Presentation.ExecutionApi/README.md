@@ -64,6 +64,17 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  POST   /{id}/pause              → PauseScheduleCommand (versioned)    │ │
 │  │  POST   /{id}/resume             → ResumeScheduleCommand (versioned)   │ │
 │  │  DELETE /{id}                    → DeleteScheduleCommand               │ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  ComplianceController + ComplianceExportController  /api/compliance   │ │
+│  │    shared with AgentHub (Presentation.Common.Compliance, #1003)        │ │
+│  │                                                                        │ │
+│  │  POST   /erase-my-data           → EraseMyDataCommand      (the caller)│ │
+│  │  POST   /erasures                → EraseSubjectDataCommand  ← operator │ │
+│  │  POST   /document-removals       → RemoveDocumentCommand    ← operator │ │
+│  │  POST   /export-my-data          → ExportMyDataCommand     (the caller)│ │
+│  │  POST   /exports                 → ExportSubjectDataCommand ← operator │ │
+│  │    Covers THIS host's stores only; every receipt/copy names its host.  │ │
+│  │    Refused in anonymous mode (every caller is one synthetic person).   │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
@@ -111,7 +122,7 @@ The disjointness check exists because the global registries scan discovery roots
 
 | Mode | `Stream` | Driver | Notes |
 |------|----------|--------|-------|
-| Background | `false` | `BundleRunBackgroundService` drains `IBundleRunDispatchQueue` | Bounded parallel -- up to `MaxConcurrentDispatchedBundleRuns` at once (default 4); `1` restores serial |
+| Background | `false` | `BundleRunBackgroundService` drains `IBundleRunDispatchQueue` | Bounded parallel -- up to `MaxConcurrentDispatchedBundleRuns` at once (default 16); `1` restores serial |
 | Live SSE | `true` | The caller opening `GET .../stream`, via `BundleRunStreamer` | **Not enqueued.** Reclaimed on `StreamReservationTtl` if never claimed |
 
 `BundleRunExecutor.ExecuteAsync` acquires the handle lease *before* claiming the run `Running` (so a run whose handle expired never carries a bogus start time), then claims via the atomic `IBundleRunJobStore.TryBeginRun` compare-and-set, so a stream racing the dispatcher for the same job yields exactly one winner. It arms `EphemeralAgentOverlayAccessor` (agent + owned skills resolve) and `CapabilityEnvelopeAccessor` (the governor enforces) around a materialised `RunConversationCommand`.
@@ -139,6 +150,10 @@ Partitioned per caller by stable id, falling back to remote IP (the only disting
 | `bundles-stream` | **concurrency** | `MaxConcurrentStreamsPerCaller` (default 4), `QueueLimit = 0` |
 
 The stream policy is concurrency rather than rate on purpose: a streamed run executes inline on its connection for the whole conversation, so a request-rate limiter that counts *starts* cannot bound it.
+
+The per-caller stream policy has a host-wide companion: `MaxConcurrentStreams` (default 64) open streams across all callers, refused with `429` past that. A named policy resolves one partition per request, so the host limit rides on the global limiter instead, matched on the endpoint carrying `bundles-stream`. It mirrors the workflow progress-stream pair (`MaxConcurrentProgressStreams` / `MaxProgressStreamsPerOwner`), which answers `503` from its own broker rather than the rate limiter.
+
+The compliance endpoints carry no named policy. `ComplianceRateLimits.Create()` (shared with AgentHub, #1003) is chained into this host's `GlobalLimiter`, ahead of the stream host limit: five self-service erasure or export requests an hour per caller, thirty operator requests an hour per operator, and at most two personal-data copies assembled at once per host. Every other path passes through it. A refused request answers `429`, as the contract says. Before #1003 the host left the framework default, `503`.
 
 ## Project Structure
 
@@ -194,7 +209,8 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `RunRecordTtl` | 30 min | Terminal records only |
 | `StreamReservationTtl` | 5 min | Unclaimed streaming reservations; deliberately independent of `RunRecordTtl` |
 | `MaxConcurrentStreamsPerCaller` | 4 | A concurrency limiter with `QueueLimit = 0` -- excess connections are rejected, not parked |
-| `MaxConcurrentDispatchedBundleRuns` | 4 | Background (non-streaming) runs the host dispatches at once, across all callers -- `1` is strictly serial |
+| `MaxConcurrentStreams` | 64 | Open streams across all callers -- one shared concurrency limiter, also `QueueLimit = 0`; read at startup |
+| `MaxConcurrentDispatchedBundleRuns` | 16 | Background (non-streaming) runs the host dispatches at once, across all callers -- `1` is strictly serial |
 | `MaxActiveBundleRunsPerOwner` | 10 | Runs one caller may hold queued or executing at once, across both dispatch modes -- refused with `400` past this (a conversation conflict is `409` instead; see below) |
 | `CleanupInterval` | 60 s | `BundleWorkspaceCleanupService` period; a lease held by a running job blocks its directory's deletion |
 | `Envelopes` | fail-closed | `Default` / `BySubject` / `ByRole` |
@@ -236,6 +252,10 @@ A conversation is created on first use and owned by the caller that first used i
 someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,
 so the endpoint cannot be used to enumerate other callers' conversation ids. Ownership itself is
 enforced inside `IConversationStore`, never re-derived here.
+
+### Compliance (`AppConfig:AI:Erasure`)
+
+The shared compliance API reads the same section AgentHub does, from this host's own configuration. `OperatorTenantIds` (default empty) lists the tenants whose operators may erase, copy, or remove documents for someone else; empty turns the three operator endpoints off. `SubjectReferenceKey` (unset by default) keys the pseudonymous subject reference in the compliance audit trail. Self-service needs neither. A request erases or copies only this host's stores, so a deployment that also runs AgentHub sends each person's request to both.
 
 ### Direct tool invocation (`AppConfig:AI:DirectToolInvocation`)
 
@@ -451,8 +471,8 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
 4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
 
-The spec covers **all five route families this host serves** -- bundles, workflows, tool
-discovery, evals, and schedules -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
+The spec covers **all six route families this host serves** -- bundles, workflows, tool
+discovery, evals, schedules, and compliance (the shared erasure and export API, #1003) -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
 (W3--W6) went in over four PRs without a single spec entry, and the drift was only caught when
 someone went looking. If you add a route here, add it to the spec in the same change. A published
 contract that describes only part of the surface is worse than one that admits its gaps, because
@@ -513,3 +533,18 @@ against an implementation that concatenated the name onto a root.
 ```bash
 dotnet test src/Content/Tests/Presentation.ExecutionApi.Tests
 ```
+
+### Load and stress testing
+
+`src/Content/Tests/Presentation.ExecutionApi.LoadTarget/` runs this host under load: the real API on
+real Kestrel, a latency-tunable simulated model in place of Azure OpenAI, locally minted tokens in place
+of Entra, and k6 scenarios for every path (polling, background and streamed runs, registration,
+workflows, the documented limits, a spike and an hour-long soak). One command runs them and collects
+the results:
+
+```powershell
+./scripts/load/Invoke-ExecutionApiLoad.ps1
+```
+
+Its README covers the profiles, what each scenario proves, how to read the results, and the
+machine-safety rules.

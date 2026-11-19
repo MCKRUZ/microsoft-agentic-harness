@@ -8,6 +8,7 @@ using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.KnowledgeGraph;
+using Application.AI.Common.Services.Runs;
 using Domain.AI.Planner;
 using Domain.AI.Runs;
 using Domain.AI.Sandbox;
@@ -129,6 +130,19 @@ public static partial class DependencyInjection
         services.TryAddSingleton<IRunJobStore, InMemoryRunJobStore>();
         services.TryAddSingleton<IRunDispatchQueue, InMemoryRunDispatchQueue>();
 
+        // Run records name their owner, so erasure removes the person's finished ones and the export copies them (#926).
+        // What erasure keeps is counted through the store too, so the receipt can say a record was kept; IRunJobStore
+        // includes the count, so a replacement store answers it as well. One of several kept-run sources (the bundle stores
+        // add theirs), so not TryAdd; the coordinator counts an instance registered twice once.
+        services.AddPersonalDataEraser<IRunJobStore>();
+        services.AddPersonalDataExporter<IRunJobStore>();
+        services.AddSingleton<IKeptRunSource>(sp => sp.GetRequiredService<IRunJobStore>());
+
+        // Erasure cancels the person's live runs before the store erases the finished ones (#992), through the same cancel
+        // path an owner's cancel takes. A plain registration, like the planned-task canceller's, so one registered
+        // earlier cannot silently switch this erasure control off.
+        services.AddSingleton<IOwnedRunCanceller, OwnedRunCanceller>();
+
         // Singleton for the same reason: the run publishes from the dispatcher and the watcher reads
         // from a request, so a scoped broker would give each side its own instance and every stream
         // would sit silent while the run reported into nothing.
@@ -141,6 +155,10 @@ public static partial class DependencyInjection
         // Being registered is not being reachable: without a RunKind.Evaluation executor no eval run
         // can execute, and the endpoints refuse unless evaluation is enabled.
         services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
+
+        // A submission records no owner, so the person's copy finds theirs through their run records (#991). TryAddEnumerable,
+        // so a substrate composed twice still puts one section in the copy.
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IPersonalDataExporter, EvalRunSubmissionExporter>());
 
         // The dataset name catalog. In Infrastructure because it reads directories, and registered
         // here rather than in the host that serves evaluation for the same reason as the store above:

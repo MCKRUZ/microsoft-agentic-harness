@@ -132,6 +132,7 @@ internal static class AuditPseudonymKey
             var archive = appConfig.AI.Audit.ArchivePath;
             return AuditChains.All(appConfig, TimeProvider.System).Any(chain =>
                 HoldsRecords(chain.Segments)
+                || HoldsHeldRecords(chain)
                 || (!string.IsNullOrWhiteSpace(archive) && HoldsRecords(chain.Segments.ArchivedUnder(archive))));
         }
         catch (Exception)
@@ -142,6 +143,12 @@ internal static class AuditPseudonymKey
 
     private static bool HoldsRecords(DatedAuditSegments segments) =>
         segments.Ordered().Any(file => new FileInfo(file).Length > 0);
+
+    // A record held for replay (#1001), or set aside for an operator to repair, carries the same references.
+    private static bool HoldsHeldRecords(AuditChainLocation chain) =>
+        Directory.Exists(chain.PendingPath)
+        && Directory.EnumerateFiles(chain.PendingPath).Any(path =>
+            path.EndsWith(".pending", StringComparison.Ordinal) || path.EndsWith(".unreadable", StringComparison.Ordinal));
 
     // A key file restored from a backup or copied by hand can come back readable by anyone on the machine, who could then
     // recompute references from the trails. Starting is still right, since refusing would stop the audit trails too.

@@ -1,0 +1,49 @@
+name: Hook Tests
+
+# The local review rails are PowerShell hooks (.claude/hooks/*.ps1): the push gate, the
+# receipt writer and the human-only guard. Each has a test suite under .claude/hooks/tests/,
+# and until this workflow nothing ran them — a suite nobody runs proves nothing, which is the
+# repo's own recurring failure mode (CLAUDE.md, "a control that nothing invokes").
+#
+# Not a required check, so a path filter is safe here: it fires only when the hooks, their
+# tests or this workflow change, which is exactly when a regression could be introduced.
+
+on:
+  pull_request:
+    paths:
+      - '.claude/hooks/**'
+      - '.claude/settings.json'
+      - '.github/workflows/hook-tests.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  hook-tests:
+    name: hook-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The push-gate suites replay real commits from this repo's history.
+          fetch-depth: 0
+
+      - name: Run every hook test suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --global user.email 'hook-tests@example.invalid'
+          git config --global user.name 'hook-tests'
+          $failed = @()
+          foreach ($suite in Get-ChildItem .claude/hooks/tests -Filter '*.tests.ps1') {
+            Write-Host "::group::$($suite.Name)"
+            pwsh -NoProfile -File $suite.FullName
+            $code = $LASTEXITCODE
+            Write-Host '::endgroup::'
+            if ($code -ne 0) { $failed += $suite.Name }
+          }
+          if ($failed.Count) {
+            Write-Host "::error::Failing hook suites: $($failed -join ', ')"
+            exit 1
+          }

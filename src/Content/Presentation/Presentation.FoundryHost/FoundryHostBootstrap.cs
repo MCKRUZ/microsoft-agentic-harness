@@ -1,4 +1,7 @@
 using Domain.AI.Agents;
+using Domain.Common.Config.Observability;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Presentation.FoundryHost;
 
@@ -18,6 +21,134 @@ internal static class FoundryHostBootstrap
     /// local-disk writes are rooted here rather than in the container's (non-persistent) app dir.
     /// </summary>
     internal const string StateRootSubdirectory = "agent-state";
+
+    /// <summary>The variable Foundry injects with its Application Insights connection string.</summary>
+    internal const string AppInsightsVariable = "APPLICATIONINSIGHTS_CONNECTION_STRING";
+
+    /// <summary>
+    /// The deployer's opt-out from sending this host's telemetry to the Application Insights resource
+    /// Foundry supplies (<c>AzureMonitorExporterConfig.EnableFromHostConnectionString</c>).
+    /// </summary>
+    internal const string EnableFromHostConnectionStringKey =
+        "AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString";
+
+    /// <summary>
+    /// Whether the host uses Foundry's connection string, from the deployer's setting for
+    /// <see cref="EnableFromHostConnectionStringKey"/> in the configuration the host loads. Where it can be set is
+    /// described once, in <c>documentation/security/08-data-protection.html#foundry-telemetry-opt-out</c>.
+    /// </summary>
+    /// <param name="configured">The setting's raw value, or <c>null</c> when it is not set.</param>
+    /// <returns>
+    /// <see langword="false"/> only for an explicit <c>false</c>, so a typo cannot silently turn export off; the
+    /// options binder rejects a value that is not a boolean when the configuration loads.
+    /// </returns>
+    internal static bool UsesHostConnectionString(string? configured) =>
+        !bool.TryParse(configured, out var use) || use;
+
+    /// <summary>
+    /// Decides the deployer's telemetry choice from <paramref name="settings"/> and applies Foundry's environment
+    /// accordingly, before the composition root loads configuration (#904).
+    /// </summary>
+    /// <param name="settings">
+    /// The deployer's full configuration, Key Vault and App Configuration included, so the opt-out is honoured wherever
+    /// it is kept.
+    /// </param>
+    /// <param name="readEnv">Reads an environment variable by name (returns <c>null</c> when unset).</param>
+    /// <param name="writeEnv">Sets an environment variable; <c>null</c> removes it.</param>
+    /// <returns>
+    /// Whether Foundry supplied a connection string, and whether the host uses it: the inputs
+    /// <see cref="DescribeTelemetryExport"/> needs once the host has bound its configuration.
+    /// </returns>
+    internal static (bool HostSupplied, bool UsedHostConnectionString) PrepareFoundryEnvironment(
+        IConfiguration settings, Func<string, string?> readEnv, Action<string, string?> writeEnv)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        var useHostConnectionString = UsesHostConnectionString(settings[EnableFromHostConnectionStringKey]);
+        var hostSupplied = ApplyFoundryEnvironment(readEnv, writeEnv, useHostConnectionString);
+        return (hostSupplied, useHostConnectionString);
+    }
+
+    /// <summary>
+    /// Whether the harness's own Azure Monitor exporter is registered, by the same condition the telemetry configurator
+    /// uses: <see cref="AzureMonitorExporterConfig.Enabled"/> and a non-empty
+    /// <see cref="AzureMonitorExporterConfig.ConnectionString"/>.
+    /// </summary>
+    /// <param name="config">The bound exporter configuration.</param>
+    /// <returns><see langword="true"/> when the exporter sends telemetry.</returns>
+    internal static bool HarnessExporterIsActive(AzureMonitorExporterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return config.Enabled && !string.IsNullOrWhiteSpace(config.ConnectionString);
+    }
+
+    /// <summary>
+    /// Writes Foundry's environment onto the harness configuration keys, before the composition root
+    /// loads configuration, and removes Foundry's connection string when the deployer opted out (#904).
+    /// </summary>
+    /// <param name="readEnv">Reads an environment variable by name (returns <c>null</c> when unset).</param>
+    /// <param name="writeEnv">Sets an environment variable; <c>null</c> removes it.</param>
+    /// <param name="useHostConnectionString">The deployer's choice, from <see cref="UsesHostConnectionString"/>.</param>
+    /// <returns>Whether Foundry supplied a connection string.</returns>
+    /// <remarks>
+    /// <para>
+    /// A value an operator set with the native <c>AppConfig__...</c> key is never overwritten.
+    /// </para>
+    /// <para>
+    /// Removing the connection string is what makes the opt-out complete. The harness's Azure Monitor
+    /// exporter sends only to the configured <c>ConnectionString</c>, which is then not mapped; but the
+    /// Foundry hosting layer (<c>AgentHost</c>) exports its own traces and logs to Azure Monitor
+    /// whenever the variable is set. With it gone, nothing is sent to Foundry's resource; the deployer
+    /// can still point the harness's exporter at a resource of their own. Foundry's portal then shows
+    /// no traces for this agent.
+    /// </para>
+    /// </remarks>
+    internal static bool ApplyFoundryEnvironment(
+        Func<string, string?> readEnv, Action<string, string?> writeEnv, bool useHostConnectionString)
+    {
+        ArgumentNullException.ThrowIfNull(readEnv);
+        ArgumentNullException.ThrowIfNull(writeEnv);
+
+        var hostSupplied = !string.IsNullOrWhiteSpace(readEnv(AppInsightsVariable));
+        foreach (var (target, value) in BuildConfigOverrides(readEnv, useHostConnectionString))
+        {
+            if (string.IsNullOrEmpty(readEnv(target)))
+                writeEnv(target, value);
+        }
+
+        if (hostSupplied && !useHostConnectionString)
+            writeEnv(AppInsightsVariable, null);
+        return hostSupplied;
+    }
+
+    /// <summary>
+    /// Says at startup where this host's telemetry goes, from the configuration the host actually bound.
+    /// </summary>
+    /// <param name="hostSupplied">Whether Foundry supplied a connection string.</param>
+    /// <param name="usedHostConnectionString">The deployer's choice, as applied before startup.</param>
+    /// <param name="harnessExporterActive">
+    /// Whether the harness's Azure Monitor exporter is registered, from <see cref="HarnessExporterIsActive"/> on the
+    /// bound configuration.
+    /// </param>
+    /// <returns>The messages to log, each with its level; empty when there is nothing to say.</returns>
+    internal static IReadOnlyList<(LogLevel Level, string Message)> DescribeTelemetryExport(
+        bool hostSupplied, bool usedHostConnectionString, bool harnessExporterActive)
+    {
+        var notices = new List<(LogLevel, string)>();
+        var harness = harnessExporterActive ? "on" : "off";
+        if (hostSupplied && usedHostConnectionString)
+            notices.Add((LogLevel.Information,
+                $"Foundry supplied {AppInsightsVariable}, so the Foundry hosting layer exports its traces and logs to that " +
+                $"Application Insights resource, and the harness's Azure Monitor exporter is {harness}. Set " +
+                $"{EnableFromHostConnectionStringKey} to false to send nothing there; each configuration source spells " +
+                "the name differently (see documentation/security/08-data-protection.html#foundry-telemetry-opt-out)."));
+        else if (hostSupplied)
+            notices.Add((LogLevel.Information,
+                $"{EnableFromHostConnectionStringKey} is false, so FoundryHost removed Foundry's {AppInsightsVariable}: " +
+                "nothing is exported to Foundry's Application Insights resource. The harness's Azure Monitor exporter is " +
+                $"{harness} (AppConfig:Observability:Exporters:AzureMonitor)."));
+        return notices;
+    }
 
     /// <summary>
     /// Resolves the directory the agent session store persists the framework's runtime state to:
@@ -66,9 +197,15 @@ internal static class FoundryHostBootstrap
     /// </list>
     /// Only non-empty source values produce overrides. A present
     /// <c>APPLICATIONINSIGHTS_CONNECTION_STRING</c> additionally enables the Azure Monitor exporter
-    /// so harness traces and metrics flow to the injected sink.
+    /// so harness traces and metrics flow to the injected sink, unless the deployer set
+    /// <see cref="EnableFromHostConnectionStringKey"/> to <c>false</c>, in which case neither is
+    /// mapped (#904).
     /// </remarks>
-    internal static IReadOnlyDictionary<string, string> BuildConfigOverrides(Func<string, string?> readEnv)
+    /// <param name="useHostConnectionString">
+    /// Whether to use Foundry's connection string; see <see cref="ApplyFoundryEnvironment"/>.
+    /// </param>
+    internal static IReadOnlyDictionary<string, string> BuildConfigOverrides(
+        Func<string, string?> readEnv, bool useHostConnectionString = true)
     {
         ArgumentNullException.ThrowIfNull(readEnv);
 
@@ -77,8 +214,8 @@ internal static class FoundryHostBootstrap
         AddIfPresent(overrides, readEnv, "FOUNDRY_PROJECT_ENDPOINT", "AppConfig__AI__AIFoundry__ProjectEndpoint");
         AddIfPresent(overrides, readEnv, "AZURE_AI_MODEL_DEPLOYMENT_NAME", "AppConfig__AI__AgentFramework__DefaultDeployment");
 
-        var appInsights = readEnv("APPLICATIONINSIGHTS_CONNECTION_STRING");
-        if (!string.IsNullOrWhiteSpace(appInsights))
+        var appInsights = readEnv(AppInsightsVariable);
+        if (useHostConnectionString && !string.IsNullOrWhiteSpace(appInsights))
         {
             overrides["AppConfig__Observability__Exporters__AzureMonitor__ConnectionString"] = appInsights;
             overrides["AppConfig__Observability__Exporters__AzureMonitor__Enabled"] = "true";
@@ -114,23 +251,13 @@ internal static class FoundryHostBootstrap
 
         var stateRoot = $"{home.TrimEnd('/')}/{StateRootSubdirectory}";
 
-        // Planner checkpoint/resume database (SQLite).
-        overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
-
-        // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
-        // (+ gate evidence), and egress decisions. Each is append-only forensic state worth
-        // preserving across resumes.
-        overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
-        overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
-        overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
-        overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
-        overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";
-        overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
+        AddHomeRootedAuditPaths(overrides, stateRoot);
+        AddHomeRootedDataStorePaths(overrides, stateRoot);
 
         // Per-session agent working state that also defaults under .agent-sessions/: offloaded tool
         // results (large outputs spilled to disk), subagent delegation records, and the inter-agent
         // mailbox. StoragePath is the .agent-sessions root itself (the store appends
-        // {session}/tool-results/), so it maps to the state root directly. Mailbox has no writer
+        // {scope folder}/tool-results/), so it maps to the state root directly. Mailbox has no writer
         // today but is rooted now so the capability lands persistent when it ships.
         overrides["AppConfig__AI__ContextManagement__ToolResultStorage__StoragePath"] = stateRoot;
         overrides["AppConfig__AI__Orchestration__Subagent__DelegationStoragePath"] = $"{stateRoot}/delegations";
@@ -143,6 +270,64 @@ internal static class FoundryHostBootstrap
 
         // File logs.
         overrides["AppConfig__Logging__LogsBasePath"] = $"{stateRoot}/logs";
+    }
+
+    /// <summary>
+    /// The audit trails and everything that keeps them checkable: the JSONL trails, the verification checkpoints, and the
+    /// key their person references are made with. Each is lost on every restart if left in the working directory, and each
+    /// loss breaks something the trails promise.
+    /// </summary>
+    private static void AddHomeRootedAuditPaths(IDictionary<string, string> overrides, string stateRoot)
+    {
+        // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
+        // (+ gate evidence), egress decisions, and the compliance record of erasures, exports and
+        // document removals. Each is append-only forensic state worth preserving across resumes, and each keeps the records
+        // it could not append inside its own folder until replay writes them (#1001), so those persist with it.
+        overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
+        overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
+        overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
+        overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
+        overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";
+        overrides["AppConfig__AI__Egress__AuditStoragePath"] = $"{stateRoot}/egress";
+        // The folder the compliance trail keeps its own two in: {stateRoot}/compliance and {stateRoot}/compliance-pending.
+        overrides["AppConfig__AI__Erasure__AuditStoragePath"] = stateRoot;
+
+        // Verification checkpoints: lost at a restart, the next pass has nothing to hold a chain to, so a chain cut off
+        // while the container was down verifies as intact.
+        overrides["AppConfig__AI__Audit__ReceiptPath"] = $"{stateRoot}/audit-verify";
+
+        // The key the trails' person references are made with (#996), made on first use. Left in the working directory it
+        // was lost on every restart, and with it any way to match a reference written before the restart to one after.
+        // Its own folder: the key must sit outside every audit folder (AuditPseudonymKeyValidator).
+        overrides["AppConfig__AI__Audit__PseudonymKeyPath"] = $"{stateRoot}/keys/audit-pseudonym.key";
+    }
+
+    /// <summary>
+    /// The SQLite and file stores that hold personal data or the erasure state that reaches it. Those switched off by
+    /// default (schedules, execution traces, the file conversation store) are rooted too, so switching one on later lands
+    /// it in the persistent location rather than the working directory.
+    /// </summary>
+    /// <remarks>
+    /// Not here: durable governance state, whose database <c>GovernanceStatePaths</c> confines to the application
+    /// directory, and prompt usage, configured by a whole connection string that an override would replace along with
+    /// every option a deployer set in it; set <c>AppConfig:AI:PromptUsage:ConnectionString</c> to
+    /// <c>Data Source=$HOME/agent-state/prompt-usage.db</c> (the folder must exist; SQLite does not create it).
+    /// </remarks>
+    private static void AddHomeRootedDataStorePaths(IDictionary<string, string> overrides, string stateRoot)
+    {
+        // Planner checkpoint/resume database (SQLite).
+        overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
+
+        // The erasure journal: an erasure that fails part-way is retried from it. Lost at a restart, the retry no longer
+        // knows which ids the request read, and a half-finished erasure cannot be completed.
+        overrides["AppConfig__AI__Erasure__JournalDatabasePath"] = $"{stateRoot}/erasure/erasure-journal.db";
+
+        overrides["AppConfig__AI__Conversations__DatabasePath"] = $"{stateRoot}/conversations/conversations.db";
+        overrides["AppConfig__AI__Conversations__ConversationsPath"] = $"{stateRoot}/conversations/files";
+        overrides["AppConfig__AI__Rag__Documents__LoadLedgerDatabasePath"] = $"{stateRoot}/documents/documents.db";
+        overrides["AppConfig__AI__Schedules__DatabasePath"] = $"{stateRoot}/schedules/schedules.db";
+        overrides["AppConfig__Infrastructure__StateManagement__BasePath"] = $"{stateRoot}/workflows";
+        overrides["AppConfig__MetaHarness__TraceDirectoryRoot"] = $"{stateRoot}/traces";
     }
 
     /// <summary>
@@ -182,14 +367,14 @@ internal static class FoundryHostBootstrap
             overrides["AppConfig__AI__Rag__GraphRag__Enabled"] = "true";
         }
 
-        // RAG vector + BM25 store (Azure AI Search). Endpoint presence is the opt-in; the API key is
-        // optional because the agent's managed identity is the preferred auth path. With no
-        // endpoint, force the in-process FAISS/FTS5 store: the vector store's config default is
-        // Azure AI Search, which would fail without an endpoint, so this keeps the container
-        // bootable standalone (RAG state is per-session, rebuilt from ingested documents). The
-        // fallback defers to an operator who configured a vector store via the native AppConfig__
-        // keys, so we never silently override a hand-configured endpoint with FAISS.
+        // RAG vector + BM25 store. An endpoint is the opt-in to Azure AI Search, given either as AZURE_SEARCH_ENDPOINT or
+        // through the native AppConfig__ key; the API key is optional because the agent's managed identity is the
+        // preferred auth path. With no endpoint, the in-process FAISS/FTS5 store is pinned explicitly so the container
+        // boots standalone (RAG state is per-session, rebuilt from ingested documents). An operator's own provider choice
+        // is never overridden.
         var searchEndpoint = readEnv("AZURE_SEARCH_ENDPOINT");
+        var nativeProviderSet = !string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Provider"));
+        var nativeEndpointSet = !string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Endpoint"));
         if (!string.IsNullOrWhiteSpace(searchEndpoint))
         {
             overrides["AppConfig__AI__Rag__VectorStore__Provider"] = "azure_ai_search";
@@ -197,10 +382,11 @@ internal static class FoundryHostBootstrap
             AddIfPresent(overrides, readEnv, "AZURE_SEARCH_API_KEY", "AppConfig__AI__Rag__VectorStore__ApiKey");
             AddIfPresent(overrides, readEnv, "AZURE_SEARCH_INDEX", "AppConfig__AI__Rag__VectorStore__IndexName");
         }
-        else if (string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Provider"))
-            && string.IsNullOrWhiteSpace(readEnv("AppConfig__AI__Rag__VectorStore__Endpoint")))
+        else if (!nativeProviderSet)
         {
-            overrides["AppConfig__AI__Rag__VectorStore__Provider"] = "faiss";
+            // A native endpoint with no provider meant Azure AI Search while Azure was the config default; #1012 made
+            // FAISS the default, and FAISS with an endpoint is refused at startup, so keep the endpoint's meaning.
+            overrides["AppConfig__AI__Rag__VectorStore__Provider"] = nativeEndpointSet ? "azure_ai_search" : "faiss";
         }
 
         // Distributed cache (Redis) — shared across sessions/replicas.

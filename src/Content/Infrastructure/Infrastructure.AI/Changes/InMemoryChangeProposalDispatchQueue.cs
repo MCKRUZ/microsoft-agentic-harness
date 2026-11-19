@@ -1,11 +1,12 @@
-using System.Threading.Channels;
 using Application.AI.Common.Interfaces.Changes;
+using Domain.AI.Telemetry.Conventions;
+using Infrastructure.AI.Helpers;
 
 namespace Infrastructure.AI.Changes;
 
 /// <summary>
-/// In-memory <see cref="IChangeProposalDispatchQueue"/> backed by a single-reader
-/// <see cref="Channel{T}"/>. FIFO; unbounded so <see cref="EnqueueAsync"/> never
+/// In-memory <see cref="IChangeProposalDispatchQueue"/> backed by an
+/// <see cref="InstrumentedDispatchChannel"/>. FIFO; unbounded so <see cref="EnqueueAsync"/> never
 /// blocks the caller waiting for capacity.
 /// </summary>
 /// <remarks>
@@ -23,26 +24,19 @@ namespace Infrastructure.AI.Changes;
 /// runtime use a cheaper synchronization primitive than the multi-reader
 /// path. If a future deployment fans out to multiple workers, drop the flag.
 /// </para>
+/// <para>
+/// Its depth and wait are reported through <see cref="InstrumentedDispatchChannel"/>.
+/// </para>
 /// </remarks>
 public sealed class InMemoryChangeProposalDispatchQueue : IChangeProposalDispatchQueue
 {
-    private readonly Channel<string> _channel = Channel.CreateUnbounded<string>(
-        new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            // Multiple producers (CQRS handlers across concurrent requests) are
-            // expected; do not set SingleWriter.
-            AllowSynchronousContinuations = false,
-        });
+    private readonly InstrumentedDispatchChannel _channel = new(DispatchConventions.ChangeProposalQueue);
 
     /// <inheritdoc />
     public ValueTask EnqueueAsync(string proposalId, CancellationToken cancellationToken)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(proposalId);
-        return _channel.Writer.WriteAsync(proposalId, cancellationToken);
-    }
+        => _channel.EnqueueAsync(proposalId, cancellationToken);
 
     /// <inheritdoc />
     public IAsyncEnumerable<string> DequeueAllAsync(CancellationToken cancellationToken)
-        => _channel.Reader.ReadAllAsync(cancellationToken);
+        => _channel.DequeueAllAsync(cancellationToken);
 }

@@ -12,6 +12,7 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Moq;
+using Presentation.Common.Compliance;
 using Xunit;
 
 namespace Presentation.AgentHub.Tests.Controllers;
@@ -132,7 +133,7 @@ public sealed class ComplianceExportControllerTests : IClassFixture<TestWebAppli
             .Setup(m => m.Send(It.IsAny<ExportMyDataCommand>(), It.IsAny<CancellationToken>()))
             .Returns<IRequest<Result<PersonalDataExport>>, CancellationToken>(async (_, _) =>
             {
-                if (Interlocked.Increment(ref inFlight) == AgentHub.DependencyInjection.ConcurrentExportLimit)
+                if (Interlocked.Increment(ref inFlight) == ComplianceRateLimits.ConcurrentExportLimit)
                     allIn.TrySetResult();
                 await release.Task;
                 return Result<PersonalDataExport>.Success(new PersonalDataExport("e", DateTimeOffset.UnixEpoch, [], []));
@@ -140,7 +141,7 @@ public sealed class ComplianceExportControllerTests : IClassFixture<TestWebAppli
         using var client = Client("person");
         client.DefaultRequestHeaders.Remove(TestAuthHandler.UserIdHeader);
 
-        var running = Enumerable.Range(0, AgentHub.DependencyInjection.ConcurrentExportLimit)
+        var running = Enumerable.Range(0, ComplianceRateLimits.ConcurrentExportLimit)
             .Select(i => client.SendAsync(AsUser($"concurrent-{i}-{Guid.NewGuid():N}")))
             .ToList();
         await allIn.Task.WaitAsync(TimeSpan.FromSeconds(30));

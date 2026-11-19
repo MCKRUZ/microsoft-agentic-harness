@@ -225,13 +225,32 @@
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
                         <div class="callout-body">
-                            <div class="callout-title">The single-tenant switch is deliberate</div>
+                            <div class="callout-title">Isolation is off by default, and says so</div>
+                            <p>
+                                <code>AppConfig:AI:Rag:GraphRag:MultiTenantIsolation</code> defaults to
+                                <code>false</code>, which suits a single-tenant deployment. In that mode the decorator is
+                                not registered at all, and a host outside Development logs a warning at startup saying
+                                what is shared. With isolation off:
+                            </p>
+                            <ul>
+                                <li>
+                                    <strong>Still private:</strong> each user's remembered facts. Memory ids are
+                                    namespaced by tenant and user (see <a href="#memory-namespacing">memory
+                                    namespacing</a>), so recall, search and forget only ever reach the caller's own.
+                                </li>
+                                <li>
+                                    <strong>Shared by every user and tenant:</strong> the graph's entities extracted from
+                                    ingested documents, and the learnings recalled into turns.
+                                </li>
+                                <li>
+                                    <strong>Shared either way:</strong> ingested documents through retrieval, and
+                                    graph-based retrieval (GraphRAG). Turning isolation on does not make documents
+                                    private.
+                                </li>
+                            </ul>
                             <p style="margin: 0">
-                                When the <code>MultiTenantIsolation</code> config is disabled, all access passes — the
-                                decorator becomes a pass-through and the store behaves as a single shared graph. This is
-                                an intentional mode for single-tenant deployments, not a bug. If you run more than one
-                                customer on one harness, this switch must be <strong>on</strong>; treat it as a
-                                load-bearing setting and verify it in every environment.
+                                If you run more than one customer on one harness, turn this switch <strong>on</strong>,
+                                treat it as a load-bearing setting, and verify it in every environment.
                             </p>
                         </div>
                     </div>
@@ -514,10 +533,15 @@
                         <li><strong>On reads</strong> it filters out expired nodes, so stale data simply isn't returned.</li>
                         <li>
                             It emits a <code>MemoryAuditEvent</code> (<code>Remember</code> / <code>Recall</code> /
-                            <code>Forget</code> / <code>Erasure</code>, with <code>ActorId</code>, <code>Timestamp</code>
-                            and <code>ScopeId</code>) to <code>IMemoryAuditSink</code>. The default sink writes it to the
-                            structured log (<code>AppConfig:AI:Rag:GraphRag:AuditSinkProvider</code>, default
-                            <code>structured_logging</code>); it is not one of the hash-chained JSONL governance trails.
+                            <code>Forget</code> / <code>Improve</code> / <code>Erasure</code> / <code>Expiry</code> /
+                            <code>DocumentRemoval</code>, with <code>ActorId</code>, <code>Timestamp</code> and
+                            <code>ScopeId</code>) to <code>IMemoryAuditSink</code>. Retention expiry is recorded as
+                            <code>Expiry</code> and document removal as <code>DocumentRemoval</code>, both with the actor
+                            <code>system</code>. The default sink writes the event to the structured log
+                            (<code>AppConfig:AI:Rag:GraphRag:AuditSinkProvider</code>, default
+                            <code>structured_logging</code>), and only while <code>ComplianceEnabled</code> is on (the
+                            default); with it off, nothing is recorded. It is not one of the hash-chained JSONL governance
+                            trails.
                             Deletions record how many nodes and edges were removed, never their ids: memory node ids
                             embed the owner and the memory key, so a deletion record that listed them would keep what was
                             deleted.
@@ -525,7 +549,9 @@
                     </ul>
                     <p>
                         Retention rules are not hardcoded: they come from <code>IRetentionPolicyProvider</code>, resolved
-                        per tenant and per dataset, so different customers and datasets can carry different lifetimes.
+                        per entity type from <code>AppConfig:AI:Rag:GraphRag:RetentionPolicies</code>
+                        (<code>ConfigRetentionPolicyProvider</code>). A policy has no tenant or dataset, so every customer
+                        on one host shares the same lifetimes.
                     </p>
 
                     <h3 id="retention-periods">Retention periods outside the graph (#901)</h3>
@@ -690,7 +716,12 @@
                             embedding error, also deleted that earlier copy; clean-up now runs only once this load's own
                             writes have started.) A removal forgets the record only up to the load it judged, so a document
                             loaded again meanwhile keeps its new time. A removal that ends Partial keeps the record and is
-                            tried again on the next sweep; at most 200 documents go per sweep, oldest first.
+                            tried again on the next sweep; at most 200 documents go per sweep, oldest first. A retry is
+                            written to the compliance trail only when it ends differently from the last recorded attempt
+                            (completed, other stores failing, a different failure, or anything removed), as a pair naming
+                            the first attempt under <code>retry_of</code>, so the trail grows with requests rather than
+                            with sweeps (#998). A retry that dies part-way leaves the first attempt and last outcome, both
+                            still true; after a restart the first retry of each document is recorded once more.
                         </li>
                         <li>
                             <strong>The load record is one process's file, so the age limit refuses shared stores.</strong>
@@ -746,8 +777,9 @@
                     <ul>
                         <li>
                             <strong>People</strong> &mdash; approvers, the person who cancelled an escalation, a change
-                            reviewer, the caller behind a drift push or recalculation, and the caller behind a direct tool
-                            invocation &mdash; are recorded as a keyed reference,
+                            reviewer, the caller behind a drift push or recalculation, the caller behind a direct tool
+                            invocation, and the operator behind an erasure, a data export or a document removal &mdash; are
+                            recorded as a keyed reference,
                             <code>ref:{key id}:{HMAC}</code>, never by name or user id. Whoever holds the key can compute a
                             named person's reference and find every approval they gave; nobody without it can reverse a
                             reference or confirm a guess. This keeps the trail's purpose, recording who approved or denied
@@ -777,7 +809,9 @@
                         The key is <code>AppConfig:AI:Audit:PseudonymKey</code>. Set it from a secret store wherever more
                         than one instance writes the trails. Without one, a key file is made once at
                         <code>.agent-sessions/keys/audit-pseudonym.key</code> with access for the application's own account
-                        only, and read on every later start, so references stay the same across restarts. Startup refuses a
+                        only, and read on every later start, so references stay the same across restarts. FoundryHost puts
+                        it at <code>$HOME/agent-state/keys/audit-pseudonym.key</code>, beside the trails it roots there,
+                        because Foundry keeps only <code>$HOME</code> across idle and resume (#996). Startup refuses a
                         key file inside any audit folder or the archive, so the key never travels with the records it
                         protects, and warns at startup when an existing key file is readable by other accounts. Back the
                         key up: without it, references can no longer be recomputed. If the key file is lost while the trails
@@ -798,10 +832,12 @@
 
                     <h3 id="audit-archive-retention">The audit archive: why erasure does not reach it, and how long to keep it</h3>
                     <p>
-                        The audit trails (governance, escalation, change, egress and drift) are hash-chained, and the audit
+                        The audit trails (governance, escalation, change, egress, drift and compliance) are hash-chained, and the audit
                         archiver moves their finished days into write-once storage (<code>Presentation.AuditArchiver</code>,
                         #416). Removing one person's records from them would break the evidence they exist to provide, so
-                        erasure lists them on the receipt rather than editing them. The basis is GDPR Article 17(3): the
+                        erasure lists the six live trails on the receipt rather than editing them. The archive itself is
+                        built only in the separate archiver host, so it gets no receipt line of its own. The basis is GDPR
+                        Article 17(3): the
                         right to erasure does not apply where processing is necessary for compliance with a legal
                         obligation (point (b)), or for the establishment, exercise or defence of legal claims (point (e)).
                         That basis does not remove storage limitation (Article 5(1)(e)): the archive needs an end date too,
@@ -838,7 +874,8 @@
                             audit files are never deleted; running it is how they get a retention period.
                         </li>
                         <li>
-                            <strong>Reducing what the trails hold</strong> in the first place is tracked in #903.
+                            <strong>What the trails hold</strong> about people is reduced to pseudonymous references
+                            (#903); see <a href="#audit-trail-pseudonyms">what the audit trails record about people</a>.
                         </li>
                     </ul>
                     <p>
@@ -864,8 +901,11 @@
                     <p>
                         "Delete the user's data" is easy to say and hard to do correctly, because an agent's knowledge of
                         a user is scattered across several stores, and some of them cannot be searched for one person at
-                        all. The harness erases everything it can find for the person, lists everything it cannot, and
-                        says plainly whether the person is fully gone.
+                        all. The harness erases everything it can find for the person and lists everything it cannot. The
+                        receipt's verdict says whether anything is kept with no end date. <code>Full</code> does not mean
+                        "fully gone": logs, traces and the response cache can still hold the person's text until they
+                        expire, and the audit trails and business content are kept on purpose (see
+                        <a href="#erasure-receipt">the receipt</a>).
                     </p>
                     <p>
                         <code>PersonalDataErasureCoordinator</code>
@@ -875,7 +915,7 @@
                         knowledge graph (nodes, edges, feedback weights, the vector and full-text content of linked
                         documents, and cross-session memory) through <code>DefaultErasureOrchestrator</code>, then every
                         store registered as an <code>IPersonalDataEraser</code>: the document indexes by owner,
-                        schedules, and, through the conversations and the planned tasks' model steps and runs, tool-result
+                        schedules, the person's finished workflow, evaluation and bundle run records, the bundles they staged, and, through the conversations and the planned tasks' model steps and runs, tool-result
                         spill files, prompt-usage records, token budgets, the call-once ledger and the observability
                         database. The conversations and the plans go next, and the token budgets and call-once ledger
                         last, for whichever of the two was actually erased. A store reached only through a conversation
@@ -938,6 +978,55 @@
                         plan. It falls back to the same "run erasure again" line.
                     </p>
                     <p>
+                        Workflow and evaluation run records (<code>InMemoryRunJobStore</code>, #926) are held in process
+                        memory only, and each names the person who started the run, their tenant, the target and the
+                        capability envelope it runs under. A finished run is dropped
+                        <code>AppConfig:AI:WorkflowSubmission:RunRecordTtl</code> (an hour) after it ends. Erasure removes
+                        the person's finished runs in every tenant at once, and releases what else is kept under their
+                        ids (progress bookkeeping, an evaluation's report). Those are released first, and if one cannot
+                        be, the records are kept so a retry can still reach it. The store removes only finished runs: removing a
+                        running run's record would let a second run start on the same workflow while the first is still
+                        executing, and removing a parked one would strand the approvals it waits on. So before anything
+                        is read, erasure (#992) ends the person's live runs through the same cancel path an owner uses: a
+                        queued run is cancelled and never starts, a parked one is cancelled and its pending approvals are
+                        withdrawn (attributed to <code>system:personal-data-erasure</code>, not to the person), and an
+                        executing workflow is signalled to stop. Alongside the planned-task stop above, erasure then waits
+                        up to 30 seconds for runs still executing, cancelling any that parked or were queued meanwhile and
+                        signalling any that started; an executing evaluation cannot be signalled, so it is only waited
+                        for. The run store then
+                        removes the cancelled runs with the finished ones, in the same request. Once every store has
+                        run, the coordinator counts every record still held for the person, so a run that ended
+                        meanwhile is counted too. When any is (a run still executing after the wait, or one started
+                        meanwhile), the receipt gets a <code>Skipped</code> line, "workflow and evaluation runs still
+                        held", and is <code>Partial</code>, telling the person to run erasure again once it has ended. The
+                        store is single-host, like the run substrate it belongs to.
+                    </p>
+                    <p>
+                        The bundle API keeps two more stores in process memory (#990). Its run records
+                        (<code>InMemoryBundleRunJobStore</code>) name the caller and hold the conversation id, the
+                        messages they sent and the agent's final answer, until <code>BundleExecution:RunRecordTtl</code>
+                        (30 minutes) after the run ends. Its staged-bundle handles (<code>InMemoryBundleHandleStore</code>)
+                        name who staged each bundle, until <code>BundleExecution:HandleTtl</code> (30 minutes) after the
+                        bundle was last used. Erasure removes the person's finished bundle runs, and keeps one still queued
+                        or running, as for workflow runs. It removes every bundle they staged and deletes its staging
+                        folder, except one a run is still reading, which goes when that run ends. A queued bundle run
+                        whose bundle was removed fails when it would have started, so it does not run after the person is
+                        erased. Each store's kept records get a <code>Skipped</code> line of their own, "bundle runs still
+                        held" or "staged bundles still held", and the receipt is <code>Partial</code>. Both are erased
+                        and copied only by a request served by the same process as the bundle API. The bundle API runs in
+                        <code>Presentation.ExecutionApi</code>, which serves erasure and export for its own stores (#1003),
+                        so send the request there as well as to AgentHub (<a href="#one-host">each request covers the host it
+                        is sent to</a>).
+                    </p>
+                    <p>
+                        <strong>Replacing a run store.</strong> Each run store's "still held" count is registered with
+                        <code>AddSingleton&lt;IKeptRunSource&gt;</code>, not <code>TryAdd</code>, and forwards to the
+                        store's own service (<code>IRunJobStore</code>, <code>IBundleRunJobStore</code>,
+                        <code>IBundleHandleStore</code>). If you wrap one in a decorator, register the decorator in place
+                        of the store as that service, so the shipped registration reaches it. Do not add another
+                        <code>IKeptRunSource</code> for it, or every receipt shows two kept lines for the one store.
+                    </p>
+                    <p>
                         Ingested documents record their owner exactly as the identity provider issued it, and their
                         erasers match that form. A scheduled run writes under its schedule's owner, so a schedule keeps
                         the owner as issued as well as lower-cased, and each fired run carries the issued form (#907). A
@@ -984,12 +1073,255 @@
                                 those would deny people their own erasure.</li>
                     </ul>
                     <p>
-                        The refusal is recorded in the erasure audit trail. Operator erasure still accepts an application
+                        The refusal is recorded as an erasure audit record (see below for where that is kept). Operator
+                        erasure still accepts an application
                         holding the erasure role, since an automated pipeline for data-subject requests is a legitimate
                         caller there.
                     </p>
 
-                    <div class="callout callout-tip">
+                    <h3 id="one-host">Each request covers the host it is sent to (#1003)</h3>
+                    <p>
+                        Erasure, document removal and export run inside one process and reach that process's stores
+                        only. Hosts never call one another. Most stores live inside their process: the workflow and
+                        evaluation run records in memory, and, by default, the conversation database, journal and plan
+                        database as files beside each host's own binaries. The document indexes are wherever the host's
+                        configuration puts them: the in-process FAISS index and SQLite full-text table, the default for
+                        a host that sets nothing, or an Azure AI Search index. Choosing Azure AI Search
+                        (<code>AppConfig:AI:Rag:VectorStore:Provider</code> = <code>azure_ai_search</code>) without
+                        its <code>Endpoint</code>, or setting an <code>Endpoint</code> without choosing it, stops the host
+                        at startup (#1012). Either half alone would erase the person from a store that holds nothing
+                        while their chunks stayed in the real index, and the receipt would read <code>Full</code>; an
+                        endpoint lost to a failed Key Vault reference or an environment override is the usual cause.
+                        A request sent to AgentHub therefore leaves the Execution API's copy of the same person's data
+                        alone, and the reverse. So every receipt and every copy names the host it covers in a
+                        <code>host</code> field, the host's application name such as <code>Presentation.AgentHub</code>
+                        or <code>Presentation.ExecutionApi</code>. Every audit record names it too. <code>Full</code> and
+                        <code>isComplete</code> speak for that host alone.
+                    </p>
+                    <p>
+                        <strong>A deployment must send each request to every host that holds personal data</strong>, and
+                        a person is erased everywhere only when every one of those hosts has returned a <code>Full</code>
+                        receipt. Both hosts that serve the compliance API serve it at the same paths, with the same roles,
+                        operator tenants (each host reads its own <code>AppConfig:AI:Erasure:OperatorTenantIds</code>),
+                        refusals and rate limits, because both mount the one implementation in
+                        <code>Presentation.Common.Compliance</code>. The rate limits and the two-copies-at-once export
+                        limit are per host. Where two hosts are pointed at one shared durable store, such as a shared
+                        conversation database, whichever host is asked first erases that store for both. Their in-memory
+                        stores still need a request each. A host scaled out to several instances keeps its in-memory
+                        stores per instance, and a request reaches only the instance that serves it. The shipped run
+                        and bundle stores are single-instance by design.
+                    </p>
+                    <p>
+                        The shipped hosts, and whether they hold personal data:
+                    </p>
+                    <ul>
+                        <li><strong>AgentHub</strong> holds conversations, memories and the knowledge graph, plans,
+                            schedules, documents people load, and the rest of the stores on this page. It serves the
+                            compliance API.</li>
+                        <li><strong>Execution API</strong> holds workflow, evaluation and bundle run records, and the
+                            conversations its agents write when a run names one. It also holds the plans its workflows
+                            persist and whatever its agents' tools store. It serves the compliance API at
+                            <code>/api/compliance/*</code>, authenticated with its own audience. Its anonymous development
+                            mode makes every caller one person, so the API refuses self-service and operator requests there,
+                            as AgentHub does under its sign-in bypass. Its receipt lists the bundle runs and staged bundles
+                            it keeps in memory (#990).</li>
+                        <li><strong>FoundryHost</strong> keeps each Foundry session's state in that session's own
+                            <code>$HOME</code>. It serves no erasure or export endpoint. You erase and export its data
+                            through Foundry's session API instead
+                            (<a href="#foundry-erasure">see below</a>).</li>
+                        <li><strong>ConsoleUI</strong> and <strong>EvalRunner</strong> are run by hand, not deployed as
+                            services. They compose the same stores, so anything they write lands in their own working
+                            directory. They serve no endpoint, so clear their state directly. <strong>AuditArchiver</strong>
+                            only moves existing audit day-files into the archive, and <strong>LoggerUI</strong> only prints
+                            log pipes. Neither writes personal data of its own.</li>
+                    </ul>
+
+                    <h3 id="foundry-erasure">Erasing and exporting FoundryHost's data: delete or copy the Foundry session</h3>
+                    <p>
+                        FoundryHost cannot serve these endpoints, and it does not need to. Callers reach a hosted agent only
+                        through its Foundry endpoint. The documented routes are the protocols
+                        (<code>.../endpoint/protocols/openai/responses</code>, <code>.../endpoint/protocols/invocations</code>)
+                        and the sessions API (Microsoft Learn, <em>Manage hosted agent sessions</em>). The container serves
+                        <code>POST /responses</code> or <code>POST /invocations</code> and <code>GET /readiness</code>
+                        (<em>Hosted agent runtime contract</em>). Neither page documents a route to any other container path,
+                        so we infer that <code>/api/compliance/*</code> would not be reachable. Every call also lands in one
+                        session's sandbox.
+                        A session is "a stateful, isolated sandbox tied to a single logical workload (for example, one
+                        user's chat)", with its own persistent <code>$HOME</code> (<em>Manage hosted agent sessions</em>).
+                        FoundryHost keeps what it writes in that <code>$HOME</code>, with two exceptions, both off by
+                        default. Durable governance state stays in the application directory, on the sandbox's ephemeral
+                        root disk. Prompt usage goes wherever its connection string points
+                        (<code>src/Content/Presentation/Presentation.FoundryHost/README.md</code>). The rest is:
+                    </p>
+                    <ul>
+                        <li>the agent session store, under <code>$HOME/.checkpoints</code>;</li>
+                        <li>the planner, conversation, document-ledger, schedule and erasure-journal databases;</li>
+                        <li>workflow state, execution traces, offloaded tool results, and subagent delegations and
+                            mailbox;</li>
+                        <li>the embedded Kuzu graph, file logs and the audit trails, all under
+                            <code>$HOME/agent-state</code>.</li>
+                    </ul>
+                    <p>
+                        An erasure run inside the container could reach only the one session the request landed in.
+                        Deleting the session reaches all of it.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Find the person's sessions.</strong> Each session belongs to one isolation key.
+                            <ul>
+                                <li>With the default Entra isolation source, the key is the caller's Microsoft Entra
+                                    identity, and the list call returns only the caller's own sessions.</li>
+                                <li>With the header source, the key is whatever your application sent in
+                                    <code>x-ms-user-isolation-key</code>.</li>
+                            </ul>
+                            An operator who holds the Foundry User role on the project sees and deletes every session on
+                            the agent. Listing is
+                            <code>GET .../agents/{agent}/endpoint/sessions</code>. If your application calls the agent on
+                            people's behalf under its own identity, it must record which sessions are whose: FoundryHost
+                            cannot tell you.
+                        </li>
+                        <li>
+                            <strong>Erase.</strong> <code>DELETE .../agents/{agent}/endpoint/sessions/{id}</code>, sent with
+                            the session's isolation key, "terminates the sandbox and releases its resources". The platform
+                            otherwise "retains <code>$HOME</code> state for 30 days unless you delete the session"
+                            (<em>Customer-managed keys in Microsoft Foundry</em>), so deleting the session is what removes
+                            the <code>$HOME</code> above. A session nobody deletes goes after 30 days of inactivity.
+                        </li>
+                        <li>
+                            <strong>Export.</strong> The session files API lists and downloads what is under
+                            <code>$HOME</code>: <code>GET .../sessions/{id}/files?path=...</code> and
+                            <code>GET .../sessions/{id}/files/content?path=...</code>. Copy <code>agent-state</code> and
+                            <code>.checkpoints</code>. They are the host's own storage formats (SQLite, JSONL, framework
+                            session files), not the JSON copy the other hosts return.
+                        </li>
+                    </ul>
+                    <p>
+                        <strong>Only when a session is one person's.</strong> Deleting or copying a session is a per-person
+                        erasure or copy only if nobody else's data is in it. That holds for the default Entra isolation
+                        source, where each caller has their own sessions. It does not hold in two cases. The first is a
+                        header isolation key shared by several people, such as a tenant id. The second is several users
+                        multiplexed into one session (Microsoft Learn, <em>Multiplex multiple users in one hosted agent
+                        session</em>). FoundryHost does not separate users inside a session. In those deployments, copying a
+                        session hands the requester the other people's data, and deleting it erases theirs too. Use one
+                        isolation key per person if you need either right per person.
+                    </p>
+                    <p>
+                        <strong>What deleting a session does not cover.</strong>
+                    </p>
+                    <ul>
+                        <li>The conversation history Foundry itself stores for the Responses protocol is kept apart from
+                            the session. Delete it through Foundry's conversations API.</li>
+                        <li>The session's audit trails, including the compliance trail, are inside <code>$HOME</code>.
+                            Deleting the session deletes them too, so the proof they hold goes with it. A deployment that
+                            must keep that proof archives the trails first (see
+                            <a href="#audit-archive-retention">the audit archive</a>).</li>
+                        <li>
+                            A store promoted to an external service is shared by every session: an external knowledge
+                            graph (<code>GRAPH_PROVIDER</code>, or <code>AppConfig:AI:Rag:GraphRag:GraphProvider</code>), a
+                            graph database other than the embedded Kuzu, any document index other than the in-process FAISS
+                            one (Azure AI Search through <code>AZURE_SEARCH_ENDPOINT</code>, say), Redis
+                            (<code>REDIS_ENDPOINT</code>), or the observability database
+                            (<code>AppConfig:Observability:PostgresConnectionString</code>). Deleting a session leaves
+                            what it put there. Which of them can still be erased per person depends on whether they record
+                            an owner (<a href="#foundry-owner">see below</a>). FoundryHost names each one at startup
+                            (<code>FoundryHostErasure</code>).
+                        </li>
+                        <li>Telemetry that has left the container: the Foundry hosting layer's traces and logs, and the
+                            harness's own Azure Monitor or OTLP export, sit in the Application Insights resource or collector
+                            they were sent to, under its own retention (see <a href="#foundry-telemetry">telemetry export</a>
+                            for turning that off).</li>
+                    </ul>
+                    <h3 id="foundry-owner">The shared stores: owned by the caller Foundry verified (#1008)</h3>
+                    <p>
+                        FoundryHost declares the Responses protocol at container protocol 2.0.0. That is the only version the
+                        Agent Framework hosting package it ships with speaks, and Foundry no longer serves 1.0.0
+                        (<em>Migrate hosted agents to the latest version</em>). On 2.0.0 the platform puts the caller's
+                        per-user id in an <code>x-agent-user-id</code> header on every protocol request. It generates the
+                        header from verified identity, and its gateway drops every caller header outside a short allowlist,
+                        so a caller cannot send their own (<em>Hosted agent runtime contract</em>). FoundryHost runs each
+                        request as that user: it builds the request's principal from the header
+                        (<code>FoundryCallerIdentity</code>), and the same knowledge-scope middleware every web host mounts
+                        sets the scope from it (<code>FoundryRequestScope</code>). The id resolves through
+                        <code>ClaimsPrincipalExtensions.GetUserIdOrNull()</code>, like every other host's caller.
+                    </p>
+                    <ul>
+                        <li><strong>The header is trusted only behind Foundry.</strong> If the container's port is ever
+                            reachable without passing through Foundry, anyone can send the header and be taken for anyone.
+                            Never publish port 8088.</li>
+                        <li><strong>No header, off the platform:</strong> a local run. The request runs unscoped, as every
+                            request did before #1008, and what it writes carries no owner.</li>
+                        <li><strong>No header, in Foundry</strong> (<code>FOUNDRY_HOSTING_ENVIRONMENT</code> set). A
+                            <code>/responses</code> request without it is refused with 401. The platform stamps every
+                            protocol request, and its gateway authenticated the caller, so a missing id is a caller we cannot
+                            name, not an anonymous one. The readiness probe never carries it and is served as before.</li>
+                        <li><strong>A header that names no one usable:</strong> sent twice with different values, blank
+                            (even beside a real value), or an id an operator erasure would refuse to name (longer than 256
+                            characters, or with surrounding whitespace). The request is refused with 401 instead of being run
+                            unowned, because a record with no owner reads as global. The same value sent twice is one
+                            caller.</li>
+                        <li><strong>Nothing else establishes the caller.</strong> A bearer token, an <code>x-client-*</code>
+                            header, or a principal set earlier in the pipeline is ignored.</li>
+                    </ul>
+                    <p>
+                        What that owner reaches, store by store:
+                    </p>
+                    <ul>
+                        <li><strong>Knowledge graph store</strong> (Neo4j or PostgreSQL). Memories and learnings written
+                            during a request record that caller as owner, so owner erasure and export find them. That includes
+                            what the request leaves running after it answers, which keeps the caller's scope. Two kinds of
+                            record carry no owner: entities derived from ingested documents, and what work no request started
+                            writes, such as a scheduled job. This needs <code>AppConfig:AI:Rag:GraphRag:ComplianceEnabled</code>
+                            (on by default): without it, edges are written with no owner, and FoundryHost warns about the
+                            store instead. The graph compares owners ignoring case. That is safe for the GUID and e-mail
+                            ids it was written for; Foundry documents its id only as opaque, so two ids differing only in
+                            case would be one owner there.</li>
+                        <li><strong>Document index</strong> (Azure AI Search). A document ingested during a request is
+                            stamped with that caller. Owner erasure deletes its chunks, and export copies them. The index is
+                            still kept by design as business content, as for every other host.</li>
+                        <li><strong>A provider the template does not ship</strong>: a graph database other than Kuzu (Kuzu
+                            is the only backend shipped), or a knowledge graph or document index added by you. Not promised.
+                            FoundryHost cannot tell whether it writes an owner, so it warns about it at startup. Check your
+                            provider stamps the knowledge scope's owner before relying on per-person erasure there.</li>
+                        <li><strong>Observability database.</strong> Not reached. Its rows name only a conversation, and the
+                            record of whose conversation it was stays inside the session. FoundryHost still warns about it at
+                            startup. Keep personal data out of it, or clear it as a whole.</li>
+                        <li><strong>Redis.</strong> Not reached. Its entries are keyed by a hash of the model request and go
+                            only when they expire (at most <code>Cache:ChatResponseExpiry</code>). FoundryHost still warns
+                            about it at startup.</li>
+                    </ul>
+                    <p>
+                        <strong>Erasing one person from those stores.</strong> FoundryHost still serves no erasure endpoint
+                        (<a href="#foundry-erasure">see above</a>). Send the request to a host that serves the compliance API
+                        and is bound to the same store: <code>POST /api/compliance/erasures</code>, or
+                        <code>/exports</code>, naming the person by their Foundry user id. Whichever host is asked first
+                        erases a shared store for both (<a href="#one-host">each request covers the host it is sent to</a>).
+                        Two limits apply:
+                    </p>
+                    <ul>
+                        <li><strong>You need the person's Foundry user id.</strong> Foundry documents it only as opaque.
+                            It is not documented to equal their Microsoft Entra object id, so it may not match the id the
+                            same person has on your other hosts. Foundry's documentation gives no way to look it up for a
+                            given person, and FoundryHost does not log it. Until one exists, a per-person request against
+                            these stores works only where you already know the id. Otherwise clear the stores as a
+                            whole.</li>
+                        <li><strong>Records with no owner stay.</strong> Those written by a request without the header, by
+                            work no request started, or derived from documents are not found by any per-person request.</li>
+                        <li><strong>Two hosting options would break this.</strong> The Foundry hosting layer's
+                            <code>ResilientBackground</code> re-runs a recovered turn with no request behind it, so with no
+                            owner. <code>SteerableConversations</code> runs a second caller's input inside the first caller's
+                            running turn, so as the first caller. FoundryHost turns on neither, and a test keeps it that way.
+                            Before turning on either, re-establish the owner from the turn's persisted platform context.</li>
+                        <li><strong>An application calling as itself is one owner.</strong> The id is the caller Foundry
+                            resolved. If your application calls the agent under its own identity without naming the person it
+                            acts for (the <code>x-ms-user-identity</code> delegation in <em>Multiplex multiple users in one
+                            hosted agent session</em>), we expect Foundry to give every person it relays the application's
+                            id. Microsoft does not document this, and we have not checked it on a deployment. If so, they
+                            share one owner, so an erasure naming it erases all of them. FoundryHost cannot tell such a
+                            caller from a person, as the other hosts do for an application's own token. Delegate the
+                            person's identity if you need either right per person.</li>
+                    </ul>
+
+                    <div class="callout callout-tip" id="erasure-receipt">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
                             <div class="callout-title">The receipt says what happened in every store</div>
@@ -999,19 +1331,30 @@
                                 structured record returned to the caller. It carries:
                             </p>
                             <ul style="margin-bottom: 0">
-                                <li><code>RequestId</code> and <code>ScopeId</code>, and the <code>RequestedAt</code> /
+                                <li><code>RequestId</code> and <code>ScopeId</code> (the person's id, lower-cased and
+                                    trimmed; returned to the caller and never logged), and the <code>RequestedAt</code> /
                                     <code>CompletedAt</code> window.</li>
+                                <li><code>Host</code>: the host whose stores the receipt covers (see
+                                    <a href="#one-host">each request covers the host it is sent to</a>).</li>
+                                <li><code>UnmatchedDocumentIds</code>: document ids drawn from the erased graph nodes that
+                                    matched no row in any store.</li>
                                 <li>The knowledge graph's counts: nodes, edges, feedback weights, vector embeddings,
                                     full-text rows and cross-session memories actually removed.</li>
                                 <li>
                                     <code>Stores</code>: one line per store, with a status and, unless it was erased, a
                                     fixed reason. <code>Erased</code> (with the count removed), <code>Failed</code>,
-                                    <code>Skipped</code> (held back because an earlier store failed),
-                                    <code>NotSupported</code> (a configured store that cannot erase), and three for stores
-                                    that cannot be searched for one person: <code>RetainedIndefinitely</code> (nothing
-                                    reliably ages it out, such as log files, traces, the response cache, and stores whose
-                                    retention period can be switched off), <code>RetainedUntilExpiry</code> (its records
-                                    go away on their own, such as a store held only in memory) and
+                                    <code>Skipped</code> (held back: an earlier store failed, or the person's
+                                    conversations or planned tasks started or ran while the erasure was under way, or one
+                                    of their workflow, evaluation or bundle runs had not ended, or a run was still
+                                    using a bundle they staged, or a store was only partly
+                                    erased), <code>NotSupported</code> (a store configured in this
+                                    host that holds personal data but cannot erase one person's), and three for stores
+                                    that cannot be searched for one person: <code>RetainedUntilExpiry</code> (each record is
+                                    deleted within a period: log files, traces and the response cache by default, and stores
+                                    held only in memory), <code>RetainedIndefinitely</code> (nothing ages it out: one of
+                                    those stores with its retention switched off, or durable escalation state and durable
+                                    change proposals, whose closed records are kept only until a period that can be
+                                    switched off) and
                                     <code>RetainedByObligation</code> (the tamper-evident audit trails, kept on purpose;
                                     the line names the kinds of data each holds, for example tool inputs or the network
                                     addresses a tool reached). One more line is always there:
@@ -1030,25 +1373,191 @@
                                     page said that the stores on the retention gap list made every default receipt
                                     <code>Partial</code>; they could not, because each of them erases by owner and so
                                     appeared as an erasure line. They are now kept by design, with the reason above.
-                                    Reducing what the audit trails record is tracked in #903.
+                                    Turning on durable escalation state or durable change proposals
+                                    (<code>EscalationsEnabled</code>, <code>ChangeProposalsEnabled</code>, both off by
+                                    default) makes every receipt <code>Partial</code>, because those stores keep open
+                                    records with no end date.
                                 </li>
                             </ul>
                         </div>
                     </div>
 
+                    <h3 id="erasure-gaps">What erasure cannot reach</h3>
+                    <p>
+                        Every store declares what it can do with <code>[PersonalDataStore]</code>, and the receipt reports
+                        from those declarations. The stores that cannot erase one person's data, by default:
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Why not</th>
+                                <th>Stores</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Not keyed by person, so one person's records cannot be found</td>
+                                <td>The chat response cache, the log files and structured application logs, execution
+                                    traces, agent delegation records, change proposals and their evidence, durable
+                                    escalation state, and the in-memory learnings store</td>
+                            </tr>
+                            <tr>
+                                <td>Kept on purpose: removing a person would break tamper-evident evidence</td>
+                                <td>The governance, change, drift, egress, escalation and compliance audit trails, and
+                                    the audit archive</td>
+                            </tr>
+                            <tr>
+                                <td>Erasure's own record of unfinished work</td>
+                                <td>The erasure journal, which ages out after <code>JournalRetention</code></td>
+                            </tr>
+                            <tr>
+                                <td>Deleted item by item, not by person</td>
+                                <td>Workflow checkpoints and their Markdown copies</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <ul>
+                        <li>
+                            A store a deployer adds that declares <code>[PersonalDataStore]</code> but has no eraser is
+                            listed as <code>NotSupported</code> ("the store configured in this host holds personal data
+                            but cannot erase one person's"), and the receipt is <code>Partial</code>.
+                        </li>
+                        <li>
+                            A cross-session memory backend that cannot delete (a remote one) makes the receipt
+                            <code>Partial</code>, with the reason "cross-session memory purge is not supported by the
+                            configured backend".
+                        </li>
+                        <li>
+                            <strong>In memory, outside the inventory guard's sight until #990.</strong> The guard found a
+                            store by the storage call it makes, and a store held only in memory makes none, so the bundle
+                            API's two stores were missed. It now also fails the build for any type that keeps a collection
+                            of records with an <code>OwnerId</code> or <code>UserId</code> field and is not declared. It
+                            still cannot see a store whose records carry no owner, such as one keyed only by a run or
+                            conversation id. Those are declared by hand. Two types it flags are listed as exceptions, each
+                            with its reason: a per-request buffer of graph nodes, and the AgentHub's record of open
+                            connections, which is dropped when a connection closes or has been idle for the configured
+                            time (five minutes by default). One type it cannot see is listed by hand: the workflow
+                            progress feed, keyed by run id, which buffers events only for an open watcher and never a
+                            step's output (#1005). Both exceptions whose reason rests on what their records carry are
+                            pinned to every field of those records and to every type that calls them directly, so a field
+                            or a direct caller added later fails the build until someone re-reads it. Text that reaches
+                            those callers from further up (cancellation notices, a run's caller-safe failure message) is
+                            not pinned; the exemption names the contracts it relies on instead.
+                        </li>
+                        <li>
+                            Some stores have no receipt line at all: the erasure journal, the in-memory learnings store,
+                            and the audit archive. The erasure, export and document-removal records are on it, as the
+                            compliance audit trail.
+                        </li>
+                        <li>
+                            Self-service erasure is limited to 5 requests an hour per person; operator erasure to 30 an
+                            hour.
+                        </li>
+                        <li>
+                            <strong>Spilled tool results written before #928.</strong> The conversation database
+                            compares ids exactly, so <code>ticket-42</code> and <code>TICKET-42</code> can belong to two
+                            people. (The file-backed conversation store, on Windows or macOS, treats the two as one
+                            conversation: it refuses the second when another person owns the first, and lets the same
+                            person use both names for one transcript.) Spill
+                            folders are now named after the id lower-cased plus a hash of the exact id, so two such ids
+                            never share a folder, even on Windows or macOS, which ignore case in names. Before #928 the
+                            folder kept the id's case, and on those systems both ids wrote into one folder. Erasure and the
+                            person's copy still find such an old folder, but only for the id that created it: it is
+                            erased and copied whole for that id, including any spills the other id wrote there, and the
+                            other id's spills in it are not found for that other person. The files carry no owner, so
+                            they cannot be separated. Old folders receive no new writes and are deleted by the 7-day
+                            spill retention. A page of an old spill can no longer be fetched by the agent.
+                        </li>
+                    </ul>
+
                     <h3>The erasure audit record</h3>
                     <p>
                         Each request writes an <code>Attempted</code> record before anything is deleted and an outcome
-                        after, paired by a correlation id, through the shared audit sink. The record proves the erasure
-                        happened without keeping the identity it erased: it holds who asked (an operator by id; a person
-                        erasing themselves only as <code>data-subject</code>), per-store counts, the receipt's request id,
-                        and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
+                        after, paired by a correlation id, with the action <code>right_to_erasure</code>. The record is
+                        meant to prove the erasure happened without keeping the identity it erased: it holds who asked
+                        (an operator by a keyed reference in the compliance trail and by id in the log line; a person
+                        erasing themselves only as <code>data-subject</code>), the host that handled it (<code>host</code>,
+                        #1003; export and document-removal records carry it too), per-store counts, the receipt's request
+                        id, and a pseudonymous subject reference. The reference is an HMAC-SHA256 of the person's id under
                         <code>AppConfig:AI:Erasure:SubjectReferenceKey</code> (base64, at least 32 bytes): whoever holds
                         the key can recompute it from an id and find that person's erasure, and no one without the key can
-                        reverse it. Without a key, no reference is recorded. A missing key or a broken audit sink never
-                        blocks an erasure. Log lines on the erasure path carry neither the person's id nor their
-                        conversation or memory ids.
+                        reverse it. Without a key, no reference is recorded. A missing key, a broken audit sink or a
+                        broken compliance trail never blocks an erasure: the failure is logged and the erasure goes on.
+                        Log lines on the erasure path carry neither the person's id nor their conversation or memory ids.
                     </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Every record is kept in the compliance audit trail</div>
+                            <p style="margin: 0">
+                                Each record is written twice, independently (#969). <code>IComplianceAuditTrail</code> keeps
+                                it in the compliance audit trail: hash-chained JSONL day-files under
+                                <code>{AppConfig:AI:Erasure:AuditStoragePath}/compliance</code> (by default
+                                <code>.agent-sessions/compliance</code>),
+                                walked by scheduled chain verification and moved to the archive with the other trails when
+                                <code>AppConfig:AI:Audit:ArchivePath</code> is set. Nothing deletes it, and erasure lists it
+                                on every receipt as <code>RetainedByObligation</code> rather than erasing from it. The audit
+                                sink, <code>StructuredLogAuditSink</code> by default, also writes it as one log line for log
+                                tooling; that line is deleted with the logs after <code>Logging:Retention:RetainFor</code>,
+                                30 days by default. Export (<code>subject_access_export</code>) and document-removal
+                                (<code>document_removal</code>) records are kept the same way. Startup refuses an empty
+                                <code>AuditStoragePath</code>. The compliance report summarises the trail for its period:
+                                counts by request and outcome, and each finished request's receipt id, with no operator,
+                                subject or document reference (#1000); records still held for replay are named in its
+                                warnings.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A record the trail cannot write is held, then written</div>
+                            <p style="margin: 0">
+                                When the trail cannot be appended to (its chain lock still busy, a full disk, a folder it
+                                may not write), the record is held in <code>{AuditStoragePath}/compliance-pending</code>
+                                instead of surviving only as the error log line (#995). An erasure or export is not kept
+                                waiting for the lock: its record waits at most half a second, rather than the writer's usual
+                                ten, before it is held (#999). The other five audit trails hold and replay the same way,
+                                each in a <code>-pending</code> folder beside its own day-files, such as
+                                <code>governance-pending</code> (#1001); a trail that refuses the action when its record
+                                cannot be written (changes, egress, escalations, a drift operator's attempt) still refuses it.
+                                Changes and egress hold the decision marked <code>not_carried_out</code>, which the report
+                                and the audit queries honour; the escalation trail holds only execution reports and the drift
+                                trail no operator attempt, since those callers refuse or re-drive the rest themselves. A pass
+                                writes at most 500 held records, oldest first, and sets aside a held file over 1 MiB or one
+                                whose name carries no hold time; <code>agent.audit.records_held</code> reports what is still
+                                waiting. Each held file is the exact line the trail refused, with an operator
+                                already replaced by their keyed reference, so it holds nothing the trail would not; it is
+                                flushed to disk and renamed into place before the request returns (the rename itself is
+                                not forced to disk, so on Linux a power cut at that moment can still lose it; a process
+                                crash cannot). A held file one pass cannot read is left for the next, and the files behind
+                                it go ahead. Anything that can write this folder can add a record to the trail, as anything
+                                that can write the trail's own folder can; both are made owner-only. A background service
+                                writes held records into the trail when the host starts and every minute, oldest first,
+                                and removes each file only once its record is in the trail. A pass first looks for every
+                                held line in the trail and only removes those already there, so a crash between writing and
+                                removing never writes a record twice, and an exclusive lock in the folder stops hosts that
+                                share it from replaying the same record. The trail is in the order records were appended:
+                                a replayed record keeps its own <code>timestamp</code> and <code>correlation_id</code> but
+                                can sit after records made later, so order requests by <code>timestamp</code>. Every record
+                                that could not be written is counted on
+                                <code>agent.audit.write_failures</code>, tagged with its trail
+                                (<code>agent.audit.chain</code>) and <code>agent.audit.outcome</code>: <code>pending</code>
+                                when it is held,
+                                <code>lost</code> when it could not be held either (logged as critical; alert on it),
+                                <code>stuck</code> when a held file cannot be opened (another account owns it, another
+                                process keeps it open), counted and logged as an error once per file in each process rather
+                                than on every pass, so it too means a record missing from the trail, and
+                                <code>agent.audit.records_replayed</code> counts the held records written since.
+                                The folder is on the trail's volume, so a full or read-only volume usually refuses the held
+                                file as well; holding mainly covers a busy lock and passing I/O failures. A held file
+                                that is not a record is renamed <code>.unreadable</code>, counted as lost and left for an
+                                operator.
+                            </p>
+                        </div>
+                    </div>
 
                     <h3>Deleted text on disk</h3>
                     <p>
@@ -1097,7 +1606,9 @@
                         sign-in is bypassed (every caller is then one synthetic person, so the copy would hold everyone's
                         data) and for an application's own token. It is limited to five requests an hour per person, and
                         the host assembles at most two copies at once; a further request is refused with 429 rather than
-                        queued.
+                        queued. The copy holds only what the host it was sent to can find, and its <code>host</code> field
+                        says which host that is. Ask each host that holds personal data
+                        (<a href="#one-host">see above</a>).
                     </p>
                     <p>
                         <strong>For someone who cannot sign in.</strong> <code>POST /api/compliance/exports</code> with the
@@ -1114,7 +1625,11 @@
                     </p>
                     <p>
                         <strong>What the copy holds.</strong> One section per store that can return a person's data:
-                        their conversations with every message, their schedules, and their knowledge-graph nodes and edges,
+                        their conversations with every message, their schedules, their workflow and evaluation run records
+                        (finished or still live) with each evaluation's dataset names, options and report (#991), their
+                        bundle runs with the messages they sent and the agent's answers, the bundles they staged (which
+                        agent, skills and plugins, not where the host extracted them) (#990), and their knowledge-graph
+                        nodes and edges,
                         including remembered facts the write-gate quarantined, which the product never shows them but which
                         are still theirs. A record with no owner is shared or global and is never included on its own, and
                         neither is an edge another person owns, even where it touches this person's node. An unowned edge
@@ -1197,7 +1712,8 @@
                         <strong>Audit.</strong> Each request writes an <code>Attempted</code> and an outcome record with the
                         action <code>subject_access_export</code>, in the same shape as erasure's: who asked, the
                         pseudonymous subject reference, the copy's request id, whether it is complete, and each store's
-                        status and record count. Never the person's id, and never anything the copy contains.
+                        status and record count. Never the person's id, and never anything the copy contains. Like
+                        erasure's, the records are kept in the compliance audit trail as well as written to the log.
                     </p>
 
                     <h2 id="data-classification-dlp">Data-classification DLP</h2>
@@ -1231,6 +1747,164 @@
                         <code>Off</code> and a classification provider are configured. This keeps the closed-by-default
                         posture on capabilities while avoiding false positives that would block legitimate work in
                         deployments that have not adopted Purview labelling.
+                    </p>
+
+                    <h2 id="data-at-rest">Data at rest: what the harness does not encrypt</h2>
+                    <p>
+                        The harness does not encrypt the files it keeps personal data in. Its local stores are plaintext
+                        on disk: SQLite databases, the knowledge-graph files, JSONL audit trails, log files and spilled
+                        tool results. Owner-only file permissions are applied on Linux; on Windows the files inherit the
+                        folder's access control. Encryption at rest is therefore the deployer's job, and the usual answer
+                        is to encrypt the volume the data directory sits on.
+                    </p>
+                    <p>
+                        The harness cannot detect whether a volume is encrypted, so it asks instead. Outside Development,
+                        a host warns at startup until the deployer records an answer in
+                        <code>AppConfig:Infrastructure:DataAtRest:Encryption</code>. <code>Unspecified</code> (the
+                        default) warns; <code>Volume</code> records that the volume is encrypted and is logged at
+                        Information. The check is <code>DataAtRestStartupCheck</code>
+                        (<code>src/Content/Infrastructure/Infrastructure.AI/DataAtRest/DataAtRestStartupCheck.cs</code>).
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Where the data is</th>
+                                <th>Examples</th>
+                                <th>How to protect it at rest</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Local SQLite databases</td>
+                                <td>Conversations and budgets, planner runs, prompt usage, schedules, the erasure journal, the document load ledger, the keyword index when it is file-backed</td>
+                                <td>Volume or disk encryption (BitLocker, LUKS, a cloud provider's disk encryption). The harness does not ship SQLCipher.</td>
+                            </tr>
+                            <tr>
+                                <td>Local files</td>
+                                <td>JSONL audit trails, log files, file-system conversation transcripts, spilled tool results, the Kùzu graph</td>
+                                <td>Volume or disk encryption, on the same volume as the databases.</td>
+                            </tr>
+                            <tr>
+                                <td>The audit archive</td>
+                                <td>Sealed audit segments copied off the host</td>
+                                <td>The storage service's own encryption at rest, for example Azure Storage's (see <a href="#audit-archive-retention">the audit archive</a>).</td>
+                            </tr>
+                            <tr>
+                                <td>PostgreSQL</td>
+                                <td>The observability store; the PostgreSQL knowledge-graph backend</td>
+                                <td>The database server's encryption at rest. A managed service such as Azure Database for PostgreSQL encrypts its storage; a self-hosted server needs disk encryption.</td>
+                            </tr>
+                            <tr>
+                                <td>Other external services</td>
+                                <td>Neo4j, Azure AI Search, the distributed cache</td>
+                                <td>That service's encryption-at-rest setting. Check it for each one you configure.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3 id="foundry-telemetry">Telemetry export from FoundryHost</h3>
+                    <p>
+                        Every host except FoundryHost exports to Azure Monitor only when
+                        <code>AppConfig:Observability:Exporters:AzureMonitor:Enabled</code> is set and a
+                        <code>ConnectionString</code> is given. Foundry injects
+                        <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> into every hosted container. By default
+                        FoundryHost turns the harness's exporter on with it, and the Foundry hosting layer
+                        (<code>AgentHost</code>) exports its own traces and logs to it as well, so telemetry goes to that
+                        Application Insights resource without any setting of the deployer's. FoundryHost says so at
+                        startup.
+                    </p>
+                    <p>
+                        To send nothing there, set the opt-out to <code>false</code>. FoundryHost then removes the
+                        variable before anything reads it, so neither the harness nor the hosting layer exports to
+                        Foundry's resource, and Foundry's portal shows no traces for the agent. The harness's exporter is
+                        then yours to point at your own resource with <code>Enabled</code> and
+                        <code>ConnectionString</code>. What the telemetry may contain is governed by content capture and
+                        redaction, not by this switch.
+                    </p>
+                    <p id="foundry-telemetry-opt-out">
+                        This is the one description of where the opt-out can be set; the code and the startup message
+                        point here. FoundryHost reads it from the same configuration the host binds, and each source
+                        spells the setting differently:
+                    </p>
+                    <ul>
+                        <li><strong>appsettings or User Secrets (JSON):</strong>
+                            <code>"AppConfig": { "Observability": { "Exporters": { "AzureMonitor": { "EnableFromHostConnectionString": false } } } }</code></li>
+                        <li><strong>Environment variable:</strong>
+                            <code>AppConfig__Observability__Exporters__AzureMonitor__EnableFromHostConnectionString=false</code>
+                            (double underscores; a variable name containing <code>:</code> is not portable).</li>
+                        <li><strong>Azure Key Vault secret:</strong> named
+                            <code>AppConfig--Observability--Exporters--AzureMonitor--EnableFromHostConnectionString</code>
+                            with the value <code>false</code> (Key Vault does not allow <code>:</code> in a name; the
+                            loader maps <code>--</code> to it).</li>
+                        <li><strong>Azure App Configuration key:</strong>
+                            <code>AppConfig:Observability:Exporters:AzureMonitor:EnableFromHostConnectionString</code>,
+                            unlabelled or labelled <code>API</code>. Keys under any other label are not read.</li>
+                    </ul>
+                    <p>
+                        Key Vault and App Configuration are read only in a Release build, only when the host has their
+                        address (<code>AzureKeyVaultUri</code>, <code>AzureAppConfigConnectionString</code>), and not when
+                        <code>DisableAzureConfigSources</code> is set. An opt-out placed in a source the host does not read
+                        has no effect, and FoundryHost's startup message says which way it went.
+                    </p>
+
+                    <h2 id="deployer-responsibilities">What the deploying organisation must do</h2>
+                    <p>
+                        The harness supplies mechanisms: an inventory of where personal data is kept, erasure and export
+                        that report honestly on every store, retention periods, pseudonymous audit references and the
+                        startup warnings on this page. It cannot make a deployment lawful. Under the GDPR the deploying
+                        organisation is the controller (or a processor acting for one), and these remain its job:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Lawful basis (Article 6).</strong> Decide and record the basis for each purpose the
+                            agent serves, and for any special-category data it may see (Article 9).
+                        </li>
+                        <li>
+                            <strong>Privacy notice (Articles 13 and 14).</strong> Tell people what the agent keeps, for
+                            how long, who it is shared with, and how to ask for a copy or erasure. The retention periods
+                            and the receipt statuses on this page are the facts to draw on.
+                        </li>
+                        <li>
+                            <strong>Processor agreements (Article 28).</strong> Have a data processing agreement with every
+                            service the deployment sends personal data to: the model provider, Azure AI Content Safety,
+                            Azure Monitor, Azure AI Search, and any database or cache you host elsewhere.
+                        </li>
+                        <li>
+                            <strong>Regions and transfers (Chapter V).</strong> Choose the region of each of those
+                            services, and put transfer safeguards in place where data leaves the EEA. FoundryHost sends
+                            telemetry to the Application Insights resource Foundry supplies unless you turn that off (see
+                            <a href="#foundry-telemetry">telemetry export</a>).
+                        </li>
+                        <li>
+                            <strong>Records of processing (Article 30).</strong> The personal-data inventory (every
+                            <code>[PersonalDataStore]</code> declaration) is a starting point for your record, not the
+                            record itself.
+                        </li>
+                        <li>
+                            <strong>Data protection impact assessment (Article 35).</strong> An AI agent that remembers
+                            people across sessions is likely to need one. Use the
+                            <a href="01-threat-model.html">threat model</a> and this page as inputs.
+                        </li>
+                        <li>
+                            <strong>Security of processing (Article 32).</strong> Encrypt data at rest (see
+                            <a href="#data-at-rest">above</a>), keep authentication bypass off outside Development, turn
+                            on content safety if you need it, and turn on knowledge isolation if more than one tenant
+                            shares the host.
+                        </li>
+                        <li>
+                            <strong>Breaches (Articles 33 and 34).</strong> Have a process to detect, assess and report a
+                            personal-data breach within 72 hours. The audit trails and telemetry help with detection; the
+                            process is yours.
+                        </li>
+                        <li>
+                            <strong>Requests from people (Articles 15 to 22).</strong> Decide who handles access and
+                            erasure requests, set <code>AppConfig:AI:Erasure:OperatorTenantIds</code> so operators can act
+                            for people who cannot use self-service, and keep the receipts.
+                        </li>
+                    </ul>
+                    <p>
+                        This is a checklist, not legal advice. Agree each item with your data protection officer.
                     </p>
 
                     <h2 id="secrets">Secrets management</h2>

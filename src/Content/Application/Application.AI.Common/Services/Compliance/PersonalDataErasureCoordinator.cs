@@ -70,6 +70,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     private readonly IPlanRunTraceSource? _planRuns;
     private readonly IErasureJournal? _journal;
     private readonly IPlannedTaskCanceller? _runningTasks;
+    private readonly IReadOnlyList<IKeptRunSource> _keptRuns;
+    private readonly IOwnedRunCanceller? _liveRuns;
     private readonly IReadOnlyList<IPersonalDataEraser> _erasers;
     private readonly IReadOnlyList<RetainedPersonalData> _retained;
     private readonly IAmbientRequestScope _ambientScope;
@@ -100,6 +102,16 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
     /// Stops the person's planned tasks still running when the request starts, before anything is read (#907).
     /// <see langword="null"/> in a host without plans.
     /// </param>
+    /// <param name="keptRuns">
+    /// Each counts the person's records a run store still holds after its erasure, which keeps a run until it ends: the
+    /// workflow and evaluation runs (#926) and the bundle API's runs and staged bundles (#990). Each gets its own receipt
+    /// line. <see langword="null"/> or empty in a host without a run store.
+    /// </param>
+    /// <param name="liveRuns">
+    /// Cancels the person's queued and parked workflow and evaluation runs when the request starts, and waits for the
+    /// executing ones once the planned tasks are stopped, so the run store's eraser can remove them with the rest (#992).
+    /// <see langword="null"/> in a host without a run store.
+    /// </param>
     public PersonalDataErasureCoordinator(
         IErasureOrchestrator graph,
         IEnumerable<IPersonalDataEraser> erasers,
@@ -110,7 +122,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         IConversationStore? conversations = null,
         IPlanRunTraceSource? planRuns = null,
         IErasureJournal? journal = null,
-        IPlannedTaskCanceller? runningTasks = null)
+        IPlannedTaskCanceller? runningTasks = null,
+        IEnumerable<IKeptRunSource>? keptRuns = null,
+        IOwnedRunCanceller? liveRuns = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(erasers);
@@ -120,8 +134,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         ArgumentNullException.ThrowIfNull(logger);
 
         _graph = graph;
-        // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser.
-        _erasers = erasers.OfType<IPersonalDataEraser>().ToList();
+        // A forwarded registration yields null when the host's store cannot erase; see AddPersonalDataEraser. A substrate
+        // composed twice registers each store twice: one store is still erased once, on one line (#1004).
+        _erasers = PersonalDataRegistrations.DistinctErasers(erasers);
         _retained = retained.ToList();
         _ambientScope = ambientScope;
         _timeProvider = timeProvider;
@@ -130,6 +145,9 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         _planRuns = planRuns;
         _journal = journal;
         _runningTasks = runningTasks;
+        // One instance registered twice (a substrate composed twice) is still one source, so one receipt line.
+        _keptRuns = keptRuns?.Distinct().ToList() ?? [];
+        _liveRuns = liveRuns;
     }
 
     /// <inheritdoc />
@@ -142,8 +160,16 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
         // One request per person at a time (#907): overlapping ones could clear an id between another's read and record.
         using var turn = _journal is null ? null : await _journal.BeginRequestAsync(ownerId, cancellationToken);
 
+        // #992: a queued run would start after the person is erased, and a parked one would keep the receipt Partial. First,
+        // so a queued workflow run cannot start a planned task after the stop below has looked for them.
+        await CancelLiveRunsAsync(ownerId);
+
         // #907: a planned task already running would keep writing under the ids read below after their stores are cleared.
-        await StopRunningTasksAsync(ownerId, cancellationToken);
+        // #992: alongside it, a bounded wait for runs still executing that re-cancels any that parked or were queued
+        // meanwhile. Together, so the two waits overlap rather than add up.
+        await Task.WhenAll(
+            StopRunningTasksAsync(ownerId, cancellationToken),
+            WaitForLiveRunsAsync(ownerId, cancellationToken));
 
         // Read before any deletion. A failure here erases nothing, which is the only safe answer: without the ids the
         // stores reached through conversations and planned-task runs are unreachable, and what leads to them must not be
@@ -208,6 +234,8 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
         if (conversationsErased)
             await NoteConversationsStartedMeanwhileAsync(ownerId, outcomes);
+
+        await NoteRunsKeptAsync(ownerId, outcomes);
 
         // #907: never followed into the stores without an owner, so the receipt must not read Full.
         if (subject.WithheldConversationIds.Count > 0)
@@ -371,7 +399,10 @@ public sealed partial class PersonalDataErasureCoordinator : IPersonalDataErasur
 
     /// <summary>
     /// Runs one later stage when <paramref name="mayRun"/>; otherwise records each of its stores as held back, so a retry
-    /// still finds them. Returns whether every store in the stage ran and succeeded.
+    /// still finds them. Returns whether every store in the stage ran and erased, which is what tells the caller the stage's
+    /// lead is gone. That is a narrower question than whether later stages may run at all: a store here that cannot erase
+    /// (<see cref="StoreErasureStatus.NotSupported"/>) leaves its records standing, so what they lead to is held back with
+    /// them, although a retry would not change it.
     /// </summary>
     private async Task<bool> RunStageAsync(
         ErasureStage stage, bool mayRun, List<StoreErasureOutcome> outcomes, ErasureSubject subject,

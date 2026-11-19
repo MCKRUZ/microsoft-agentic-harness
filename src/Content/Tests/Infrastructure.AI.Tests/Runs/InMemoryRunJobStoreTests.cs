@@ -8,6 +8,7 @@ using Infrastructure.AI.Tests.Runs.Support;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Infrastructure.AI.Tests.Runs;
 
@@ -31,7 +32,7 @@ public sealed class InMemoryRunJobStoreTests
     private IRunJobStore BuildSut(TimeSpan? ttl = null)
     {
         _config.AI.WorkflowSubmission.RunRecordTtl = ttl ?? TimeSpan.FromHours(1);
-        return new InMemoryRunJobStore(new StaticOptionsMonitor<AppConfig>(_config), _time);
+        return new InMemoryRunJobStore(new StaticOptionsMonitor<AppConfig>(_config), _time, [], NullLogger<InMemoryRunJobStore>.Instance);
     }
 
     private RunRecord Queued(

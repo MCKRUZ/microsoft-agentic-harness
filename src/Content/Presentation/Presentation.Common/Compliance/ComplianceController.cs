@@ -1,30 +1,34 @@
 using Application.Core.CQRS.Compliance.EraseMyData;
 using Application.Core.CQRS.Compliance.EraseSubjectData;
-using Application.Core.CQRS.Compliance.GenerateComplianceReport;
 using Application.Core.CQRS.Compliance.RemoveDocument;
 using Application.Core.Compliance;
-using Domain.AI.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Presentation.AgentHub.Auth;
 using Presentation.Common.Extensions;
 
-namespace Presentation.AgentHub.Controllers;
+namespace Presentation.Common.Compliance;
 
 /// <summary>
-/// REST API for data-subject compliance actions: self-scoped right-to-erasure, operator-initiated erasure, operator
-/// removal of a source document, and compliance reports.
+/// REST API for data-subject compliance actions: self-scoped right-to-erasure, operator-initiated erasure, and operator
+/// removal of a source document.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>One host at a time (#1003).</b> Every request erases what <em>this</em> process holds, and the receipt names the
+/// host it covers (<see cref="ErasureReceipt.Host"/>). Hosts do not call one another, so a deployment that runs more than
+/// one host holding personal data — AgentHub and the Execution API, say — sends the request to each. The controller ships
+/// here, not in a host, so every host serves the same endpoints under the same rules; it is mounted only by
+/// <see cref="ComplianceApiMvcBuilderExtensions.AddComplianceApi"/> (see <see cref="RequiresComplianceApiOptInAttribute"/>).
+/// </para>
 /// <para>
 /// The controller is <see cref="AuthorizeAttribute">[Authorize]</see> (authentication required, no role
 /// gate): erasing one's <b>own</b> data is a data-subject right available to every authenticated user,
 /// not a privileged administrative operation. Anonymous callers are rejected by the framework before any
-/// handler runs. Erasing someone else and reading reports each carry their own role.
+/// handler runs. Erasing someone else and removing a document each carry their own role.
 /// </para>
 /// <para>
 /// <b>Self-scope.</b> The erase endpoint takes no request body and no owner parameter. The subject of the
@@ -41,6 +45,7 @@ namespace Presentation.AgentHub.Controllers;
 [ApiController]
 [Route("api/compliance")]
 [Authorize]
+[RequiresComplianceApiOptIn]
 public sealed class ComplianceController : ControllerBase
 {
     /// <summary>
@@ -73,26 +78,31 @@ public sealed class ComplianceController : ControllerBase
     private readonly AuditedErasure _erasure;
     private readonly AuditedDocumentRemoval _documentRemoval;
     private readonly OperatorGate _operatorGate;
+    private readonly ComplianceApiMarker _api;
 
     /// <summary>Initializes the controller.</summary>
     /// <param name="mediator">The MediatR mediator used to dispatch the erasure commands.</param>
     /// <param name="erasure">Records operator erasure requests refused before they reach a command.</param>
     /// <param name="documentRemoval">Records document-removal requests refused before they reach a command.</param>
     /// <param name="operatorGate">Decides whether an operator may erase or remove documents.</param>
+    /// <param name="api">The host's opt-in, which names the sign-in schemes every caller of which is the same person.</param>
     public ComplianceController(
         IMediator mediator,
         AuditedErasure erasure,
         AuditedDocumentRemoval documentRemoval,
-        OperatorGate operatorGate)
+        OperatorGate operatorGate,
+        ComplianceApiMarker api)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(erasure);
         ArgumentNullException.ThrowIfNull(documentRemoval);
         ArgumentNullException.ThrowIfNull(operatorGate);
+        ArgumentNullException.ThrowIfNull(api);
         _mediator = mediator;
         _erasure = erasure;
         _documentRemoval = documentRemoval;
         _operatorGate = operatorGate;
+        _api = api;
     }
 
     /// <summary>
@@ -102,8 +112,9 @@ public sealed class ComplianceController : ControllerBase
     /// owner can be targeted.
     /// </summary>
     /// <remarks>
-    /// Refused when sign-in is bypassed (<c>DevAuthHandler</c> or <c>SelfHostedAuthHandler</c>): every caller is then
-    /// the same synthetic person, so "my data" is everyone's. Refused for the same reason when the token is an
+    /// Refused when sign-in is bypassed (a scheme the host named in <see cref="ComplianceApiMarker.SharedIdentitySchemes"/>,
+    /// such as AgentHub's <c>DevAuthHandler</c> or the Execution API's anonymous mode): every caller is then the same
+    /// synthetic person, so "my data" is everyone's. Refused for the same reason when the token is an
     /// application's own rather than a person's (<see cref="ClaimsPrincipalExtensions.IsApplicationOnly"/>, #907): every
     /// caller of that application shares its identity. Both refusals are recorded in the erasure audit trail.
     /// </remarks>
@@ -118,7 +129,7 @@ public sealed class ComplianceController : ControllerBase
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> EraseMyData(CancellationToken cancellationToken)
     {
-        if (AuthBypassPolicy.IsSharedSyntheticIdentity(User))
+        if (_api.IsSharedSyntheticIdentity(User))
         {
             await _erasure.RecordDeniedAsync(ErasureActor.DataSubject, nameof(EraseMyDataCommand), "sign-in is bypassed")
                 .ConfigureAwait(false);
@@ -264,65 +275,6 @@ public sealed class ComplianceController : ControllerBase
             await _documentRemoval.RecordDeniedAsync(actor, "invalid document id", request.DocumentId).ConfigureAwait(false);
 
         return result.IsSuccess ? Ok(result.Value) : this.FailureResponse(result, "Document removal failed");
-    }
-
-    /// <summary>
-    /// Generates a compliance report over a time window — the append-only, hash-chained governance/
-    /// change/egress/escalation/drift trails joined with sessions, safety-filter events, and audit-log
-    /// entries from the conversation database, plus a live tamper-evidence check of every chain.
-    /// </summary>
-    /// <remarks>
-    /// This is cross-user, privileged observability data — the same posture as <c>SessionsController</c>
-    /// — so it is gated separately from the rest of this controller with
-    /// <see cref="SessionsController.ObserverRole"/> rather than this controller's own bare
-    /// <see cref="AuthorizeAttribute"/>, which only requires authentication.
-    /// </remarks>
-    /// <param name="start">Start of the reporting window, as Unix epoch seconds (inclusive).</param>
-    /// <param name="end">End of the reporting window, as Unix epoch seconds (inclusive).</param>
-    /// <param name="conversationId">Optional: narrows the session/safety/audit-log sections to one conversation.</param>
-    /// <param name="maxRecordsPerSource">Optional: caps raw records returned per data source.</param>
-    /// <param name="format">Either <c>json</c> (default) or <c>markdown</c>.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <response code="200">Report generated; body is JSON or Markdown depending on <paramref name="format"/>.</response>
-    /// <response code="400">Validation failure (e.g. window too long, end before start).</response>
-    /// <response code="401">No authenticated user identity present.</response>
-    /// <response code="403">Authenticated, but lacking the observer role.</response>
-    [HttpGet("reports")]
-    [Authorize(Roles = SessionsController.ObserverRole)]
-    [ProducesResponseType(typeof(ComplianceReport), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<IActionResult> GenerateReport(
-        [FromQuery] long start,
-        [FromQuery] long end,
-        [FromQuery] string? conversationId = null,
-        [FromQuery] int? maxRecordsPerSource = null,
-        [FromQuery] string format = "json",
-        CancellationToken cancellationToken = default)
-    {
-        if (User.GetUserIdOrNull() is not { } callerId)
-            return this.NoUsableIdentity();
-
-        var query = new GenerateComplianceReportQuery
-        {
-            CallerId = callerId,
-            Start = DateTimeOffset.FromUnixTimeSeconds(start),
-            End = DateTimeOffset.FromUnixTimeSeconds(end),
-            ConversationId = string.IsNullOrWhiteSpace(conversationId) ? null : conversationId,
-        };
-        if (maxRecordsPerSource.HasValue)
-            query = query with { MaxRecordsPerSource = maxRecordsPerSource.Value };
-
-        var result = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
-
-        if (!result.IsSuccess)
-            return this.FailureResponse(result, "Compliance report generation failed");
-
-        if (string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase))
-            return Content(ComplianceReportMarkdownRenderer.Render(result.Value!), "text/markdown");
-
-        return Ok(result.Value);
     }
 
     /// <summary>

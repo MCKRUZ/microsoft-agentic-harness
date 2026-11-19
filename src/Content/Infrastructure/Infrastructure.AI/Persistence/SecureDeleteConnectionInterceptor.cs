@@ -10,7 +10,8 @@ namespace Infrastructure.AI.Persistence;
 /// </summary>
 /// <remarks>
 /// Attached by <c>UseSqliteWithSecureDelete</c>, the one way a context in this harness is pointed at SQLite. Stateless,
-/// so a single instance serves every context.
+/// so a single instance serves every context. It also sets the <see cref="SqliteLockWait"/> lock wait, so a writer waits
+/// for SQLite's write lock in short steps rather than the driver's 150 ms sleeps.
 /// </remarks>
 public sealed class SecureDeleteConnectionInterceptor : DbConnectionInterceptor
 {
@@ -23,13 +24,13 @@ public sealed class SecureDeleteConnectionInterceptor : DbConnectionInterceptor
 
     /// <inheritdoc />
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData) =>
-        SqliteSecureDelete.Apply(connection);
+        SqliteSecureDelete.ConfigureOpened(connection);
 
     /// <inheritdoc />
     public override Task ConnectionOpenedAsync(
         DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        SqliteSecureDelete.Apply(connection);
+        SqliteSecureDelete.ConfigureOpened(connection);
         return Task.CompletedTask;
     }
 }

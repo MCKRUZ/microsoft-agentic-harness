@@ -54,3 +54,15 @@ If you remove the file's project reference, does the code still compile with onl
 5. Implementation in `Infrastructure.*`
 6. Register in appropriate `DependencyInjection.cs`
 7. Wire in Presentation layer
+
+## Standing rules (Incident Ledger, onboarding chapter 19)
+- Before adding an abstraction, check `Application.AI.Common/Interfaces/` and the ApplicationTemplate for an existing one (INC-01)
+- A new command needs its MediatR pipeline behaviors registered in `DependencyInjection.cs` (INC-03)
+- AI model config comes from `AppConfig.AI.AgentFramework`, never inline (INC-04)
+- Step executors register as keyed services by `StepType` (INC-06)
+- `SandboxOptions` (Domain config) and `SandboxExecutionOptions` (Application container config) are different classes; use the one you mean (INC-07)
+- Never increment an entity's `Version` by hand; `SqliteVersionInterceptor` does it on save (INC-08)
+- Check `Result.IsSuccess` on every state store operation (INC-09)
+- Step executors never call `NotifyStepStarted`; `PlanExecutor` owns notification centrally (INC-10)
+- A skill with `PluginSource` needs that plugin declared in `PluginsConfig`, or the plugin won't load and its tools won't resolve (INC-11)
+- A plugin's `DeniedTools` are bypass-immune: no auto-approve mode overrides them (INC-12)

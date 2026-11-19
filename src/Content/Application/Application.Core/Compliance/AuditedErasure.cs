@@ -6,6 +6,7 @@ using Application.Core.CQRS.Compliance.EraseSubjectData;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using Domain.Common.Models;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Compliance;
@@ -19,12 +20,19 @@ namespace Application.Core.Compliance;
 /// <strong>What the record holds.</strong> Who asked (<see cref="ErasureActor"/>), a pseudonymous subject reference from
 /// <see cref="IErasureSubjectReference"/> when a reference key is configured, the receipt's request id, its completeness,
 /// and per-store counts. Never the subject's id, never a node, memory key or conversation id: an audit trail that kept
-/// those would keep the person the erasure removed.
+/// those would keep the person the erasure removed. Every record also names the host that handled it (#1003), so a trail
+/// shared by several hosts says which host each erasure covered.
+/// </para>
+/// <para>
+/// <strong>One host.</strong> The erasure reaches only this process's stores, so the receipt is stamped with this host's
+/// name (<see cref="ErasureReceipt.Host"/>): its completeness says nothing about another host's copy of the person's data.
 /// </para>
 /// <para>
 /// <strong>Two records per request.</strong> An <see cref="AuditOutcome.Attempted"/> record before anything is deleted and
 /// an outcome after, sharing one correlation id, so a request that dies mid-way leaves a trace that it began rather than a
-/// claim that it succeeded. The outcome is written even when the caller cancels part-way. Writing a record is
+/// claim that it succeeded. The outcome is written even when the caller cancels part-way. Each record goes to the
+/// <see cref="IComplianceAuditTrail"/>, which keeps it as proof for good (#969), and to the audit sink, whose default
+/// log line is deleted with the logs; the two writes are independent. Writing a record is
 /// best-effort, and so is the subject reference: a broken audit sink or an unusable key is logged and never refuses an
 /// erasure, because refusing a person their legal right to protect the audit trail would invert the priorities.
 /// </para>
@@ -58,31 +66,41 @@ public sealed class AuditedErasure
     private readonly IPersonalDataErasure _erasure;
     private readonly IErasureSubjectReference _subjectReference;
     private readonly IAuditSink _auditSink;
+    private readonly IComplianceAuditTrail _trail;
+    private readonly string _host;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedErasure> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="AuditedErasure"/> class.</summary>
     /// <param name="erasure">Erases one person from the knowledge graph and every registered store.</param>
     /// <param name="subjectReference">Pseudonymises the subject for the audit record.</param>
-    /// <param name="auditSink">The audit trail the attempt and outcome are written to.</param>
+    /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
+    /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the erasure was handled.</param>
+    /// <param name="hostEnvironment">Names the host the receipt covers (#1003): an erasure reaches only this process's stores.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedErasure(
         IPersonalDataErasure erasure,
         IErasureSubjectReference subjectReference,
         IAuditSink auditSink,
+        IComplianceAuditTrail trail,
+        IHostEnvironment hostEnvironment,
         TimeProvider timeProvider,
         ILogger<AuditedErasure> logger)
     {
         ArgumentNullException.ThrowIfNull(erasure);
         ArgumentNullException.ThrowIfNull(subjectReference);
         ArgumentNullException.ThrowIfNull(auditSink);
+        ArgumentNullException.ThrowIfNull(trail);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _host = hostEnvironment.ApplicationName;
         _erasure = erasure;
         _subjectReference = subjectReference;
         _auditSink = auditSink;
+        _trail = trail;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -112,12 +130,12 @@ public sealed class AuditedErasure
             Outcome = AuditOutcome.Attempted,
             Metadata = Metadata("attempt", actor, subjectReference, receipt: null),
         };
-        await RecordSafelyAsync(record);
+        await RecordSafelyAsync(record, actor);
 
         ErasureReceipt receipt;
         try
         {
-            receipt = await _erasure.EraseOwnerAsync(subjectId, cancellationToken);
+            receipt = await _erasure.EraseOwnerAsync(subjectId, cancellationToken) with { Host = _host };
         }
         catch (OperationCanceledException)
         {
@@ -141,7 +159,7 @@ public sealed class AuditedErasure
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
             Metadata = Metadata("outcome", actor, subjectReference, receipt),
-        });
+        }, actor);
 
         return Result<ErasureReceipt>.Success(receipt);
     }
@@ -173,7 +191,7 @@ public sealed class AuditedErasure
             Outcome = AuditOutcome.Denied,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, subjectReference, receipt: null),
-        });
+        }, actor);
     }
 
     /// <summary>
@@ -201,15 +219,16 @@ public sealed class AuditedErasure
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, subjectReference, receipt: null),
-        });
+        }, actor);
 
-    private static Dictionary<string, string> Metadata(
+    private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string? subjectReference, ErasureReceipt? receipt)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
             ["initiator"] = actor.Initiator,
+            ["host"] = _host,
         };
         if (subjectReference is not null)
             metadata["subject_reference"] = subjectReference;
@@ -232,20 +251,7 @@ public sealed class AuditedErasure
 
     private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Writes one record, never cancelled by the caller: an erasure that started must leave its outcome even when the
-    /// request is abandoned part-way.
-    /// </summary>
-    private async Task RecordSafelyAsync(AuditEntry entry)
-    {
-        try
-        {
-            await _auditSink.RecordAsync(entry, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(MessageWithheldException.From(ex), "Failed to record the {Phase} of right-to-erasure {CorrelationId}.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-    }
+    /// <summary>Writes one record to the compliance audit trail and to the audit sink; see <see cref="ComplianceRecords"/>.</summary>
+    private Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor) =>
+        ComplianceRecords.WriteAsync(_trail, _auditSink, entry, actor, _logger, "right-to-erasure");
 }

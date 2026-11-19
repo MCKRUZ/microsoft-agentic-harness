@@ -32,3 +32,9 @@ The harness includes a full RAG pipeline (`Infrastructure.AI.RAG`) and a product
 
 ## Skill Training (SkillOpt port)
 Single-skill-document optimizer modeled on [microsoft/SkillOpt](https://github.com/microsoft/SkillOpt). 6-stage loop (rollout → reflect → aggregate → select → apply → gate) in `Application.AI.Common/CQRS/SkillTraining/TrainSkill/`. Bounded `Edit{Op,Target,Content}` operations (Append/InsertAfter/Replace/Delete) against the SKILL.md, validated by a gate that uses Hard/Soft/Mixed metric projection and strict-greater accept semantics. Epoch boundary runs SlowUpdate (paired longitudinal forgetting detection) and MetaSkillUpdate (cross-epoch strategy memory via `IKnowledgeMemory`). Pure components (`PatchApplier`, `GateEvaluator`, `PatchAggregator`, `TopKEditSelector`, 3 LR schedulers) are stateless. `IPatchProposer` + `IRolloutRunner` ship with `NotConfigured*` fail-fast defaults — consumers replace with agent-backed Infrastructure impls.
+
+### Skill Training standing rules (Incident Ledger, onboarding chapter 19)
+- To remove text in a `Patch`, use the `Delete` op; `PatchApplier` rejects `Replace` with empty `Content` as a failed edit, and `Delete` keeps the intent in the audit trail (INC-13)
+- Skill-training handlers return stable scrubbed codes (`skill_training.*`) in `Result.Fail`, never raw exception text, and log the full exception through structured logging; HTTP-backed proposers can leak SAS tokens in exception messages (INC-14)
+- Never persist projected gate scores across checkpoint reloads: the float→text→float round trip can flip Accept/Reject by 1 ULP; re-project on each call via `IGateEvaluator.SelectGateScore` (INC-15)
+- `NotConfiguredPatchProposer` / `NotConfiguredRolloutRunner` throw on first use; a consumer that runs `TrainSkillCommand` without registering real implementations gets an `InvalidOperationException` at runtime, not a silent no-op (INC-16)

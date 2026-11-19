@@ -28,6 +28,15 @@ public class BundleExecutionConfigValidatorTests
     }
 
     [Fact]
+    public void Default_MaxConcurrentDispatchedBundleRuns_Is16()
+    {
+        // Measured, not guessed: at 4, a 50-user spike finished 0.73 runs a second and 91 of 601 runs had
+        // not started after five minutes; at 32 every run finished. A run spends most of its time waiting
+        // on the model, so slots cost little. 16 stays within typical model-provider quotas.
+        new BundleExecutionConfig().MaxConcurrentDispatchedBundleRuns.Should().Be(16);
+    }
+
+    [Fact]
     public async Task Validate_ZeroStreamReservationTtl_HasError()
     {
         // The headline bug from #173: a non-positive reservation TTL sweeps the SSE stream before the
@@ -93,6 +102,19 @@ public class BundleExecutionConfigValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxConcurrentStreamsPerCaller));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Validate_NonPositiveMaxConcurrentStreams_HasError(int maxStreams)
+    {
+        var config = new BundleExecutionConfig { MaxConcurrentStreams = maxStreams };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxConcurrentStreams));
     }
 
     [Fact]

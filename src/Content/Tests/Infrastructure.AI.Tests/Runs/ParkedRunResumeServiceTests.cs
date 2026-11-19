@@ -198,7 +198,7 @@ public sealed class ParkedRunResumeServiceTests
 
     private void ParkRun(string jobId, params Guid[] awaiting)
     {
-        _store = new InMemoryRunJobStore(new Support.StaticOptionsMonitor<AppConfig>(_config), _time);
+        _store = new InMemoryRunJobStore(new Support.StaticOptionsMonitor<AppConfig>(_config), _time, [], NullLogger<InMemoryRunJobStore>.Instance);
         _queue = new RecordingQueue();
 
         var record = new RunRecord

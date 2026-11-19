@@ -24,7 +24,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Deployment</div><a class="sidebar-link" href="18-self-hosted-docker.html"><span class="sidebar-link-num">18</span> Self-Hosted, Non-Azure Docker</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a><a class="sidebar-link" href="19-incident-ledger.html"><span class="sidebar-link-num">19</span> Incident Ledger</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
@@ -816,6 +816,29 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>204</code></td>
                                 <td>Removes a schedule you own. <code>404</code> if it is not yours.</td>
                             </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Compliance</strong> — erase or copy a person's data held by <em>this host</em> (#1003). The same API AgentHub serves; a request covers only the host it is sent to, and every receipt and copy names that host in <code>host</code>. Send each person's request to every host that holds personal data. All are refused in anonymous mode, where every caller is one person. See <a href="security/08-data-protection.html#one-host">the data-protection guide</a>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/erase-my-data</code></td>
+                                <td><code>200</code></td>
+                                <td>No body: erases the signed-in caller's runs, the conversations this host's agents wrote for them and the rest of their data here, and returns the receipt. Five an hour per caller. <code>403</code> for an application's own token.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/export-my-data</code></td>
+                                <td><code>200</code></td>
+                                <td>No body: a JSON copy of the caller's data here, with a manifest per store. Five an hour per caller; at most two copies assembled at once per host, the rest refused with <code>429</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/erasures</code><br><code>POST /api/compliance/exports</code></td>
+                                <td><code>200</code></td>
+                                <td>Body: <code>subjectId</code>. An operator erases or copies a named person. Needs <code>Harness.Compliance.EraseSubject</code> or <code>Harness.Compliance.ExportSubject</code> and a tenant listed in <code>AppConfig:AI:Erasure:OperatorTenantIds</code> (empty means off). Thirty an hour per operator.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/compliance/document-removals</code></td>
+                                <td><code>200</code></td>
+                                <td>Body: <code>documentId</code> (16 upper-case hex digits). Removes a document and what was drawn from it from this host's corpus. Needs <code>Harness.Compliance.RemoveDocument</code> and an allowed operator tenant. The chunk counts are <code>vectorEmbeddingsDeleted</code> and <code>bm25DocumentsDeleted</code>.</td>
+                            </tr>
                         </tbody>
                     </table>
 
@@ -1192,7 +1215,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     <p>
                         One property of the dispatcher matters a great deal when you set your poll interval: it drains
                         the queue with <strong>bounded parallelism</strong> — up to <code>MaxConcurrentDispatchedBundleRuns</code>
-                        runs at once (default 4), host-wide, across every caller. An unrelated caller's run does not
+                        runs at once (default 16), host-wide, across every caller. An unrelated caller's run does not
                         wait behind yours, but the degree is still finite: once every slot is busy, the next queued
                         run waits for one to free up. So the time to a result is not just how long the model takes to
                         think — it is that plus however long you wait for a slot. Budget for both. A host that sets
@@ -1321,8 +1344,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     <p>
                         Streams are capped by <strong>concurrency, not rate</strong>: each open connection holds a permit
                         for its whole lifetime, and a caller may hold <code>MaxConcurrentStreamsPerCaller</code>
-                        (default 4) at once. The excess is rejected with <code>429</code> immediately rather than queued,
-                        so a client that opens streams in a loop must bound itself.
+                        (default 4) at once. The host as a whole holds at most <code>MaxConcurrentStreams</code>
+                        (default 64) across all callers, so a <code>429</code> can also mean the host is full while you
+                        hold none. Either way the excess is rejected with <code>429</code> immediately rather than queued,
+                        so a client that opens streams in a loop must bound itself and back off.
                     </p>
 
                     <h2>What the host does with your archive</h2>
@@ -1375,7 +1400,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>403</code></td><td>Bundle execution is disabled on this host.</td><td>Operator action — <code>Enabled: true</code>. Do not retry.</td></tr>
                             <tr><td><code>404</code></td><td>Handle, run, or named conversation is unknown, expired, or not yours. These are deliberately indistinguishable, so the API never confirms that someone else's resource exists.</td><td>Re-register the bundle to get a fresh handle; check the <code>conversationId</code> is one you created.</td></tr>
                             <tr><td><code>409</code></td><td>The run is not awaiting a stream — it is a background run, already being streamed, or already finished.</td><td>Poll the status endpoint instead.</td></tr>
-                            <tr><td><code>429</code></td><td>10/min register; 60/min run, poll, and delete; the stream endpoint is capped by open connections instead.</td><td>Back off; for streams, close one first.</td></tr>
+                            <tr><td><code>429</code></td><td>10/min register; 60/min run, poll, and delete; the stream endpoint is capped by open connections instead. Compliance: five self-service requests an hour per caller, thirty operator requests an hour, two copies assembled at once per host. Before #1003 this host answered these with <code>503</code>, against this contract.</td><td>Back off; for streams, close one first.</td></tr>
                             <tr><td><code>500</code></td><td>Unexpected server error. The body is deliberately generic.</td><td>The detail is in the host's logs. Retry idempotently.</td></tr>
                         </tbody>
                     </table>
@@ -1430,7 +1455,8 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>RunRecordTtl</code></td><td><code>00:30:00</code></td><td>How long a terminal run stays pollable.</td></tr>
                             <tr><td><code>StreamReservationTtl</code></td><td><code>00:05:00</code></td><td>How long an unclaimed stream reservation survives.</td></tr>
                             <tr><td><code>MaxConcurrentStreamsPerCaller</code></td><td><code>4</code></td><td>Open streams one caller may hold.</td></tr>
-                            <tr><td><code>MaxConcurrentDispatchedBundleRuns</code></td><td><code>4</code></td><td>Background runs the host executes at once, across all callers.</td></tr>
+                            <tr><td><code>MaxConcurrentStreams</code></td><td><code>64</code></td><td>Open streams the host holds at once, across all callers.</td></tr>
+                            <tr><td><code>MaxConcurrentDispatchedBundleRuns</code></td><td><code>16</code></td><td>Background runs the host executes at once, across all callers.</td></tr>
                             <tr><td><code>MaxActiveBundleRunsPerOwner</code></td><td><code>10</code></td><td>Runs one caller may hold queued or executing at once, any dispatch mode.</td></tr>
                             <tr><td><code>CleanupInterval</code></td><td><code>00:01:00</code></td><td>Sweeper period.</td></tr>
                             <tr><td><code>Envelopes</code></td><td>fail-closed</td><td>The per-caller grant table (see above).</td></tr>
@@ -1466,6 +1492,17 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>TickInterval</code></td><td><code>00:00:30</code></td><td>How often the host checks for schedules that are due.</td></tr>
                             <tr><td><code>MaxSchedulesPerOwner</code></td><td><code>50</code></td><td>Schedules one caller may hold at once.</td></tr>
                             <tr><td><code>DatabasePath</code></td><td><code>data/schedules.db</code></td><td>SQLite file backing the durable schedule store.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The compliance endpoints (#1003) read <code>AppConfig:AI:Erasure</code>, the same section AgentHub reads. Each host reads its own copy.
+                    </p>
+                    <table>
+                        <thead><tr><th>Key</th><th>Default</th><th>Purpose</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>OperatorTenantIds</code></td><td><code>[]</code></td><td>Tenants whose operators may erase, copy or remove documents for someone else. Empty &rArr; the operator endpoints <code>403</code>s; self-service is unaffected.</td></tr>
+                            <tr><td><code>SubjectReferenceKey</code></td><td>unset</td><td>Key for the pseudonymous subject reference in the compliance audit trail. Unset &rArr; records carry no reference.</td></tr>
                         </tbody>
                     </table>
 

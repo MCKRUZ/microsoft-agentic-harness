@@ -74,6 +74,12 @@ public sealed record ComplianceReport
     public required IReadOnlyList<ComplianceChainIntegrity> ChainIntegrity { get; init; }
 
     /// <summary>
+    /// The erasure, data export and document removal requests the compliance audit trail recorded in the period, by
+    /// request and outcome, with their receipt ids (#1000). Covers every conversation: these requests belong to none.
+    /// </summary>
+    public required ComplianceRequestsSummary ComplianceRequests { get; init; }
+
+    /// <summary>
     /// One entry per data source that failed to answer rather than returning genuinely empty
     /// results. An empty report with a non-empty <see cref="Warnings"/> list is not a clean
     /// report — it is an incomplete one.

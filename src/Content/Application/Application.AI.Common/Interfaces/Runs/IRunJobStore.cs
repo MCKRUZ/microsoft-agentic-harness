@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Compliance;
 using Domain.AI.Runs;
 
 namespace Application.AI.Common.Interfaces.Runs;
@@ -25,8 +26,12 @@ namespace Application.AI.Common.Interfaces.Runs;
 /// read-then-write decisions. Deciding them in a handler and inserting afterwards leaves a window in
 /// which concurrent requests all observe the limit as unmet and all proceed.
 /// </para>
+/// <para>
+/// <strong>Run records name their owner</strong>, so the store also answers <see cref="IKeptRunSource"/>: an erasure
+/// receipt must say when a person's run record was kept (#926).
+/// </para>
 /// </remarks>
-public interface IRunJobStore
+public interface IRunJobStore : IKeptRunSource
 {
     /// <summary>
     /// Admits a newly accepted run, or refuses it, deciding and inserting as one atomic step.
@@ -54,6 +59,24 @@ public interface IRunJobStore
     /// <param name="ownerId">Stable identity of the calling principal.</param>
     /// <param name="tenantId">Tenant of the calling principal, when the host resolves one.</param>
     RunRecord? Get(string jobId, string ownerId, string? tenantId);
+
+    /// <summary>
+    /// Lists every run <paramref name="ownerId"/> owns, finished or not, in every tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists for the person's copy of their data (#991): a store that keeps run-scoped state under a run's id, such as an
+    /// evaluation's submission and report, records no owner, so the person's run ids are the only way to theirs.
+    /// </para>
+    /// <para>
+    /// Takes no tenant and no caller, because the copy is about the person, not the tenant a run was started under. The
+    /// owner is matched as every read here matches it, through the canonical form. Nothing reached through a request may
+    /// use it to find runs: a caller is entitled only to the runs <see cref="Get"/> returns for its own identity.
+    /// </para>
+    /// </remarks>
+    /// <param name="ownerId">The person, in either the issued or the canonical form.</param>
+    /// <returns>Each of the person's run records as the store holds it.</returns>
+    IReadOnlyList<RunRecord> GetRunsOwnedBy(string ownerId);
 
     /// <summary>
     /// Atomically claims a queued run for execution, returning the updated record to the winner and
@@ -110,6 +133,24 @@ public interface IRunJobStore
     /// </para>
     /// </remarks>
     IReadOnlyList<RunRecord> GetParkedRuns();
+
+    /// <summary>
+    /// Lists every run <paramref name="ownerId"/> owns that has not ended (queued, running or parked), in every tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists for erasure (#992), which must stop a person's live runs before it removes their records: a queued run would
+    /// otherwise start after the person was erased, and a parked one would hold every erasure retry <c>Partial</c>.
+    /// </para>
+    /// <para>
+    /// Takes no tenant and no caller, for the same reason erasure's own match does not: erasure is about the person, not
+    /// the tenant a run was started under. The owner is matched as every read here matches it, through the canonical
+    /// form, so a run recorded with different casing is still the person's. Nothing reached through a request may use it
+    /// to find runs: a caller is entitled only to the runs <see cref="Get"/> returns for its own identity.
+    /// </para>
+    /// </remarks>
+    /// <param name="ownerId">The person, in either the issued or the canonical form.</param>
+    IReadOnlyList<RunRecord> GetLiveRunsOwnedBy(string ownerId);
 
     /// <summary>
     /// Atomically returns a parked run to the queue, handing the updated record to the caller that won

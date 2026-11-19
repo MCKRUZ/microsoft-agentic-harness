@@ -1,0 +1,18 @@
+# Known-clean: fix: give each FoundryHost request its own tool-call trace claims
+id: CLEAN-885
+kind: clean
+pr: 885
+base_sha: 16d59f45c59090ad5173220832493fa6d52c5ad2
+head_sha_before_fix: 5706271a724bac3f8589b22800663dded8318e88
+fix_sha: null
+expected: null
+caught_by: null
+scope: correctness
+valid_until: null
+notes: >-
+  Single-commit PR moving FoundryHost's per-request scope into FoundryRequestScope so each request
+  gets a fresh ReplayedToolCallScope (3 files, +157/-14 under src/; base is the head's parent).
+  correctness-review check run 118301043571 concluded success; comment bottom line "**Bottom line:**
+  CORRECT." with only an advisory. No later fix found: git log origin/main --no-merges
+  --since=2026-10-19T22:23:43Z on the PR's src/ files returned nothing, and gh search prs "#885"
+  returned no other PR (grep-based, not exhaustive).

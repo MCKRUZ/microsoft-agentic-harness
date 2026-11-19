@@ -33,6 +33,29 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task Append_TheChainCannotBeWritten_StillRefusesTheStepButHoldsTheDecisionMarked()
+    {
+        var proposal = TestProposals.NewProposal();
+        var dayFolder = Path.Combine(_tempDir, "audit", "changes");
+        Directory.CreateDirectory(Path.GetDirectoryName(dayFolder)!);
+        File.WriteAllText(dayFolder, "not a folder");
+
+        var append = () => _sut.AppendAsync(
+            proposal, NewDecision("approval", GateAction.Pass), proposal.SubmittedBy, OrchestratorMode.Live, "corr-1", CancellationToken.None);
+
+        await append.Should().ThrowAsync<IOException>("a gate decision that cannot be recorded must not take effect");
+        File.ReadAllText(Directory.GetFiles(_sut.PendingLocation, "*.pending").Single()).Should().Contain(
+            "\"not_carried_out\":true", "the decision is kept, marked as one whose transition never happened");
+
+        File.Delete(dayFolder);
+        (await _sut.ReplayPendingAsync(CancellationToken.None)).Written.Should().Be(1);
+        var replayed = (await _sut.GetRecordsAsync(new ChangeAuditQuery(), CancellationToken.None)).Value!.Single();
+        replayed.NotCarriedOut.Should().BeTrue();
+        (await _sut.GetRecordsAsync(new ChangeAuditQuery { Decision = GateAction.Pass }, CancellationToken.None)).Value!
+            .Should().BeEmpty("a decision that never took effect answers no decision filter");
+    }
+
+    [Fact]
     public async Task Append_WritesOneLinePerDecision()
     {
         var proposal = TestProposals.NewProposal();

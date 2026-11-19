@@ -4,7 +4,7 @@
 - **Metaphor:** A chess game with a coach — the agent (player) thinks about the position, decides on a move (tool call or response), the coach (harness) validates the move is legal, then the opponent (reality/tool result) responds. The game continues until checkmate (task complete) or the clock runs out (turn limit).
 - **Opening hook:** "You know that moment when an AI assistant pauses, calls a tool, gets results, and then keeps going? That's not one step — it's an entire loop running behind the scenes, and every iteration goes through a gauntlet of checks."
 - **Key insight:** The conversation isn't one API call — it's a loop. Each turn goes through validation, content safety, performance monitoring, and the actual LLM call. The harness decides when to keep looping and when to stop. This is what separates a toy demo from a production agent.
-- **"Why should I care?":** When your agent gets stuck in a loop, burns through tokens, or gives weird answers, understanding the conversation loop is how you diagnose *why*. Is it the turn limit? The validation rejecting something? Content safety blocking a response? The loop structure tells you where to look.
+- **"Why should I care?":** When your agent gets stuck in a loop, burns through tokens, or gives weird answers, understanding the conversation loop is how you diagnose *why*. Is it the turn limit? The validation rejecting something? Content safety blocking the incoming request (it never screens the response)? The loop structure tells you where to look.
 
 ## Screens (5)
 
@@ -15,7 +15,7 @@ Turn 2: Tool result + context → Handler → LLM says "I also need web_search" 
 Turn 3: Both results → Handler → LLM says "Here is my answer" → IsComplete=true → Loop ends
 
 ### Screen 2: The CQRS Pipeline (Numbered Step Cards)
-Show the pipeline behaviors in order: Validation → Caching → Content Safety → Tool Permission → Performance Logging → Handler. Each step is a card with what it does and why it matters.
+Show the 22 pipeline behaviors in registration order (the six Application.Common behaviors outermost): RequestValidation → Authorization → Idempotency → Caching → RequestTracing → Timeout → UnhandledException → AmbientRequestScope → AgentContextPropagation → AgentIdentityResolution → AuditTrail → PromptInjection → ContentSafety → TokenBudget → Hook → RetrievalAudit → ResponseSanitization → ToolOutputCompression → KnowledgeExtraction → WorkEpisodeCapture → SkillEffectivenessTracking → PromptUsageTracking → Handler. Tool permission is not a pipeline behavior; it runs on the tool-call path. Each step is a card with what it does and why it matters.
 
 ### Screen 3: ExecuteAgentTurn — One Round (Code Translation)
 Code↔English of the turn handler — the single most important piece of code.

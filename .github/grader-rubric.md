@@ -17,6 +17,16 @@ as the spec, supplemented by any linked issue and the `CLAUDE.md` / `.claude/rul
 standards. If the PR description states no intent, say so plainly — an
 unspecified change cannot be graded against intent, and that itself is a finding.
 
+The body follows `.github/PULL_REQUEST_TEMPLATE.md`. Two of its sections are
+evidence the human Checker reads instead of the diff, so grade them as checks:
+
+- **Testing evidence** must show a command and its output. Empty, a template
+  comment left in place, or a bare claim ("tests pass") is a ❌ not-met row.
+- **How to revert** must give a concrete command. Empty or vague is ❌ not met.
+
+If either is not met, the bottom line is `INSUFFICIENT SPEC`, whatever the diff
+looks like: without them the Checker has nothing to read but the diff.
+
 ## The anchor set — pin your evidence to it
 
 The workflow gives you a **changed-line anchor set** (from

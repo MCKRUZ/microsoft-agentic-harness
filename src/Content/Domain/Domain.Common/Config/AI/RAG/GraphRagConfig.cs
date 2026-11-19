@@ -86,10 +86,22 @@ public class GraphRagConfig
     public bool ProvenanceEnabled { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets whether multi-tenant knowledge isolation is enabled.
-    /// When <c>true</c>, all graph operations are scoped by tenant and dataset,
-    /// preventing cross-tenant data access.
+    /// Gets or sets whether knowledge-graph isolation by tenant and owner is enabled.
     /// </summary>
+    /// <value>Default: <see langword="false"/>, which suits a single-tenant deployment; a startup warning says so outside Development.</value>
+    /// <remarks>
+    /// <para>
+    /// When <see langword="true"/>, the knowledge-graph store filters every record by the caller's tenant and owner: a
+    /// user sees their tenant's shared records and their own, not another tenant's, and not another user's learnings.
+    /// When <see langword="false"/>, the graph's entities and the learnings recalled into turns are visible to every user
+    /// and tenant.
+    /// </para>
+    /// <para>
+    /// What it does not change: each user's remembered facts are private either way (their ids are namespaced by user and
+    /// tenant), and graph-based retrieval (GraphRAG) and document search are not filtered by owner in either mode. The
+    /// dataset is not enforced (#904).
+    /// </para>
+    /// </remarks>
     public bool MultiTenantIsolation { get; set; } = false;
 
     /// <summary>

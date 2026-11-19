@@ -8,9 +8,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Infrastructure.AI.Runs;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using Presentation.Common.Compliance;
 using Presentation.ExecutionApi.Services;
 using Presentation.ExecutionApi.Streaming;
 using Application.Common.Hosting;
@@ -20,8 +22,8 @@ using Microsoft.Extensions.Logging;
 namespace Presentation.ExecutionApi.Extensions;
 
 /// <summary>
-/// Host-specific service registration for <c>Presentation.ExecutionApi</c>: controllers, the fail-closed
-/// authentication scheme (its own audience), authorization, and per-path rate limiting. The cross-layer
+/// Host-specific service registration for <c>Presentation.ExecutionApi</c>: controllers (with the shared compliance API),
+/// the fail-closed authentication scheme (its own audience), authorization, and per-path rate limiting. The cross-layer
 /// wiring (MediatR handlers, bundle stores, background services) is composed separately by
 /// <c>Presentation.Common</c>'s <c>GetServices</c>, exactly as the other hosts do.
 /// </summary>
@@ -68,11 +70,12 @@ public static class ExecutionApiServiceCollectionExtensions
     /// <see cref="MaxConcurrentInvocationsPerCaller"/> simultaneous invocations cannot exhaust the
     /// thread pool however fast it calls, whereas a request-rate cap cannot bound work that is still
     /// running when the window rolls. What the swap gives up is real and worth stating plainly: this
-    /// action has no request-<em>rate</em> bound at all, and this host configures no
-    /// <c>GlobalLimiter</c> to fall back on. An authorized caller may issue unlimited invocations of a
+    /// action has no request-<em>rate</em> bound at all, and the host's <c>GlobalLimiter</c>
+    /// (<c>ComplianceRateLimits</c>) limits only the compliance paths. An authorized caller may issue unlimited invocations of a
     /// fast tool, four at a time. That is the lesser exposure — a fast tool returns its thread
     /// immediately, so the cost is throughput rather than capacity — but it is not nothing, and
-    /// chaining a fixed window with this concurrency limiter is the obvious follow-up.
+    /// chaining a fixed window with this concurrency limiter is the obvious follow-up, with the concurrency
+    /// limiter first so a refused invocation does not spend a window permit (see <c>ComplianceRateLimits.Create</c>).
     /// </para>
     /// </remarks>
     public const string InvokeRateLimitPolicy = "tools-invoke";
@@ -103,7 +106,11 @@ public static class ExecutionApiServiceCollectionExtensions
             .AddJsonOptions(options =>
                 // Serialize BundleRunStatus and friends as their names, not ordinals, so the poll contract
                 // is human-readable and stable against enum renumbering.
-                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()))
+            // Deliberate opt-in: this host's runs and the conversations its agents write live in its own stores, not
+            // AgentHub's, so a person's data here is erased and copied only by a request sent here (#1003). Anonymous
+            // mode makes every caller one synthetic person, so self-service and operator requests are refused under it.
+            .AddComplianceApi([AnonymousAuthenticationHandler.SchemeName]);
 
         var bundleConfig = configuration
             .GetSection("AppConfig:AI:BundleExecution")
@@ -140,6 +147,17 @@ public static class ExecutionApiServiceCollectionExtensions
 
         services.AddRateLimiter(options =>
         {
+            // The compliance endpoints carry no named policy: their per-caller windows and host-wide export limit are
+            // the ones every host that mounts the compliance API applies (#1003). Every other path passes through it.
+            // Chained, not replaced: the live-stream host limit rides on the same global limiter, because a named
+            // policy resolves one partition per request and the stream endpoint's is already the per-caller one.
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
+                ComplianceRateLimits.Create(),
+                HostWideStreams(bundleConfig.MaxConcurrentStreams));
+
+            // The published contract answers a refused request with 429; the framework default is 503.
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
             options.AddPolicy(DefaultRateLimitPolicy, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(ResolvePartitionKey(httpContext), _ =>
                     new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1) }));
@@ -169,6 +187,26 @@ public static class ExecutionApiServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// One concurrency limit shared by every request to an endpoint carrying <see cref="StreamRateLimitPolicy"/>,
+    /// whoever sends it, so the host holds at most <paramref name="maxStreams"/> live streams at once. The
+    /// per-caller policy decides how many of those one caller may hold.
+    /// </summary>
+    /// <remarks>
+    /// Matched on the endpoint's rate-limit policy rather than its path, so the host limit covers exactly the
+    /// endpoints the per-caller stream limit covers and cannot drift from it when a route changes. The endpoint
+    /// is known here because <c>UseRateLimiter</c> runs after <c>UseRouting</c>.
+    /// </remarks>
+    private static PartitionedRateLimiter<HttpContext> HostWideStreams(int maxStreams) =>
+        PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            context.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == StreamRateLimitPolicy
+                ? RateLimitPartition.GetConcurrencyLimiter("bundle-stream:host", _ => new ConcurrencyLimiterOptions
+                {
+                    PermitLimit = Math.Max(1, maxStreams),
+                    QueueLimit = 0,
+                })
+                : RateLimitPartition.GetNoLimiter("none"));
 
     /// <summary>
     /// Partitions the rate limiter per caller so one client cannot exhaust a shared global window and starve

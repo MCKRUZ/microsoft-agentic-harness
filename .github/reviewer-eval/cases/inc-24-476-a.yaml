@@ -1,0 +1,23 @@
+# Call-once tools registered into the process-global policy inside ProvisionToolAsync, before the plugin AllowedTools/DeniedTools boundary runs
+id: INC-24
+kind: incident
+pr: 476
+base_sha: 9513c2d036940e0f3c7ed42707d66a7ac9ff82c8
+head_sha_before_fix: acbd5ba4b998a5cf855b1d243753d3e043482a59
+fix_sha: ebf812262bebe2f1879d94aec448b0adc66feb6a
+expected:
+  path: src/Content/Application/Application.AI.Common/Services/Tools/ToolChainBuilder.cs
+  line: 517
+  class: check-before-final-stage
+caught_by: ci-security
+scope: security
+valid_until: null
+notes: >-
+  ProvisionToolAsync calls RegisterCallOnce(declaration, ..., skillId) as each declaration resolves
+  (lines 502 MCP, 517 keyed-DI, 529 fallback; all added in this PR), so a plugin-sourced skill
+  registers a tool its own plugin DENIES into the never-pruned IToolCallOncePolicy before
+  ApplyPluginBoundaryIfPluginSkill (line 176) strips it. The fix commit replaces the three calls with
+  TagCallOnceCandidates and registers survivors only after the boundary. Line 517 is the call site the
+  CI Security Review's BLOCK comment cited; 502 and 529 are the same defect. Caught by CI Security
+  Review (run on acbd5ba4 failed, HIGH finding); CI Correctness Review PASSED on this same head, so this
+  security-class defect sits outside the correctness rubric's stated scope.

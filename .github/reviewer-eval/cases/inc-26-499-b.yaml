@@ -1,0 +1,22 @@
+# RedactingLogger.BeginScope rebuilds a structured scope as a plain List<KeyValuePair>, losing the templated scope's ToString() rendering console formatters print
+id: INC-26
+kind: incident
+pr: 499
+base_sha: f78c19efe364b92d33187d4e742dde145860fc6a
+head_sha_before_fix: 71033286dea9ecfb65af456441c9a29c087927e5
+fix_sha: dfc67b1a737a6e054fc28498d333d0719f22aed2
+expected:
+  path: src/Content/Application/Application.Common/Logging/RedactingLogger.cs
+  line: 81
+  class: consumer-contract-break
+caught_by: ci-correctness
+scope: correctness
+valid_until: null
+notes: >-
+  Lines 76-81 rebuild any IEnumerable<KeyValuePair<string, object?>> scope via .ToList() and push the
+  List with `return _inner.BeginScope(redactedPairs);`. A compiler-generated templated BeginScope
+  state overrides ToString() to render the interpolated text, and the List cannot, so the console
+  scope output becomes boilerplate. The fix commit removes the KVP branch and redacts only bare strings.
+  Caught by CI Correctness Review (failed run on 71033286). Its reason names SimpleConsoleFormatter,
+  while the fix commit and CLAUDE.md name ColorfulConsoleFormatter.WriteScopeInformation. A finding
+  naming either one is the same defect, and line 76 (the rebuild) is an equally valid anchor.

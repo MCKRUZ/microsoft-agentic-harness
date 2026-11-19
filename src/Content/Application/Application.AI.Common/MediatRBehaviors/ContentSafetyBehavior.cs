@@ -20,7 +20,9 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Pipeline position: 8 (after validation — content must be structurally valid before screening).
+/// Pipeline position: after request validation (content must be structurally valid before screening) and after
+/// <c>PromptInjectionBehavior</c>, whose local scan runs before this possibly metered external call. See the order in
+/// <c>Application.AI.Common.DependencyInjection</c>.
 /// </para>
 /// <para>
 /// Only screens <see cref="ContentScreeningTarget.Input"/>: the text a request names through

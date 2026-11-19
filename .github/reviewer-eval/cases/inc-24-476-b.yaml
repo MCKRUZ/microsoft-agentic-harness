@@ -1,0 +1,23 @@
+# Call-once registration moved past the plugin boundary but still before FinalizeChain's ReservedPlanCapabilityFilter and ResolveSurvivingTools
+id: INC-24
+kind: incident
+pr: 476
+base_sha: 9513c2d036940e0f3c7ed42707d66a7ac9ff82c8
+head_sha_before_fix: ebf812262bebe2f1879d94aec448b0adc66feb6a
+fix_sha: b7b7f748dbfbb92419b9d3f82fd13a113f9807d9
+expected:
+  path: src/Content/Application/Application.AI.Common/Services/Tools/ToolChainBuilder.cs
+  line: 187
+  class: check-before-final-stage
+caught_by: ci-correctness
+scope: correctness
+valid_until: null
+notes: >-
+  BuildProvisionedToolsAsync calls RegisterSurvivingCallOnceTools(managed, callOnceCandidates,
+  skill.Id) right after ApplyPluginBoundaryIfPluginSkill but before FinalizeChain (line 192) and the
+  cross-skill ResolveSurvivingTools pass, so an MCP tool that loses first-party precedence or is
+  withheld can still poison the process-global policy for the surviving same-named tool. The fix
+  commit deletes this call and registers only in BuildToolsAsync/BuildMergedToolsWithSourcesAsync
+  against the fully resolved set. Caught by CI Correctness Review: run 32549653005 on ebf81226 failed
+  with a BLOCK reason naming this ordering. The PR's sticky correctness comment was later overwritten
+  by the b7b7f748 run, so use the run log, not the comment, as evidence.

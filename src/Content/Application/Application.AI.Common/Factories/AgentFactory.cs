@@ -35,7 +35,7 @@ namespace Application.AI.Common.Factories;
 /// </list>
 /// </remarks>
 [PersonalDataStore(
-    "Turns on the chat response cache: model responses, including tool-call arguments, cached as JSON under a hash of the request. Process memory by default; Redis when CacheType is RedisCache. Every entry expires after Cache:ChatResponseExpiry (default one hour). Not tied to any user.",
+    "Turns on the chat response cache: model responses, including tool-call arguments, cached as JSON under a hash of the request. Process memory by default; Redis when CacheType is RedisCache. Every entry expires after Cache:ChatResponseExpiry (default one hour). Each entry is filed under a keyed hash of the caller's tenant and user (CallerScopedDistributedCache) so no caller is served another's entry, but the key exists only in process memory, so entries cannot be found by person from the cache itself.",
     PersonalDataCategories.ConversationContent | PersonalDataCategories.ToolInputsAndOutputs,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Configured,

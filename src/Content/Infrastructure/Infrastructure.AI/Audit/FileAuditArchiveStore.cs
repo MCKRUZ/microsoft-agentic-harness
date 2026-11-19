@@ -16,7 +16,7 @@ namespace Infrastructure.AI.Audit;
 /// is not one the archive uses.
 /// </remarks>
 [PersonalDataStore(
-    "Write-once folder archive of every hash-chained audit log (governance, escalation, change, egress, drift); files are never replaced or deleted. Kept by design as tamper-evident compliance history, so erasure is exempt.",
+    "Write-once folder archive of every hash-chained audit log (governance, escalation, change, egress, drift, compliance); files are never replaced or deleted. Kept by design as tamper-evident compliance history, so erasure is exempt.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ToolInputsAndOutputs | PersonalDataCategories.PeopleNames | PersonalDataCategories.NetworkTargets | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Unkeyed,
     RetentionBasis.KeptByDesign,

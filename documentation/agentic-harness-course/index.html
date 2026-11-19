@@ -108,7 +108,7 @@
     <div class="flow-animation" data-steps='[
       {"highlight":"flow-actor-1","label":"You type a message in the web chat UI and hit Send."},
       {"highlight":"flow-actor-2","label":"Browser POSTs to /ag-ui/run; AgUiRunHandler receives the message as a Server-Sent Events stream.","packet":true,"from":"actor-1","to":"actor-2"},
-      {"highlight":"flow-actor-3","label":"The MediatR pipeline runs 15 behaviors &mdash; safety, governance, prompt-injection, permissions, audit, tracing &mdash; before the handler.","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-3","label":"The MediatR pipeline runs 22 behaviors &mdash; validation, authorization, tracing, audit, prompt-injection, content safety, token budget &mdash; around the handler.","packet":true,"from":"actor-2","to":"actor-3"},
       {"highlight":"flow-actor-4","label":"The handler sends the conversation to the LLM (Azure OpenAI).","packet":true,"from":"actor-3","to":"actor-4"},
       {"highlight":"flow-actor-4","label":"The LLM decides it needs a tool and asks the harness to call one."},
       {"highlight":"flow-actor-5","label":"The Tool System runs the requested tool inside a safe sandbox.","packet":true,"from":"actor-4","to":"actor-5"},
@@ -168,7 +168,7 @@
         <div class="icon-circle" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
         <div>
           <strong>The <span class="term" data-definition="MediatR is a .NET library for sending commands through a pipeline of steps. Each request passes through validators, logging, and safety checks before reaching the handler that does the real work.">MediatR</span> <span class="term" data-definition="A pipeline is a chain of steps a request passes through in order — like a conveyor belt in a factory. Each step can inspect, change, or reject the request before the next one sees it.">pipeline</span></strong>
-          <p>Every command passes through fifteen checkpoints &mdash; exception capture, content safety, tool permissions, governance, prompt-injection scan, audit, validation, tracing, timeout, response sanitization &mdash; before (and after) a handler touches it.</p>
+          <p>Every command passes through twenty-two checkpoints &mdash; validation, authorization, tracing, timeout, exception capture, audit, prompt-injection scan, content safety, token budget, response sanitization &mdash; before (and after) a handler touches it.</p>
         </div>
       </div>
       <div class="icon-row">
@@ -284,7 +284,7 @@
           <p class="tl">Loop through the user&apos;s messages one at a time, numbering them as we go.</p>
           <p class="tl">If we&apos;ve hit the max-turns safety limit, log a warning and stop &mdash; runaway agents are expensive.</p>
           <p class="tl">Build an &ldquo;execute one turn&rdquo; command with this message and the history so far.</p>
-          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; all fifteen pipeline behaviors (exception capture, content safety, tool permissions, governance, prompt-injection, audit, validation, tracing, timeout, response sanitization, &hellip;) run automatically before the turn handler.</p>
+          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; all twenty-two pipeline behaviors (validation, authorization, tracing, timeout, exception capture, audit, prompt-injection, content safety, token budget, response sanitization, &hellip;) run automatically around the turn handler.</p>
           <p class="tl">Remember this turn&apos;s result so the next turn has context, and loop back for the next message.</p>
         </div>
       </div>
@@ -486,7 +486,7 @@
             <div class="arch-icon" style="background: var(--color-actor-3); color: white;">M</div>
             <span><span class="term" data-definition="MediatR is a library that acts like a message dispatcher. Instead of components calling each other directly, they send messages through MediatR, which routes them to the right handler — like a mail sorting facility.">MediatR Pipeline</span></span>
           </div>
-          <div class="arch-component" data-desc="Checks every user message and AI response for harmful content before it goes further — like a content review board on a film set." onclick="showArchDesc(this)">
+          <div class="arch-component" data-desc="Checks the incoming request text for harmful content before it goes further — like a content review board on a film set. It does not check the AI's response, and the default AllowAll provider lets everything through until Azure AI Content Safety is configured." onclick="showArchDesc(this)">
             <div class="arch-icon" style="background: var(--color-actor-3); color: white;">CS</div>
             <span><span class="term" data-definition="Content Safety is a middleware layer that scans messages for harmful, unsafe, or inappropriate content — like a content moderator reviewing posts before they go live.">ContentSafety</span></span>
           </div>
@@ -1068,113 +1068,162 @@
        SCREEN 2 — The CQRS Pipeline (Numbered Step Cards)
        ============================================================ -->
   <div class="screen" id="screen-3-2">
-    <h2 class="screen-title">The Gauntlet: 15 Pipeline Behaviors</h2>
-    <p>Before the <span class="term" data-definition="The handler is the code that actually does the work for a command. Every request passes through the pipeline first, and only if it survives all the checks does it reach the handler. Think of it as the player who finally gets to make the move.">handler</span> ever touches your message, it must survive a gauntlet of fifteen checkpoints. These are called <span class="term" data-definition="A pipeline behavior is a checkpoint that every request must pass through before reaching the handler. They run in a fixed order, like security checkpoints at an airport &mdash; skip one, and you do not get through.">pipeline behaviors</span>, registered across two layers: ten AI-specific behaviors (outermost) wrap five common behaviors (innermost). Together they run in this exact order every time.</p>
+    <h2 class="screen-title">The Gauntlet: 22 Pipeline Behaviors</h2>
+    <p>Before the <span class="term" data-definition="The handler is the code that actually does the work for a command. Every request passes through the pipeline first, and only if it survives all the checks does it reach the handler. Think of it as the player who finally gets to make the move.">handler</span> ever touches your message, it must survive a gauntlet of twenty-two checkpoints. These are called <span class="term" data-definition="A pipeline behavior is a checkpoint that every request must pass through before reaching the handler. They run in a fixed order, like security checkpoints at an airport &mdash; skip one, and you do not get through.">pipeline behaviors</span>, registered across two layers: six common behaviors from <code>Application.Common</code> (outermost, because the composition root registers that layer first) wrap sixteen AI-specific behaviors from <code>Application.AI.Common</code>. MediatR runs them in registration order, the same order every time. Many of them act only on requests that opt in through a marker interface and let everything else straight through.</p>
 
     <div class="step-cards">
       <div class="step-card" style="border-left-color: var(--color-actor-1)">
         <div class="step-num" style="background: var(--color-actor-1)">1</div>
         <div class="step-body">
-          <strong>UnhandledException</strong>
-          <p>Outermost layer &mdash; catches any uncaught error, logs it, and converts it into a structured failure so the rest of the system never sees a raw stack trace.</p>
+          <strong>RequestValidation</strong>
+          <p>Outermost. FluentValidation checks: required fields present, formats valid, ranges sane. Catches malformed inputs before anything else runs.</p>
         </div>
       </div>
       <div class="step-card" style="border-left-color: var(--color-actor-2)">
         <div class="step-num" style="background: var(--color-actor-2)">2</div>
-        <div class="step-body">
-          <strong>AgentContextPropagation</strong>
-          <p>Stamps the current agent identity (name, session, deployment) onto the ambient context so every downstream call &mdash; LLM, tool, log line &mdash; can tell who asked for it.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-3)">
-        <div class="step-num" style="background: var(--color-actor-3)">3</div>
-        <div class="step-body">
-          <strong>AuditTrail</strong>
-          <p>Writes an immutable audit record &mdash; what command, when, by whom &mdash; so security and compliance teams can replay any action months later.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-4)">
-        <div class="step-num" style="background: var(--color-actor-4)">4</div>
-        <div class="step-body">
-          <strong>ContentSafety</strong>
-          <p>Scans the message for harmful, toxic, or policy-violating content via Azure Content Safety. Blocks dangerous requests before they ever reach the AI.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-5)">
-        <div class="step-num" style="background: var(--color-actor-5)">5</div>
-        <div class="step-body">
-          <strong>ToolPermission</strong>
-          <p>Verifies this agent is actually allowed to use the tools it might call. Three-phase model: deny gates, ask rules, allow rules.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-1)">
-        <div class="step-num" style="background: var(--color-actor-1)">6</div>
-        <div class="step-body">
-          <strong>GovernancePolicy <span style="font-size: var(--text-xs); background: var(--color-accent); color: white; padding: 2px 6px; border-radius: 3px; vertical-align: middle;">NEW</span></strong>
-          <p>Evaluates every tool call against YAML-defined policies via Microsoft AGT. Returns one of: Allow / Deny / Warn / RequireApproval (triggers escalation) / Log / RateLimit. The harness&apos;s enforcement of organization rules.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-2)">
-        <div class="step-num" style="background: var(--color-actor-2)">7</div>
-        <div class="step-body">
-          <strong>PromptInjection <span style="font-size: var(--text-xs); background: var(--color-accent); color: white; padding: 2px 6px; border-radius: 3px; vertical-align: middle;">NEW</span></strong>
-          <p>Scans the user message for <span class="term" data-definition="Prompt injection is when a user message tries to override the agent&apos;s system prompt or instructions &mdash; e.g., &lsquo;ignore previous instructions and...&rsquo;. The harness blocks this before it reaches the LLM.">prompt-injection</span> patterns (instruction override attempts, role hijacking, exfiltration markers) before the LLM ever sees it.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-3)">
-        <div class="step-num" style="background: var(--color-actor-3)">8</div>
-        <div class="step-body">
-          <strong>Hook</strong>
-          <p>Fires registered lifecycle hooks (pre-turn / post-turn) so plug-ins like usage capture, evaluation harnesses, or custom rate-limiters can observe each command.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-4)">
-        <div class="step-num" style="background: var(--color-actor-4)">9</div>
-        <div class="step-body">
-          <strong>RetrievalAudit</strong>
-          <p>For commands that hit RAG or knowledge graphs, records which chunks and sources were retrieved so you can later answer "where did the agent's answer come from?"</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-5)">
-        <div class="step-num" style="background: var(--color-actor-5)">10</div>
-        <div class="step-body">
-          <strong>ResponseSanitization <span style="font-size: var(--text-xs); background: var(--color-accent); color: white; padding: 2px 6px; border-radius: 3px; vertical-align: middle;">NEW</span></strong>
-          <p>Runs AFTER the handler returns. Scans the LLM&apos;s response for leaked secrets, suspicious URLs, and policy-violating output and either redacts or blocks the response before it streams back.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-1)">
-        <div class="step-num" style="background: var(--color-actor-1)">11</div>
-        <div class="step-body">
-          <strong>RequestValidation</strong>
-          <p>FluentValidation checks: required fields present, formats valid, ranges sane. Catches malformed inputs before they reach the handler.</p>
-        </div>
-      </div>
-      <div class="step-card" style="border-left-color: var(--color-actor-2)">
-        <div class="step-num" style="background: var(--color-actor-2)">12</div>
         <div class="step-body">
           <strong>Authorization</strong>
           <p>Confirms the caller has permission to execute this specific command. Distinct from tool permissions &mdash; this is about who is allowed to ask, not what tools they can use.</p>
         </div>
       </div>
       <div class="step-card" style="border-left-color: var(--color-actor-3)">
-        <div class="step-num" style="background: var(--color-actor-3)">13</div>
+        <div class="step-num" style="background: var(--color-actor-3)">3</div>
+        <div class="step-body">
+          <strong>Idempotency</strong>
+          <p>Only for commands marked <code>IIdempotentRequest</code>: a retry with the same idempotency key gets the stored response instead of running the work twice. It sits after Authorization so a replay still has to pass the auth check.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-4)">
+        <div class="step-num" style="background: var(--color-actor-4)">4</div>
         <div class="step-body">
           <strong>Caching</strong>
-          <p>Checks if this exact request was already answered recently. If so, returns the cached result instantly &mdash; no need to bother the <span class="term" data-definition="A Large Language Model (LLM) is the AI brain &mdash; models like GPT-4 or Claude that read your message and generate a response. They are expensive to call, which is why caching matters.">LLM</span>.</p>
+          <p>For queries marked <code>ICacheableQuery</code>, checks whether this exact request was answered recently. If so, returns the cached result instantly &mdash; no need to bother the <span class="term" data-definition="A Large Language Model (LLM) is the AI brain &mdash; models like GPT-4 or Claude that read your message and generate a response. They are expensive to call, which is why caching matters.">LLM</span>.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-5)">
+        <div class="step-num" style="background: var(--color-actor-5)">5</div>
+        <div class="step-body">
+          <strong>RequestTracing</strong>
+          <p>Opens an OpenTelemetry <span class="term" data-definition="A span (also called an activity in .NET) is a timed record of one operation. Spans nest inside each other to show exactly how long each step took, like a stopwatch with sub-laps. Engineers use these to find bottlenecks.">span</span> around everything inside it so you can see exactly how long each step takes. Essential for diagnosing slow responses.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">6</div>
+        <div class="step-body">
+          <strong>Timeout</strong>
+          <p>Trips a configurable timer that cancels the operation if it runs too long. Because it sits here, the timer covers every AI-layer behavior below it as well as the handler.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">7</div>
+        <div class="step-body">
+          <strong>UnhandledException</strong>
+          <p>The outermost of the AI-layer behaviors. Catches any exception escaping the layers below, logs it with the agent&apos;s context attached, and rethrows it.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">8</div>
+        <div class="step-body">
+          <strong>AmbientRequestScope</strong>
+          <p>Makes this request&apos;s dependency-injection scope the ambient one for the rest of the pipeline, so long-lived (cached) agents still resolve the right per-request, per-user services &mdash; such as memory recall.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-4)">
+        <div class="step-num" style="background: var(--color-actor-4)">9</div>
+        <div class="step-body">
+          <strong>AgentContextPropagation</strong>
+          <p>Stamps the current agent identity (name, session, deployment) onto the ambient context so every downstream call &mdash; LLM, tool, log line &mdash; can tell who asked for it.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-5)">
+        <div class="step-num" style="background: var(--color-actor-5)">10</div>
+        <div class="step-body">
+          <strong>AgentIdentityResolution</strong>
+          <p>Resolves the agent&apos;s workload identity and stamps it onto the request&apos;s execution context. Does nothing unless <code>AppConfig.AI.Identity.Enabled</code> is on.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">11</div>
+        <div class="step-body">
+          <strong>AuditTrail</strong>
+          <p>Writes an audit record &mdash; what command, when, by whom, and the outcome &mdash; for requests marked <code>IAuditable</code>, so security and compliance teams can replay any action months later.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">12</div>
+        <div class="step-body">
+          <strong>PromptInjection <span style="font-size: var(--text-xs); background: var(--color-accent); color: white; padding: 2px 6px; border-radius: 3px; vertical-align: middle;">NEW</span></strong>
+          <p>Scans the user message for <span class="term" data-definition="Prompt injection is when a user message tries to override the agent&apos;s system prompt or instructions &mdash; e.g., &lsquo;ignore previous instructions and...&rsquo;. The harness blocks this before it reaches the LLM.">prompt-injection</span> patterns (instruction override attempts, role hijacking, exfiltration markers) before the LLM ever sees it. A local pattern match: it costs nothing, so it runs before the content safety call. Turned on by <code>EnablePromptInjectionDetection</code> in the shipped appsettings.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">13</div>
+        <div class="step-body">
+          <strong>ContentSafety</strong>
+          <p>Screens the incoming text for harmful content (Hate, SelfHarm, Sexual, Violence) &mdash; but only when <code>AppConfig:AI:ContentSafety:Provider</code> is <code>AzureAIContentSafety</code>. The default <code>AllowAll</code> provider passes everything. It screens the request&apos;s input only, never the response.</p>
         </div>
       </div>
       <div class="step-card" style="border-left-color: var(--color-actor-4)">
         <div class="step-num" style="background: var(--color-actor-4)">14</div>
         <div class="step-body">
-          <strong>RequestTracing</strong>
-          <p>Opens an OpenTelemetry <span class="term" data-definition="A span (also called an activity in .NET) is a timed record of one operation. Spans nest inside each other to show exactly how long each step took, like a stopwatch with sub-laps. Engineers use these to find bottlenecks.">span</span> around the handler so you can see exactly how long each step takes. Essential for diagnosing slow responses.</p>
+          <strong>TokenBudget</strong>
+          <p>For requests that consume LLM tokens (<code>IConsumesTokens</code>): refuses the request up front if its estimated cost exceeds the remaining budget, then records the actual usage after the turn.</p>
         </div>
       </div>
       <div class="step-card" style="border-left-color: var(--color-actor-5)">
         <div class="step-num" style="background: var(--color-actor-5)">15</div>
         <div class="step-body">
-          <strong>Timeout</strong>
-          <p>Final safety net &mdash; trips a configurable timer that aborts the operation if the handler runs too long. Keeps runaway commands from blocking the whole system.</p>
+          <strong>Hook</strong>
+          <p>Fires registered lifecycle hooks (pre-turn / post-turn) so plug-ins like usage capture, evaluation harnesses, or custom rate-limiters can observe each command.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">16</div>
+        <div class="step-body">
+          <strong>RetrievalAudit</strong>
+          <p>For commands that hit RAG or knowledge graphs, records the query and how long retrieval took, so you can later answer &ldquo;where did the agent&apos;s answer come from?&rdquo;</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">17</div>
+        <div class="step-body">
+          <strong>ResponseSanitization <span style="font-size: var(--text-xs); background: var(--color-accent); color: white; padding: 2px 6px; border-radius: 3px; vertical-align: middle;">NEW</span></strong>
+          <p>Runs AFTER the handler returns. Scans tool output for leaked credentials, embedded injection payloads, and exfiltration URLs, and redacts or blocks it before it re-enters the LLM&apos;s context.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">18</div>
+        <div class="step-body">
+          <strong>ToolOutputCompression</strong>
+          <p>Runs after the handler. Stores large tool output in full and hands the model a compressed summary plus a reference to retrieve the rest, saving context-window space.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-4)">
+        <div class="step-num" style="background: var(--color-actor-4)">19</div>
+        <div class="step-body">
+          <strong>KnowledgeExtraction</strong>
+          <p>Post-turn: extracts notable facts from the conversation and saves them to the knowledge graph (fire-and-forget).</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-5)">
+        <div class="step-num" style="background: var(--color-actor-5)">20</div>
+        <div class="step-body">
+          <strong>WorkEpisodeCapture</strong>
+          <p>Post-turn: records what the agent did on this turn as a work episode, cheaply and with no LLM call. An overnight pass later distills episodes into reusable lessons.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">21</div>
+        <div class="step-body">
+          <strong>SkillEffectivenessTracking</strong>
+          <p>Post-turn: records, per skill, whether this turn succeeded, so the agent&apos;s procedural memory learns which skills work.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">22</div>
+        <div class="step-body">
+          <strong>PromptUsageTracking</strong>
+          <p>Innermost. After the handler runs, forwards every prompt-usage entry the handler tracked to the prompt-usage recorder, so you can tell which prompt version produced which result.</p>
         </div>
       </div>
       <div class="step-card" style="border-left-color: var(--color-accent)">
@@ -1186,7 +1235,7 @@
       </div>
     </div>
 
-    <p>This pattern is called <span class="term" data-definition="CQRS stands for Command Query Responsibility Segregation. In plain terms, it means separating actions that change data (commands) from actions that just read data (queries). In this codebase, every agent turn is a command that flows through the pipeline.">CQRS</span> with <span class="term" data-definition="MediatR is a library that acts like a postal service inside the code. You send a command (a letter), and MediatR figures out which handler (recipient) should process it &mdash; passing it through all the pipeline behaviors (checkpoints) along the way.">MediatR</span>. Every request is a &ldquo;command&rdquo; that gets routed through behaviors before reaching a handler. The order matters &mdash; UnhandledException is outermost so it can catch errors from anything inside; Timeout is innermost so it only times the actual work, not the safety checks.</p>
+    <p>This pattern is called <span class="term" data-definition="CQRS stands for Command Query Responsibility Segregation. In plain terms, it means separating actions that change data (commands) from actions that just read data (queries). In this codebase, every agent turn is a command that flows through the pipeline.">CQRS</span> with <span class="term" data-definition="MediatR is a library that acts like a postal service inside the code. You send a command (a letter), and MediatR figures out which handler (recipient) should process it &mdash; passing it through all the pipeline behaviors (checkpoints) along the way.">MediatR</span>. Every request is a &ldquo;command&rdquo; that gets routed through behaviors before reaching a handler. The order matters &mdash; validation and authorization run first so nothing is done for a malformed or unauthorized request; the free, local prompt-injection scan runs before content safety, which may be a metered call to an external service; and the post-turn behaviors sit innermost, next to the handler, so they see its result first.</p>
   </div>
 
   <!-- ============================================================
@@ -1443,7 +1492,7 @@
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>The content safety filter &mdash; it might be blocking responses</span>
+            <span>The content safety filter &mdash; it might be blocking the request</span>
           </button>
           <button class="quiz-option" data-value="option-2b" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
@@ -1460,21 +1509,21 @@
       <!-- Question 3 -->
       <div class="quiz-question-block"
            data-correct="option-3a"
-           data-explanation-right="Exactly. UnhandledException is registered outermost so it can catch errors thrown by any of the eleven layers below it (and the handler) and convert them into structured failures. If it ran later, an exception from an earlier behavior would escape unhandled."
-           data-explanation-wrong="Not quite. The outermost behavior in this codebase is UnhandledException. Wrapping everything else means it can catch errors thrown by any inner behavior or by the handler itself.">
-        <h3 class="quiz-question">3. Which pipeline behavior runs outermost, and why does the order matter?</h3>
+           data-explanation-right="Exactly. The prompt-injection scan is a local pattern match that costs nothing; content safety may be a metered, rate-limited call to an external service. Running the scan first means text it refuses is never sent out, and during a screening outage an injection is still refused as an injection."
+           data-explanation-wrong="Not quite. Think about cost: one of these checks is a local pattern match, the other may be a paid call to an external service. Which one should get the first look at the text?">
+        <h3 class="quiz-question">3. Why does PromptInjection run before ContentSafety in the pipeline?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>UnhandledException &mdash; outermost so it can catch errors from any inner layer or the handler</span>
+            <span>The injection scan is local and free, while content safety may be an external, metered call &mdash; so text the scan refuses is never sent out</span>
           </button>
           <button class="quiz-option" data-value="option-3b" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>Content Safety &mdash; dangerous requests should be caught before anything else runs</span>
+            <span>Content safety needs the injection scan&apos;s result as its input</span>
           </button>
           <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>RequestTracing &mdash; you need to time everything from the very start</span>
+            <span>The order does not matter &mdash; MediatR runs behaviors in parallel</span>
           </button>
         </div>
         <div class="quiz-feedback"></div>
@@ -2767,6 +2816,10 @@
     </p>
 
     <p class="animate-in">
+      One catch: the bouncer only checks what it is configured to check. The harness ships with the <code>AllowAll</code> provider, which lets everything through (and logs a startup warning outside Development). Real screening needs <code>AppConfig:AI:ContentSafety:Provider</code> set to <code>AzureAIContentSafety</code>, which scores the text for four harm categories &mdash; Hate, SelfHarm, Sexual, Violence &mdash; and blocks at <code>BlockAtSeverity</code> (4 by default). Prompt injection is a separate checkpoint, <code>PromptInjectionBehavior</code>, which runs just before this one.
+    </p>
+
+    <p class="animate-in">
       Watch both scenarios play out: a flagged message that gets blocked, then a clean message that sails through.
     </p>
 
@@ -2774,8 +2827,8 @@
       {"highlight":"flow-actor-1","label":"User sends a message to the agent"},
       {"highlight":"flow-actor-2","label":"MediatR pipeline starts processing the request","packet":true,"from":"actor-1","to":"actor-2"},
       {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens the input text","packet":true,"from":"actor-2","to":"actor-3"},
-      {"highlight":"flow-actor-3","label":"FLAGGED: potential prompt injection detected"},
-      {"highlight":"flow-actor-3","label":"Pipeline halts. Agent never sees the message. Violation metric incremented."},
+      {"highlight":"flow-actor-3","label":"BLOCKED: the Azure provider scores the text at or above BlockAtSeverity in a harm category (e.g. Violence)"},
+      {"highlight":"flow-actor-3","label":"Pipeline halts. Agent never sees the message. agent.safety.blocks is incremented, tagged with the category."},
       {"highlight":"flow-actor-1","label":"Now a clean message arrives from the user"},
       {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens it and approves","packet":true,"from":"actor-1","to":"actor-3"},
       {"highlight":"flow-actor-4","label":"Message reaches the agent handler. Conversation continues normally.","packet":true,"from":"actor-3","to":"actor-4"}
@@ -2813,45 +2866,46 @@
     <h3 class="animate-in">The Code Behind the Bouncer</h3>
 
     <p class="animate-in">
-      <code>ContentSafetyBehavior</code> is a <span class="term" data-definition="A pipeline behavior is a piece of code that wraps around a command handler, running before and/or after it. Think of it as a checkpoint on an assembly line that can inspect, modify, or reject items before they reach the next station.">pipeline behavior</span> &mdash; it sits in the MediatR pipeline and inspects every command that implements <code>IContentScreenable</code>.
+      <code>ContentSafetyBehavior</code> is a <span class="term" data-definition="A pipeline behavior is a piece of code that wraps around a command handler, running before and/or after it. Think of it as a checkpoint on an assembly line that can inspect, modify, or reject items before they reach the next station.">pipeline behavior</span> &mdash; it sits in the MediatR pipeline and inspects every command that implements <code>IContentScreenable</code> with a screening target of <code>Input</code> or <code>Both</code>. Today that is the agent turn (<code>ExecuteAgentTurnCommand</code>) and the document search query (<code>SearchDocumentsQuery</code>). It screens the request's input only; nothing screens the model's output.
     </p>
 
     <div class="translation-block animate-in">
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    <span class="code-keyword">where</span> TRequest : notnull</span>
+<span class="code-line"><span class="code-keyword">public sealed class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt; <span class="code-keyword">where</span> TRequest : notnull</span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-function">ContentSafetyBehavior</span>(ITextContentSafetyService safety, IObservabilityStore observabilityStore)</span>
-<span class="code-line">    { _safety = safety; _observabilityStore = observabilityStore; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-function">ContentSafetyBehavior</span>(ITextContentSafetyService safetyService,</span>
+<span class="code-line">        IObservabilityStore observabilityStore, IOptions&lt;AppConfig&gt; config) { <span class="code-comment">/* store the three */</span> }</span>
 <span class="code-line"></span>
 <span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(TRequest request, RequestHandlerDelegate&lt;TResponse&gt; next, CancellationToken ct)</span>
 <span class="code-line">    {</span>
-<span class="code-line">        <span class="code-comment">// Runtime opt-in: only requests that implement IContentScreenable get screened</span></span>
-<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IContentScreenable screenable) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IContentScreenable { ScreeningTarget: ContentScreeningTarget.Input <span class="code-keyword">or</span> ContentScreeningTarget.Both } screenable)</span>
+<span class="code-line">            <span class="code-keyword">return await</span> next();</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">var</span> content = screenable.ContentToScreen;</span>
-<span class="code-line">        ContentSafetyMetrics.Evaluations.<span class="code-function">Add</span>(1);  <span class="code-comment">// every screen, pass or fail</span></span>
-<span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">if</span> (!<span class="code-keyword">string</span>.<span class="code-function">IsNullOrWhiteSpace</span>(content))</span>
+<span class="code-line">        ContentSafetyResult result;</span>
+<span class="code-line">        <span class="code-keyword">try</span></span>
 <span class="code-line">        {</span>
-<span class="code-line">            <span class="code-keyword">var</span> result = <span class="code-keyword">await</span> _safety.<span class="code-function">ScreenContentAsync</span>(content, ct);</span>
-<span class="code-line"></span>
-<span class="code-line">            <span class="code-keyword">if</span> (!result.IsSafe)</span>
-<span class="code-line">            {</span>
-<span class="code-line">                _logger.<span class="code-function">LogWarning</span>(<span class="code-string">"Content safety block: {Categories}"</span>, <span class="code-keyword">string</span>.<span class="code-function">Join</span>(<span class="code-string">", "</span>, result.Categories));</span>
-<span class="code-line">                <span class="code-keyword">await</span> _observabilityStore.<span class="code-function">RecordSafetyEventAsync</span>(screenable, result, ct);</span>
-<span class="code-line">                ContentSafetyMetrics.Blocks.<span class="code-function">Add</span>(1);</span>
-<span class="code-line"></span>
-<span class="code-line">                <span class="code-comment">// Prefer returning a structured Result.ContentBlocked rather than throwing</span></span>
-<span class="code-line">                <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(result, <span class="code-keyword">out var</span> failure)) <span class="code-keyword">return</span> failure;</span>
-<span class="code-line">                <span class="code-keyword">throw new</span> ContentSafetyException(result.Reason, result.Category);</span>
-<span class="code-line">            }</span>
+<span class="code-line">            result = <span class="code-keyword">await</span> _safetyService.<span class="code-function">ScreenAsync</span>(screenable.ContentToScreen, ct);</span>
+<span class="code-line">        }</span>
+<span class="code-line">        <span class="code-keyword">catch</span> (ContentSafetyUnavailableException)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            <span class="code-keyword">await</span> <span class="code-function">RecordAsync</span>(request, SafetyConventions.OutcomeValues.Unscreened, category: <span class="code-keyword">null</span>, ct);</span>
+<span class="code-line">            <span class="code-keyword">if</span> (_config.Value.AI.ContentSafety.BlockWhenUnavailable) <span class="code-keyword">throw</span>;</span>
+<span class="code-line">            <span class="code-keyword">return await</span> next();</span>
 <span class="code-line">        }</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">return await</span> next();</span>
+<span class="code-line">        <span class="code-keyword">await</span> <span class="code-function">RecordAsync</span>(request, result.IsBlocked ? SafetyConventions.OutcomeValues.Block : SafetyConventions.OutcomeValues.Pass,</span>
+<span class="code-line">            result.Category, ct);</span>
+<span class="code-line">        <span class="code-keyword">if</span> (!result.IsBlocked) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">        ContentSafetyMetrics.Blocks.<span class="code-function">Add</span>(1, <span class="code-comment">/* phase and filter tags, then */</span></span>
+<span class="code-line">            <span class="code-keyword">new</span> KeyValuePair&lt;<span class="code-keyword">string</span>, <span class="code-keyword">object</span>?&gt;(SafetyConventions.Category, result.Category ?? <span class="code-string">"unknown"</span>));</span>
+<span class="code-line">        <span class="code-keyword">var</span> reason = result.BlockReason ?? <span class="code-string">"Content blocked by safety policy."</span>;</span>
+<span class="code-line">        <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(<span class="code-keyword">nameof</span>(Result.ContentBlocked), reason, <span class="code-keyword">out var</span> blocked))</span>
+<span class="code-line">            <span class="code-keyword">return</span> blocked;</span>
+<span class="code-line">        <span class="code-keyword">throw new</span> ContentSafetyException(reason, result.Category);</span>
 <span class="code-line">    }</span>
 <span class="code-line">}</span>
         </code></pre>
@@ -2860,35 +2914,38 @@
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
           <p class="tl">This is a safety checkpoint registered as a pipeline behavior.</p>
-          <p class="tl">It plugs into MediatR so it runs automatically &mdash; no manual wiring.</p>
-          <p class="tl">Constraint is just <code>notnull</code>; the screening opt-in happens at runtime, not by generic constraint.</p>
+          <p class="tl">It plugs into MediatR so it runs automatically. The constraint is just <code>notnull</code>; the opt-in happens at runtime.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Constructor takes the safety service and an observability store (to record safety events to Postgres).</p>
-          <p class="tl">&nbsp;</p>
+          <p class="tl">The constructor takes the screening service, an observability store (to record safety events to Postgres)&hellip;</p>
+          <p class="tl">&hellip;and the app configuration, read for the outage policy. There is no logger.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">The Handle method runs for every command.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Runtime opt-in: only screen if the request implements <code>IContentScreenable</code>. Otherwise pass through immediately.</p>
+          <p class="tl">Runtime opt-in: only requests that implement <code>IContentScreenable</code> with a target of <code>Input</code> or <code>Both</code> get screened (<code>Both</code> still screens the input only).</p>
+          <p class="tl">Everything else passes straight through.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Read the content directly from the property (not a method).</p>
-          <p class="tl">Bump the &ldquo;evaluations&rdquo; counter on every screen so you can see how often safety runs &mdash; pass or fail.</p>
+          <p class="tl">Hold the verdict here.</p>
+          <p class="tl">Try to screen&hellip;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If there is actual content to check&hellip;</p>
+          <p class="tl">Send the request's text to the configured provider and wait for the verdict.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Send the content to the safety service and wait for the verdict.</p>
+          <p class="tl">If the provider could not be reached&hellip;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If the verdict says the content is NOT safe&hellip;</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Log a warning with the flagged categories.</p>
-          <p class="tl">Record the safety event to the observability store so Sessions dashboard can show it.</p>
-          <p class="tl">Bump the &ldquo;blocks&rdquo; counter &mdash; Prometheus tracks both evaluations and blocks separately.</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Prefer returning a structured failure (<code>Result.ContentBlocked</code>) if the response type supports it. Cleaner than an exception.</p>
-          <p class="tl">Otherwise fall back to throwing a typed exception so the outer handler can map it.</p>
+          <p class="tl">Record the evaluation as &ldquo;unscreened&rdquo; &mdash; an outage is not a pass and not a block.</p>
+          <p class="tl">With <code>BlockWhenUnavailable</code> on (the default), refuse: the error surfaces as a service failure (HTTP 503 on hosts behind the global exception middleware).</p>
+          <p class="tl">With it off, let the request through unscreened.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
+          <p class="tl">Record the evaluation (<code>agent.safety.evaluations</code>, tagged with the outcome) and the session's safety event&hellip;</p>
+          <p class="tl">&hellip;with the harm category, if any.</p>
+          <p class="tl">If the verdict is not a block, call <code>next()</code> and let the message continue.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If we got here, the content passed safety checks. Call <code>next()</code> to let the message continue.</p>
+          <p class="tl">Blocked: bump <code>agent.safety.blocks</code>&hellip;</p>
+          <p class="tl">&hellip;tagged with the harm category.</p>
+          <p class="tl">Use the provider's reason, or a generic one.</p>
+          <p class="tl">Prefer returning a structured failure (<code>Result.ContentBlocked</code>) if the response type supports it&hellip;</p>
+          <p class="tl">&hellip;so the caller gets a clean result instead of an exception.</p>
+          <p class="tl">Otherwise throw a typed exception so the outer handler can map it.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
         </div>
@@ -3149,8 +3206,8 @@
       <!-- Question 2 -->
       <div class="quiz-question-block"
            data-correct="option-2c"
-           data-explanation-right="Exactly. The ContentSafetyBehavior returns a structured Result.ContentBlocked failure (or throws ContentSafetyException as a fallback). Either way the pipeline halts &mdash; the agent handler never executes. The block is recorded to the observability store and ContentSafetyMetrics.Blocks is incremented for monitoring."
-           data-explanation-wrong="Not quite. Look at the ContentSafetyBehavior code &mdash; when IsSafe is false, the behavior tries TryCreateFailure first, falls back to throwing ContentSafetyException, and either way the pipeline halts. The agent never sees the message.">
+           data-explanation-right="Exactly. The ContentSafetyBehavior returns a structured Result.ContentBlocked failure (or throws ContentSafetyException as a fallback). Either way the pipeline halts &mdash; the agent handler never executes. The block is recorded to the observability store and ContentSafetyMetrics.Blocks (agent.safety.blocks, tagged with the category) is incremented for monitoring."
+           data-explanation-wrong="Not quite. Look at the ContentSafetyBehavior code &mdash; when result.IsBlocked is true, the behavior tries TryCreateFailure first, falls back to throwing ContentSafetyException, and either way the pipeline halts. The agent never sees the message.">
         <h3 class="quiz-question">What happens when ContentSafetyBehavior flags a message as unsafe?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
@@ -3358,7 +3415,7 @@
           <div class="chat-avatar" style="background: var(--color-actor-3)">P</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: var(--color-actor-3)">MediatR Pipeline</span>
-            <p>I am fifteen checkpoints in a row. Every command passes through me before reaching its handler &mdash; exception capture, content safety, tool permissions, governance, prompt-injection, audit, validation, caching, tracing, response sanitization, timeout.</p>
+            <p>I am twenty-two checkpoints in a row. Every command passes through me before reaching its handler &mdash; validation, authorization, caching, tracing, timeout, exception capture, audit, prompt-injection scan, content safety, token budget, response sanitization, and the post-turn memory capture.</p>
           </div>
         </div>
         <div class="chat-message" data-msg="3" data-sender="actor-4" style="display:none">
@@ -3451,9 +3508,9 @@
       <div class="step-card" style="border-left-color: var(--color-actor-3)">
         <div class="step-num" style="background: var(--color-actor-3)">3</div>
         <div class="step-body">
-          <strong>The MediatR pipeline &mdash; twelve checkpoints</strong>
-          <p><code>Application.AI.Common/DependencyInjection.cs:59&ndash;68</code> + <code>Application.Common/DependencyInjection.cs:63&ndash;67</code></p>
-          <p>Every command is wrapped, outer to inner, in 15 behaviors: <code>UnhandledException</code> &rarr; <code>AgentContextPropagation</code> &rarr; <code>AuditTrail</code> &rarr; <code>ContentSafety</code> &rarr; <code>ToolPermission</code> &rarr; <code>GovernancePolicy</code> &rarr; <code>PromptInjection</code> &rarr; <code>Hook</code> &rarr; <code>RetrievalAudit</code> &rarr; <code>ResponseSanitization</code> &rarr; <code>RequestValidation</code> &rarr; <code>Authorization</code> &rarr; <code>Caching</code> &rarr; <code>RequestTracing</code> &rarr; <code>Timeout</code> &rarr; <strong>Handler</strong>. Three of these (Governance, PromptInjection, ResponseSanitization) were added in Phase 2 of the harness work and now form the security spine alongside ContentSafety.</p>
+          <strong>The MediatR pipeline &mdash; twenty-two checkpoints</strong>
+          <p><code>Application.Common/DependencyInjection.cs:74&ndash;80</code> + <code>Application.AI.Common/DependencyInjection.cs:94&ndash;127</code></p>
+          <p>Every command is wrapped, outer to inner, in 22 behaviors. The six from <code>Application.Common</code> are outermost, because the composition root registers that layer first and MediatR runs behaviors in registration order: <code>RequestValidation</code> &rarr; <code>Authorization</code> &rarr; <code>Idempotency</code> &rarr; <code>Caching</code> &rarr; <code>RequestTracing</code> &rarr; <code>Timeout</code> &rarr; <code>UnhandledException</code> &rarr; <code>AmbientRequestScope</code> &rarr; <code>AgentContextPropagation</code> &rarr; <code>AgentIdentityResolution</code> &rarr; <code>AuditTrail</code> &rarr; <code>PromptInjection</code> &rarr; <code>ContentSafety</code> &rarr; <code>TokenBudget</code> &rarr; <code>Hook</code> &rarr; <code>RetrievalAudit</code> &rarr; <code>ResponseSanitization</code> &rarr; <code>ToolOutputCompression</code> &rarr; <code>KnowledgeExtraction</code> &rarr; <code>WorkEpisodeCapture</code> &rarr; <code>SkillEffectivenessTracking</code> &rarr; <code>PromptUsageTracking</code> &rarr; <strong>Handler</strong>. Most act only on requests that opt in through a marker interface. PromptInjection and ResponseSanitization were added in Phase 2 of the harness work and form the security spine alongside ContentSafety. Tool permission and governance policy are no longer pipeline behaviors: they run on the live tool-call path, inside <code>GovernedAIFunction</code>.</p>
         </div>
       </div>
 
@@ -5603,7 +5660,7 @@
       <div class="callout-icon">&#x1F4A1;</div>
       <div class="callout-content">
         <strong class="callout-title">Why the proposer is a separate agent, not a service</strong>
-        <p>Making the optimizer an agent buys two things at once. First, the proposer can use the same skill, tool, and governance machinery the rest of the harness already enforces &mdash; including escalation, audit, and content safety on its own edits. Second, the proposer is itself replaceable: ship a smarter proposer (or a different optimization strategy) by swapping the skill, not by rewriting infrastructure. The four-phase loop stays the same; the brain inside it can evolve.</p>
+        <p>Making the optimizer an agent buys two things at once. First, the proposer can use the same skill, tool, and governance machinery the rest of the harness already enforces &mdash; including escalation, audit, and content safety on the mission text it is given (the edits it returns are not content-screened). Second, the proposer is itself replaceable: ship a smarter proposer (or a different optimization strategy) by swapping the skill, not by rewriting infrastructure. The four-phase loop stays the same; the brain inside it can evolve.</p>
       </div>
     </div>
 

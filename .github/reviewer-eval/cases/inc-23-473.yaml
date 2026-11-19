@@ -1,0 +1,23 @@
+# RedactionCategory.VendorApiKey added without updating the hand-maintained "all categories" default lists in ContentCaptureConfig/LogsConfig
+id: INC-23
+kind: incident
+pr: 473
+base_sha: d774f4bb9d1a52b321e721b93795d0d6e2506eeb
+head_sha_before_fix: b582decabf27432afcec62d87d56007e0a2dd538
+fix_sha: 441d2f244e13cd4d15d32943c4a07df2e6583cf5
+expected:
+  path: src/Content/Domain/Domain.AI/Telemetry/Redaction/RedactionCategory.cs
+  line: 50
+  class: stale-mirrored-list
+caught_by: ci-correctness
+scope: correctness
+valid_until: null
+notes: >-
+  At b582deca the enum gains `VendorApiKey = 8,` (line 50, added hunk 42-50), but the default
+  RedactionCategories lists in ContentCaptureConfig.cs (lines 106-107) and LogsConfig.cs (lines 76-77) still
+  go "AwsKey" -> "JwtToken" with no "VendorApiKey", so bare vendor tokens export in cleartext through the
+  config-driven redaction paths. Fix 441d2f24 adds "VendorApiKey" to both config lists. Neither config file
+  is in the PR's pre-fix diff (only RedactionCategory.cs is), so the anchor is the enum line the defect
+  manifests on, not a config file; findings at either config list or at RedactionCategory.cs 42-50 should
+  score. CI's correctness-review (original body, since edited to "superseded") anchored it at
+  RedactionCategory.cs:44.

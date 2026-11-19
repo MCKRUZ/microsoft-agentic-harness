@@ -1,0 +1,25 @@
+# IaC pre-dispatch refusal discriminated by `ExitCode is null`, which executors also leave null on timeout / reserved-env-grant rejection / egress-preflight block
+id: INC-21
+kind: incident
+pr: 422
+base_sha: 49f21d2e5641e768a8ce9ae601c17cfd99a5ab39
+head_sha_before_fix: d8663be4c582d745eef56b63c605d0264c458756
+fix_sha: 9debf15a27f4c1797e896d2cc91341aaf70a8fc8
+expected:
+  path: src/Content/Infrastructure/Infrastructure.AI/Iac/TerraformGenerator.cs
+  line: 115
+  class: overloaded-discriminator-field
+caught_by: second-pass
+scope: correctness
+valid_until: null
+notes: >-
+  At d8663be4, TerraformGenerator.PlanAsync treats `validate.ExitCode is null` (line 115) as "the sandbox
+  refused before dispatch", but ProcessSandboxExecutor/DockerSandboxExecutor also leave ExitCode null on
+  timeout, reserved-env-grant rejection and egress-preflight block (all of which dispatched and signed an
+  attestation), so those are mislabeled iac.plan.sandbox_denied. Fix 9debf15a switches every site to
+  `Attestation is null`. The same defect sits on six added lines: TerraformGenerator.cs 115/174/181 and
+  BicepGenerator.cs 121/180/187 at this SHA; any of them should score as a hit. The INC-22 defect (unguarded
+  `plan` dispatch) is also present at this SHA, so a finding about it is not a false positive. The CLAUDE.md
+  entry cites issues #405/#406/#407 (and #421, the later Result.Forbidden reshape, PR #427); the defect
+  and fix are in PR #422. Caught by a local review pass before the PR was opened (PR created 12:26Z,
+  fix committed 07:10Z; CI's only correctness review on #422 said CORRECT).

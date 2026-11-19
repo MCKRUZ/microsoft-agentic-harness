@@ -23,9 +23,10 @@ namespace Domain.Common.Helpers;
 /// The rule closes shapes, not knowledge: a caller who learns another person's server-minted id (a job id, say) and
 /// names a conversation after it is not stopped here. Those ids are random and are only shown to their owner. Since the
 /// personal-data export (#902) reads those stores through the caller's conversation ids, such a caller's export would
-/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion. On a
-/// case-insensitive filesystem (Windows, default macOS) the tool-result store also treats ids that differ only in case
-/// as one directory, which widens the same knowledge-based gap to a case variant of the id (#936).
+/// return what the other person's run recorded there, so the consequence is disclosure, not only deletion. New tool-result
+/// spills keep ids that differ only by case apart, but on Windows and macOS a spill folder written before #928 holds the
+/// spills of every case variant that wrote to it, and the id that created the folder erases and exports all of them,
+/// until retention removes the folder; see <c>FileSystemToolResultStore</c>.
 /// </para>
 /// </remarks>
 public static class ReservedConversationIds

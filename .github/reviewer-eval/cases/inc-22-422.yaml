@@ -1,0 +1,23 @@
+# TerraformGenerator.PlanAsync: governance-refusal guard added to the `validate` dispatch only; the sibling `plan` dispatch stays unguarded
+id: INC-22
+kind: incident
+pr: 422
+base_sha: 49f21d2e5641e768a8ce9ae601c17cfd99a5ab39
+head_sha_before_fix: 0bccb3372dc216b3e20160e2318d67d143da64ae
+fix_sha: 9e95155fa087262c6e81322e5006f5b3e21fa0d8
+expected:
+  path: src/Content/Infrastructure/Infrastructure.AI/Iac/TerraformGenerator.cs
+  line: 115
+  class: unfixed-sibling
+caught_by: second-pass
+scope: correctness
+valid_until: null
+notes: >-
+  At 0bccb337 the refusal guard `if (validate.Attestation is null)` (line 115, an added line) covers only
+  the `validate` dispatch; the `plan` dispatch at lines 140-148 falls straight into
+  `return Result<IacPlanResult>.Success(ParsePlan(moduleDirectory, plan));` (line 148), so a refusal there
+  (e.g. a hot-reloaded DeniedCapabilities override between the two calls) is reported as "plan errored"
+  instead of iac.plan.sandbox_denied. Fix 9e95155f adds the same guard before line 148. Lines 140-148 are
+  unchanged context outside every diff hunk, so the expected anchor is the added sibling guard at 115; a
+  correct finding will most likely point at 140-148 and that range should also count as a hit. Caught by a
+  local second review pass before the PR was opened (fix committed 08:44Z, PR created 12:26Z).

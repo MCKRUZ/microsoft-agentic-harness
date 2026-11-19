@@ -69,7 +69,9 @@ public interface IErasureOrchestrator
     /// <para>
     /// A document id is derived from its source alone, so this reaches every tenant and collection the document was loaded
     /// into; it suspends any ambient request scope itself. A store that cannot delete the document's chunks makes the
-    /// receipt <see cref="ErasureCompleteness.Partial"/>, and the removal is audited whatever happens.
+    /// receipt <see cref="ErasureCompleteness.Partial"/>, and the removal is audited whatever happens. Every registered
+    /// chunk store is asked: a host cannot start with an Azure AI Search index that has no endpoint (#1012), so a store
+    /// that cannot be reached is a failure, never a store skipped as holding nothing.
     /// </para>
     /// </remarks>
     /// <param name="documentId">The document to remove: 16 upper-case hex digits, as the chunkers form it.</param>

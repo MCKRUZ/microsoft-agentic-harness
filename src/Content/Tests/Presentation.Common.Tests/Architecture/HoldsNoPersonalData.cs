@@ -28,6 +28,9 @@ internal static class HoldsNoPersonalData
         ["Infrastructure.AI/Infrastructure.AI.Persistence.SecureDeleteConnectionInterceptor"] = new(
             "Turns SQLite secure delete on for each connection an Entity Framework context opens; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
+        ["Infrastructure.AI.RAG/Infrastructure.AI.RAG.Sqlite.SqliteLockWait"] = new(
+            "Builds the busy-timeout statement from a connection's configured timeout; it runs no command and reads and writes no rows.",
+            "Microsoft.Data.Sqlite.SqliteConnection::get_DefaultTimeout", "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder::.ctor", "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder::get_DefaultTimeout", "System.Data.Common.DbConnection::get_ConnectionString"),
         ["Infrastructure.AI/Infrastructure.AI.Extensions.SqliteDatabaseFacadeExtensions"] = new(
             "Runs a write-ahead-log checkpoint after an erasure on the calling store's database; it reads and writes no rows.",
             "calls channel Infrastructure.AI.RAG.Sqlite.SqliteSecureDelete"),
@@ -173,6 +176,9 @@ internal static class HoldsNoPersonalData
             "Writes the audit pseudonym key file (#903): 32 random bytes, base64, made once in a temporary file and moved into place. It holds the key the audit references are made with, not data about anyone.",
             "System.IO.File::Move",
             "System.IO.FileStream::.ctor"),
+        ["Infrastructure.AI/Infrastructure.AI.Audit.UnreadableComplianceAuditRecords"] = new(
+            "The compliance report's reader when a host replaced the trail with one that cannot be read back (#1000): every read fails with a fixed reason; it reads and keeps nothing.",
+            "shares Application.Core.Compliance.IComplianceAuditRecords with store Infrastructure.AI.Audit.JsonlComplianceAuditTrail"),
         ["Infrastructure.AI/Infrastructure.AI.Audit.AuditChainCheckpointStore"] = new(
             "One small JSON file per audit chain holding only the last verified sequence number and hash.",
             "System.IO.File::Move",
@@ -222,6 +228,15 @@ internal static class HoldsNoPersonalData
         ["Infrastructure.Observability/Infrastructure.Observability.Persistence.NullObservabilityStore"] = new(
             "Null object used when no observability database is configured: discards every write and keeps nothing.",
             "shares Application.AI.Common.Interfaces.IObservabilityStore with store Infrastructure.Observability.Persistence.PostgresObservabilityStore"),
+
+        // Release adapters (#991): the evaluation submission store also listens for reclaimed runs, so the scan pairs it
+        // with the other listeners, which hold nothing and only forward a run's release to the holder they wrap.
+        ["Infrastructure.AI/Infrastructure.AI.Runs.EvalSubmissionReclaimListener"] = new(
+            "Forwards a reclaimed run's id to the evaluation submission store so it releases that run's submission; holds nothing itself.",
+            "shares Application.AI.Common.Interfaces.Runs.IRunReclaimListener with store Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"),
+        ["Infrastructure.AI/Infrastructure.AI.Runs.RunProgressReclaimListener"] = new(
+            "Forwards a reclaimed run's id to the run progress broker so it forgets that run's progress; holds nothing itself.",
+            "shares Application.AI.Common.Interfaces.Runs.IRunReclaimListener with store Infrastructure.AI.Runs.InMemoryEvalRunSubmissionStore"),
 
         // Scratch space removed when its run ends.
         ["Infrastructure.AI/Infrastructure.AI.Sandbox.DockerSandboxExecutor"] = new(

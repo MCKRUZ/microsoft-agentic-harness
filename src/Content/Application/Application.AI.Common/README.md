@@ -40,20 +40,20 @@ This is an Application layer project, so it defines interfaces (contracts) and o
 
 ### The Agent-Specific Pipeline
 
-When a request marked as agent-related flows through MediatR, it passes through AI-specific behaviors layered *on top of* Application.Common's generic pipeline:
+When a request flows through MediatR, it passes through Application.Common's generic behaviors first, then the AI-specific ones. MediatR runs the first-registered behavior outermost, and the composition root registers Application.Common's first. The main steps (`DependencyInjection.cs` has the full, authoritative list):
 
 ```
 Request enters
-  → UnhandledExceptionBehavior     Outer safety net — catches, logs, enriches with agent context
-    → AgentContextPropagation      Sets scoped agent identity (AgentId, ConversationId, TurnNumber)
-      → AuditTrailBehavior         Records who did what, when, and the outcome
-        → ContentSafetyBehavior    Screens IContentScreenable against safety policies
-          → PromptInjectionBehavior Scans for injection attacks
-            → HookBehavior     Fires pre/post lifecycle hooks
-                  → RetrievalAuditBehavior  Records RAG retrieval metrics
-                    → ToolOutputCompressionBehavior  Compresses large tool outputs by content type
-                      → [Generic behaviors from Application.Common]
-                      → Handler
+  → [Generic behaviors from Application.Common: validation, authorization, idempotency, caching, tracing, timeout]
+    → UnhandledExceptionBehavior     Safety net — logs with agent context, then rethrows
+      → AgentContextPropagation      Sets scoped agent identity (AgentId, ConversationId, TurnNumber)
+        → AuditTrailBehavior         Records who did what, when, and the outcome
+          → PromptInjectionBehavior  Local scan for injection patterns, before any external call
+            → ContentSafetyBehavior  Screens IContentScreenable input with the configured provider
+              → HookBehavior         Fires pre/post lifecycle hooks
+                → RetrievalAuditBehavior  Records RAG retrieval metrics
+                  → ToolOutputCompressionBehavior  Compresses large tool outputs by content type
+                    → Handler
 ```
 
 > **Tool-call authorization** (permission ACLs, graded-autonomy risk, declarative policy) does **not**

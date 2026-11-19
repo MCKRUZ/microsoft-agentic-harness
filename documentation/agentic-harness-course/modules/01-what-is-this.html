@@ -61,7 +61,7 @@
     <div class="flow-animation" data-steps='[
       {"highlight":"flow-actor-1","label":"You type a message in the web chat UI and hit Send."},
       {"highlight":"flow-actor-2","label":"Browser POSTs to /ag-ui/run; AgUiRunHandler receives the message as a Server-Sent Events stream.","packet":true,"from":"actor-1","to":"actor-2"},
-      {"highlight":"flow-actor-3","label":"The MediatR pipeline runs 15 behaviors &mdash; safety, governance, prompt-injection, permissions, audit, tracing &mdash; before the handler.","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-3","label":"The MediatR pipeline runs 22 behaviors &mdash; validation, authorization, tracing, audit, prompt-injection, content safety, token budget &mdash; around the handler.","packet":true,"from":"actor-2","to":"actor-3"},
       {"highlight":"flow-actor-4","label":"The handler sends the conversation to the LLM (Azure OpenAI).","packet":true,"from":"actor-3","to":"actor-4"},
       {"highlight":"flow-actor-4","label":"The LLM decides it needs a tool and asks the harness to call one."},
       {"highlight":"flow-actor-5","label":"The Tool System runs the requested tool inside a safe sandbox.","packet":true,"from":"actor-4","to":"actor-5"},
@@ -121,7 +121,7 @@
         <div class="icon-circle" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
         <div>
           <strong>The <span class="term" data-definition="MediatR is a .NET library for sending commands through a pipeline of steps. Each request passes through validators, logging, and safety checks before reaching the handler that does the real work.">MediatR</span> <span class="term" data-definition="A pipeline is a chain of steps a request passes through in order — like a conveyor belt in a factory. Each step can inspect, change, or reject the request before the next one sees it.">pipeline</span></strong>
-          <p>Every command passes through fifteen checkpoints &mdash; exception capture, content safety, tool permissions, governance, prompt-injection scan, audit, validation, tracing, timeout, response sanitization &mdash; before (and after) a handler touches it.</p>
+          <p>Every command passes through twenty-two checkpoints &mdash; validation, authorization, tracing, timeout, exception capture, audit, prompt-injection scan, content safety, token budget, response sanitization &mdash; before (and after) a handler touches it.</p>
         </div>
       </div>
       <div class="icon-row">
@@ -237,7 +237,7 @@
           <p class="tl">Loop through the user&apos;s messages one at a time, numbering them as we go.</p>
           <p class="tl">If we&apos;ve hit the max-turns safety limit, log a warning and stop &mdash; runaway agents are expensive.</p>
           <p class="tl">Build an &ldquo;execute one turn&rdquo; command with this message and the history so far.</p>
-          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; all fifteen pipeline behaviors (exception capture, content safety, tool permissions, governance, prompt-injection, audit, validation, tracing, timeout, response sanitization, &hellip;) run automatically before the turn handler.</p>
+          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; all twenty-two pipeline behaviors (validation, authorization, tracing, timeout, exception capture, audit, prompt-injection, content safety, token budget, response sanitization, &hellip;) run automatically around the turn handler.</p>
           <p class="tl">Remember this turn&apos;s result so the next turn has context, and loop back for the next message.</p>
         </div>
       </div>

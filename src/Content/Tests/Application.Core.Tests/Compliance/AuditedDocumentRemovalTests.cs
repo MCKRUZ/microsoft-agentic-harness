@@ -3,8 +3,11 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.Core.Compliance;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common;
+using Domain.Common.Compliance;
 using Domain.Common.Models;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Tests.Common;
 using Xunit;
@@ -24,6 +27,8 @@ public sealed class AuditedDocumentRemovalTests
     private readonly Microsoft.Extensions.Time.Testing.FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 23, 0, 0, 0, TimeSpan.Zero));
     private readonly List<AuditEntry> _records = [];
     private readonly Mock<IAuditSink> _sink = new();
+    private readonly List<(AuditEntry Entry, ErasureActor Actor)> _kept = [];
+    private readonly Mock<IComplianceAuditTrail> _trail = new();
     private readonly CapturingLogger<AuditedDocumentRemoval> _logger = new();
 
     public AuditedDocumentRemovalTests()
@@ -31,9 +36,12 @@ public sealed class AuditedDocumentRemovalTests
         _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
             .Callback<AuditEntry, CancellationToken>((e, _) => _records.Add(e))
             .Returns(ValueTask.CompletedTask);
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .Callback<AuditEntry, ErasureActor, CancellationToken>((e, a, _) => _kept.Add((e, a)))
+            .ReturnsAsync(Result.Success());
     }
 
-    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _clock, _logger);
+    private AuditedDocumentRemoval Create() => new(_orchestrator.Object, _ledger.Object, _sink.Object, _trail.Object, TestHostEnvironment.Instance, _clock, _logger);
 
     [Fact]
     public async Task RemoveAsync_Complete_ForgetsTheLoadRecord_UpToWhenTheRemovalStarted()
@@ -43,6 +51,18 @@ public sealed class AuditedDocumentRemovalTests
         await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
 
         _ledger.Verify(l => l.ForgetAsync(DocumentId, _clock.GetUtcNow(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_TheReceiptAndEveryRecordNameTheHostTheRemovalCovered()
+    {
+        // #1003: a removal reaches only this process's document indexes and graph.
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        result.Value!.Host.Should().Be(TestHostEnvironment.Name);
+        _records.Should().HaveCount(2).And.OnlyContain(r => r.Metadata!["host"] == TestHostEnvironment.Name);
     }
 
     [Fact]
@@ -119,6 +139,24 @@ public sealed class AuditedDocumentRemovalTests
         outcome.Metadata["graph.feedback_weights"].Should().Be("1");
         outcome.Metadata["graph.vector_embeddings"].Should().Be("4");
         outcome.Metadata["graph.bm25_documents"].Should().Be("5");
+    }
+
+    [Fact]
+    public async Task RemoveAsync_AStoreLineOnTheReceipt_IsNamedInTheOutcomeRecord()
+    {
+        // A store an orchestrator lists on the receipt is a line of its own in the record, as it is on erasure.
+        const string Index = "document index (Azure AI Search vectors)";
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Receipt() with
+            {
+                Stores = [new StoreErasureOutcome(Index, StoreErasureStatus.Failed, 0, "unreachable")],
+                Completeness = ErasureCompleteness.Partial,
+            });
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Operator("operator-1"), CancellationToken.None);
+
+        _records[1].Metadata!["store." + Index].Should().Be("Failed:0");
+        _records[1].Metadata["completeness"].Should().Be("Partial");
     }
 
     [Fact]
@@ -220,4 +258,73 @@ public sealed class AuditedDocumentRemovalTests
     [InlineData(null, false)]
     public void IsDocumentId_AcceptsOnlySixteenUpperCaseHexDigits(string? documentId, bool expected) =>
         AuditedDocumentRemoval.IsDocumentId(documentId).Should().Be(expected);
+
+    [Fact]
+    public async Task RemoveAsync_Succeeds_KeepsTheSameAttemptAndOutcomeInTheComplianceTrail()
+    {
+        // #969: the log line is deleted with the logs; the trail is the proof that outlives them.
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Select(k => k.Entry).Should().Equal(_records, "the trail keeps exactly the records the audit sink receives");
+        _kept.Should().HaveCount(2).And.OnlyContain(k => k.Actor == ErasureActor.Retention);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_StoreFault_KeepsTheFailureInTheComplianceTrail()
+    {
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("boom"));
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Select(k => k.Entry.Outcome).Should().Equal(AuditOutcome.Attempted, AuditOutcome.Failure);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_ComplianceTrailThrows_RemovesAndStillWritesTheAuditSink()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a broken compliance trail must not stop a removal");
+        _records.Should().HaveCount(2, "the audit sink is written whatever happened to the trail");
+        _logger.Logged(LogLevel.Error, "compliance audit trail").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RemoveAsync_ComplianceTrailRefusesTheRecord_LogsWhyAndRemoves()
+    {
+        _trail.Setup(t => t.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<ErasureActor>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("the audit chain is busy"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        var result = await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _logger.Logged(LogLevel.Error, "the audit chain is busy").Should().BeTrue("a record the trail refused must not vanish silently");
+    }
+
+    [Fact]
+    public async Task RemoveAsync_AuditSinkThrows_StillKeepsBothRecordsInTheComplianceTrail()
+    {
+        _sink.Setup(s => s.RecordAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>())).ThrowsAsync(new IOException("disk full"));
+        _orchestrator.Setup(o => o.RemoveDocumentAsync(DocumentId, It.IsAny<CancellationToken>())).ReturnsAsync(Receipt());
+
+        await Create().RemoveAsync(DocumentId, ErasureActor.Retention, CancellationToken.None);
+
+        _kept.Should().HaveCount(2, "the trail is written whatever happened to the audit sink");
+    }
+
+    [Fact]
+    public async Task RecordDeniedAsync_KeepsTheRefusalInTheComplianceTrail()
+    {
+        await Create().RecordDeniedAsync(ErasureActor.UnidentifiedOperator, "no identity", DocumentId);
+
+        _kept.Should().ContainSingle().Which.Entry.Outcome.Should().Be(AuditOutcome.Denied);
+    }
 }

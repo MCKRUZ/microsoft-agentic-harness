@@ -47,8 +47,10 @@ namespace Application.AI.Common;
 /// </para>
 /// <para>
 /// <strong>Agent Pipeline Behavior Order:</strong>
-/// These behaviors wrap the generic behaviors registered by Application.Common.
-/// The combined pipeline (outermost → innermost):
+/// MediatR runs the first-registered behavior outermost, and the composition root registers
+/// Application.Common's behaviors first, so validation, authorization, idempotency, caching, tracing
+/// and timeout wrap the agent behaviors below. The agent behaviors, outermost → innermost (the main
+/// ones; the registration list is the authority):
 /// <list type="number">
 ///   <item><description><c>UnhandledExceptionBehavior</c> — safety net with agent context enrichment</description></item>
 ///   <item><description><c>AgentContextPropagationBehavior</c> — sets scoped agent identity</description></item>
@@ -91,8 +93,8 @@ public static class DependencyInjection
         // one would otherwise fail to construct its conversation handler at all.
         services.AddSingleton<IConversationTelemetryRecorder, ConversationTelemetryRecorder>();
 
-        // Agent-specific pipeline behaviors — registered before Application.Common
-        // behaviors so they wrap as the outermost layer
+        // Agent-specific pipeline behaviors. The composition root registers Application.Common's
+        // behaviors first, so those wrap these; within this list, earlier means further out.
         services
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(UnhandledExceptionBehavior<,>))
             // Establish the request scope ambient for the whole pipeline so singleton-cached agents'

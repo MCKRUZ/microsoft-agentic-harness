@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.Core.Compliance;
 using Domain.AI.Audit;
 using Domain.AI.Compliance;
 using Domain.AI.Observability.Models;
@@ -18,7 +19,7 @@ namespace Application.Core.CQRS.Compliance.GenerateComplianceReport;
 /// Builds a <see cref="ComplianceReport"/> by fanning out, concurrently, across every audit-chain
 /// store built in #714 (governance, change, egress, escalation, drift), the conversation
 /// database's session/safety/audit-log reads, and a live tamper-evidence check of every
-/// hash-chained trail (#696).
+/// hash-chained trail (#696), and a summary of the compliance audit trail's own records (#1000).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -47,6 +48,7 @@ public sealed class GenerateComplianceReportQueryHandler
     private readonly IEgressAuditWriter _egressAuditWriter;
     private readonly IEscalationAuditStore _escalationAuditStore;
     private readonly IDriftAuditStore _driftAuditStore;
+    private readonly IComplianceAuditRecords _complianceRecords;
     private readonly IEnumerable<IVerifiableAuditChain> _chains;
     private readonly IAuditChainCheckpoints _checkpoints;
     private readonly TimeProvider _timeProvider;
@@ -60,6 +62,7 @@ public sealed class GenerateComplianceReportQueryHandler
         IEgressAuditWriter egressAuditWriter,
         IEscalationAuditStore escalationAuditStore,
         IDriftAuditStore driftAuditStore,
+        IComplianceAuditRecords complianceRecords,
         IEnumerable<IVerifiableAuditChain> chains,
         IAuditChainCheckpoints checkpoints,
         TimeProvider timeProvider,
@@ -71,6 +74,7 @@ public sealed class GenerateComplianceReportQueryHandler
         ArgumentNullException.ThrowIfNull(egressAuditWriter);
         ArgumentNullException.ThrowIfNull(escalationAuditStore);
         ArgumentNullException.ThrowIfNull(driftAuditStore);
+        ArgumentNullException.ThrowIfNull(complianceRecords);
         ArgumentNullException.ThrowIfNull(chains);
         ArgumentNullException.ThrowIfNull(checkpoints);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -82,6 +86,7 @@ public sealed class GenerateComplianceReportQueryHandler
         _egressAuditWriter = egressAuditWriter;
         _escalationAuditStore = escalationAuditStore;
         _driftAuditStore = driftAuditStore;
+        _complianceRecords = complianceRecords;
         _chains = chains;
         _checkpoints = checkpoints;
         _timeProvider = timeProvider;
@@ -108,11 +113,12 @@ public sealed class GenerateComplianceReportQueryHandler
             new EscalationAuditQuery { Start = request.Start, End = request.End }, cancellationToken);
         var driftTask = _driftAuditStore.GetRecordsAsync(
             new DriftAuditQuery { Start = request.Start, End = request.End }, cancellationToken);
+        var complianceTask = _complianceRecords.ReadAsync(request.Start, request.End, cancellationToken);
         var chainIntegrityTask = VerifyAllChainsAsync(cancellationToken);
 
         await Task.WhenAll(
             sessionsTask, safetyTask, auditTask, governanceTask, changeTask,
-            egressTask, escalationTask, driftTask, chainIntegrityTask).ConfigureAwait(false);
+            egressTask, escalationTask, driftTask, complianceTask, chainIntegrityTask).ConfigureAwait(false);
 
         var warnings = new List<string>();
 
@@ -139,6 +145,7 @@ public sealed class GenerateComplianceReportQueryHandler
         var egress = UnwrapAndCap(egressTask.Result, "egress decisions", request.MaxRecordsPerSource, warnings);
         var escalation = UnwrapAndCap(escalationTask.Result, "escalation events", request.MaxRecordsPerSource, warnings);
         var drift = UnwrapAndCap(driftTask.Result, "drift findings", request.MaxRecordsPerSource, warnings);
+        var complianceRequests = SummariseComplianceRequests(complianceTask.Result, request.MaxRecordsPerSource, warnings);
 
         var report = new ComplianceReport
         {
@@ -157,6 +164,7 @@ public sealed class GenerateComplianceReportQueryHandler
             EscalationEvents = escalation,
             DriftFindings = drift,
             ChainIntegrity = chainIntegrityTask.Result,
+            ComplianceRequests = complianceRequests,
             Warnings = warnings,
         };
 
@@ -255,6 +263,26 @@ public sealed class GenerateComplianceReportQueryHandler
         return records.Count <= maxRecords
             ? records
             : records.Skip(records.Count - maxRecords).ToList();
+    }
+
+    /// <summary>
+    /// The compliance trail's records as counts and receipt ids (#1000). A trail that could not be read, and records still
+    /// held for replay, are warnings: the counts would otherwise read as complete.
+    /// </summary>
+    private static ComplianceRequestsSummary SummariseComplianceRequests(
+        Result<ComplianceTrailContents> read, int maxRecords, List<string> warnings)
+    {
+        if (!read.IsSuccess)
+        {
+            warnings.Add($"Failed to read compliance requests: {string.Join("; ", read.Errors)}");
+            return ComplianceRequestsSummary.Empty;
+        }
+
+        var summary = ComplianceRequestsSummaries.From(read.Value!, maxRecords);
+        if (summary.HeldForReplay > 0)
+            warnings.Add(
+                $"{summary.HeldForReplay} compliance record(s) are held for replay and not yet counted; generate the report again in a minute.");
+        return summary;
     }
 
     private static ComplianceSessionSummary BuildSessionSummary(IReadOnlyList<SessionRecord> sessions) => new()

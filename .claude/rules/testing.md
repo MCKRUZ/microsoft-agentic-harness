@@ -1,5 +1,5 @@
 ---
-paths: src/Content/Testing/**/*.cs
+paths: src/Content/Tests/**/*.cs
 ---
 # Testing Rules
 

@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common;
 using Domain.Common.Models;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Compliance;
@@ -16,15 +17,24 @@ namespace Application.Core.Compliance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>What the record holds.</strong> Who asked (an operator, or the document age limit), the document id, the receipt's request id, its completeness,
-/// whether the id matched anything, and per-store counts. A document id is a hash of where the document came from, not a person's identity, so it is kept: an
+/// <strong>What the record holds.</strong> Who asked (an operator, or the document age limit), the document id, the
+/// receipt's request id, its completeness, whether the id matched anything, per-store counts, any store line the receipt
+/// lists, and the host whose stores the removal reached (#1003), also stamped on the receipt. A
+/// document id is a hash of where the document came from, not a person's identity, so it is kept: an
 /// audit record that could not say which document went would prove little.
 /// </para>
 /// <para>
 /// <strong>Two records per request.</strong> An <see cref="AuditOutcome.Attempted"/> record before anything is removed and
 /// an outcome after, sharing one correlation id, so a request that dies part-way leaves a trace that it began. Writing a
-/// record is best-effort: a broken audit sink is logged and never stops the removal. Store faults are logged in full and
+/// record is best-effort: a broken audit sink is logged and never stops the removal. Each record goes to the
+/// <see cref="IComplianceAuditTrail"/>, which keeps it as proof for good (#969), and to the audit sink, whose default log
+/// line is deleted with the logs; the two writes are independent. Store faults are logged in full and
 /// surfaced as a fixed message, because store exceptions can carry connection strings and paths.
+/// </para>
+/// <para>
+/// <strong>Retries by the age limit (#998).</strong> The age limit retries a <c>Partial</c> removal every sweep. A retry is
+/// recorded only when it ends differently from the last recorded attempt, as a pair written once it ends and naming the
+/// first attempt under <c>retry_of</c>; see <see cref="DocumentRemovalRetries"/>.
 /// </para>
 /// <para>
 /// <strong>The load record.</strong> A complete removal forgets the document in <see cref="IDocumentLoadLedger"/>, so the
@@ -51,31 +61,41 @@ public sealed class AuditedDocumentRemoval
     private readonly IErasureOrchestrator _orchestrator;
     private readonly IDocumentLoadLedger _loadLedger;
     private readonly IAuditSink _auditSink;
+    private readonly IComplianceAuditTrail _trail;
+    private readonly string _host;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuditedDocumentRemoval> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="AuditedDocumentRemoval"/> class.</summary>
     /// <param name="orchestrator">Removes the document from every store.</param>
     /// <param name="loadLedger">When each document was last loaded; a complete removal forgets the document there.</param>
-    /// <param name="auditSink">The audit trail the attempt and outcome are written to.</param>
+    /// <param name="auditSink">The general audit sink, by default a log line, the attempt and outcome are also written to.</param>
+    /// <param name="trail">The compliance audit trail the attempt and outcome are kept in, as proof the removal was handled.</param>
+    /// <param name="hostEnvironment">Names the host the receipt covers (#1003): a removal reaches only this process's stores.</param>
     /// <param name="timeProvider">Time source for record timestamps.</param>
     /// <param name="logger">Logger for store faults and audit-write failures.</param>
     public AuditedDocumentRemoval(
         IErasureOrchestrator orchestrator,
         IDocumentLoadLedger loadLedger,
         IAuditSink auditSink,
+        IComplianceAuditTrail trail,
+        IHostEnvironment hostEnvironment,
         TimeProvider timeProvider,
         ILogger<AuditedDocumentRemoval> logger)
     {
         ArgumentNullException.ThrowIfNull(orchestrator);
         ArgumentNullException.ThrowIfNull(loadLedger);
         ArgumentNullException.ThrowIfNull(auditSink);
+        ArgumentNullException.ThrowIfNull(trail);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _host = hostEnvironment.ApplicationName;
         _orchestrator = orchestrator;
         _loadLedger = loadLedger;
         _auditSink = auditSink;
+        _trail = trail;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -92,9 +112,18 @@ public sealed class AuditedDocumentRemoval
     /// The latest load the caller decided to remove; the document age limit passes the load time it judged. A load recorded
     /// after it keeps its record. When omitted, the moment the removal starts.
     /// </param>
+    /// <param name="retries">
+    /// What the document age limit last recorded for each document it is retrying (#998), so a retry that ends as the last
+    /// recorded attempt did writes nothing; see <see cref="DocumentRemovalRetries"/>. Null, as for an operator's removal,
+    /// records every attempt.
+    /// </param>
     /// <returns>The receipt, or a scrubbed failure when a fault stopped the request.</returns>
     public async Task<Result<ErasureReceipt>> RemoveAsync(
-        string documentId, ErasureActor actor, CancellationToken cancellationToken, DateTimeOffset? loadedNoLaterThan = null)
+        string documentId,
+        ErasureActor actor,
+        CancellationToken cancellationToken,
+        DateTimeOffset? loadedNoLaterThan = null,
+        DocumentRemovalRetries? retries = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
         ArgumentNullException.ThrowIfNull(actor);
@@ -111,34 +140,36 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Attempted,
             Metadata = Metadata("attempt", actor, documentId, receipt: null),
         };
-        await RecordSafelyAsync(record);
+        var retry = new Retry(retries, retries?.Previous(documentId, forgetLoadsUpTo), documentId, forgetLoadsUpTo);
+        if (retry.Of is null)
+            await RecordSafelyAsync(record, actor);
 
         ErasureReceipt receipt;
         try
         {
-            receipt = await _orchestrator.RemoveDocumentAsync(documentId, cancellationToken);
+            receipt = await _orchestrator.RemoveDocumentAsync(documentId, cancellationToken) with { Host = _host };
         }
         catch (OperationCanceledException)
         {
-            await RecordFailureAsync(record, actor, documentId, "cancelled");
+            await RecordFailureAsync(record, actor, documentId, "cancelled", retry);
             throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Document removal {CorrelationId} failed for document {DocumentId}.", correlationId, documentId);
-            await RecordFailureAsync(record, actor, documentId, ex.GetType().Name);
+            await RecordFailureAsync(record, actor, documentId, ex.GetType().Name, retry);
             return Result<ErasureReceipt>.Fail(FailedMessage);
         }
 
         _logger.LogInformation(
             "Document removal {CorrelationId} completed for document {DocumentId}: receipt {RequestId}, completeness {Completeness}.",
             correlationId, documentId, receipt.RequestId, receipt.Completeness);
-        await RecordSafelyAsync(record with
+        await RecordOutcomeAsync(record, record with
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Success,
             Metadata = Metadata("outcome", actor, documentId, receipt),
-        });
+        }, actor, retry, DocumentRemovalRetries.OutcomeOf(receipt), receipt.Completeness == ErasureCompleteness.Full);
 
         if (receipt.Completeness == ErasureCompleteness.Full)
             await ForgetLoadAsync(documentId, forgetLoadsUpTo);
@@ -183,25 +214,56 @@ public sealed class AuditedDocumentRemoval
             Outcome = AuditOutcome.Denied,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, IsDocumentId(documentId) ? documentId! : DocumentInvalid, receipt: null),
-        });
+        }, actor);
     }
 
-    private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason) =>
-        RecordSafelyAsync(attempt with
+    private Task RecordFailureAsync(AuditEntry attempt, ErasureActor actor, string documentId, string reason, Retry retry) =>
+        RecordOutcomeAsync(attempt, attempt with
         {
             Timestamp = _timeProvider.GetUtcNow(),
             Outcome = AuditOutcome.Failure,
             FailureReason = reason,
             Metadata = Metadata("outcome", actor, documentId, receipt: null),
-        });
+        }, actor, retry, DocumentRemovalRetries.FailedOutcome(reason), fullyRemoved: false);
 
-    private static Dictionary<string, string> Metadata(
+    /// <summary>
+    /// Records <paramref name="outcome"/>, and for a retry first its deferred <paramref name="attempt"/>, unless the retry
+    /// ended as the last recorded attempt did (#998); then tells the retries what was recorded.
+    /// </summary>
+    private async Task RecordOutcomeAsync(
+        AuditEntry attempt, AuditEntry outcome, ErasureActor actor, Retry retry, string? endedWith, bool fullyRemoved)
+    {
+        if (retry.Of is { } previous)
+        {
+            if (endedWith is not null && endedWith == previous.Outcome)
+            {
+                _logger.LogDebug(
+                    "Retry of document removal {RetryOf} ended as the last recorded attempt did; nothing new is recorded.",
+                    previous.RetryOf);
+                return;
+            }
+
+            await RecordSafelyAsync(attempt with { Metadata = DocumentRemovalRetries.MarkRetry(attempt.Metadata, previous.RetryOf) }, actor);
+            outcome = outcome with { Metadata = DocumentRemovalRetries.MarkRetry(outcome.Metadata, previous.RetryOf) };
+        }
+
+        await RecordSafelyAsync(outcome, actor);
+        // RemoveAsync always sets the attempt's correlation id.
+        retry.Retries?.Recorded(retry.DocumentId, retry.Load, retry.Of?.RetryOf ?? attempt.CorrelationId!, endedWith, fullyRemoved);
+    }
+
+    /// <summary>The retries this removal is tracked in, if any, and what they last recorded for it.</summary>
+    private sealed record Retry(
+        DocumentRemovalRetries? Retries, DocumentRemovalRetries.Tried? Of, string DocumentId, DateTimeOffset Load);
+
+    private Dictionary<string, string> Metadata(
         string phase, ErasureActor actor, string documentId, ErasureReceipt? receipt)
     {
         var metadata = new Dictionary<string, string>
         {
             ["phase"] = phase,
             ["initiator"] = actor.Initiator,
+            ["host"] = _host,
             ["document_id"] = documentId,
         };
         if (receipt is null)
@@ -215,25 +277,17 @@ public sealed class AuditedDocumentRemoval
         metadata["graph.feedback_weights"] = Count(receipt.FeedbackWeightsDeleted);
         metadata["graph.vector_embeddings"] = Count(receipt.VectorEmbeddingsDeleted);
         metadata["graph.bm25_documents"] = Count(receipt.Bm25DocumentsDeleted);
+        // Any store line the orchestrator lists on the receipt, in the shape an erasure record gives every store line. The
+        // shipped orchestrator lists none on a removal: its counts are the chunk counts above.
+        foreach (var store in receipt.Stores)
+            metadata[$"store.{store.Store}"] = $"{store.Status}:{Count(store.ItemsRemoved)}";
+
         return metadata;
     }
 
     private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Writes one record, never cancelled by the caller: a removal that started must leave its outcome even when the
-    /// request is abandoned part-way.
-    /// </summary>
-    private async Task RecordSafelyAsync(AuditEntry entry)
-    {
-        try
-        {
-            await _auditSink.RecordAsync(entry, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to record the {Phase} of document removal {CorrelationId}.",
-                entry.Metadata?.GetValueOrDefault("phase"), entry.CorrelationId);
-        }
-    }
+    /// <summary>Writes one record to the compliance audit trail and to the audit sink; see <see cref="ComplianceRecords"/>.</summary>
+    private Task RecordSafelyAsync(AuditEntry entry, ErasureActor actor) =>
+        ComplianceRecords.WriteAsync(_trail, _auditSink, entry, actor, _logger, "document removal");
 }

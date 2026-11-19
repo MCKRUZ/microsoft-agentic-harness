@@ -30,19 +30,26 @@ namespace Infrastructure.AI.Egress;
 /// </para>
 /// </remarks>
 [PersonalDataStore(
-    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: target scheme, host and port with a keyed fingerprint of the full address (#903; records written earlier hold the full URI with query string), resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain.",
+    "Hash-chained JSONL under {Egress:AuditStoragePath} (default .agent-sessions/egress) of every outbound request decision: target scheme, host and port with a keyed fingerprint of the full address (#903; records written earlier hold the full URI with query string), resolved IP, reason, agent and tenant. Kept by design: deleting records would break the chain. A record that could not be appended is held, as the same line, in {Egress:AuditStoragePath}/egress-pending until replay writes it to the chain, then deleted.",
     PersonalDataCategories.NetworkTargets | PersonalDataCategories.Identifiers | PersonalDataCategories.DiagnosticText,
     PersonalDataKey.Tenant,
     RetentionBasis.KeptByDesign,
     ErasureSupport.Exempt,
     ExportSupport.NotSupported)]
-public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IDisposable
+public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IReplaysHeldAuditRecords, IDisposable
 {
     /// <inheritdoc />
     public string AuditName => "egress";
 
     /// <inheritdoc />
     public string AuditLocation => _filePath;
+
+    /// <inheritdoc />
+    public string PendingLocation => _chain.PendingLocation!;
+
+    /// <inheritdoc />
+    public Task<PendingRecordsReplay> ReplayPendingAsync(CancellationToken cancellationToken) =>
+        _chain.ReplayPendingAsync(cancellationToken);
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -117,7 +124,10 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         };
 
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var result = await _chain.AppendAsync(json, cancellationToken).ConfigureAwait(false);
+        // Held, it says the request was refused: the throw below stops it going out (#1001).
+        var result = await _chain.AppendAsync(
+            json, () => JsonSerializer.Serialize(record with { NotCarriedOut = true }, SerializeOptions), cancellationToken)
+            .ConfigureAwait(false);
         if (!result.IsSuccess)
         {
             var reason = string.Join("; ", result.Errors);
@@ -171,8 +181,9 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
             filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
         if (query.End.HasValue)
             filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        // A decision held after its request was refused (#1001) is no allowed request: it never went out.
         if (query.Allowed.HasValue)
-            filtered = filtered.Where(r => r.Allowed == query.Allowed.Value);
+            filtered = filtered.Where(r => r.Allowed == query.Allowed.Value && !(r.Allowed && r.NotCarriedOut == true));
         if (!string.IsNullOrEmpty(query.Host))
             filtered = filtered.Where(r => r.Host == query.Host);
 

@@ -1,5 +1,6 @@
 using System.Reflection;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compliance;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
@@ -96,6 +97,40 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
                 return await db.PlanGraphs.CountAsync(g => g.Id == p.PlanId.Value)
                     + await db.PlanSteps.CountAsync(s => s.PlanGraphId == p.PlanId.Value);
             }),
+        ["InMemoryRunJobStore"] = new(
+            (sp, p) =>
+            {
+                // Finished, so erasure may remove it: a live run is kept on purpose (#926).
+                var runs = sp.GetRequiredService<IRunJobStore>();
+                var run = FinishedRun(p) with { Status = RunStatus.Queued, CompletedAt = null };
+                runs.TryCreate(run, int.MaxValue).Should().Be(RunAdmission.Accepted);
+                runs.Update(FinishedRun(p)).Should().BeTrue();
+                return Task.CompletedTask;
+            },
+            (sp, p) => Task.FromResult(sp.GetRequiredService<IRunJobStore>().Get($"run-{p.Label}", p.OwnerId, null) is null ? 0 : 1)),
+        // #990: finished, so erasure may remove it, as above; a staged bundle no run holds, so erasure evicts it now.
+        ["InMemoryBundleRunJobStore"] = new(
+            (sp, p) =>
+            {
+                BundleStoreSeeds.SeedFinishedRun(sp, p.OwnerId, p.Label);
+                return Task.CompletedTask;
+            },
+            (sp, p) => Task.FromResult(sp.GetRequiredService<IBundleRunJobStore>().Get(BundleStoreSeeds.RunId(p.Label)) is null ? 0 : 1)),
+        ["InMemoryBundleHandleStore"] = new(
+            (sp, p) =>
+            {
+                BundleStoreSeeds.SeedStagedBundle(sp, _workingDir, p.OwnerId, p.Label);
+                return Task.CompletedTask;
+            },
+            // Held, not merely unusable: a handle marked removed but never evicted still names the person and keeps its folder.
+            // 1 when both the handle and its folder are held, 0 when both are gone, and -1 for anything in between (a handle
+            // the store never took, or one evicted with its folder left behind), which neither check accepts.
+            async (sp, p) =>
+            {
+                var held = await sp.GetRequiredService<IBundleHandleStore>().CountRunsKeptAsync(p.OwnerId, CancellationToken.None) > 0;
+                var onDisk = Directory.Exists(BundleStoreSeeds.FolderOf(_workingDir, p.Label));
+                return held == onDisk ? (held ? 1 : 0) : -1;
+            }),
         ["EfScheduleStore"] = new(
             (sp, p) => sp.GetRequiredService<IScheduleStore>().CreateAsync(Schedule(p), CancellationToken.None),
             async (sp, p) => (await sp.GetRequiredService<IScheduleStore>().ListForOwnerAsync(p.OwnerId, null, CancellationToken.None)).Count),
@@ -125,7 +160,8 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         reached.Where(name => !Stores.ContainsKey(name)).Should().BeEmpty(
             "every store the coordinator reaches needs a seed and a check here; add an entry for the new store");
         reached.Should().Contain(["EfCoreConversationStore", "FileSystemToolResultStore", "EfCorePlanStateStore", "EfScheduleStore",
-            "EfCorePromptUsageStore", "FaissVectorStore", "SqliteFts5Store"],
+            "EfCorePromptUsageStore", "FaissVectorStore", "SqliteFts5Store", "InMemoryRunJobStore", "InMemoryBundleRunJobStore",
+            "InMemoryBundleHandleStore"],
             "a floor, so a composition that reaches fewer stores than this one configures cannot pass");
 
         // Labels unique to this run: the keyword index is a process-wide in-memory database other tests also write to.
@@ -177,6 +213,52 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         (await PlannedTaskRecordsAsync(provider, bystander)).Should().AllSatisfy(r => r.Value.Should().BeGreaterThan(0,
             $"{r.Key} must keep everyone else's"));
     }
+
+    [Fact]
+    public async Task LiveRuns_AreCancelledAndErasedInTheSameRequest_AndEveryoneElsesKeepRunning()
+    {
+        // #992. A queued run would start after the person is erased, and a parked one would hold every retry Partial, so
+        // erasure cancels both through the cancel path and the run store then removes them with the finished ones.
+        await using var provider = BuildProvider();
+        var runs = provider.GetRequiredService<IRunJobStore>();
+        var label = Guid.NewGuid().ToString("N")[..8];
+        foreach (var owner in new[] { Subject, Bystander })
+        {
+            Admit(runs, LiveRun($"queued-{owner}-{label}", owner));
+            var parked = LiveRun($"parked-{owner}-{label}", owner);
+            Admit(runs, parked);
+            runs.Update(parked with
+            {
+                Status = RunStatus.Blocked, ParkedAt = DateTimeOffset.UtcNow, AwaitingEscalationIds = [Guid.NewGuid()],
+            }).Should().BeTrue();
+        }
+
+        ErasureReceipt receipt;
+        await using (var scope = provider.CreateAsyncScope())
+            receipt = await scope.ServiceProvider.GetRequiredService<IPersonalDataErasure>().EraseOwnerAsync(Subject, CancellationToken.None);
+
+        receipt.Stores.Should().NotContain(s => s.Status == Domain.Common.Compliance.StoreErasureStatus.Failed
+            || s.Status == Domain.Common.Compliance.StoreErasureStatus.Skipped,
+            "nothing of the subject's is still running, so no run record is kept and no retry is needed");
+        runs.Get($"queued-{Subject}-{label}", Subject, null).Should().BeNull();
+        runs.Get($"parked-{Subject}-{label}", Subject, null).Should().BeNull();
+        runs.Get($"queued-{Bystander}-{label}", Bystander, null)!.Status.Should().Be(RunStatus.Queued);
+        runs.Get($"parked-{Bystander}-{label}", Bystander, null)!.Status.Should().Be(RunStatus.Blocked);
+    }
+
+    private static void Admit(IRunJobStore runs, RunRecord run) =>
+        runs.TryCreate(run, int.MaxValue).Should().Be(RunAdmission.Accepted);
+
+    private static RunRecord LiveRun(string jobId, string ownerId) => new()
+    {
+        JobId = jobId,
+        Kind = RunKind.Workflow,
+        TargetId = Guid.NewGuid().ToString(),
+        OwnerId = ownerId,
+        Envelope = new CapabilityEnvelope(),
+        Status = RunStatus.Queued,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
 
     /// <summary>A person's planned-task run: their plan, a model step's conversation id and the run's tool-result scope.</summary>
     private sealed record SeededRun(Seeded Person, string StepConversationId, string RunBudgetKey, string ToolResultScopeId);
@@ -237,7 +319,7 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         {
             ["step budget"] = (await budget.GetStatusAsync(run.StepConversationId)).ConsumedTokens,
             ["run budget"] = (await budget.GetStatusAsync(run.RunBudgetKey)).ConsumedTokens,
-            ["model step spills"] = SpilledFiles(run.StepConversationId.Replace(':', '~')),
+            ["model step spills"] = SpilledFiles(run.StepConversationId),
             ["tool step spills"] = SpilledFiles(run.ToolResultScopeId),
             ["prompt usage"] = await usage.PromptUsages.CountAsync(u => u.CaseId == $"{run.StepConversationId}:1"),
             ["run records"] = await planner.PlanRuns.CountAsync(r => r.PlanGraphId == run.Person.PlanId.Value),
@@ -336,9 +418,9 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
         return await Stores[store].Remaining(scope.ServiceProvider, person);
     }
 
-    private int SpilledFiles(string scopeDirectory)
+    private int SpilledFiles(string scopeId)
     {
-        var directory = Path.Combine(_workingDir, "spills", scopeDirectory);
+        var directory = Path.Combine(_workingDir, "spills", Infrastructure.AI.Context.FileSystemToolResultStore.ScopeDirectoryName(scopeId));
         return Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count() : 0;
     }
 
@@ -381,6 +463,18 @@ public sealed class ErasureReachesEveryStoreEndToEndTests : IDisposable
             Configuration = new PlanConfiguration { MaxParallelSteps = 4, PlanTimeout = TimeSpan.FromMinutes(10) },
         };
     }
+
+    private static RunRecord FinishedRun(Seeded p) => new()
+    {
+        JobId = $"run-{p.Label}",
+        Kind = RunKind.Workflow,
+        TargetId = $"target-{p.Label}",
+        OwnerId = p.OwnerId,
+        Envelope = new CapabilityEnvelope(),
+        Status = RunStatus.Succeeded,
+        CreatedAt = DateTimeOffset.UtcNow,
+        CompletedAt = DateTimeOffset.UtcNow,
+    };
 
     private static ScheduleRecord Schedule(Seeded p) => new()
     {

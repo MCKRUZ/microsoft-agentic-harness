@@ -1,10 +1,10 @@
 ---
-paths: src/Content/**/AI/**/*.cs, src/Content/**/AI.Common/**/*.cs, src/Content/Domain/Domain.AI/**/*.cs
+paths: src/Content/**/AI/**/*.cs, src/Content/**/Application.AI.Common/**/*.cs, src/Content/Domain/Domain.AI/**/*.cs
 ---
 # AI Agent Layer Rules
 
 ## Agent Construction
-Always use `AgentFactory` to create agents — it wires OpenTelemetry, caching, content safety, and function invocation limits. Never construct `AIAgent` directly.
+Always use `AgentFactory` to create agents — it wires OpenTelemetry, response caching, and function invocation limits. Never construct `AIAgent` directly. (Content safety is not wired here: it is `ContentSafetyBehavior` in the MediatR pipeline, so it is lost only by going around the mediator. A host whose runtime calls the agent directly must send the caller's text through `ScreenUserInputCommand` first, as `FoundryInputScreening` does.)
 
 ## Skills — Progressive Disclosure (CRITICAL)
 Skills use 3-tier loading to manage context budget:

@@ -96,6 +96,20 @@
             ]
           }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__github__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-File",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/human-only-guard.ps1"
+            ]
+          }
+        ]
       }
     ],
     "Stop": [

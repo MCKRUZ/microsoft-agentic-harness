@@ -10,8 +10,10 @@ using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
+using Presentation.Common.Helpers;
 
 namespace Presentation.FoundryHost;
 
@@ -23,8 +25,11 @@ namespace Presentation.FoundryHost;
 /// This host packages the full agentic harness as a Foundry <b>hosted agent</b>: a container that
 /// Foundry Agent Service starts, scales, and exposes over the OpenAI-compatible <c>/responses</c>
 /// protocol. Unlike a Foundry <i>prompt agent</i> (where the platform owns the loop), a hosted agent
-/// runs <i>your</i> code, so the harness's in-process pipeline — skills, governance, tool-output
-/// compression, prerequisite gating, telemetry — survives intact.
+/// runs <i>your</i> code, so skills, tool governance, tool-output compression, prerequisite gating and
+/// telemetry all run here. Foundry's runtime calls the agent directly rather than sending a turn
+/// request, so the host re-creates what guards the request: input screening
+/// (<see cref="FoundryInputScreening"/>) and per-request admission and ownership
+/// (<see cref="FoundryRequestScope"/>). Token budgets, the turn timeout and post-turn learning do not run here.
 /// </para>
 /// <para>
 /// The host reuses the same composition root every other host uses
@@ -50,7 +55,17 @@ public static class Program
         // Foundry injects its own well-known env var names. Translate them into the harness config
         // keys BEFORE the composition root loads configuration, so AppConfigHelper's
         // AddEnvironmentVariables() pass picks them up and they override appsettings defaults.
-        MapFoundryEnvironmentToHarnessConfig();
+        // The telemetry opt-out is read from the same full configuration the composition root binds (LoadAppConfig), so
+        // an opt-out kept in Key Vault is honoured; where it can be set is described once, in
+        // documentation/security/08-data-protection.html#foundry-telemetry-opt-out. This is a second full load before
+        // the composition root's own, so every Azure configuration source the host has configured is read again at cold
+        // start, and this throwaway configuration's appsettings file watchers live for the process (only its outer root
+        // is disposable). Accepted as the price of an opt-out that works wherever the host reads settings.
+        var settings = AppConfigHelper.LoadAppConfig(typeof(Program).Assembly);
+        (bool HostSupplied, bool UsedHostConnectionString) foundry;
+        using (settings as IDisposable)
+            foundry = FoundryHostBootstrap.PrepareFoundryEnvironment(
+                settings, Environment.GetEnvironmentVariable, Environment.SetEnvironmentVariable);
 
         // Build the harness composition root: skills, governance, tools, RAG, knowledge graph,
         // telemetry, and the Phase 1 Foundry Responses inference provider. The provider is kept
@@ -68,6 +83,21 @@ public static class Program
         // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2)
         // and centralizes the ASP0000 suppression for the console-style hosts.
         var provider = services.BuildValidatedServiceProvider();
+
+        // Said at startup, from what the host actually bound: the export follows from the platform rather than from
+        // anything the deployer set.
+        var azureMonitor = provider.GetRequiredService<IOptions<AppConfig>>().Value.Observability.Exporters.AzureMonitor;
+        var startupLog = provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(Program));
+        foreach (var (level, message) in FoundryHostBootstrap.DescribeTelemetryExport(
+                     foundry.HostSupplied, foundry.UsedHostConnectionString,
+                     FoundryHostBootstrap.HarnessExporterIsActive(azureMonitor)))
+            startupLog.Log(level, "{TelemetryExport}", message);
+
+        // This host serves no erasure or export endpoint (#1003): said at startup, with every store the host was bound
+        // with that deleting a Foundry session does not reach.
+        foreach (var (level, message) in FoundryHostErasure.Describe(
+                     provider.GetRequiredService<IOptions<AppConfig>>().Value))
+            startupLog.Log(level, "{PersonalDataErasure}", message);
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —
@@ -110,7 +140,9 @@ public static class Program
             // Trust boundary: the /responses endpoint is NOT authenticated by this host. That is by
             // design of the Foundry hosting model — the platform fronts the container with the
             // agent's dedicated identity and never exposes the listening port (8088) beyond the
-            // Foundry runtime. Do not publish this port directly; all access must go through Foundry.
+            // Foundry runtime. Do not publish this port directly; all access must go through Foundry. The caller's
+            // identity rests on the same boundary: the platform's x-agent-user-id header is trusted because Foundry's
+            // gateway drops any copy a caller sends (see FoundryCallerIdentity), which it cannot do for a published port.
             var builder = AgentHost.CreateBuilder(args);
             // Pinned to the file-system session store: Agent Framework 1.24 defaults to the platform's
             // shared FoundryAgentSessionStore, and moving where that state lives should be a deliberate
@@ -171,8 +203,13 @@ public static class Program
             // WebApplicationBuilder.Services, which never had the harness's services registered into
             // it — is what resolves the scoped admission pipeline, one fresh scope per request,
             // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn. The same scope also gives
-            // each request its own tool-call trace claims (#541); see FoundryRequestScope.
-            app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, () => next(context)));
+            // each request its own tool-call trace claims (#541), and runs it as the caller Foundry verified, so what it
+            // writes to a shared store carries that caller as owner (#1008); see FoundryRequestScope.
+            // Hosted when either source says so, the environment the SDK reads or the configuration the hosting
+            // package reads: a disagreement then refuses unnamed callers instead of running them unscoped.
+            var hosted = FoundryEnvironment.IsHosted
+                || !string.IsNullOrEmpty(app.App.Configuration["FOUNDRY_HOSTING_ENVIRONMENT"]);
+            app.App.Use((context, next) => FoundryRequestScope.RunAsync(provider, context, hosted, () => next(context)));
 
             await app.RunAsync().ConfigureAwait(false);
         }
@@ -217,33 +254,15 @@ public static class Program
         var skillIds = FoundryHostBootstrap.ResolveSkillIds(definition);
 
         var factory = provider.GetRequiredService<IAgentFactory>();
-        return await factory
+        var built = await factory
             .CreateAgentFromSkillsAsync(
                 skillIds,
                 new SkillAgentOptions { OwningAgentId = definition.Id },
                 cancellationToken)
             .ConfigureAwait(false);
-    }
 
-    /// <summary>
-    /// Copies Foundry's runtime-injected environment variables onto the configuration keys the
-    /// harness binds, so the existing config pipeline consumes them without bespoke binding code.
-    /// </summary>
-    /// <remarks>
-    /// Existing values are never overwritten, so an operator can still override any mapping with the
-    /// native <c>AppConfig__...</c> key. App Insights additionally enables the Azure Monitor exporter
-    /// so harness traces and metrics flow to the injected connection string.
-    /// </remarks>
-    private static void MapFoundryEnvironmentToHarnessConfig()
-    {
-        var overrides = FoundryHostBootstrap.BuildConfigOverrides(Environment.GetEnvironmentVariable);
-        foreach (var (target, value) in overrides)
-        {
-            // Never clobber a value an operator set explicitly via the native AppConfig__ key.
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(target)))
-            {
-                Environment.SetEnvironmentVariable(target, value);
-            }
-        }
+        // Foundry's runtime calls the agent directly, never the turn pipeline that screens every other host's input,
+        // so the screening is put in front of the agent here (see FoundryInputScreening).
+        return FoundryInputScreening.Wrap(built, provider);
     }
 }

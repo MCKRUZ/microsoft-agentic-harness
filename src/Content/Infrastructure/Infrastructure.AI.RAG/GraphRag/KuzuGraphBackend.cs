@@ -86,10 +86,14 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
         // files are removed before the connection closes. Without this, Windows file locks
         // on those sidecars prevent callers from deleting the data directory immediately
         // after Dispose (relevant to test teardown and container restart scenarios).
+        // The lock wait is turned off first, so disposal behaves exactly as it did before SqliteLockWait: with another
+        // connection mid-read the checkpoint gives up at once, and the journal-mode switch is retried only by the
+        // driver's own loop, as before, rather than also waiting in SQLite's busy handler. The connection closes next,
+        // so nothing needs restoring.
         try
         {
             using var checkpoint = _connection.CreateCommand();
-            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;";
+            checkpoint.CommandText = SqliteLockWait.NoWaitPragma + " PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;";
             checkpoint.ExecuteNonQuery();
         }
         catch (Exception ex)

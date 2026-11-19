@@ -224,6 +224,37 @@ public sealed class InMemoryBundleRunJobStoreTests
     }
 
     [Fact]
+    public void TryBeginRun_UnderConcurrency_ClaimsExactlyOnce()
+    {
+        // The sequential test above cannot see a race: two stream connections opening the same run at the
+        // same instant both pass the controller's "still Queued" pre-flight and both reach this claim. The
+        // barrier releases every thread together, and many rounds make a non-atomic claim lose reliably.
+        const int rounds = 50;
+        const int contenders = 16;
+        var sut = BuildSut();
+
+        for (var round = 0; round < rounds; round++)
+        {
+            var jobId = $"race-{round}";
+            Store(sut, NewRecord(jobId: jobId));
+
+            var winners = 0;
+            using var start = new Barrier(contenders);
+            var threads = Enumerable.Range(0, contenders).Select(_ => new Thread(() =>
+            {
+                start.SignalAndWait();
+                if (sut.TryBeginRun(jobId, _time.GetUtcNow()) is not null)
+                    Interlocked.Increment(ref winners);
+            })).ToList();
+
+            foreach (var thread in threads) thread.Start();
+            foreach (var thread in threads) thread.Join();
+
+            winners.Should().Be(1, "exactly one connection may drive a run (round {0})", round);
+        }
+    }
+
+    [Fact]
     public void TryBeginRun_ExpiredStreamingReservation_ReturnsNull()
     {
         var sut = BuildSut();

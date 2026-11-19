@@ -1,0 +1,160 @@
+name: Rails Telemetry
+
+# Weekly review-process telemetry: one JSON file per ISO week, produced by ONE instrument
+# (scripts/rails/collect-review-metrics.mjs) whose regexes and rules are printed into every file.
+# Field meanings and how to compare windows: .github/rails-telemetry/README.md.
+#
+# Where the files land: main is branch-protected (PR-only), so the scheduled run commits to the
+# dedicated orphan branch `rails-telemetry` instead, creating it on first run. That branch is not
+# matched by any ruleset ("main-branch-protection" targets ~DEFAULT_BRANCH only; "Protection" has
+# an empty include list, which matches no branch). Every run also uploads the file as an artifact.
+#
+# Not a required check. The pull_request trigger is path-filtered to this workflow's own files and
+# runs the unit tests plus a dry collection that calls every endpoint the scheduled run calls, so a
+# missing token scope fails here rather than on the first Monday.
+
+on:
+  schedule:
+    # Mondays 05:17 UTC: after the ISO week closes, off the top of the hour.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      since:
+        description: 'Window start, YYYY-MM-DD UTC, inclusive. Leave both empty for the previous ISO week.'
+        required: false
+        default: ''
+      until:
+        description: 'Window end, YYYY-MM-DD UTC, exclusive.'
+        required: false
+        default: ''
+  pull_request:
+    paths:
+      - 'scripts/rails/collect-review-metrics.mjs'
+      - 'scripts/rails/lib/**'
+      - 'scripts/rails/tests/**'
+      - '.github/workflows/rails-telemetry.yml'
+
+permissions: {}
+
+env:
+  DATA_BRANCH: rails-telemetry
+
+jobs:
+  collect:
+    name: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: rails-telemetry-collect-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read        # git history of main, workflow and ruleset files, the data branch
+      actions: read         # workflow runs of the reviewer workflows
+      pull-requests: read   # merged PRs, comments, review threads
+      issues: read          # incident and rails:breaker issues, labels
+      checks: read          # check runs on PR head commits
+      statuses: read        # commit statuses on PR head commits
+    outputs:
+      dir: ${{ steps.window.outputs.dir }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Reverts and CLAUDE.md size are read from main's history.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Unit tests
+        run: node --test scripts/rails/tests/*.test.mjs
+
+      - name: Choose the window
+        id: window
+        env:
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          if [ -n "$SINCE" ] || [ -n "$UNTIL" ]; then
+            case "$SINCE$UNTIL" in *[!0-9-]*) echo "since/until must be YYYY-MM-DD" >&2; exit 1 ;; esac
+            echo "args=--since $SINCE --until $UNTIL" >> "$GITHUB_OUTPUT"
+            echo "dir=windows" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=--previous-week" >> "$GITHUB_OUTPUT"
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read earlier weekly files
+        run: |
+          mkdir -p "$RUNNER_TEMP/history"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$DATA_BRANCH"
+            git archive FETCH_HEAD | tar -x -C "$RUNNER_TEMP/history"
+          fi
+          ls "$RUNNER_TEMP/history"
+
+      - name: Collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARGS: ${{ steps.window.outputs.args }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          # shellcheck disable=SC2086 # ARGS is a fixed, validated flag list built above
+          node scripts/rails/collect-review-metrics.mjs $ARGS \
+            --ref origin/main --data-dir "$RUNNER_TEMP/history" \
+            --out-dir "$RUNNER_TEMP/out" --summary "$GITHUB_STEP_SUMMARY"
+          ls -l "$RUNNER_TEMP/out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rails-telemetry
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 90
+
+  persist:
+    name: persist
+    needs: collect
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: rails-telemetry-persist
+      cancel-in-progress: false
+    permissions:
+      contents: write       # push to the rails-telemetry data branch only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: rails-telemetry
+          path: ${{ runner.temp }}/out
+
+      - name: Commit to the data branch
+        env:
+          TARGET_DIR: ${{ needs.collect.outputs.dir }}
+        run: |
+          data="$RUNNER_TEMP/data"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$DATA_BRANCH"
+            git worktree add -B "$DATA_BRANCH" "$data" FETCH_HEAD
+          else
+            git worktree add --detach "$data"
+            git -C "$data" checkout --orphan "$DATA_BRANCH"
+            git -C "$data" rm -rf --quiet .
+          fi
+          mkdir -p "$data/$TARGET_DIR"
+          # A re-run of the same window overwrites its own file.
+          cp "$RUNNER_TEMP"/out/*.json "$data/$TARGET_DIR/"
+          cd "$data"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No change to commit."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "chore: record rails telemetry $(ls "$RUNNER_TEMP"/out/*.json | xargs -n1 basename)"
+          git push origin "HEAD:$DATA_BRANCH"

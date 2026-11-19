@@ -1,0 +1,22 @@
+# RedactingLogger.BeginScope collapses any unrecognized scope object to a redacted ToString(), breaking ExecutionScopeProvider's `scope is ExecutionScope` check
+id: INC-26
+kind: incident
+pr: 499
+base_sha: f78c19efe364b92d33187d4e742dde145860fc6a
+head_sha_before_fix: 329fbae729989a5914c6ea6b9d6a49b28987cc80
+fix_sha: 71033286dea9ecfb65af456441c9a29c087927e5
+expected:
+  path: src/Content/Application/Application.Common/Logging/RedactingLogger.cs
+  line: 61
+  class: consumer-contract-break
+caught_by: ci-correctness
+scope: correctness
+valid_until: null
+notes: >-
+  The BeginScope fallback `return _inner.BeginScope(_redactor.Redact(state.ToString() ?? string.Empty));`
+  swaps a typed scope such as ExecutionScope for a string whenever redaction is enabled (the default),
+  so ExecutionScopeProvider.GetCurrentScope's type check fails. The fix commit passes non-string,
+  non-KVP state through unchanged. RedactingLogger.cs is a new file in this PR, so every line is in scope.
+  Caught by CI Correctness Review (failed run on 329fbae7), whose reason also flags Log() collapsing
+  structured state to a string. Scorer: this head ALREADY contains the round-B defect (the
+  List<KeyValuePair> rebuild at lines 51-58), so a finding there is a real defect, not noise.

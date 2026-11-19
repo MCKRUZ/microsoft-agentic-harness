@@ -7,10 +7,9 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Presentation.AgentHub.Auth;
 using Presentation.Common.Extensions;
 
-namespace Presentation.AgentHub.Controllers;
+namespace Presentation.Common.Compliance;
 
 /// <summary>
 /// REST API for a person's right of access and portability (#902): a machine-readable copy of their own data, or of a
@@ -23,7 +22,13 @@ namespace Presentation.AgentHub.Controllers;
 /// data, needing its own retention, erasure and access control, and a download link that must not be guessable. The cost
 /// is that a very large copy is held in memory while the request runs; the request has the same long time limit as
 /// erasure, each person may ask five times an hour, and the host assembles only
-/// <see cref="DependencyInjection.ConcurrentExportLimit"/> copies at once.
+/// <see cref="ComplianceRateLimits.ConcurrentExportLimit"/> copies at once.
+/// </para>
+/// <para>
+/// <b>One host at a time (#1003).</b> The copy holds what <em>this</em> process can find, and names the host it covers
+/// (<see cref="PersonalDataExport.Host"/>). Hosts do not call one another, so a deployment that runs more than one host
+/// holding personal data sends the request to each. Mounted only by
+/// <see cref="ComplianceApiMvcBuilderExtensions.AddComplianceApi"/>.
 /// </para>
 /// <para>
 /// <b>Kept apart from erasure in one process only.</b> A copy is not made while an erasure for the same person runs, through
@@ -38,6 +43,7 @@ namespace Presentation.AgentHub.Controllers;
 [ApiController]
 [Route("api/compliance")]
 [Authorize]
+[RequiresComplianceApiOptIn]
 public sealed class ComplianceExportController : ControllerBase
 {
     /// <summary>
@@ -54,19 +60,24 @@ public sealed class ComplianceExportController : ControllerBase
     private readonly IMediator _mediator;
     private readonly AuditedExport _export;
     private readonly OperatorGate _operatorGate;
+    private readonly ComplianceApiMarker _api;
 
     /// <summary>Initializes the controller.</summary>
     /// <param name="mediator">The MediatR mediator used to dispatch the export command.</param>
     /// <param name="export">Records requests refused before they reach the command.</param>
     /// <param name="operatorGate">Decides whether an operator may export someone else's data.</param>
-    public ComplianceExportController(IMediator mediator, AuditedExport export, OperatorGate operatorGate)
+    /// <param name="api">The host's opt-in, which names the sign-in schemes every caller of which is the same person.</param>
+    public ComplianceExportController(
+        IMediator mediator, AuditedExport export, OperatorGate operatorGate, ComplianceApiMarker api)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(operatorGate);
+        ArgumentNullException.ThrowIfNull(api);
         _mediator = mediator;
         _export = export;
         _operatorGate = operatorGate;
+        _api = api;
     }
 
     /// <summary>
@@ -74,8 +85,9 @@ public sealed class ComplianceExportController : ControllerBase
     /// that can hold their data and what it returned or why it returned nothing. The caller's identity is the sole subject.
     /// </summary>
     /// <remarks>
-    /// Refused when sign-in is bypassed (<c>DevAuthHandler</c> or <c>SelfHostedAuthHandler</c>): every caller is then the
-    /// same synthetic person, so "my data" is everyone's and the copy would disclose it all. Refused for the same reason
+    /// Refused when sign-in is bypassed (a scheme the host named in <see cref="ComplianceApiMarker.SharedIdentitySchemes"/>,
+    /// such as AgentHub's <c>DevAuthHandler</c> or the Execution API's anonymous mode): every caller is then the same
+    /// synthetic person, so "my data" is everyone's and the copy would disclose it all. Refused for the same reason
     /// when the token is an application's own rather than a person's (<see cref="ClaimsPrincipalExtensions.IsApplicationOnly"/>).
     /// Both refusals are recorded in the audit trail.
     /// </remarks>
@@ -90,7 +102,7 @@ public sealed class ComplianceExportController : ControllerBase
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> ExportMyData(CancellationToken cancellationToken)
     {
-        if (AuthBypassPolicy.IsSharedSyntheticIdentity(User))
+        if (_api.IsSharedSyntheticIdentity(User))
         {
             await _export.RecordDeniedAsync(ErasureActor.DataSubject, nameof(ExportMyDataCommand), "sign-in is bypassed")
                 .ConfigureAwait(false);

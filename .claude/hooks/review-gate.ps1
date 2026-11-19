@@ -147,6 +147,21 @@ if (-not $fingerprint) {
 }
 
 $receiptDir = Join-Path $projectDir '.claude/.review-receipts'
+
+# --- The round cap (pre-push-review step 8). Three local review rounds that still leave
+#     Important findings open usually mean the approach is wrong, not that a fourth round
+#     will converge: on the Claude Code team, ~59% of what a looping reviewer re-flagged had
+#     been there since its first pass. The skill writes a round-cap receipt and stops; this
+#     gate refuses the push until Matt has looked and said to push anyway (round-cap-ack).
+#     It is checked before the other receipts so the message names the real blocker.
+if ((Test-Path (Join-Path $receiptDir "$fingerprint.round-cap")) -and
+    -not (Test-Path (Join-Path $receiptDir "$fingerprint.round-cap-ack"))) {
+  Deny("Review gate: the 3-round review cap was reached for this code (fingerprint $fingerprint) " +
+       "with findings still open. Stop and tell Matt: the approach may be wrong; list the open " +
+       "findings. Push only if he says to push anyway, then record his words verbatim with " +
+       "``'<his words>' | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind round-cap-ack``.")
+}
+
 $missing = @()
 if (-not (Test-Path (Join-Path $receiptDir "$fingerprint.code-review"))) { $missing += '/code-review' }
 if (-not (Test-Path (Join-Path $receiptDir "$fingerprint.simplify")))    { $missing += '/simplify' }
