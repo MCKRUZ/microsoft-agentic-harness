@@ -235,7 +235,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             var outcome = await DispatchTurnAsync(
                 sessionKey, conversationId, last.Content, last.Id, storedForThisTurn: false, callerId, onChunk, leased, turnCt);
 
-            return outcome with { HistoryKeepCount = truncated.Messages.Count };
+            // A refusal can remove the retried message, the last one the truncation kept (#1036).
+            var kept = outcome.RemovedMessageId == last.Id ? truncated.Messages.Count - 1 : truncated.Messages.Count;
+            return outcome with { HistoryKeepCount = kept };
         }, ct);
     }
 

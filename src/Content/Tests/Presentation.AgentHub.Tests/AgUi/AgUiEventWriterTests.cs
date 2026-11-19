@@ -93,4 +93,30 @@ public class AgUiEventWriterTests
         output.Should().NotContain("threadId");
         output.Should().NotContain("runId");
     }
+
+    [Fact]
+    public async Task WriteAsync_RunErrorWithoutACode_LeavesTheCodeKeyOut()
+    {
+        // The AG-UI client schema types `code` as an optional string: absent parses, null does not, so a null written
+        // here would make every ordinary run error unreadable to the client (#1036).
+        var root = await WriteAndParse(new RunErrorEvent("fail"));
+
+        root.TryGetProperty("code", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WriteAsync_RunErrorWithACode_WritesIt()
+    {
+        var root = await WriteAndParse(new RunErrorEvent("blocked", AgUiErrorCodes.MessageRemoved));
+
+        root.GetProperty("code").GetString().Should().Be(AgUiErrorCodes.MessageRemoved);
+    }
+
+    private static async Task<System.Text.Json.JsonElement> WriteAndParse(AgUiEvent evt)
+    {
+        using var stream = new MemoryStream();
+        await new AgUiEventWriter(stream).WriteAsync(evt);
+        var json = Encoding.UTF8.GetString(stream.ToArray()).Replace("data: ", "").TrimEnd('\n');
+        return System.Text.Json.JsonDocument.Parse(json).RootElement.Clone();
+    }
 }

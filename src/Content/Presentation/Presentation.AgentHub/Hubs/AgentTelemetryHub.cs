@@ -490,6 +490,9 @@ public sealed class AgentTelemetryHub : Hub
     /// Emits the standard post-turn events to the caller: either (final TokenReceived +
     /// TurnComplete) or Error. <c>HistoryTruncated</c>, when this turn truncated history, was
     /// already emitted before dispatch via <see cref="EmitHistoryTruncatedAsync"/> — never here.
+    /// The Error event names <c>removedMessageId</c> when the store dropped the caller's message
+    /// because the turn was rejected before the model saw it (null otherwise): the client shows that
+    /// message before the turn runs, and must drop it to match the conversation (#1036).
     /// </summary>
     private async Task EmitTurnEventsAsync(string conversationId, TurnOutcome outcome, CancellationToken ct)
     {
@@ -511,7 +514,13 @@ public sealed class AgentTelemetryHub : Hub
         else
         {
             await Clients.Caller.SendAsync(EventError,
-                new { conversationId, message = outcome.ErrorMessage ?? "An error occurred.", code = "AGENT_ERROR" }, ct);
+                new
+                {
+                    conversationId,
+                    message = outcome.ErrorMessage ?? "An error occurred.",
+                    code = "AGENT_ERROR",
+                    removedMessageId = outcome.RemovedMessageId,
+                }, ct);
         }
     }
 }

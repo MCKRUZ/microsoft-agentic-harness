@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services.AI;
@@ -612,6 +613,41 @@ public sealed class AgUiRunHandlerTests
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
         store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),
             Times.Once, "the refused message is removed from the store it was appended to");
+    }
+
+    [Theory]
+    [InlineData(true, AgUiErrorCodes.MessageRemoved)]
+    [InlineData(false, null)]
+    public async Task HandleRunAsync_RejectedBeforeDispatch_CodesTheErrorOnlyWhenTheStoreDroppedTheMessage(
+        bool storeDropsIt, string? expectedCode)
+    {
+        // #1036: the client shows the message before the run starts. The code tells it to drop that message; sent when
+        // the store kept it, the client would hide a message the conversation still holds.
+        const string threadId = "conv-refused";
+        const string userId = "user-1";
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        var truncate = store.Setup(s => s.TruncateFromMessageAsync(threadId, userId, It.IsAny<Guid>(), It.IsAny<CancellationToken>()));
+        if (storeDropsIt)
+            truncate.ReturnsAsync(MakeRecord(threadId, userId));
+        else
+            truncate.ThrowsAsync(new IOException("disk"));
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new ContentSafetyException("blocked", "hate"));
+
+        using var ms = new MemoryStream();
+        await BuildHandler(mediator, store).HandleRunAsync(
+            MakeInput(threadId, "refused text", Guid.NewGuid().ToString()), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var error = ParseSseFrames(ms).Single(f => EventType(f) == AgUiEventType.RunError);
+        var code = error.RootElement.TryGetProperty("code", out var c) ? c.GetString() : null;
+        code.Should().Be(expectedCode);
     }
 
     [Fact]

@@ -135,3 +135,33 @@ describe('useAgentStream — render_image round-trip', () => {
     expect(useChatStore.getState().messages.some((m) => m.widget?.type === 'render_image')).toBe(false);
   });
 });
+
+describe('useAgentStream — a run rejected before the model saw it', () => {
+  // #1036: the message is shown as soon as it is sent. When the server dropped it from the conversation, the client
+  // must drop it too, or it keeps showing text the conversation no longer holds (and a retry keyed by it fails).
+  beforeEach(() => {
+    mockedCreate.mockReset();
+    useChatStore.getState().clearMessages();
+    useChatStore.getState().setConversationId('conv-1');
+    useChatStore.getState().addMessage({ id: 'earlier', role: 'assistant', content: 'an earlier answer', timestamp: new Date() });
+    useChatStore.getState().addMessage({ id: 'user-1', role: 'user', content: 'show me a cat', timestamp: new Date() });
+  });
+
+  it('drops the sent message when the server says it removed it', async () => {
+    const events$ = await startRun();
+
+    act(() => { events$.next({ type: EventType.RUN_ERROR, message: 'blocked', code: 'message_removed' }); });
+
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => m.id)).toEqual(['earlier']);
+    expect(state.error).toBe('blocked');
+  });
+
+  it('keeps the sent message on a run error that left it stored', async () => {
+    const events$ = await startRun();
+
+    act(() => { events$.next({ type: EventType.RUN_ERROR, message: 'An error occurred during agent execution.' }); });
+
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['earlier', 'user-1']);
+  });
+});

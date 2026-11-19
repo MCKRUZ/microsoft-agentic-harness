@@ -100,13 +100,15 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             });
         var orchestrator = Orchestrator();
 
+        var refusedMessageId = Guid.NewGuid();
         var first = await orchestrator.SendMessageAsync(
-            "conn", conversation.Id, Guid.NewGuid(), Refused, "user-a", null, CancellationToken.None);
+            "conn", conversation.Id, refusedMessageId, Refused, "user-a", null, CancellationToken.None);
         var second = await orchestrator.SendMessageAsync(
             "conn", conversation.Id, Guid.NewGuid(), "continue", "user-a", null, CancellationToken.None);
 
         first.Success.Should().BeFalse();
         first.ErrorMessage.Should().Be(toldTheCaller, "the caller is told why, without the text");
+        first.RemovedMessageId.Should().Be(refusedMessageId, "the client is told which message to drop (#1036)");
         second.Success.Should().BeTrue();
         secondTurnHistory.Should().NotBeNull();
         secondTurnHistory!.Select(m => m.Text).Should().NotContain(text => text.Contains(Refused),
@@ -123,10 +125,13 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         var conversation = await SeedExchangeAsync("the original question");
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>())).ThrowsAsync(refusal);
 
+        var editedMessageId = Guid.NewGuid();
         var outcome = await Orchestrator().EditAndResubmitAsync(
-            "conn", conversation.Id, conversation.UserMessageId, Guid.NewGuid(), Refused, "user-a", null, CancellationToken.None);
+            "conn", conversation.Id, conversation.UserMessageId, editedMessageId, Refused, "user-a", null, CancellationToken.None);
 
         outcome.ErrorMessage.Should().Be(toldTheCaller);
+        outcome.RemovedMessageId.Should().Be(editedMessageId, "the client shows the edit before the turn runs");
+        outcome.HistoryKeepCount.Should().Be(0, "the edit replaced the only user message, and it is gone");
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content)
             .Should().NotContain(content => content.Contains(Refused), "the edited text was stored for this turn and refused");
         _health.Verify(h => h.RecordError(It.IsAny<string>()), Times.Never);
@@ -144,6 +149,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             "conn", conversation.Id, conversation.AssistantMessageId, "user-a", null, CancellationToken.None);
 
         outcome.ErrorMessage.Should().Be(outage.ClientMessage, "the caller is told to try again");
+        outcome.RemovedMessageId.Should().BeNull("the retried message stays, so the client keeps showing it");
+        outcome.HistoryKeepCount.Should().Be(1, "the store still holds the retried user message");
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content).Should().Contain(earlier,
             "an outage is no verdict on the text, and a retry stores nothing new, so removing it would delete history");
     }
@@ -161,6 +168,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             "conn", conversation.Id, conversation.AssistantMessageId, "user-a", null, CancellationToken.None);
 
         outcome.ErrorMessage.Should().Be(toldTheCaller);
+        outcome.RemovedMessageId.Should().Be(conversation.UserMessageId, "the client still shows the retried message");
+        outcome.HistoryKeepCount.Should().Be(0, "the count excludes the message just removed (#1036)");
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content)
             .Should().NotContain(content => content.Contains(Refused), "a rejected message stays out of the history");
     }

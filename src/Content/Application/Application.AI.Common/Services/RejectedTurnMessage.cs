@@ -1,5 +1,6 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 using Application.Common.Exceptions.ExceptionTypes;
 using Microsoft.Extensions.Logging;
 
@@ -32,8 +33,8 @@ public static class RejectedTurnMessage
     public static bool IsRejection(Exception ex) => ex is IScreeningRefusal or ValidationException;
 
     /// <summary>
-    /// Removes the rejected message when it should go, and returns what the caller is told. Never contains the rejected
-    /// text.
+    /// Removes the rejected message when it should go, and reports what the caller is told and whether the message is
+    /// gone.
     /// </summary>
     /// <param name="store">The conversation store.</param>
     /// <param name="conversationId">The conversation the message was stored in.</param>
@@ -45,13 +46,16 @@ public static class RejectedTurnMessage
     /// </param>
     /// <param name="rejection">The rejection, as recognised by <see cref="IsRejection"/>.</param>
     /// <param name="logger">Where the rejection, and a failed removal, are reported.</param>
-    /// <returns>The refusal's own message, or <see cref="NotAcceptedMessage"/> for a validation rejection.</returns>
+    /// <returns>
+    /// The refusal's own message (or <see cref="NotAcceptedMessage"/> for a validation rejection), and the removed
+    /// message's id when the store no longer holds it, so the transport can tell its client to drop it (#1036).
+    /// </returns>
     /// <remarks>
     /// The removal takes no cancellation token on purpose: it is what keeps the message out of the next turn's
     /// history, so a caller disconnecting after the rejection must not cancel it. It is best effort: a failure is
     /// logged as the replay risk it is, and the caller is still told the turn was rejected.
     /// </remarks>
-    public static async Task<string> RejectAsync(
+    public static async Task<RejectedTurn> RejectAsync(
         IConversationStore store, string conversationId, string callerId, Guid messageId, bool storedForThisTurn,
         Exception rejection, ILogger logger)
     {
@@ -60,21 +64,33 @@ public static class RejectedTurnMessage
         ArgumentNullException.ThrowIfNull(logger);
 
         logger.LogWarning(rejection, "Turn on conversation {ConversationId} rejected before dispatch.", conversationId);
-        if (ShouldRemove(rejection, storedForThisTurn))
-        {
-            try
-            {
-                await store.TruncateFromMessageAsync(conversationId, callerId, messageId, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex,
-                    "Failed to remove the rejected message from conversation {ConversationId}; it will be replayed as history.",
-                    conversationId);
-            }
-        }
+        var removed = ShouldRemove(rejection, storedForThisTurn)
+            && await TryRemoveAsync(store, conversationId, callerId, messageId, logger);
 
-        return rejection is IScreeningRefusal refusal ? refusal.ClientMessage : NotAcceptedMessage;
+        return new RejectedTurn
+        {
+            ClientMessage = rejection is IScreeningRefusal refusal ? refusal.ClientMessage : NotAcceptedMessage,
+            RemovedMessageId = removed ? messageId : null,
+        };
+    }
+
+    // True when the store no longer holds the message. A missing conversation returns null and a failure throws; in
+    // neither case did this call remove anything, so the client is not told to drop the message.
+    private static async Task<bool> TryRemoveAsync(
+        IConversationStore store, string conversationId, string callerId, Guid messageId, ILogger logger)
+    {
+        try
+        {
+            return await store.TruncateFromMessageAsync(conversationId, callerId, messageId, CancellationToken.None)
+                is not null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Failed to remove the rejected message from conversation {ConversationId}; it will be replayed as history.",
+                conversationId);
+            return false;
+        }
     }
 
     /// <summary>Whether the rejected message is removed from the store.</summary>

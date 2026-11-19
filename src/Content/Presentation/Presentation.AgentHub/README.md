@@ -65,8 +65,8 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 | `ToolCallStarted` | `{ conversationId, toolName, input }` | Tool execution begins |
 | `ToolCallCompleted` | `{ conversationId, toolName, output, durationMs }` | Tool execution ends |
 | `SpanReceived` | Serialized span data | OTel span routed to client |
-| `Error` | `{ message }` | Turn failure (sanitized, no internals) |
-| `HistoryTruncated` | `{ conversationId, keepCount }` | Context window compaction occurred |
+| `Error` | `{ conversationId, message, code, removedMessageId }` | Turn failure (sanitized, no internals). `removedMessageId` names the caller's message the store dropped because the turn was rejected before the model saw it (screening or validation); the client shows that message as soon as it is sent and must drop it. `null` when the message is still stored |
+| `HistoryTruncated` | `{ conversationId, keepCount }` | A retry or edit dropped the tail of the conversation before dispatch; keep the first `keepCount` messages |
 
 **Concurrency safety:** `IConversationTurnLease` serializes turns on one conversation, so concurrent `SendMessage` calls cannot interleave token streams or corrupt the transcript. A second turn *waits* for the one in flight rather than being rejected. Which implementation is live follows the transcript provider (see below): the `Sqlite` provider gets `SqliteConversationTurnLease`, which holds the lease as two columns on the conversation row and therefore serializes turns **across hosts**; the `FileSystem` provider gets `InProcessConversationTurnLease`, which reaches only this process — matching a store that is itself single-process. This replaces `ConversationLockRegistry`, which was in-process only and so said nothing to the Execution API.
 
@@ -110,6 +110,8 @@ Neither guarantee crosses a machine boundary. A horizontally scaled deployment n
 ### AG-UI Protocol (SSE Streaming)
 
 `POST /ag-ui/run` implements the AG-UI standard for agent streaming via Server-Sent Events. The `AgUiRunHandler` orchestrates the run lifecycle: receives the run request, dispatches to the agent pipeline, and writes `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`, `RUN_ERROR`, and `RUN_FINISHED` events to the SSE stream.
+
+`RUN_ERROR` carries `code: "message_removed"` (`AgUiErrorCodes.MessageRemoved`) when the run was rejected before the model saw the caller's message and the store dropped that message: the client removes the message it sent with the run. Any other `RUN_ERROR` has no `code` key, and the message stays.
 
 The same stream also carries tool-call, plan, escalation, drift and learning events, plus six Magentic progress events (`MAGENTIC_WORKFLOW_STARTED`, `MAGENTIC_PLAN`, `MAGENTIC_ROUND`, `MAGENTIC_PLAN_REVIEW_REQUESTED`, `MAGENTIC_WORKFLOW_COMPLETED`, `MAGENTIC_WORKFLOW_FAILED`). The Magentic events are emitted by `Magentic/AgUiMagenticProgressNotifier`, which writes to the active run's `IAgUiEventWriterAccessor` and skips silently when no AG-UI run is active.
 
