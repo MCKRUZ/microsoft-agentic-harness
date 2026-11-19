@@ -211,8 +211,9 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     [Fact]
     public void ReadDirectoryOwner_ReturnsTheRealOwner()
     {
-        // #682: proves the statx offsets. A wrong offset would refuse every directory (or none); the
-        // filesystem root is owned by uid 0, which differs from this test's own uid unless it runs as root.
+        // #682: proves the statx offsets. A wrong offset would refuse every directory (or none). The
+        // filesystem root's owner is compared with what coreutils' stat reports rather than assumed to be
+        // 0: in a user-namespaced container an unmapped root reads as the overflow uid (review advisory).
         if (!OperatingSystem.IsLinux()
             || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is not { } flags)
             return;
@@ -221,7 +222,19 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         var euid = OwnerOnlyDirectoryHelper.ActualEffectiveUserIdForTests();
 
         OwnerOnlyDirectoryHelper.ReadDirectoryOwnerForTests(_root, flags).Should().Be(euid);
-        OwnerOnlyDirectoryHelper.ReadDirectoryOwnerForTests("/", flags).Should().Be(0u);
+        OwnerOnlyDirectoryHelper.ReadDirectoryOwnerForTests("/", flags).Should().Be(OwnerReportedByStat("/"));
+    }
+
+    private static uint OwnerReportedByStat(string path)
+    {
+        using var stat = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("stat")
+        {
+            ArgumentList = { "-c", "%u", path },
+            RedirectStandardOutput = true,
+        })!;
+        var output = stat.StandardOutput.ReadToEnd();
+        stat.WaitForExit();
+        return uint.Parse(output.Trim(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     [Fact]
