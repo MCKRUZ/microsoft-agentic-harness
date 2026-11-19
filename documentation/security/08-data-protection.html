@@ -437,6 +437,14 @@
                                 deployment per isolation boundary you need — enforced at startup via
                                 <code>RemoteMemoryConfig.AcknowledgeSharedRecallBoundary</code>.
                             </p>
+                            <p style="margin: 0.5rem 0 0">
+                                The harness side of the trust signal is ready: a recall result the remote service
+                                marks anything but trusted is never served, and a trust value it sends is carried on
+                                the result. Today's contract sends no trust field, so unmarked results are served by
+                                default. Once the remote service sends one on every result, set
+                                <code>RemoteMemoryConfig.RequireRecallTrustSignal</code> to <code>true</code> so an
+                                unmarked result is dropped instead.
+                            </p>
                         </div>
                     </div>
 
