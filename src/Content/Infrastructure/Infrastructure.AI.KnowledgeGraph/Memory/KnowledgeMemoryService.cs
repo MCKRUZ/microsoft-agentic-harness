@@ -239,7 +239,8 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     /// reused as the legacy input to harmonic fusion. RecallAsync is the single chokepoint that enforces
     /// "quarantined facts are never served": both sources are passed through <see cref="IsRecallable"/>
     /// here, so the trust invariant lives in one place and cannot be bypassed by a future read path or a
-    /// stray cache insertion.
+    /// stray cache insertion. <see cref="SearchGraphAsync"/> also filters as it admits, but only so that
+    /// quarantined nodes cannot spend the result cap (#724); this pass remains the authoritative check.
     /// </summary>
     private async Task<IReadOnlyList<GraphNode>> RecallLegacyAsync(
         string query,
@@ -316,6 +317,18 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
             relevantNodeIds.Count, detection.FeedbackScore);
     }
 
+    /// <summary>
+    /// The graph half of legacy recall, in four phases that each stop once <paramref name="maxResults"/>
+    /// is reached: direct memory-key lookup, triplet expansion from those matches, entity-id lookup plus
+    /// neighbour scan, then the #598 content search.
+    /// </summary>
+    /// <remarks>
+    /// Every phase admits a node only through <see cref="TryAddRecallable"/>, so a quarantined node never
+    /// spends a result slot (#724). Leaving trust to <see cref="RecallLegacyAsync"/>'s downstream pass is
+    /// not enough here: an untrusted node that fills the cap in an early phase stops the search before the
+    /// content search runs, and is then stripped, so recall comes back short or empty while a trusted match
+    /// exists. The downstream pass stays as the authoritative check; this keeps the cap honest.
+    /// </remarks>
     private async Task<IReadOnlyList<GraphNode>> SearchGraphAsync(
         string query,
         int maxResults,
@@ -325,54 +338,12 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         var matched = new List<GraphNode>();
         var seen = new HashSet<string>();
 
-        // Try direct memory key lookups first. Keys are namespaced by the current scope so a
-        // user only ever queries their own remembered facts — never another user's or tenant's.
-        foreach (var term in terms)
-        {
-            if (matched.Count >= maxResults) break;
-            var memoryId = MemoryNodeId(term);
-            var node = await _graphStore.GetNodeAsync(memoryId, cancellationToken);
-            if (node is not null && seen.Add(node.Id))
-                matched.Add(node);
-        }
-
+        var directKeyNodes = await AppendDirectKeyMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
         if (matched.Count >= maxResults)
             return matched;
 
-        // Search via triplets from any matched nodes' neighborhoods
-        if (matched.Count > 0)
-        {
-            var neighborIds = matched.Select(n => n.Id).ToList();
-            var triplets = await _graphStore.GetTripletsAsync(neighborIds, cancellationToken);
-            foreach (var t in triplets)
-            {
-                if (matched.Count >= maxResults) break;
-                if (MatchesQuery(t.Source, terms) && seen.Add(t.Source.Id))
-                    matched.Add(t.Source);
-                if (matched.Count >= maxResults) break;
-                if (MatchesQuery(t.Target, terms) && seen.Add(t.Target.Id))
-                    matched.Add(t.Target);
-            }
-        }
-
-        // Scan neighbors of nodes found by direct ID lookup (entity-style IDs)
-        foreach (var term in terms)
-        {
-            if (matched.Count >= maxResults) break;
-            var entityId = $"{term.ToLowerInvariant()}:entity";
-            var node = await _graphStore.GetNodeAsync(entityId, cancellationToken);
-            if (node is not null && seen.Add(node.Id))
-                matched.Add(node);
-
-            if (node is null) continue;
-            var neighbors = await _graphStore.GetNeighborsAsync(entityId, maxDepth: 1, cancellationToken);
-            foreach (var neighbor in neighbors)
-            {
-                if (matched.Count >= maxResults) break;
-                if (MatchesQuery(neighbor, terms) && seen.Add(neighbor.Id))
-                    matched.Add(neighbor);
-            }
-        }
+        await AppendTripletMatchesAsync(directKeyNodes, terms, maxResults, matched, seen, cancellationToken);
+        await AppendEntityMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
 
         // #598: content search over this caller's own memory nodes — the only path that can ever recall
         // a fact whose key/name don't literally equal a query word, such as every fact written by the
@@ -385,14 +356,99 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     }
 
     /// <summary>
+    /// Phase 1: direct memory-key lookups. Keys are namespaced by the current scope so a user only ever
+    /// queries their own remembered facts — never another user's or tenant's.
+    /// </summary>
+    /// <returns>Every node the lookups found, admitted or not: the seeds for triplet expansion.</returns>
+    private async Task<List<GraphNode>> AppendDirectKeyMatchesAsync(
+        string[] terms, int maxResults, List<GraphNode> matched, HashSet<string> seen, CancellationToken cancellationToken)
+    {
+        var found = new List<GraphNode>();
+        foreach (var term in terms)
+        {
+            if (matched.Count >= maxResults) break;
+            var node = await _graphStore.GetNodeAsync(MemoryNodeId(term), cancellationToken);
+            if (node is null) continue;
+
+            found.Add(node);
+            TryAddRecallable(node, matched, seen);
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Phase 2: query-matching nodes one edge away from the direct-key lookups. Seeds from every node
+    /// phase 1 found, including a quarantined one, as the entity phase does: trust gates what is
+    /// admitted, not which edges are walked, so a trusted node linked to a quarantined fact is still
+    /// recalled.
+    /// </summary>
+    private async Task AppendTripletMatchesAsync(
+        IReadOnlyList<GraphNode> seeds, string[] terms, int maxResults, List<GraphNode> matched,
+        HashSet<string> seen, CancellationToken cancellationToken)
+    {
+        if (seeds.Count == 0)
+            return;
+
+        var neighborIds = seeds.Select(n => n.Id).ToList();
+        var triplets = await _graphStore.GetTripletsAsync(neighborIds, cancellationToken);
+        foreach (var t in triplets)
+        {
+            if (matched.Count >= maxResults) break;
+            if (MatchesQuery(t.Source, terms))
+                TryAddRecallable(t.Source, matched, seen);
+            if (matched.Count >= maxResults) break;
+            if (MatchesQuery(t.Target, terms))
+                TryAddRecallable(t.Target, matched, seen);
+        }
+    }
+
+    /// <summary>
+    /// Phase 3: entity-style ids (<c>{term}:entity</c>) and their query-matching neighbours. The neighbour
+    /// scan runs whenever the entity node exists, whatever its trust: trust gates what is admitted, not
+    /// which edges are walked.
+    /// </summary>
+    private async Task AppendEntityMatchesAsync(
+        string[] terms, int maxResults, List<GraphNode> matched, HashSet<string> seen, CancellationToken cancellationToken)
+    {
+        foreach (var term in terms)
+        {
+            if (matched.Count >= maxResults) break;
+            var entityId = $"{term.ToLowerInvariant()}:entity";
+            var node = await _graphStore.GetNodeAsync(entityId, cancellationToken);
+            if (node is null) continue;
+
+            TryAddRecallable(node, matched, seen);
+            var neighbors = await _graphStore.GetNeighborsAsync(entityId, maxDepth: 1, cancellationToken);
+            foreach (var neighbor in neighbors)
+            {
+                if (matched.Count >= maxResults) break;
+                if (MatchesQuery(neighbor, terms))
+                    TryAddRecallable(neighbor, matched, seen);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The single admission point for the graph-search phases: adds <paramref name="node"/> only when it is
+    /// recallable and not already present, so an untrusted node can never count against the result cap.
+    /// </summary>
+    private static void TryAddRecallable(GraphNode node, List<GraphNode> matched, HashSet<string> seen)
+    {
+        if (IsRecallable(node) && seen.Add(node.Id))
+            matched.Add(node);
+    }
+
+    /// <summary>
     /// The #598 content-search fallback: ranks this scope's recallable memory nodes by token overlap with
     /// the query and appends the top-scoring ones to <paramref name="matched"/> (up to <paramref
     /// name="maxResults"/>). Ranked, not just filtered, so a handful of generic shared words (e.g. "my",
     /// "is") don't crowd out a genuinely relevant fact.
     /// </summary>
     /// <remarks>
-    /// Trust is filtered inside <see cref="GetScopedRecallableMemoryNodesAsync"/>, before ranking — not
-    /// left to <see cref="RecallLegacyAsync"/>'s downstream <see cref="IsRecallable"/> pass. This method
+    /// Trust is filtered inside <see cref="GetScopedRecallableMemoryNodesAsync"/>, before ranking — the same
+    /// rule <see cref="TryAddRecallable"/> applies to the earlier phases, and not left to
+    /// <see cref="RecallLegacyAsync"/>'s downstream <see cref="IsRecallable"/> pass. This method
     /// ranks-then-takes a bounded slice, so an unfiltered quarantined candidate that outscores a real
     /// match would consume a result slot and never be replaced, letting a quarantined, injection-bearing
     /// fact crowd out genuinely trusted results (an attacker need only pad the quarantined content with
