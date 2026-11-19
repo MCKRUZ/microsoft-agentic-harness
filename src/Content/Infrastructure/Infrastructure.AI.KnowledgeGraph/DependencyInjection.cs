@@ -316,8 +316,9 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<WorkMemory.GraphWorkEpisodeStore>>()));
 
-        services.AddKeyedSingleton<IWorkEpisodeStore>("in_memory", (_, _) =>
-            new WorkMemory.InMemoryWorkEpisodeStore());
+        services.AddKeyedSingleton<IWorkEpisodeStore>("in_memory", (sp, _) =>
+            new WorkMemory.InMemoryWorkEpisodeStore(
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>()));
 
         var workMemoryProvider = appConfig.AI.WorkMemory.StoreProvider;
         // Fail loud at startup on a misconfigured provider key. Capture runs fire-and-forget, so a

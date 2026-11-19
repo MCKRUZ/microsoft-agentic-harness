@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.Common;
 using Domain.Common.Config;
@@ -35,6 +36,11 @@ namespace Application.Core.CQRS.Learnings;
 /// still lives in exactly one place. <c>LearningsWriteGateCoverageTests</c> fails if a third
 /// handler ever writes learning content without consulting it.
 /// </para>
+/// <para>
+/// A learning scoped to one user (<see cref="LearningScope.UserId"/>, #968) can be improved only by
+/// that user. Any other caller, including one with no knowledge scope, gets not-found, the same
+/// answer as for a learning that does not exist, so the id reveals nothing.
+/// </para>
 /// </remarks>
 public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearningCommand, Result<LearningEntry>>
 {
@@ -44,6 +50,7 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ImproveLearningCommandHandler> _logger;
+    private readonly IKnowledgeScope? _knowledgeScope;
 
     /// <summary>Initializes a new instance of the <see cref="ImproveLearningCommandHandler"/> class.</summary>
     /// <param name="store">Durable learnings persistence.</param>
@@ -53,13 +60,16 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
     /// <param name="options">Application configuration; supplies the learnings enablement flag.</param>
     /// <param name="timeProvider">Clock used for the reinforcement timestamp.</param>
     /// <param name="logger">Logger for gate decisions and bridge failures.</param>
+    /// <param name="knowledgeScope">The caller's knowledge scope. Null means the caller is unknown,
+    /// so no user-scoped learning can be improved.</param>
     public ImproveLearningCommandHandler(
         ILearningsStore store,
         ILearningsDriftBridge driftBridge,
         IMemoryWriteGate writeGate,
         IOptionsMonitor<AppConfig> options,
         TimeProvider timeProvider,
-        ILogger<ImproveLearningCommandHandler> logger)
+        ILogger<ImproveLearningCommandHandler> logger,
+        IKnowledgeScope? knowledgeScope = null)
     {
         ArgumentNullException.ThrowIfNull(writeGate);
 
@@ -69,6 +79,7 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
+        _knowledgeScope = knowledgeScope;
     }
 
     /// <inheritdoc />
@@ -83,7 +94,8 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
         }
 
         var getResult = await _store.GetAsync(request.LearningId, cancellationToken);
-        if (!getResult.IsSuccess || getResult.Value is null)
+        if (!getResult.IsSuccess || getResult.Value is null
+            || !getResult.Value.Scope.IsVisibleTo(ScopeIdentity.Canonicalize(_knowledgeScope?.UserId)))
             return Result<LearningEntry>.NotFound($"Learning {request.LearningId} not found");
 
         var learning = getResult.Value;

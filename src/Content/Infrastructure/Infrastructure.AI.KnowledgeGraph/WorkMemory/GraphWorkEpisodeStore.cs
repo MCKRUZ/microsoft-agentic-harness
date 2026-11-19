@@ -244,7 +244,11 @@ public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
             Outcome = Enum.TryParse<EpisodeOutcome>(props.GetValueOrDefault("Outcome", ""), out var oc) ? oc : EpisodeOutcome.Success,
             InputTokens = int.TryParse(props.GetValueOrDefault("InputTokens", "0"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var it) ? it : 0,
             OutputTokens = int.TryParse(props.GetValueOrDefault("OutputTokens", "0"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ot) ? ot : 0,
-            CreatedAt = DateTimeOffset.TryParse(props.GetValueOrDefault("CreatedAt", ""), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ca) ? ca : DateTimeOffset.UtcNow
+            CreatedAt = DateTimeOffset.TryParse(props.GetValueOrDefault("CreatedAt", ""), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ca) ? ca : DateTimeOffset.UtcNow,
+            // Read-side provenance from the node itself, never from Properties: synthesis groups by
+            // these to keep each user's lessons with that user (#968).
+            OwnerId = ScopeIdentity.Canonicalize(node.OwnerId),
+            TenantId = ScopeIdentity.Canonicalize(node.TenantId)
         };
     }
 }

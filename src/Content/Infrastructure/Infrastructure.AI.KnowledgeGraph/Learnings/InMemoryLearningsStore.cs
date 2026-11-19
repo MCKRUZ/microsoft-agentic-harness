@@ -11,7 +11,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// Registered with keyed DI key <c>"in_memory"</c>.
 /// </summary>
 [PersonalDataStore(
-    "Learnings held in process memory, recalled into every user's agent turns; lost at restart. Entries carry no owner; a deleted entry is hidden at once and removed after Learnings:DeletedRetentionDays.",
+    "Learnings held in process memory; lost at restart. Human-written learnings are recalled into every user's agent turns; lessons work-memory synthesis distils from one user's conversations name that user in their scope and are recalled only into that user's turns. Entries carry no owner key, so erasure cannot find them; a deleted entry is hidden at once and removed after Learnings:DeletedRetentionDays.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Unkeyed,
     RetentionBasis.Volatile,

@@ -18,7 +18,9 @@ namespace Domain.AI.WorkMemory;
 /// <see cref="ConversationId"/> and <see cref="TurnNumber"/> form the provenance link back to the
 /// originating session — every episode is traceable to its source. Tenant/owner isolation is enforced
 /// by the underlying graph store (<c>ComplianceAwareGraphStore</c> stamps tenant on write,
-/// <c>TenantIsolatedGraphStore</c> filters on read); the episode itself carries no tenant field.
+/// <c>TenantIsolatedGraphStore</c> filters on read). <see cref="OwnerId"/> and <see cref="TenantId"/>
+/// are read-side provenance: the store fills them from the stored record, and callers never set them.
+/// Synthesis groups episodes by them so a lesson reaches only the user it came from (#968).
 /// </para>
 /// </remarks>
 public sealed record WorkEpisode
@@ -55,6 +57,19 @@ public sealed record WorkEpisode
 
     /// <summary>When the episode was recorded (turn completion time).</summary>
     public required DateTimeOffset CreatedAt { get; init; }
+
+    /// <summary>
+    /// The canonical owner (user) the stored episode is attributed to, or <c>null</c> when it was captured
+    /// outside any user's request. Filled by the episode store on save and read; a value a caller sets is
+    /// overwritten or ignored.
+    /// </summary>
+    public string? OwnerId { get; init; }
+
+    /// <summary>
+    /// The canonical tenant the stored episode belongs to, or <c>null</c> when none was recorded. Filled by
+    /// the episode store on save and read; a value a caller sets is overwritten or ignored.
+    /// </summary>
+    public string? TenantId { get; init; }
 
     /// <summary>Total tokens consumed by the turn — the cost signal the synthesis pass trends over time.</summary>
     public int TotalTokens => InputTokens + OutputTokens;

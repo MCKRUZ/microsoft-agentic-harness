@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.WorkMemory;
+using Application.AI.Common.Services;
 using Domain.AI.WorkMemory;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.WorkMemory;
@@ -8,7 +9,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.WorkMemory;
 
 public sealed class InMemoryWorkEpisodeStoreTests
 {
-    private readonly InMemoryWorkEpisodeStore _sut = new();
+    private readonly InMemoryWorkEpisodeStore _sut = new(new AmbientRequestScope());
 
     private static WorkEpisode BuildEpisode(
         Guid? id = null,

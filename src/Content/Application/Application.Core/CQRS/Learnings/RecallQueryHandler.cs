@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.Common;
 using Domain.Common.Config;
@@ -20,6 +22,12 @@ namespace Application.Core.CQRS.Learnings;
 /// Scoring formula: <c>finalScore = (1 - alpha) * relevance + alpha * min(feedback * freshness, ceiling)</c>.
 /// Learning content is embedded on-the-fly for cosine similarity since <see cref="LearningEntry"/>
 /// does not store pre-computed embeddings.
+/// <para>
+/// User axis (#968): a learning whose <see cref="LearningScope.UserId"/> is set is recalled only
+/// for that user, checked against <see cref="IKnowledgeScope.UserId"/>. Without a knowledge scope
+/// the caller is unknown and sees no user-scoped learning (fail closed). Human-written learnings
+/// leave the axis unset and stay shared; recall never filters by graph owner.
+/// </para>
 /// </remarks>
 public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IReadOnlyList<WeightedLearning>>>
 {
@@ -30,8 +38,18 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<RecallQueryHandler> _logger;
+    private readonly IKnowledgeScope? _knowledgeScope;
 
     /// <summary>Initializes a new instance of the <see cref="RecallQueryHandler"/> class.</summary>
+    /// <param name="store">The learnings store searched for candidates.</param>
+    /// <param name="decayService">Computes each candidate's freshness.</param>
+    /// <param name="embeddingService">Embeds the query and candidate content for relevance scoring.</param>
+    /// <param name="scopeFactory">Creates the scope for fire-and-forget access reinforcement.</param>
+    /// <param name="options">Application configuration (learnings settings).</param>
+    /// <param name="timeProvider">Clock for access timestamps.</param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="knowledgeScope">The caller's knowledge scope, used to admit user-scoped learnings
+    /// only for their user. Null means the caller is unknown, so no user-scoped learning is recalled.</param>
     public RecallQueryHandler(
         ILearningsStore store,
         ILearningDecayService decayService,
@@ -39,7 +57,8 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         IServiceScopeFactory scopeFactory,
         IOptionsMonitor<AppConfig> options,
         TimeProvider timeProvider,
-        ILogger<RecallQueryHandler> logger)
+        ILogger<RecallQueryHandler> logger,
+        IKnowledgeScope? knowledgeScope = null)
     {
         _store = store;
         _decayService = decayService;
@@ -48,6 +67,7 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
+        _knowledgeScope = knowledgeScope;
     }
 
     /// <inheritdoc />
@@ -73,7 +93,13 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         // RecallLearningsQuery surface, and MediatorLearningRecaller — funnels through this handler,
         // so quarantined learnings cannot be reached by adding a read path that forgets to filter.
         // Applied before scoring so a quarantined entry never costs an embedding call either.
-        var candidates = searchResult.Value!.Where(LearningEntryTrustExtensions.IsRecallable).ToList();
+        // The user axis (#968) is enforced here for the same reason: a lesson distilled from one
+        // user's conversations must not reach another user through any recall path.
+        var callerId = ScopeIdentity.Canonicalize(_knowledgeScope?.UserId);
+        var candidates = searchResult.Value!
+            .Where(LearningEntryTrustExtensions.IsRecallable)
+            .Where(l => l.Scope.IsVisibleTo(callerId))
+            .ToList();
         if (candidates.Count == 0)
             return Result<IReadOnlyList<WeightedLearning>>.Success(Array.Empty<WeightedLearning>());
 
