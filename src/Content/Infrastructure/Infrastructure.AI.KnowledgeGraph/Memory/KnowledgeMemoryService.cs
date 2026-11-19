@@ -338,11 +338,11 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         var matched = new List<GraphNode>();
         var seen = new HashSet<string>();
 
-        await AppendDirectKeyMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
+        var directKeyNodes = await AppendDirectKeyMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
         if (matched.Count >= maxResults)
             return matched;
 
-        await AppendTripletMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
+        await AppendTripletMatchesAsync(directKeyNodes, terms, maxResults, matched, seen, cancellationToken);
         await AppendEntityMatchesAsync(terms, maxResults, matched, seen, cancellationToken);
 
         // #598: content search over this caller's own memory nodes — the only path that can ever recall
@@ -359,30 +359,38 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     /// Phase 1: direct memory-key lookups. Keys are namespaced by the current scope so a user only ever
     /// queries their own remembered facts — never another user's or tenant's.
     /// </summary>
-    private async Task AppendDirectKeyMatchesAsync(
+    /// <returns>Every node the lookups found, admitted or not: the seeds for triplet expansion.</returns>
+    private async Task<List<GraphNode>> AppendDirectKeyMatchesAsync(
         string[] terms, int maxResults, List<GraphNode> matched, HashSet<string> seen, CancellationToken cancellationToken)
     {
+        var found = new List<GraphNode>();
         foreach (var term in terms)
         {
             if (matched.Count >= maxResults) break;
             var node = await _graphStore.GetNodeAsync(MemoryNodeId(term), cancellationToken);
-            if (node is not null)
-                TryAddRecallable(node, matched, seen);
+            if (node is null) continue;
+
+            found.Add(node);
+            TryAddRecallable(node, matched, seen);
         }
+
+        return found;
     }
 
     /// <summary>
-    /// Phase 2: query-matching nodes one edge away from the nodes admitted so far. Seeds from
-    /// <paramref name="matched"/>, which holds only recallable nodes, so expansion never starts from a
-    /// quarantined fact.
+    /// Phase 2: query-matching nodes one edge away from the direct-key lookups. Seeds from every node
+    /// phase 1 found, including a quarantined one, as the entity phase does: trust gates what is
+    /// admitted, not which edges are walked, so a trusted node linked to a quarantined fact is still
+    /// recalled.
     /// </summary>
     private async Task AppendTripletMatchesAsync(
-        string[] terms, int maxResults, List<GraphNode> matched, HashSet<string> seen, CancellationToken cancellationToken)
+        IReadOnlyList<GraphNode> seeds, string[] terms, int maxResults, List<GraphNode> matched,
+        HashSet<string> seen, CancellationToken cancellationToken)
     {
-        if (matched.Count == 0)
+        if (seeds.Count == 0)
             return;
 
-        var neighborIds = matched.Select(n => n.Id).ToList();
+        var neighborIds = seeds.Select(n => n.Id).ToList();
         var triplets = await _graphStore.GetTripletsAsync(neighborIds, cancellationToken);
         foreach (var t in triplets)
         {
