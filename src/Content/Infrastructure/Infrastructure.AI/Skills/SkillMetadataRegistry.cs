@@ -427,7 +427,10 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
 
         var skillFile = Path.Combine(directory, "SKILL.md");
 
-        if (_fileReader.FileExists(skillFile))
+        if (!TryProbeSkillFile(skillFile, directory, out var hasSkillFile))
+            return;
+
+        if (hasSkillFile)
         {
             TryAddSkill(skillFile, directory, pluginPaths, result);
 
@@ -451,6 +454,35 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
             // directory is the point of this catch; tolerating being told it is out of bounds is not.
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
             hadEnumerationErrors = true;
+        }
+    }
+
+    /// <summary>
+    /// Probes <paramref name="directory"/> for its <c>SKILL.md</c>. Returns <see langword="false"/> when the
+    /// sandbox's input validation rejects the path (traversal sequences or shell metacharacters such as
+    /// <c>"R;D"</c> or <c>"v1..2"</c>), meaning: skip this one folder (#831).
+    /// </summary>
+    /// <remarks>
+    /// A rejected folder is deliberately NOT an enumeration error. The rejection is deterministic, so
+    /// flagging it would mark every later scan unreliable and stop deletions elsewhere from ever being
+    /// reconciled, and letting it escape would abandon the parent's remaining subfolders. A
+    /// <see cref="SkillPathRefusedException"/> is not caught here and still propagates: skills keep the
+    /// fail-loud refusal policy (the agent registry contains refusals per agent instead). A configured
+    /// root rejected this way never reaches here: <see cref="SkillSearchPathResolver"/> drops it, with an
+    /// error, before the walk starts.
+    /// </remarks>
+    private bool TryProbeSkillFile(string skillFile, string directory, out bool exists)
+    {
+        try
+        {
+            exists = _fileReader.FileExists(skillFile);
+            return true;
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning(ex, "Skipping skill directory the sandbox cannot validate: {Path}", directory);
+            exists = false;
+            return false;
         }
     }
 
