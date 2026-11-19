@@ -34,6 +34,19 @@ public sealed class AuthBypassStartupRefusalTests
     }
 
     [Fact]
+    public void Start_ShippedContainerSettingsAlone_RefusesWithTheReason()
+    {
+        // #947: the image runs under the Container environment, and its own settings turn sign-in off. They must not also
+        // carry the override, or a bare `docker run` of the image serves every caller as one identity with no sign-in.
+        // The override belongs to whoever deploys the image (the shipped compose file sets it beside its loopback-only
+        // port), so with no deployment settings at all the host refuses.
+        var act = () => Boot("Container", authFromSettingsFilesOnly: true);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Auth:Disabled=true*'Container'*Refusing to start*Auth:AllowOutsideDevelopment=true*");
+    }
+
+    [Fact]
     public void Start_SignInBypassedOutsideDevelopmentWithTheOverride_StartsSelfHostedAndLogsCritical()
     {
         // The control: the same host with the deliberate override starts (the self-hosted deployment of #591), under the
@@ -47,11 +60,13 @@ public sealed class AuthBypassStartupRefusalTests
             e.Level == LogLevel.Critical && e.Message.Contains("Auth:AllowOutsideDevelopment=true"));
     }
 
-    private static string? Boot(string environment, bool allowOutsideDevelopment, ILoggerProvider? logs = null)
+    private static string? Boot(
+        string environment, bool allowOutsideDevelopment = false, ILoggerProvider? logs = null,
+        bool authFromSettingsFilesOnly = false)
     {
         var variables = new Dictionary<string, string?>
         {
-            ["Auth__Disabled"] = "true",
+            ["Auth__Disabled"] = authFromSettingsFilesOnly ? null : "true",
             ["Auth__AllowOutsideDevelopment"] = allowOutsideDevelopment ? "true" : null,
             ["DisableAzureConfigSources"] = "true",
             ["AppConfig__AI__AgentFramework__ClientType"] = "Echo",
