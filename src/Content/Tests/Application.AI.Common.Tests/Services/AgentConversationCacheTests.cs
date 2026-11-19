@@ -298,6 +298,64 @@ public sealed class AgentConversationCacheTests
         _completionTracker.IsCompleted("conv-rebuild", ValidateSkillId).Should().BeTrue();
     }
 
+    // #763: the cache is per process. When host A handles a reassignment it calls Evict, but host B only
+    // learns of it when the next turn arrives with the new agent's build inputs. Each test below is host B:
+    // the cached build is the old agent's, and no Evict has happened here.
+
+    [Fact]
+    public async Task GetOrCreateAsync_OwningAgentChangedWithoutEvict_ForgetsWhatTheOldAgentUnlocked()
+    {
+        await _cache.GetOrCreateAsync(
+            "conv-moved", [ValidateSkillId, DeploySkillId], new SkillAgentOptions { OwningAgentId = "agent-x" });
+        _completionTracker.MarkCompleted("conv-moved", ValidateSkillId);
+
+        await _cache.GetOrCreateAsync(
+            "conv-moved", [ValidateSkillId, DeploySkillId], new SkillAgentOptions { OwningAgentId = "agent-y" });
+
+        _completionTracker.IsCompleted("conv-moved", ValidateSkillId).Should().BeFalse(
+            "a reassignment is Evict-shaped: what the old agent unlocked must not carry over to the new one");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_OwningAgentChangedWithoutEvict_ForgetsTheRegistrationHistory()
+    {
+        var snapshot = new RegistrationSnapshot("prompt", [], [], [], []);
+        await _cache.GetOrCreateAsync("conv-moved-reg", [ValidateSkillId], new SkillAgentOptions { OwningAgentId = "agent-x" });
+        _registrationTracker.DiffAndUpdate("conv-moved-reg", snapshot);
+
+        await _cache.GetOrCreateAsync("conv-moved-reg", [ValidateSkillId], new SkillAgentOptions { OwningAgentId = "agent-y" });
+
+        _registrationTracker.DiffAndUpdate("conv-moved-reg", snapshot).SystemPromptIsNew.Should().BeTrue(
+            "the new agent starts its registration history from nothing, as it does on the host that evicted");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_ManifestlessSkillSetChangedWithoutEvict_ForgetsWhatTheOldAgentUnlocked()
+    {
+        // With no AGENT.md on either side, the turn handler uses the agent name itself as the skill id, so
+        // a different skill list under no owning agent is a different agent.
+        await _cache.GetOrCreateAsync("conv-moved-bare", [ValidateSkillId, DeploySkillId], new SkillAgentOptions());
+        _completionTracker.MarkCompleted("conv-moved-bare", ValidateSkillId);
+
+        await _cache.GetOrCreateAsync("conv-moved-bare", [ValidateSkillId], new SkillAgentOptions());
+
+        _completionTracker.IsCompleted("conv-moved-bare", ValidateSkillId).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_SameOwningAgentEditedSkillList_KeepsWhatTheConversationHasUnlocked()
+    {
+        // The other direction: the same agent's manifest gaining a skill is a rebuild, not a reassignment.
+        await _cache.GetOrCreateAsync(
+            "conv-edited", [ValidateSkillId], new SkillAgentOptions { OwningAgentId = "agent-x" });
+        _completionTracker.MarkCompleted("conv-edited", ValidateSkillId);
+
+        await _cache.GetOrCreateAsync(
+            "conv-edited", [ValidateSkillId, DeploySkillId], new SkillAgentOptions { OwningAgentId = "agent-x" });
+
+        _completionTracker.IsCompleted("conv-edited", ValidateSkillId).Should().BeTrue();
+    }
+
     [Fact]
     public async Task GetOrCreateAsync_DistinctConversationIds_BuildIndependentAgents()
     {
