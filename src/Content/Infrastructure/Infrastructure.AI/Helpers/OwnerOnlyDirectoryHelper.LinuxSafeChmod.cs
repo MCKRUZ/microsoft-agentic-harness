@@ -69,9 +69,10 @@ internal static partial class OwnerOnlyDirectoryHelper
     /// under; never throws.
     /// </summary>
     [SupportedOSPlatform("linux")]
-    private static bool ReassertModeOnLinux(string segment, int oNoFollow, int oDirectory, ILogger? logger)
+    private static bool ReassertModeOnLinux(
+        string segment, int oNoFollow, int oDirectory, ILogger? logger, bool refuseForeignOwner)
     {
-        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment, oNoFollow, oDirectory);
+        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment, oNoFollow, oDirectory, refuseForeignOwner);
         switch (outcome)
         {
             case ChmodOutcome.Applied:
@@ -150,7 +151,8 @@ internal static partial class OwnerOnlyDirectoryHelper
     /// is never guessed at instead of routed here.
     /// </remarks>
     [SupportedOSPlatform("linux")]
-    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(string segment, int oNoFollow, int oDirectory)
+    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(
+        string segment, int oNoFollow, int oDirectory, bool refuseForeignOwner)
     {
         const int oRdOnly = 0;
         const int enoent = 2;
@@ -182,7 +184,9 @@ internal static partial class OwnerOnlyDirectoryHelper
 
         // #682: read on the same descriptor fchmod will use, so the owner checked is the directory
         // changed. Root passes fchmod's own permission check for any owner; this is what refuses it.
-        if (IsOwnedByAnotherUser(ReadOwnerUid(fd), EffectiveUserId()))
+        // Only for a directory that already existed: one this call just created can report a fixed
+        // owner on a share mounted with uid= or all_squash, and refusing it would be a new failure.
+        if (refuseForeignOwner && IsOwnedByAnotherUser(ReadOwnerUid(fd), EffectiveUserId()))
             return (ChmodOutcome.AccessDenied, 0);
 
         if (FChmod(fd, (int)OwnerOnlyMode) == 0)

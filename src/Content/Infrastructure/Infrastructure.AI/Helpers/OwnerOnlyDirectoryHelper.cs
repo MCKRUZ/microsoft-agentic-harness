@@ -215,7 +215,8 @@ internal static partial class OwnerOnlyDirectoryHelper
         // check). An already-existing ANCESTOR found while walking up for a genuinely missing leaf is
         // different and stays untouched below, exactly as before — it is never pushed here, only
         // fullPath is, and only when nothing else was missing.
-        if (missingSegments.Count == 0)
+        var leafAlreadyExisted = missingSegments.Count == 0;
+        if (leafAlreadyExisted)
         {
             ThrowIfFilesystemRootOrTopLevel(fullPath, logger);
             missingSegments.Push(fullPath);
@@ -232,7 +233,7 @@ internal static partial class OwnerOnlyDirectoryHelper
             // permissions on an already-existing directory, so the mode argument above is not a
             // guarantee. Re-asserting the mode here, unconditionally, closes that — and, since #670,
             // is also what retroactively secures a segment that already existed before this call ran.
-            ReassertOrThrow(fullPath, segment, logger);
+            ReassertOrThrow(fullPath, segment, logger, refuseForeignOwner: leafAlreadyExisted);
         }
     }
 
@@ -277,7 +278,7 @@ internal static partial class OwnerOnlyDirectoryHelper
     /// callers/analyzers, since the guard lives in the caller, not in this method itself.
     /// </remarks>
     [UnsupportedOSPlatform("windows")]
-    private static void ReassertOrThrow(string fullPath, string segment, ILogger? logger)
+    private static void ReassertOrThrow(string fullPath, string segment, ILogger? logger, bool refuseForeignOwner)
     {
         // ProcessArchitecture, not OSArchitecture (/code-review finding, round 3): OSArchitecture
         // reflects the HOST, and Microsoft's own docs say it does not account for QEMU-based
@@ -286,7 +287,7 @@ internal static partial class OwnerOnlyDirectoryHelper
         // code (and therefore its libc calls) actually is, which is the only thing that determines
         // whether the open() flag values are correct (#677).
         var secured = OperatingSystem.IsLinux() && GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is { } flags
-            ? ReassertModeOnLinux(segment, flags.NoFollow, flags.Directory, logger)
+            ? ReassertModeOnLinux(segment, flags.NoFollow, flags.Directory, logger, refuseForeignOwner)
             : ReassertModeFollowingSymlinks(segment, logger);
 
         if (secured)

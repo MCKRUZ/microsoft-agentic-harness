@@ -182,6 +182,33 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     }
 
     [Fact]
+    public void Create_NewDirectoriesReportingAnotherOwner_AreStillCreatedAndSecured()
+    {
+        // #682 review: a share mounted with uid= or all_squash can report a fixed owner for a folder this
+        // call just created. The owner rule is for the re-apply on a folder that already existed, so
+        // fresh folders must keep main's behaviour. The seam makes every folder look foreign.
+        if (!OperatingSystem.IsLinux()
+            || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is null)
+            return;
+
+        var leaf = Path.Combine(_root, "a", "b");
+        OwnerOnlyDirectoryHelper.EffectiveUserIdOverrideForTests.Value =
+            OwnerOnlyDirectoryHelper.ActualEffectiveUserIdForTests() + 1;
+        try
+        {
+            OwnerOnlyDirectoryHelper.Create(leaf);
+        }
+        finally
+        {
+            OwnerOnlyDirectoryHelper.EffectiveUserIdOverrideForTests.Value = null;
+        }
+
+        const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        File.GetUnixFileMode(_root).Should().Be(expected);
+        File.GetUnixFileMode(leaf).Should().Be(expected);
+    }
+
+    [Fact]
     public void ReadDirectoryOwner_ReturnsTheRealOwner()
     {
         // #682: proves the statx offsets. A wrong offset would refuse every directory (or none); the
