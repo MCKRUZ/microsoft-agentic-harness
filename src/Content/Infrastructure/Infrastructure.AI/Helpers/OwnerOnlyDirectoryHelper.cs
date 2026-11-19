@@ -29,15 +29,20 @@ namespace Infrastructure.AI.Helpers;
 /// helper to own.
 /// </para>
 /// <para>
-/// <strong>Two known gaps tracked separately (#682), not fixed here.</strong> First: nothing bounds
-/// which paths this retroactive reassert may touch, so a config typo pointing a storage root at an
-/// already-existing shared/system directory now actively <c>chmod</c>s it instead of being a harmless
-/// no-op — closing this needs a bounded, non-brittle guard, not a hard-coded deny-list. Second: several
-/// of this helper's ~20 call sites invoke <see cref="Create"/> completely unguarded, and a pre-existing
-/// directory genuinely owned by a different user (a real, non-adversarial scenario: a bind-mounted
-/// volume created by root, with the app running as a non-root user) now throws where it previously
-/// could not — each such call site needs its own reviewed decision about acceptable degraded behavior,
-/// which #682 tracks as its own scoped follow-up.
+/// <strong>What the retroactive reassert refuses to touch (#682).</strong> A config typo can point a
+/// storage root at a directory that already exists and belongs to the whole system. Two rules bound it,
+/// neither of them a list of named directories: a filesystem root or a directory directly under one
+/// (<c>/</c>, <c>/tmp</c>, <c>/var</c>, <c>/home</c>) is never secured, because a real storage root
+/// always sits at least two levels down; and a directory owned by a different user than this process
+/// is never secured, even when the process runs as root and could change it. A non-root process
+/// already cannot change another user's directory, so the owner rule matters for root. It is read
+/// from the open descriptor on the Linux architectures the safe path covers; elsewhere only the depth
+/// rule applies. What neither rule catches is a typo naming a deeper directory this same user owns
+/// (root pointed at <c>/var/log</c>, say).
+/// </para>
+/// <para>
+/// Several of this helper's call sites invoke <see cref="Create"/> unguarded, so a refusal can stop
+/// host startup; #682 tracks giving each its own decision.
 /// </para>
 /// <para>
 /// <strong>Retroactively reasserting on every call, not just once per process, is deliberate — do NOT
@@ -211,7 +216,10 @@ internal static partial class OwnerOnlyDirectoryHelper
         // different and stays untouched below, exactly as before — it is never pushed here, only
         // fullPath is, and only when nothing else was missing.
         if (missingSegments.Count == 0)
+        {
+            ThrowIfFilesystemRootOrTopLevel(fullPath, logger);
             missingSegments.Push(fullPath);
+        }
 
         while (missingSegments.Count > 0)
         {
@@ -226,6 +234,36 @@ internal static partial class OwnerOnlyDirectoryHelper
             // is also what retroactively secures a segment that already existed before this call ran.
             ReassertOrThrow(fullPath, segment, logger);
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="fullPath"/> is a filesystem root or a directory directly under one —
+    /// too shallow to be a storage root this process owns (#682). A trailing separator is ignored.
+    /// </summary>
+    internal static bool IsFilesystemRootOrTopLevel(string fullPath)
+    {
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(fullPath));
+        return parent is null || Path.GetDirectoryName(parent) is null;
+    }
+
+    /// <summary>
+    /// Refuses the #670 retroactive reassert for a pre-existing directory that
+    /// <see cref="IsFilesystemRootOrTopLevel"/> rejects, before anything is opened or changed.
+    /// </summary>
+    private static void ThrowIfFilesystemRootOrTopLevel(string fullPath, ILogger? logger)
+    {
+        if (!IsFilesystemRootOrTopLevel(fullPath))
+            return;
+
+        logger?.LogError(
+            "Refusing to make {Directory} owner-only: it is a filesystem root or a directory directly " +
+            "under one, shared by the whole system. Point the storage setting at a dedicated directory " +
+            "nested inside it instead.", fullPath);
+        throw new IOException(
+            $"Refusing to secure '{fullPath}': it already exists and is a filesystem root or a " +
+            "top-level directory directly under one, which other software shares. Nothing was changed. " +
+            $"Point this storage setting at a dedicated directory such as " +
+            $"'{Path.Combine(fullPath, "agentic-harness")}' instead.");
     }
 
     /// <summary>

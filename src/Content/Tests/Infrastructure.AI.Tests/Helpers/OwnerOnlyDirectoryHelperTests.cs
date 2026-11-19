@@ -105,6 +105,98 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             "the exact directory this call was asked to secure must be corrected even if it already existed");
     }
 
+    [Theory]
+    [InlineData("/", true)]
+    [InlineData("/tmp", true)]
+    [InlineData("/tmp/", true)]
+    [InlineData("/var", true)]
+    [InlineData("/tmp/agentic-harness", false)]
+    [InlineData("/app/appdata", false)]
+    [InlineData("/app/appdata/logs/", false)]
+    public void IsFilesystemRootOrTopLevel_ClassifiesByDepth(string path, bool expected)
+    {
+        // #682: a typo pointing a storage root at /tmp or /var must not chmod a directory the whole
+        // system shares, while every real storage root (two or more levels down, like the AgentHub
+        // container's /app/appdata) still gets secured.
+        OwnerOnlyDirectoryHelper.IsFilesystemRootOrTopLevel(path).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(null, 1000u, false)]
+    [InlineData(1000u, 1000u, false)]
+    [InlineData(0u, 1000u, true)]
+    [InlineData(1000u, 0u, true)]
+    public void IsOwnedByAnotherUser_RefusesOnlyAKnownDifferentOwner(uint? owner, uint effectiveUid, bool expected)
+    {
+        // #682: an owner that could not be read is not refused (fchmod's own check still applies); a
+        // known owner other than this process is, including when this process is root (uid 0).
+        OwnerOnlyDirectoryHelper.IsOwnedByAnotherUser(owner, effectiveUid).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/tmp")]
+    public void Create_PreExistingFilesystemRootOrTopLevelDirectory_RefusesBeforeTouchingIt(string path)
+    {
+        // #682: the refusal must come from the depth rule, named in the message, not from whatever
+        // chmod would have done — a root process could change these, so the depth rule is the guard.
+        if (OperatingSystem.IsWindows() || !Directory.Exists(path))
+            return;
+
+        var modeBefore = File.GetUnixFileMode(path);
+
+        var act = () => OwnerOnlyDirectoryHelper.Create(path);
+
+        act.Should().Throw<IOException>().WithMessage("*top-level directory*");
+        File.GetUnixFileMode(path).Should().Be(modeBefore);
+    }
+
+    [Fact]
+    public void Create_PreExistingDirectoryOwnedByAnotherUser_RefusesAndLeavesItsModeAlone()
+    {
+        // #682: a process running as root passes fchmod's permission check for any owner, so without
+        // the owner check it would make another user's directory 0700. The seam stands in for root by
+        // making this test's own directory look foreign.
+        if (!OperatingSystem.IsLinux()
+            || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is null)
+            return;
+
+        Directory.CreateDirectory(_root);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        File.SetUnixFileMode(_root, wideMode);
+
+        OwnerOnlyDirectoryHelper.EffectiveUserIdOverrideForTests.Value =
+            OwnerOnlyDirectoryHelper.ActualEffectiveUserIdForTests() + 1;
+        try
+        {
+            var act = () => OwnerOnlyDirectoryHelper.Create(_root);
+
+            act.Should().Throw<IOException>().WithMessage($"*{_root}*");
+            File.GetUnixFileMode(_root).Should().Be(wideMode, "another user's directory must not be changed");
+        }
+        finally
+        {
+            OwnerOnlyDirectoryHelper.EffectiveUserIdOverrideForTests.Value = null;
+        }
+    }
+
+    [Fact]
+    public void ReadDirectoryOwner_ReturnsTheRealOwner()
+    {
+        // #682: proves the statx offsets. A wrong offset would refuse every directory (or none); the
+        // filesystem root is owned by uid 0, which differs from this test's own uid unless it runs as root.
+        if (!OperatingSystem.IsLinux()
+            || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is not { } flags)
+            return;
+
+        Directory.CreateDirectory(_root);
+        var euid = OwnerOnlyDirectoryHelper.ActualEffectiveUserIdForTests();
+
+        OwnerOnlyDirectoryHelper.ReadDirectoryOwnerForTests(_root, flags).Should().Be(euid);
+        OwnerOnlyDirectoryHelper.ReadDirectoryOwnerForTests("/", flags).Should().Be(0u);
+    }
+
     [Fact]
     public void Create_LeafAlreadyExistsAsASymlink_ThrowsAndDoesNotChmodTheTarget()
     {
