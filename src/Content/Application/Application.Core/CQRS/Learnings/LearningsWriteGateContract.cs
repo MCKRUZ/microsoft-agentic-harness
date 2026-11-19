@@ -38,21 +38,27 @@ internal static class LearningsWriteGateContract
     /// <param name="scope">The learning's visibility scope.</param>
     /// <param name="category">What kind of knowledge the learning represents.</param>
     /// <remarks>
-    /// <strong>Deliberately bounded, and that is the whole point.</strong> The gate composes this key
-    /// into its audit action string, and the audit adapter uses that string verbatim as an
-    /// OpenTelemetry metric tag — so a per-write unique value (a learning id, say) would mint a new
-    /// time series on every write, permanently, and the background synthesis pass writes many per
-    /// run. Scope-kind × category is a handful of values. It is also the honest answer to what the
-    /// gate asks for — a memory key — matching the sibling knowledge channel, which supplies a
-    /// stable namespaced key rather than a row id. Individual ids belong in the structured logs.
+    /// <para>
+    /// <strong>What the key is used for.</strong> The gate keeps no state between writes: it scans
+    /// each candidate on its own and holds no per-key rate, contradiction or history record. The key
+    /// only labels the decision — it becomes part of the action text of the gate's governance audit
+    /// record (or of the log line, when no audit service is registered). So two writes that share a
+    /// key share nothing but that label, and a user-scoped learning
+    /// (<see cref="LearningScope.UserId"/>) needs no user axis here for one user's writes to stay
+    /// independent of another's (#1038).
+    /// </para>
+    /// <para>
+    /// <strong>Why scope-kind × category and nothing finer.</strong> The audit record is a
+    /// tamper-evident, append-only chain, so whatever the key carries is kept there for good. A user id
+    /// would put a personal identifier into that chain on every user-scoped write. The metric that
+    /// counts audit events is not a reason: since #903 it is tagged with the action's kind only
+    /// (<c>memory_write</c>), never the key.
+    /// </para>
     /// <para>
     /// <strong>Known cost, accepted deliberately.</strong> Because the key is shared by every write
-    /// of the same shape, the tamper-evident audit entry cannot distinguish one rejected write from
-    /// another; the learning id lives only in the structured log line beside it. That is the right
-    /// side of the trade — a rejected write persists nothing for the id to identify, and an
-    /// ever-growing metric surface is a durable operational defect against a per-record forensic
-    /// nicety. Restoring per-record audit detail means giving the gate a separate untagged
-    /// correlation parameter, which is a change to a shared interface and belongs in its own issue.
+    /// of the same shape, the audit entry cannot distinguish one rejected write from another; the
+    /// learning id lives only in the structured log line beside it. A rejected write persists nothing
+    /// for the id to identify, so the loss is small.
     /// </para>
     /// </remarks>
     internal static string KeyFor(LearningScope scope, LearningCategory category) =>

@@ -96,7 +96,7 @@ public sealed class RememberCommandHandler : IRequestHandler<RememberCommand, Re
         var learningId = Guid.NewGuid();
 
         // Gate before anything is persisted — see the remarks for why this is the right place, and
-        // LearningsWriteGateContract for why the key is scope+category rather than the learning id.
+        // LearningsWriteGateContract for why the key is scope+category rather than the learning or user id.
         var decision = await _writeGate.EvaluateAsync(
             LearningsWriteGateContract.KeyFor(request.Scope, request.Category),
             request.Content,
