@@ -76,9 +76,17 @@ internal sealed record RecallRequest
 }
 
 /// <summary>One element of the array <c>POST {avatarId}/recall</c> returns.</summary>
+/// <remarks>
+/// <see cref="Trust"/> and <see cref="EntityType"/> are optional on the wire (#719): the current avatar
+/// contract sends neither, and a missing field reads as <see langword="null"/>, never as a default
+/// <see cref="MemoryTrust.Trusted"/>. <see cref="Trust"/> uses the same numeric mapping as
+/// <see cref="RememberResponse.Trust"/>.
+/// </remarks>
 internal sealed record RecalledMemoryResponse
 {
     public string? Id { get; init; }
     public string? Content { get; init; }
     public double Score { get; init; }
+    public MemoryTrust? Trust { get; init; }
+    public string? EntityType { get; init; }
 }

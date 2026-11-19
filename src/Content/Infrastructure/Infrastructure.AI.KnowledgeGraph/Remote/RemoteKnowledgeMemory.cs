@@ -2,7 +2,9 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.KnowledgeGraph.Remote;
 
@@ -19,12 +21,19 @@ namespace Infrastructure.AI.KnowledgeGraph.Remote;
 /// local implementation, which resolves <c>IMemoryWriteGate</c> from the same request scope, this
 /// class also runs it — first, before ever contacting the remote service — rather than trusting
 /// the remote <c>/remember</c> endpoint's own gate evaluation unverified. A local Reject or
-/// Quarantine never leaves this process: the remote wire contract carries no trust field on either
-/// <c>/remember</c> or <c>/recall</c>, so a quarantined fact sent to the remote store would come
-/// back on a later recall indistinguishable from a trusted one (the same "unmarked defaults to
-/// Trusted" rule the local backend's own <c>GetTrust()</c> uses). Only a local Trusted result is
+/// Quarantine never leaves this process: the remote <c>/remember</c> contract carries no trust field,
+/// so a quarantined fact sent to the remote store would come back on a later recall
+/// indistinguishable from a trusted one (the same "unmarked defaults to Trusted" rule the local
+/// backend's own <c>GetTrust()</c> uses). Only a local Trusted result is
 /// ever sent, and the remote service's own <see cref="RememberResponse.Trust"/> can still downgrade
 /// it — trust only ever narrows across the two gates, never widens.
+/// </para>
+/// <para>
+/// <b>Recall honours a trust signal when the remote sends one (#719).</b> A recalled result marked
+/// anything but Trusted is dropped, and a sent trust value is stamped on the returned node. The
+/// current avatar contract sends no trust field, so an unmarked result is served by default;
+/// <c>RemoteMemoryConfig.RequireRecallTrustSignal</c> makes it fail closed once the remote side
+/// sends one on every result.
 /// </para>
 /// <para>
 /// <b>Caller identity is required, not defaulted.</b> An authenticated caller whose
@@ -58,6 +67,7 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
     private readonly IKnowledgeScope _scope;
     private readonly IMemoryWriteGate _writeGate;
     private readonly ILogger<RemoteKnowledgeMemory> _logger;
+    private readonly IOptionsMonitor<AppConfig> _configMonitor;
 
     /// <summary>Initializes a new instance of the <see cref="RemoteKnowledgeMemory"/> class.</summary>
     /// <param name="httpClientFactory">
@@ -72,21 +82,28 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
     /// The same write gate the local backend uses, run before any content leaves this process.
     /// </param>
     /// <param name="logger">Logger for remember/recall diagnostics.</param>
+    /// <param name="configMonitor">
+    /// Read on every recall for <see cref="Domain.Common.Config.AI.RemoteMemoryConfig.RequireRecallTrustSignal"/>,
+    /// so a hot reload takes effect without a restart.
+    /// </param>
     public RemoteKnowledgeMemory(
         IHttpClientFactory httpClientFactory,
         IKnowledgeScope scope,
         IMemoryWriteGate writeGate,
-        ILogger<RemoteKnowledgeMemory> logger)
+        ILogger<RemoteKnowledgeMemory> logger,
+        IOptionsMonitor<AppConfig> configMonitor)
     {
         ArgumentNullException.ThrowIfNull(httpClientFactory);
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(writeGate);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(configMonitor);
 
         _httpClientFactory = httpClientFactory;
         _scope = scope;
         _writeGate = writeGate;
         _logger = logger;
+        _configMonitor = configMonitor;
     }
 
     /// <inheritdoc />
@@ -238,19 +255,12 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
             if (recalled is null || recalled.Count == 0)
                 return [];
 
-            // The remote contract carries no per-result entity type, so entityType is accepted for
-            // interface parity but not enforced here — every match is stamped with the same fixed,
-            // honest type rather than fabricating agreement with the caller's filter. A caller that
-            // needs the filter actually enforced must currently use the local backend.
+            var requireTrustSignal = _configMonitor.CurrentValue.AI.RemoteMemory.RequireRecallTrustSignal;
             return recalled
                 .Where(r => !string.IsNullOrWhiteSpace(r.Id) && !string.IsNullOrWhiteSpace(r.Content))
-                .Select(r => new GraphNode
-                {
-                    Id = r.Id!,
-                    Name = r.Id!,
-                    Type = "Fact",
-                    Properties = new Dictionary<string, string> { ["content"] = r.Content! },
-                })
+                .Where(r => IsServable(r, requireTrustSignal))
+                .Where(r => MatchesEntityType(r, entityType))
+                .Select(ToGraphNode)
                 .ToList();
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -281,4 +291,42 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
         IReadOnlyList<string> relevantNodeIds,
         CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+
+    /// <summary>
+    /// Whether a recalled result may be served (#719). A result the remote marks with any trust other
+    /// than <see cref="MemoryTrust.Trusted"/> is never served. A result with no trust field is served
+    /// only while <paramref name="requireTrustSignal"/> is off, because the current avatar contract
+    /// sends none and this harness only ever sends it facts its own gate judged Trusted.
+    /// </summary>
+    private static bool IsServable(RecalledMemoryResponse result, bool requireTrustSignal) =>
+        result.Trust is { } trust ? trust == MemoryTrust.Trusted : !requireTrustSignal;
+
+    /// <summary>
+    /// Applies the caller's <paramref name="entityType"/> filter when the remote returned a type for the
+    /// result, with the local backend's case-insensitive comparison. A result the remote sent without a
+    /// type cannot be checked, so it is kept and labelled <c>Fact</c>; a caller that needs the filter
+    /// strictly enforced against such results must use the local backend.
+    /// </summary>
+    private static bool MatchesEntityType(RecalledMemoryResponse result, string? entityType) =>
+        entityType is null
+        || string.IsNullOrWhiteSpace(result.EntityType)
+        || string.Equals(result.EntityType, entityType, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Maps a servable result to a node. The remote's own type is used when it sent one, otherwise the
+    /// fixed, honest <c>Fact</c>; the caller's filter is never copied onto the result. A trust value the
+    /// remote sent is stamped on the node, so downstream code reads it instead of the "unmarked means
+    /// Trusted" default.
+    /// </summary>
+    private static GraphNode ToGraphNode(RecalledMemoryResponse result)
+    {
+        var node = new GraphNode
+        {
+            Id = result.Id!,
+            Name = result.Id!,
+            Type = string.IsNullOrWhiteSpace(result.EntityType) ? "Fact" : result.EntityType,
+            Properties = new Dictionary<string, string> { ["content"] = result.Content! },
+        };
+        return result.Trust is { } trust ? node.WithTrust(trust) : node;
+    }
 }

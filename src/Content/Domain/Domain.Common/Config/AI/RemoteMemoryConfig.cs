@@ -88,4 +88,18 @@ public sealed class RemoteMemoryConfig
     /// of documentation an operator can skip past.
     /// </summary>
     public bool AcknowledgeSharedRecallBoundary { get; set; }
+
+    /// <summary>
+    /// When <see langword="true"/>, a remote recall result that carries no trust signal is dropped
+    /// instead of served. Defaults to <see langword="false"/>, which keeps the current avatar contract
+    /// working: it sends no trust field yet, and this harness only ever sends it facts its own write
+    /// gate judged Trusted.
+    /// </summary>
+    /// <remarks>
+    /// A result the remote service marks with any trust other than Trusted is always dropped, whatever
+    /// this setting says. Set this to <see langword="true"/> once the remote service sends a trust
+    /// field on every recall result, so a result that arrives without one fails closed rather than
+    /// being read as Trusted by default.
+    /// </remarks>
+    public bool RequireRecallTrustSignal { get; set; }
 }
