@@ -157,6 +157,45 @@ public sealed class ImproveLearningCommandHandlerTests
         result.FailureType.Should().Be(ResultFailureType.NotFound);
     }
 
+    /// <summary>
+    /// #968: a lesson scoped to one user cannot be improved (and so rewritten) by another user, and
+    /// the refusal looks like a missing learning so the id reveals nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("user-b")]
+    [InlineData(null)]
+    public async Task Handle_UserScopedLearning_OtherCaller_ReturnsNotFoundWithoutWriting(string? caller)
+    {
+        var learning = CreateLearning(feedbackWeight: 1.0, updateCount: 0) with
+        {
+            Scope = new LearningScope { IsGlobal = true, UserId = "user-a" }
+        };
+        SetupGetAndUpdate(learning);
+
+        var result = await CreateHandler(callerUserId: caller).Handle(
+            new ImproveLearningCommand { LearningId = learning.LearningId, FeedbackScore = 5.0 },
+            CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+        _store.Verify(s => s.UpdateAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_UserScopedLearning_OwningCaller_Updates()
+    {
+        var learning = CreateLearning(feedbackWeight: 1.0, updateCount: 0) with
+        {
+            Scope = new LearningScope { IsGlobal = true, UserId = "user-a" }
+        };
+        SetupGetAndUpdate(learning);
+
+        var result = await CreateHandler(callerUserId: "USER-A").Handle(
+            new ImproveLearningCommand { LearningId = learning.LearningId, FeedbackScore = 5.0 },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Handle_Disabled_ReturnsSuccessNoOp()
     {
@@ -279,13 +318,14 @@ public sealed class ImproveLearningCommandHandlerTests
             Times.Never);
     }
 
-    private ImproveLearningCommandHandler CreateHandler(LearningsConfig? config = null) => new(
+    private ImproveLearningCommandHandler CreateHandler(LearningsConfig? config = null, string? callerUserId = null) => new(
         _store.Object,
         _driftBridge.Object,
         _writeGate.Object,
         CreateOptions(config ?? new LearningsConfig { BiasCorrection = false }),
         _timeProvider,
-        NullLogger<ImproveLearningCommandHandler>.Instance);
+        NullLogger<ImproveLearningCommandHandler>.Instance,
+        Mock.Of<IKnowledgeScope>(k => k.UserId == callerUserId));
 
     private void SetupGetAndUpdate(LearningEntry learning)
     {
