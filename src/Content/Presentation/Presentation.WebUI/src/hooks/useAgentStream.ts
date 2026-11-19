@@ -20,6 +20,12 @@ import { loginRequest } from '@/lib/authConfig';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 import { useChatStore } from '@/stores/chatStore';
 
+/**
+ * The RUN_ERROR `code` the server sends when it rejected the run before the model saw the message and removed that
+ * message from the conversation. Matches `AgUiErrorCodes.MessageRemoved` in Presentation.AgentHub (#1036).
+ */
+export const MESSAGE_REMOVED_ERROR_CODE = 'message_removed';
+
 export interface UseAgentStreamReturn {
   sendMessage: (conversationId: string, userMessageId: string, message: string) => void;
   abort: () => void;
@@ -190,6 +196,10 @@ export function useAgentStream(): UseAgentStreamReturn {
             }
             case EventType.RUN_ERROR: {
               const runError = event as RunErrorEvent;
+              // The message this run sent is shown already; drop it when the server says the conversation no longer
+              // holds it, so the transcript matches and a later retry or edit is not keyed to a missing message.
+              if (runError.code === MESSAGE_REMOVED_ERROR_CODE)
+                useChatStore.getState().removeMessage(userMessageId);
               useChatStore.getState().setError(runError.message);
               break;
             }

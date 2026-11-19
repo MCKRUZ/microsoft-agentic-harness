@@ -38,6 +38,11 @@ interface ChatState {
   addMessage: (message: ChatMessage) => void;
   setMessages: (messages: ChatMessage[]) => void;
   truncateAfter: (keepCount: number) => void;
+  /**
+   * Drops the message with this id, if shown. Used when the server says it removed a refused message from the
+   * conversation, so the transcript stops showing text the conversation no longer holds (#1036).
+   */
+  removeMessage: (id: string) => void;
   setPendingEditMessage: (message: ChatMessage | null) => void;
   startStreaming: () => void;
   appendToken: (token: string) => void;
@@ -72,6 +77,7 @@ export const useChatStore = create<ChatState>()((set) => ({
     const messages = state.pendingEditMessage ? [...kept, state.pendingEditMessage] : kept;
     return { messages, pendingEditMessage: null };
   }),
+  removeMessage: (id) => set((state) => ({ messages: state.messages.filter((m) => m.id !== id) })),
   setPendingEditMessage: (message) => set({ pendingEditMessage: message }),
   startStreaming: () => set({ isStreaming: true, streamingContent: '' }),
   appendToken: (token) => set((state) => state.isStreaming

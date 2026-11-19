@@ -127,6 +127,38 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
     }
 
     [Fact]
+    public async Task RefusedTurn_ErrorFrameNamesTheRemovedMessage_SoTheClientDropsIt()
+    {
+        // #1036: the client shows the message before the turn runs; the store drops a refused one. Without its id on
+        // the Error frame the client keeps showing a message the conversation no longer holds.
+        var fixture = Build();
+        var removed = Guid.NewGuid();
+        fixture.Orchestrator
+            .Setup(o => o.SendMessageAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TurnOutcome { Success = false, ErrorMessage = "blocked", RemovedMessageId = removed });
+
+        await fixture.Hub.SendMessage("conv-1", removed, "Hi");
+
+        var error = fixture.Captured.Single(f => f.EventName == AgentTelemetryHub.EventError);
+        error.Payload.GetProperty("removedMessageId").GetGuid().Should().Be(removed);
+    }
+
+    [Fact]
+    public async Task FailedTurnThatKeptTheMessage_ErrorFrameNamesNoRemovedMessage()
+    {
+        var fixture = Build();
+        ScriptErrorOutcome(fixture.Orchestrator, "model unavailable");
+
+        await fixture.Hub.SendMessage("conv-1", Guid.NewGuid(), "Hi");
+
+        var error = fixture.Captured.Single(f => f.EventName == AgentTelemetryHub.EventError);
+        var named = error.Payload.TryGetProperty("removedMessageId", out var id) && id.ValueKind != JsonValueKind.Null;
+        named.Should().BeFalse("a failed turn keeps its message, so the client must keep showing it");
+    }
+
+    [Fact]
     public void AssertExactlyOneTerminalFrame_FrameAfterTerminal_Throws()
     {
         // The check itself, proven against a synthetic violation — production code never emits

@@ -30,7 +30,12 @@ public sealed record RunFinishedEvent(
 /// </summary>
 public sealed record RunErrorEvent(
     /// <summary>Human-readable description of the error.</summary>
-    [property: JsonPropertyName("message")] string Message
+    [property: JsonPropertyName("message")] string Message,
+    /// <summary>
+    /// Machine-readable reason, one of <see cref="AgUiErrorCodes"/>, or <see langword="null"/> for none. Left out of the
+    /// frame when null: the AG-UI client schema types <c>code</c> as an optional string, and rejects a null.
+    /// </summary>
+    [property: JsonPropertyName("code"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Code = null
 ) : AgUiEvent;
 
 /// <summary>

@@ -368,9 +368,10 @@ public sealed class AgUiRunHandler
         catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
         {
             // Rejected before the model saw it, so nothing was streamed (#959). Every AG-UI run stores its message above.
-            var clientMessage = await RejectedTurnMessage.RejectAsync(
+            var rejected = await RejectedTurnMessage.RejectAsync(
                 _conversationStore, input.ThreadId, callerId, userMsg.Id, storedForThisTurn: true, ex, _logger);
-            await writer.WriteAsync(new RunErrorEvent(clientMessage), ct);
+            var code = rejected.RemovedMessageId is null ? null : AgUiErrorCodes.MessageRemoved;
+            await writer.WriteAsync(new RunErrorEvent(rejected.ClientMessage, code), ct);
             return;
         }
         catch (Exception ex)

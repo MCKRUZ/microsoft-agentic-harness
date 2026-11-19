@@ -1,5 +1,6 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.Services;
 using Application.Common.Exceptions.ExceptionTypes;
 using FluentAssertions;
@@ -51,7 +52,7 @@ public sealed class RejectedTurnMessageTests
     [Fact]
     public async Task RejectAsync_AValidationRejection_SaysTheMessageWasNotAcceptedWithoutEchoingIt()
     {
-        var told = await Reject(new ValidationException("UserMessage: secret text"));
+        var told = (await Reject(new ValidationException("UserMessage: secret text"))).ClientMessage;
 
         told.Should().Be(RejectedTurnMessage.NotAcceptedMessage).And.NotContain("secret");
     }
@@ -74,12 +75,55 @@ public sealed class RejectedTurnMessageTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new IOException("disk"));
 
-        var told = await Reject(new ContentSafetyException("blocked", "hate"));
+        var rejected = await Reject(new ContentSafetyException("blocked", "hate"));
 
-        told.Should().Be(IScreeningRefusal.BlockedMessage);
+        rejected.ClientMessage.Should().Be(IScreeningRefusal.BlockedMessage);
+        rejected.RemovedMessageId.Should().BeNull("the store still holds the message, so the client must keep showing it");
     }
 
-    private Task<string> Reject(Exception rejection, Guid? messageId = null) =>
+    [Fact]
+    public async Task RejectAsync_WhenTheMessageIsRemoved_ReportsItsId_SoTheClientCanDropIt()
+    {
+        // #1036: the client shows the message before the turn runs. Unless it is told the store dropped the message,
+        // it keeps showing text the conversation no longer holds, and a later retry or edit keyed by it fails.
+        var id = Guid.NewGuid();
+        StoreTruncates();
+
+        var rejected = await Reject(new ContentSafetyException("blocked", "hate"), id);
+
+        rejected.RemovedMessageId.Should().Be(id);
+    }
+
+    [Fact]
+    public async Task RejectAsync_ARetryDuringAnOutage_ReportsNothingRemoved()
+    {
+        StoreTruncates();
+
+        var rejected = await RejectedTurnMessage.RejectAsync(
+            _store.Object, "c1", "u1", Guid.NewGuid(), storedForThisTurn: false, new ContentSafetyUnavailableException(),
+            NullLogger.Instance);
+
+        rejected.RemovedMessageId.Should().BeNull("an outage keeps a retried message an earlier turn stored");
+    }
+
+    [Fact]
+    public async Task RejectAsync_WhenTheConversationIsGone_ReportsNothingRemoved()
+    {
+        _store.Setup(s => s.TruncateFromMessageAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationRecord?)null);
+
+        var rejected = await Reject(new ContentSafetyException("blocked", "hate"));
+
+        rejected.RemovedMessageId.Should().BeNull();
+    }
+
+    private void StoreTruncates() =>
+        _store.Setup(s => s.TruncateFromMessageAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "u1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
+
+    private Task<RejectedTurn> Reject(Exception rejection, Guid? messageId = null) =>
         RejectedTurnMessage.RejectAsync(
             _store.Object, "c1", "u1", messageId ?? Guid.NewGuid(), storedForThisTurn: true, rejection,
             NullLogger.Instance);

@@ -161,4 +161,52 @@ describe('useAgentHub conversation guard', () => {
 
     expect(useChatStore.getState().messages).toHaveLength(2);
   });
+  it('Error_NamingARemovedMessage_DropsItFromTheActiveTranscript', async () => {
+    // #1036: a refused send, edit or retry leaves the message on screen unless the client drops the one the server
+    // removed.
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [
+        { id: 'm1', role: 'assistant', content: 'an answer', timestamp: new Date() },
+        { id: 'm2', role: 'user', content: 'refused', timestamp: new Date() },
+      ],
+    });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-B', message: 'blocked', code: 'AGENT_ERROR', removedMessageId: 'm2' });
+    });
+
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => m.id)).toEqual(['m1']);
+    expect(state.error).toBe('blocked');
+  });
+
+  it('Error_NamingNoRemovedMessage_KeepsTheTranscript', async () => {
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [{ id: 'm2', role: 'user', content: 'kept', timestamp: new Date() }],
+    });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-B', message: 'boom', code: 'AGENT_ERROR', removedMessageId: null });
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(1);
+  });
+
+  it('Error_ForeignConversation_DoesNotRemoveFromActiveTranscript', async () => {
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [{ id: 'm2', role: 'user', content: 'mine', timestamp: new Date() }],
+    });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-A', message: 'blocked', code: 'AGENT_ERROR', removedMessageId: 'm2' });
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(1);
+  });
 });

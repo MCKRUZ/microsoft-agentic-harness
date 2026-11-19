@@ -190,9 +190,12 @@ public sealed partial class ConversationOrchestrator
         {
             // Rejected before the model saw it (#959). Not the agent failing, so not counted against its health, and no
             // error row is added to the transcript.
-            var clientMessage = await RejectedTurnMessage.RejectAsync(
+            var rejected = await RejectedTurnMessage.RejectAsync(
                 _conversationStore, conversationId, callerId, userMessageId, storedForThisTurn, ex, _logger);
-            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
+            return new TurnOutcome
+            {
+                Success = false, ErrorMessage = rejected.ClientMessage, RemovedMessageId = rejected.RemovedMessageId,
+            };
         }
         catch (Exception ex)
         {

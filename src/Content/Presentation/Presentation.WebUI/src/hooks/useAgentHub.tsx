@@ -103,11 +103,17 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
     });
 
     connection.on('Error', (payload: unknown) => {
+      const fields = payload != null && typeof payload === 'object' ? payload as Record<string, unknown> : null;
       const message =
         typeof payload === 'string' ? payload
-        : payload != null && typeof payload === 'object' && 'message' in payload && typeof (payload as Record<string, unknown>).message === 'string'
-          ? (payload as Record<string, unknown>).message as string
-          : JSON.stringify(payload);
+        : typeof fields?.message === 'string' ? fields.message
+        : JSON.stringify(payload);
+      // A turn rejected before the model saw it names the message the server removed (#1036). The transcript shows
+      // that message from the moment it was sent, so drop it to match the conversation.
+      const removedMessageId = fields?.removedMessageId;
+      const conversationId = fields?.conversationId;
+      if (typeof removedMessageId === 'string' && typeof conversationId === 'string' && isActiveConversation(conversationId))
+        useChatStore.getState().removeMessage(removedMessageId);
       useChatStore.getState().setError(message);
     });
 
