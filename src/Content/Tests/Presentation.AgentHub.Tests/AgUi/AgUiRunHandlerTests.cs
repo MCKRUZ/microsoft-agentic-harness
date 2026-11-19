@@ -580,6 +580,40 @@ public sealed class AgUiRunHandlerTests
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Theory]
+    [MemberData(nameof(RejectionCases.All), MemberType = typeof(RejectionCases))]
+    public async Task HandleRunAsync_RejectedBeforeDispatch_RemovesTheStoredMessageAndReportsTheRefusal(Exception refusal, string toldTheCaller)
+    {
+        // #959: the user message is appended before the turn runs, and the next run reads history back from the
+        // store unscreened. A refused message left in the store reaches the model on the caller's next run.
+        const string threadId = "conv-refused";
+        const string userId = "user-1";
+        var userMessageId = Guid.NewGuid();
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(refusal);
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "refused text", userMessageId.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var frames = ParseSseFrames(ms);
+        RunErrorMessage(frames).Should().Be(toldTheCaller, "a rejection is reported as one, not as an error");
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
+        store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),
+            Times.Once, "the refused message is removed from the store it was appended to");
+    }
+
     [Fact]
     public async Task HandleRunAsync_ConversationBudgetExhausted_EmitsAssistantMessageThenRunFinished_NoDispatch()
     {

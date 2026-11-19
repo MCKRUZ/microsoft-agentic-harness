@@ -68,6 +68,33 @@ public sealed class AzureContentSafetyServiceTests
         result.IsBlocked.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \n\t")]
+    public async Task ScreenAsync_TextWithNothingToScreen_PassesWithoutCallingTheService(string content)
+    {
+        // The service rejects empty text, which the fail-closed default would turn into a refusal of a request that
+        // carries nothing to screen.
+        var result = await Service().ScreenAsync(content, CancellationToken.None);
+
+        result.IsBlocked.Should().BeFalse();
+        _handler.Bodies.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ScreenAsync_ALongTextWithABlankTail_ScreensOnlyTheChunksWithText()
+    {
+        // Only one response is queued: a request for a blank chunk would get the fallback, which scores no category and
+        // is treated as an outage.
+        _handler.Respond(Clean);
+        var text = "hello" + new string(' ', AzureContentSafetyService.MaxChunkLength * 2);
+
+        var result = await Service().ScreenAsync(text, CancellationToken.None);
+
+        result.IsBlocked.Should().BeFalse();
+        _handler.Bodies.Should().ContainSingle();
+    }
+
     [Fact]
     public async Task ScreenAsync_ACategoryExactlyAtTheThreshold_Blocks()
     {

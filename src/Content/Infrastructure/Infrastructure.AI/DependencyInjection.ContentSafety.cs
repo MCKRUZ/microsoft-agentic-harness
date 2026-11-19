@@ -31,6 +31,15 @@ public static partial class DependencyInjection
         services.AddSingleton<ITextContentSafetyService>(sp =>
         {
             var config = sp.GetRequiredService<IOptions<AppConfig>>().Value.AI.ContentSafety;
+            // The startup validator checks a separately bound copy of this section, and a host that composes its own
+            // options pipeline (or sets AppConfig in code) may not run it at all. Validate the instance actually used,
+            // with the same rules and before choosing the provider, so an http endpoint never carries the API key, an
+            // off-scale threshold never blocks everything, and an undefined provider is refused, not read as AllowAll.
+            var validation = new ContentSafetyConfigValidator().Validate(config);
+            if (!validation.IsValid)
+                throw new InvalidOperationException(
+                    "AppConfig:AI:ContentSafety is invalid: " + string.Join(" ", validation.Errors.Select(e => e.ErrorMessage)));
+
             return config.Provider == ContentSafetyProvider.AzureAIContentSafety
                 ? new AzureContentSafetyService(
                     CreateContentSafetyClient(config),
@@ -45,14 +54,6 @@ public static partial class DependencyInjection
     // An API key when one is configured; otherwise the Entra credential, which is preferred.
     private static ContentSafetyClient CreateContentSafetyClient(ContentSafetyConfig config)
     {
-        // The startup validator checks a separately bound copy of this section, and a host that composes its own options
-        // pipeline (or sets AppConfig in code) may not run it at all. Validate the instance actually used, with the same
-        // rules, so an http endpoint never carries the API key and an off-scale threshold never blocks everything.
-        var validation = new ContentSafetyConfigValidator().Validate(config);
-        if (!validation.IsValid)
-            throw new InvalidOperationException(
-                "AppConfig:AI:ContentSafety is invalid: " + string.Join(" ", validation.Errors.Select(e => e.ErrorMessage)));
-
         var endpoint = new Uri(config.Endpoint!);
         var options = CreateContentSafetyClientOptions();
         return string.IsNullOrWhiteSpace(config.ApiKey)

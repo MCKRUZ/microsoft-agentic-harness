@@ -365,6 +365,14 @@ public sealed class AgUiRunHandler
         {
             throw;
         }
+        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
+        {
+            // Rejected before the model saw it, so nothing was streamed (#959). Every AG-UI run stores its message above.
+            var clientMessage = await RejectedTurnMessage.RejectAsync(
+                _conversationStore, input.ThreadId, callerId, userMsg.Id, storedForThisTurn: true, ex, _logger);
+            await writer.WriteAsync(new RunErrorEvent(clientMessage), ct);
+            return;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
@@ -488,6 +496,7 @@ public sealed class AgUiRunHandler
     /// <c>CallerIdentityResolutionBoundaryTests</c> now prevents — delegate, never copy.
     /// </remarks>
     private static string GetCallerId(ClaimsPrincipal principal) => principal.GetUserId();
+
 
     /// <summary>
     /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly

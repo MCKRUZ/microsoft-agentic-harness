@@ -86,7 +86,7 @@ public sealed partial class ConversationOrchestrator
     }
 
     private async Task<TurnOutcome> DispatchTurnAsync(
-        string sessionKey, string conversationId, string userMessage, Guid userMessageId,
+        string sessionKey, string conversationId, string userMessage, Guid userMessageId, bool storedForThisTurn,
         string callerId, Func<string, CancellationToken, Task>? onChunk, LeasedTurn leased, CancellationToken ct)
     {
         // The agent to dispatch to is resolved HERE, fresh under the lease, rather than accepted as
@@ -185,6 +185,14 @@ public sealed partial class ConversationOrchestrator
             _logger.LogInformation(
                 "Turn dispatch for conversation {ConversationId} cancelled by client disconnect.", conversationId);
             throw;
+        }
+        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
+        {
+            // Rejected before the model saw it (#959). Not the agent failing, so not counted against its health, and no
+            // error row is added to the transcript.
+            var clientMessage = await RejectedTurnMessage.RejectAsync(
+                _conversationStore, conversationId, callerId, userMessageId, storedForThisTurn, ex, _logger);
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
         }
         catch (Exception ex)
         {

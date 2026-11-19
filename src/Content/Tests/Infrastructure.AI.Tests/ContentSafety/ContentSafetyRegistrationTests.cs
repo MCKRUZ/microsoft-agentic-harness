@@ -75,6 +75,19 @@ public sealed class ContentSafetyRegistrationTests
         act.Should().Throw<InvalidOperationException>().WithMessage($"*{expected}*");
     }
 
+    [Fact]
+    public void AnUndefinedProvider_StopsTheHostInsteadOfScreeningNothing()
+    {
+        // A provider value set in code, outside the bound options pipeline, would otherwise fall through to AllowAll.
+        var config = Azure();
+        config.Provider = (ContentSafetyProvider)99;
+        using var built = Build(config);
+
+        var act = () => built.GetRequiredService<ITextContentSafetyService>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*ContentSafety*");
+    }
+
     [Theory]
     [InlineData(true, "Production", 1)]
     [InlineData(true, "Development", 0)]

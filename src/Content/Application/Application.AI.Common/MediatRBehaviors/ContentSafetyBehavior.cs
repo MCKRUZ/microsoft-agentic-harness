@@ -36,7 +36,7 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// <see cref="SafetyConventions.OutcomeValues.Unscreened"/>, never as a pass or a block: an outage is not a verdict on
 /// the text, and a dashboard that showed it as one would report healthy screening while nothing was screened. With the
 /// policy on (the default) the exception propagates as a service failure: HTTP 503 on hosts whose errors pass through
-/// <c>GlobalExceptionMiddleware</c>; AgentHub's turn paths still report it as an internal error (#952). With the policy
+/// <c>GlobalExceptionMiddleware</c>, and a retryable refusal on AgentHub's turn paths (#952). With the policy
 /// off, the request goes on unscreened.
 /// </para>
 /// </remarks>

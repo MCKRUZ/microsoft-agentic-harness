@@ -30,8 +30,14 @@ namespace Application.AI.Common.Exceptions;
 /// }
 /// </code>
 /// </example>
-public sealed class ContentSafetyException : ApplicationExceptionBase
+public sealed class ContentSafetyException : ApplicationExceptionBase, IScreeningRefusal
 {
+    /// <inheritdoc />
+    public string ClientMessage => IScreeningRefusal.BlockedMessage;
+
+    /// <inheritdoc />
+    public bool IsVerdict => true;
+
     /// <summary>
     /// Gets the category of the safety violation, if specified.
     /// </summary>
