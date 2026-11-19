@@ -20,8 +20,8 @@ namespace Application.Core.CQRS.Learnings;
 /// </para>
 /// <para>
 /// <b>Read-only by design.</b> Learnings writes are deliberately not exposed over HTTP: they
-/// bypass the memory write gate, learnings carry no owner/tenant scoping, and they sit outside
-/// the erasure surface — an HTTP write path would be a prompt-injection channel into every
+/// bypass the memory write gate, an HTTP write would carry no owner/tenant scoping, and it would
+/// sit outside the erasure surface — an HTTP write path would be a prompt-injection channel into every
 /// user's agent turns.
 /// </para>
 /// </remarks>

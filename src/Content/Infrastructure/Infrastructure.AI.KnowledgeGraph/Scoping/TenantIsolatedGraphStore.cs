@@ -367,7 +367,9 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
     ///   <item><b>tenant</b>: the record is global (<paramref name="tenantId"/> is null) or belongs
     ///   to the caller's tenant (<see cref="IKnowledgeScopeValidator.ValidateAccess"/>);</item>
     ///   <item><b>owner</b>: the record is shared within the tenant (<paramref name="ownerId"/> is
-    ///   null — e.g. corpus/learnings) or the caller owns it
+    ///   null — e.g. corpus, or a learning written by background work) or the caller owns it. A learning
+    ///   written inside a request is owner-stamped by GraphLearningsStore, so with isolation on it is
+    ///   visible only to the user who wrote it
     ///   (<see cref="IKnowledgeScopeValidator.CanAccessDataset"/> — e.g. their memory).</item>
     /// </list>
     /// So a user sees their tenant's shared corpus plus their own memory, never another tenant's

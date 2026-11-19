@@ -13,10 +13,12 @@ namespace Presentation.AgentHub.Controllers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Cross-user disclosure — why the role gate exists.</b> Learnings are scoped to
+/// <b>Cross-user disclosure — why the role gate exists.</b> Most learnings are scoped to
 /// agent/team/global, <b>not</b> to users: an entry captured from one user's correction,
 /// escalation resolution, or drift event is recalled into every user's agent turns, and its
-/// content can embed material from any user's sessions. This endpoint therefore discloses
+/// content can embed material from any user's sessions. Lessons work-memory synthesis distils
+/// from one user's conversations are the exception (#968): they are user-scoped, so an operator
+/// sees the shared learnings plus their own user-scoped ones, never another user's. This endpoint therefore discloses
 /// cross-user data by construction, so the whole controller is gated with
 /// <see cref="OperatorRole"/> — following the <c>AgentHub.Traces.ReadAll</c> precedent on
 /// <see cref="SessionsController"/>. A plain authenticated chat user (no role) gets 403.
@@ -24,7 +26,7 @@ namespace Presentation.AgentHub.Controllers;
 /// <para>
 /// <b>Read-only by design.</b> No learnings write (remember, improve, forget, or access
 /// recording) is exposed over HTTP, deliberately: learnings writes bypass the memory write
-/// gate, carry no owner/tenant scoping, and sit outside the erasure surface — an HTTP write
+/// gate, would carry no owner/tenant scoping, and would sit outside the erasure surface — an HTTP write
 /// path would be a prompt-injection channel into every user's agent turns.
 /// </para>
 /// <para>

@@ -316,8 +316,9 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<WorkMemory.GraphWorkEpisodeStore>>()));
 
-        services.AddKeyedSingleton<IWorkEpisodeStore>("in_memory", (_, _) =>
-            new WorkMemory.InMemoryWorkEpisodeStore());
+        services.AddKeyedSingleton<IWorkEpisodeStore>("in_memory", (sp, _) =>
+            new WorkMemory.InMemoryWorkEpisodeStore(
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>()));
 
         var workMemoryProvider = appConfig.AI.WorkMemory.StoreProvider;
         // Fail loud at startup on a misconfigured provider key. Capture runs fire-and-forget, so a
@@ -333,6 +334,15 @@ public static partial class DependencyInjection
 
         services.AddSingleton<IWorkEpisodeStore>(sp =>
             sp.GetRequiredKeyedService<IWorkEpisodeStore>(workMemoryProvider));
+        // The in-memory store erases and exports the person's episodes itself (#968). The graph store's episodes are
+        // graph nodes the graph's own erasure and export reach; registering it here would add a "could not erase"
+        // stand-in to every receipt, and a provider name nothing is registered under (allowed above while work memory
+        // is off) would throw inside every erasure and export request.
+        if (workMemoryProvider == "in_memory")
+        {
+            services.AddPersonalDataEraser<IWorkEpisodeStore>();
+            services.AddPersonalDataExporter<IWorkEpisodeStore>();
+        }
 
         // Overnight synthesizer (PR2) — distills episodes into reusable lessons via an economy-tier
         // LLM. Registered unconditionally (mirrors IConversationFactExtractor); it is only resolved by

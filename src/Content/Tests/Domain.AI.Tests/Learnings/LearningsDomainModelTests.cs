@@ -269,4 +269,22 @@ public sealed class LearningsDomainModelTests
             CreatedAt = DateTimeOffset.UtcNow
         };
     }
+
+    // #968: the user axis. An unknown caller never sees a user-scoped learning; a shared one is
+    // visible to everyone; identity comparison is canonical (trimmed, case-insensitive).
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(null, "user-b", true)]
+    [InlineData("user-a", "user-a", true)]
+    [InlineData("user-a", " USER-A ", true)]
+    [InlineData("user-a", "user-b", false)]
+    [InlineData("user-a", null, false)]
+    [InlineData("user-a", "  ", false)]
+    [InlineData("  ", null, true)]
+    public void LearningScope_IsVisibleTo_AppliesTheUserAxis(string? learningUser, string? caller, bool expected)
+    {
+        var scope = new LearningScope { IsGlobal = true, UserId = learningUser };
+
+        Assert.Equal(expected, scope.IsVisibleTo(caller));
+    }
 }

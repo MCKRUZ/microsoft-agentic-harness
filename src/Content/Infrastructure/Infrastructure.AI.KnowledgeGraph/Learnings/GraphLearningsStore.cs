@@ -27,7 +27,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// on purpose — they are shared routing structures, not the subject's data.
 /// </remarks>
 [PersonalDataStore(
-    "Learnings as nodes in the knowledge graph, recalled into every user's agent turns. Entries written in a request carry that caller as owner and are reached by owner erasure; entries captured by background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days, and a pruned or forgotten learning is removed for good after Learnings:DeletedRetentionDays (default 30). Permanent learnings are kept by design, as someone deliberately marked them, until deleted or their owner is erased. A person's copy of their data holds the learnings they wrote, with their other knowledge-graph nodes.",
+    "Learnings as nodes in the knowledge graph. Human-written learnings are recalled into every user's agent turns; lessons work-memory synthesis distils from one user's conversations are recalled only into that user's turns and owned by that user. Entries written in a request carry that caller as owner and are reached by owner erasure; synthesis lessons carry the user they came from; entries captured by other background work carry none. Volatile and Stable learnings are pruned after 7 and 180 days, and a pruned or forgotten learning is removed for good after Learnings:DeletedRetentionDays (default 30). Permanent learnings are kept by design, as someone deliberately marked them, until deleted or their owner is erased. A person's copy of their data holds the learnings they wrote, with their other knowledge-graph nodes.",
     PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent | PersonalDataCategories.DerivedKnowledge,
     PersonalDataKey.Owner,
     RetentionBasis.Configured,
@@ -379,6 +379,7 @@ public sealed class GraphLearningsStore : ILearningsStore
         ["ScopeAgentId"] = entry.Scope.AgentId ?? "",
         ["ScopeTeamId"] = entry.Scope.TeamId ?? "",
         ["ScopeIsGlobal"] = entry.Scope.IsGlobal.ToString().ToLowerInvariant(),
+        ["ScopeUserId"] = entry.Scope.UserId ?? "",
         ["IsDeleted"] = entry.IsDeleted.ToString().ToLowerInvariant(),
         ["DeleteReason"] = entry.DeleteReason ?? "",
         // Deliberately the SAME property key the knowledge channel uses for the same concept, rather
@@ -438,7 +439,8 @@ public sealed class GraphLearningsStore : ILearningsStore
             {
                 AgentId = string.IsNullOrEmpty(props.GetValueOrDefault("ScopeAgentId", "")) ? null : props["ScopeAgentId"],
                 TeamId = string.IsNullOrEmpty(props.GetValueOrDefault("ScopeTeamId", "")) ? null : props["ScopeTeamId"],
-                IsGlobal = props.GetValueOrDefault("ScopeIsGlobal", "false") == "true"
+                IsGlobal = props.GetValueOrDefault("ScopeIsGlobal", "false") == "true",
+                UserId = string.IsNullOrEmpty(props.GetValueOrDefault("ScopeUserId", "")) ? null : props["ScopeUserId"]
             },
             IsDeleted = props.GetValueOrDefault("IsDeleted", "false") == "true",
             DeleteReason = string.IsNullOrEmpty(props.GetValueOrDefault("DeleteReason", "")) ? null : props["DeleteReason"],

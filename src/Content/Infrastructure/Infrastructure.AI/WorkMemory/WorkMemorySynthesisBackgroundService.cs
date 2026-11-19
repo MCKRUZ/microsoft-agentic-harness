@@ -1,9 +1,11 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.WorkMemory;
 using Application.Common.Helpers;
 using Application.Core.CQRS.Learnings;
 using Domain.AI.Governance;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.AI.WorkMemory;
 using Domain.Common;
@@ -50,10 +52,22 @@ namespace Infrastructure.AI.WorkMemory;
 /// synthesis-quality judgement and genuinely local.
 /// </para>
 /// <para>
-/// <strong>Tenant scope:</strong> like the sibling background jobs (<c>LearningsPruningBackgroundService</c>,
-/// retention enforcement), the pass runs with no inbound request identity, so it operates over the
-/// store's unscoped view. Per-tenant synthesis is a future extension point if a consumer enables
-/// multi-tenant isolation and needs lessons partitioned by tenant.
+/// <strong>Per-owner synthesis (#968):</strong> a lesson distilled from one user's conversations must
+/// reach only that user and be erasable with that user's data. The pass therefore reads the episodes
+/// with the ambient request scope suspended (<see cref="IAmbientRequestScope.SuspendScope"/>, the seam
+/// for privileged system reads), so a tenant-isolating store returns every owner's episodes rather than
+/// none, then groups them by the owner and tenant each episode was stored under. Each group is
+/// synthesized in its own DI scope with that owner set through <see cref="IKnowledgeScopeWriter"/>, so
+/// the lessons it produces are owner-stamped, and they are scoped to that user
+/// (<see cref="LearningScope.UserId"/>) so only that user recalls them. One group's episodes never reach
+/// another group's synthesizer call.
+/// </para>
+/// <para>
+/// The pass fails closed: a host with no <see cref="IKnowledgeScopeWriter"/> cannot attribute lessons to
+/// their user, so that owner's group is skipped with an error rather than written owner-less and shared.
+/// Episodes captured outside any user's request carry no owner; they are synthesized together into
+/// global lessons every user recalls, with any inherited identity cleared. A synthesizer failure for one
+/// group is logged and the pass moves on to the next.
 /// </para>
 /// </remarks>
 public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
@@ -125,9 +139,9 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// Runs a single synthesis pass immediately: read recent episodes, synthesize lessons, gate them,
-    /// and persist survivors. Exposed so the pass can be triggered on demand (tests, manual ops) without
-    /// waiting for the interval. Creates and owns its own DI scope.
+    /// Runs a single synthesis pass immediately: read recent episodes, synthesize lessons per owner, gate
+    /// them, and persist survivors. Exposed so the pass can be triggered on demand (tests, manual ops)
+    /// without waiting for the interval. Creates and owns its own DI scopes.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The number of lessons stored, or a failure when reading episodes fails.</returns>
@@ -149,20 +163,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
             return Result<int>.Success(0);
         }
 
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        using var _ = _ambientScope.BeginScope(scope.ServiceProvider);
-
-        var episodeStore = scope.ServiceProvider.GetRequiredService<IWorkEpisodeStore>();
-        var synthesizer = scope.ServiceProvider.GetRequiredService<IWorkEpisodeSynthesizer>();
-        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-        var criteria = new WorkEpisodeSearchCriteria
-        {
-            CreatedAfter = _timeProvider.GetUtcNow() - TimeSpan.FromHours(cfg.SynthesisLookbackHours),
-            Limit = cfg.MaxEpisodesPerRun
-        };
-
-        var episodesResult = await episodeStore.SearchAsync(criteria, ct);
+        var episodesResult = await ReadEpisodesAsync(cfg, ct);
         if (!episodesResult.IsSuccess)
             return Result<int>.Fail(episodesResult.Errors.ToArray());
 
@@ -173,28 +174,95 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
             return Result<int>.Success(0);
         }
 
-        var lessons = await synthesizer.SynthesizeAsync(episodes, ct);
-
         // One id per pass, shared by every lesson it produces, so the audit trail can correlate all
         // lessons back to the synthesis run that created them (a per-lesson random id would not).
         var runId = Guid.NewGuid().ToString();
 
+        var groups = episodes.GroupBy(e => new EpisodeOwner(
+            ScopeIdentity.Canonicalize(e.OwnerId), ScopeIdentity.Canonicalize(e.TenantId)));
+
+        var stored = 0;
+        foreach (var group in groups)
+            stored += await SynthesizeGroupAsync(group.Key, group.ToList(), runId, cfg, ct);
+
+        _logger.LogInformation(
+            "Work-memory synthesis: {Stored} lessons stored from {Episodes} episodes",
+            stored, episodes.Count);
+
+        return Result<int>.Success(stored);
+    }
+
+    /// <summary>
+    /// Reads the look-back window's episodes for every owner. The ambient request scope is suspended so a
+    /// tenant-isolating store applies no caller's filter: without it, the store would see a scope with no
+    /// user and hide every owner-stamped episode, and a pass triggered inside a request would see only
+    /// that caller's episodes.
+    /// </summary>
+    private async Task<Result<IReadOnlyList<WorkEpisode>>> ReadEpisodesAsync(WorkMemoryConfig cfg, CancellationToken ct)
+    {
+        using var suspended = _ambientScope.SuspendScope();
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var episodeStore = scope.ServiceProvider.GetRequiredService<IWorkEpisodeStore>();
+
+        var criteria = new WorkEpisodeSearchCriteria
+        {
+            CreatedAfter = _timeProvider.GetUtcNow() - TimeSpan.FromHours(cfg.SynthesisLookbackHours),
+            Limit = cfg.MaxEpisodesPerRun
+        };
+
+        return await episodeStore.SearchAsync(criteria, ct);
+    }
+
+    /// <summary>
+    /// Synthesizes one owner's episodes into lessons and persists them as that owner, in a DI scope of
+    /// their own. Returns the number of lessons stored.
+    /// </summary>
+    private async Task<int> SynthesizeGroupAsync(
+        EpisodeOwner owner, IReadOnlyList<WorkEpisode> episodes, string runId, WorkMemoryConfig cfg, CancellationToken ct)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        using var ambient = _ambientScope.BeginScope(scope.ServiceProvider);
+
+        var writer = scope.ServiceProvider.GetService<IKnowledgeScopeWriter>();
+        if (owner.UserId is not null && writer is null)
+        {
+            _logger.LogError(
+                "Work-memory synthesis skipped {Count} episodes: this host registers no {Writer}, so their "
+                + "lessons cannot be attributed to the user they came from and must not be written shared.",
+                episodes.Count, nameof(IKnowledgeScopeWriter));
+            return 0;
+        }
+
+        // Set even for the owner-less group: a null user replaces any identity inherited from a caller,
+        // so global lessons are never stamped with whoever triggered the pass.
+        using var identity = writer?.SetScope(userId: owner.UserId, tenantId: owner.TenantId);
+
+        var synthesizer = scope.ServiceProvider.GetRequiredService<IWorkEpisodeSynthesizer>();
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+        IReadOnlyList<SynthesizedLesson> lessons;
+        try
+        {
+            lessons = await synthesizer.SynthesizeAsync(episodes, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Work-memory synthesis failed for a group of {Count} episodes", episodes.Count);
+            return 0;
+        }
+
         var stored = 0;
         foreach (var lesson in lessons)
         {
-            if (!MeetsConfidenceFloor(lesson, cfg.MinConfidenceToStore))
-                continue;
-
-            var remembered = await PersistLessonAsync(mediator, lesson, runId, ct);
-            if (remembered)
+            if (MeetsConfidenceFloor(lesson, cfg.MinConfidenceToStore)
+                && await PersistLessonAsync(mediator, lesson, owner.UserId, runId, ct))
                 stored++;
         }
 
-        _logger.LogInformation(
-            "Work-memory synthesis: {Stored}/{Candidates} lessons stored from {Episodes} episodes",
+        _logger.LogDebug(
+            "Work-memory synthesis: {Stored}/{Candidates} lessons stored from a group of {Episodes} episodes",
             stored, lessons.Count, episodes.Count);
-
-        return Result<int>.Success(stored);
+        return stored;
     }
 
     /// <summary>
@@ -211,14 +279,17 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
         return false;
     }
 
-    private async Task<bool> PersistLessonAsync(IMediator mediator, SynthesizedLesson lesson, string runId, CancellationToken ct)
+    private async Task<bool> PersistLessonAsync(
+        IMediator mediator, SynthesizedLesson lesson, string? ownerId, string runId, CancellationToken ct)
     {
         var now = _timeProvider.GetUtcNow();
         var command = new RememberCommand
         {
             Content = lesson.Content,
             Category = lesson.Category,
-            Scope = new LearningScope { IsGlobal = true },
+            // Global tier so the existing index finds it; the user axis narrows it to the owner when there
+            // is one. RememberCommandValidator requires an agent, team or global tier.
+            Scope = new LearningScope { IsGlobal = true, UserId = ownerId },
             Source = new LearningSource
             {
                 SourceType = LearningSourceType.AgentSelfImprovement,
@@ -249,4 +320,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
             return false;
         }
     }
+
+    /// <summary>The canonical owner and tenant a group of episodes was stored under.</summary>
+    private readonly record struct EpisodeOwner(string? UserId, string? TenantId);
 }

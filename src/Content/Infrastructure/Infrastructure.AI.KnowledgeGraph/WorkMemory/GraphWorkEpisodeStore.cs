@@ -6,6 +6,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.WorkMemory;
 using Domain.Common;
+using Domain.Common.Compliance;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -32,6 +33,13 @@ namespace Infrastructure.AI.KnowledgeGraph.WorkMemory;
 /// singleton store from capturing the scoped <see cref="IKnowledgeScope"/>.
 /// </para>
 /// </remarks>
+[PersonalDataStore(
+    "Work-memory episodes as nodes in the knowledge graph: a turn's user message, the agent's response summary, its outcome and token counts. Each node is stamped with the owner of the caller who saved it and is reached by owner erasure and by the owner's export with their other knowledge-graph nodes; an episode saved with no caller in flight carries no owner. Deleted once not written for the graph's personal-knowledge retention period.",
+    PersonalDataCategories.Identifiers | PersonalDataCategories.ConversationContent,
+    PersonalDataKey.Owner,
+    RetentionBasis.Configured,
+    ErasureSupport.PurgeByOwner,
+    ExportSupport.ByOwner)]
 public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
 {
     private readonly IKnowledgeGraphStore _graphStore;
@@ -244,7 +252,11 @@ public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
             Outcome = Enum.TryParse<EpisodeOutcome>(props.GetValueOrDefault("Outcome", ""), out var oc) ? oc : EpisodeOutcome.Success,
             InputTokens = int.TryParse(props.GetValueOrDefault("InputTokens", "0"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var it) ? it : 0,
             OutputTokens = int.TryParse(props.GetValueOrDefault("OutputTokens", "0"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ot) ? ot : 0,
-            CreatedAt = DateTimeOffset.TryParse(props.GetValueOrDefault("CreatedAt", ""), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ca) ? ca : DateTimeOffset.UtcNow
+            CreatedAt = DateTimeOffset.TryParse(props.GetValueOrDefault("CreatedAt", ""), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ca) ? ca : DateTimeOffset.UtcNow,
+            // Read-side provenance from the node itself, never from Properties: synthesis groups by
+            // these to keep each user's lessons with that user (#968).
+            OwnerId = ScopeIdentity.Canonicalize(node.OwnerId),
+            TenantId = ScopeIdentity.Canonicalize(node.TenantId)
         };
     }
 }

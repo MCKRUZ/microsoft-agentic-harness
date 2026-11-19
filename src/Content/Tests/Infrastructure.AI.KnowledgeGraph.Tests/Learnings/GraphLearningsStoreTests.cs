@@ -65,6 +65,37 @@ public sealed class GraphLearningsStoreTests
         }
     };
 
+    /// <summary>
+    /// #968: the user axis must survive every write path. Recall reinforces access with an
+    /// UpdateAsync after every hit, so a rebuild that dropped the user would turn a private lesson
+    /// shared on its first recall; a soft-delete must keep it too.
+    /// </summary>
+    [Fact]
+    public async Task UserScope_SurvivesSaveUpdateAndSoftDelete()
+    {
+        var entry = BuildEntry(isGlobal: true) with { Scope = new LearningScope { IsGlobal = true, UserId = "user-a" } };
+        await _sut.SaveAsync(entry, CancellationToken.None);
+
+        (await _sut.UpdateAsync(entry with { UpdateCount = 1 }, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        var afterUpdate = await _sut.SearchAsync(
+            new LearningSearchCriteria { Scope = new LearningScope { IsGlobal = true } }, CancellationToken.None);
+        afterUpdate.Value.Should().ContainSingle().Which.Scope.UserId.Should().Be("user-a");
+
+        await _sut.SoftDeleteAsync(entry.LearningId, "test", CancellationToken.None);
+        var node = await _graphStore.GetNodeAsync($"learning:{entry.LearningId}".ToLowerInvariant());
+        node!.Properties["ScopeUserId"].Should().Be("user-a");
+    }
+
+    [Fact]
+    public async Task SharedLearning_RoundTripsWithNoUser()
+    {
+        var entry = BuildEntry(isGlobal: true);
+        await _sut.SaveAsync(entry, CancellationToken.None);
+
+        var found = await _sut.GetAsync(entry.LearningId, CancellationToken.None);
+        found.Value!.Scope.UserId.Should().BeNull();
+    }
+
     [Fact]
     public async Task Save_StampsCallerCanonicalOwner_SoOwnerScopedErasureCanFindIt()
     {
