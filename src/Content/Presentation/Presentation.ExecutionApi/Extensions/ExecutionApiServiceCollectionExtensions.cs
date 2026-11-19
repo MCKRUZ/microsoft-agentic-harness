@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Infrastructure.AI.Runs;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
@@ -148,7 +149,11 @@ public static class ExecutionApiServiceCollectionExtensions
         {
             // The compliance endpoints carry no named policy: their per-caller windows and host-wide export limit are
             // the ones every host that mounts the compliance API applies (#1003). Every other path passes through it.
-            options.GlobalLimiter = ComplianceRateLimits.Create();
+            // Chained, not replaced: the live-stream host limit rides on the same global limiter, because a named
+            // policy resolves one partition per request and the stream endpoint's is already the per-caller one.
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
+                ComplianceRateLimits.Create(),
+                HostWideStreams(bundleConfig.MaxConcurrentStreams));
 
             // The published contract answers a refused request with 429; the framework default is 503.
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -182,6 +187,26 @@ public static class ExecutionApiServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// One concurrency limit shared by every request to an endpoint carrying <see cref="StreamRateLimitPolicy"/>,
+    /// whoever sends it, so the host holds at most <paramref name="maxStreams"/> live streams at once. The
+    /// per-caller policy decides how many of those one caller may hold.
+    /// </summary>
+    /// <remarks>
+    /// Matched on the endpoint's rate-limit policy rather than its path, so the host limit covers exactly the
+    /// endpoints the per-caller stream limit covers and cannot drift from it when a route changes. The endpoint
+    /// is known here because <c>UseRateLimiter</c> runs after <c>UseRouting</c>.
+    /// </remarks>
+    private static PartitionedRateLimiter<HttpContext> HostWideStreams(int maxStreams) =>
+        PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            context.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == StreamRateLimitPolicy
+                ? RateLimitPartition.GetConcurrencyLimiter("bundle-stream:host", _ => new ConcurrencyLimiterOptions
+                {
+                    PermitLimit = Math.Max(1, maxStreams),
+                    QueueLimit = 0,
+                })
+                : RateLimitPartition.GetNoLimiter("none"));
 
     /// <summary>
     /// Partitions the rate limiter per caller so one client cannot exhaust a shared global window and starve

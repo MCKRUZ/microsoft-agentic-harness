@@ -47,7 +47,7 @@ transient, so retry and circuit-breaker behave as they would against a throttlin
 |----------|-----------|----------------|
 | `poll-storm` | Steady arrival rate of status polls | Per-request pipeline overhead (auth, scope, limiter, MediatR) with almost no work behind it |
 | `submit-burst` | Many callers start background runs and wait | Dispatch queue depth and time-to-start with 16 dispatch slots |
-| `stream-soak` | Many callers hold live streams back to back | Cost of many simultaneous streams; bundle streams have no host-wide cap |
+| `stream-soak` | Many callers hold live streams back to back | Cost of many simultaneous streams, up to the host's limit of 64 |
 | `register-burst` | Many callers register and delete bundles | Archive staging and file I/O under concurrency |
 | `workflow-runs` | Many callers run a one-step LLM workflow and watch its progress stream | The workflow path and its host-wide stream cap of 64 (503s above it are expected) |
 | `noisy-neighbour` | One caller floods the queue beside many light callers | Fairness: dispatch is first in, first out across callers |

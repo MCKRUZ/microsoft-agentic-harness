@@ -151,7 +151,9 @@ Partitioned per caller by stable id, falling back to remote IP (the only disting
 
 The stream policy is concurrency rather than rate on purpose: a streamed run executes inline on its connection for the whole conversation, so a request-rate limiter that counts *starts* cannot bound it.
 
-The compliance endpoints carry no named policy. `ComplianceRateLimits.Create()` (shared with AgentHub, #1003) is this host's `GlobalLimiter`: five self-service erasure or export requests an hour per caller, thirty operator requests an hour per operator, and at most two personal-data copies assembled at once per host. Every other path passes through it. A refused request answers `429`, as the contract says. Before #1003 the host left the framework default, `503`.
+The per-caller stream policy has a host-wide companion: `MaxConcurrentStreams` (default 64) open streams across all callers, refused with `429` past that. A named policy resolves one partition per request, so the host limit rides on the global limiter instead, matched on the endpoint carrying `bundles-stream`. It mirrors the workflow progress-stream pair (`MaxConcurrentProgressStreams` / `MaxProgressStreamsPerOwner`), which answers `503` from its own broker rather than the rate limiter.
+
+The compliance endpoints carry no named policy. `ComplianceRateLimits.Create()` (shared with AgentHub, #1003) is chained into this host's `GlobalLimiter`, ahead of the stream host limit: five self-service erasure or export requests an hour per caller, thirty operator requests an hour per operator, and at most two personal-data copies assembled at once per host. Every other path passes through it. A refused request answers `429`, as the contract says. Before #1003 the host left the framework default, `503`.
 
 ## Project Structure
 
@@ -207,6 +209,7 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `RunRecordTtl` | 30 min | Terminal records only |
 | `StreamReservationTtl` | 5 min | Unclaimed streaming reservations; deliberately independent of `RunRecordTtl` |
 | `MaxConcurrentStreamsPerCaller` | 4 | A concurrency limiter with `QueueLimit = 0` -- excess connections are rejected, not parked |
+| `MaxConcurrentStreams` | 64 | Open streams across all callers -- one shared concurrency limiter, also `QueueLimit = 0`; read at startup |
 | `MaxConcurrentDispatchedBundleRuns` | 16 | Background (non-streaming) runs the host dispatches at once, across all callers -- `1` is strictly serial |
 | `MaxActiveBundleRunsPerOwner` | 10 | Runs one caller may hold queued or executing at once, across both dispatch modes -- refused with `400` past this (a conversation conflict is `409` instead; see below) |
 | `CleanupInterval` | 60 s | `BundleWorkspaceCleanupService` period; a lease held by a running job blocks its directory's deletion |

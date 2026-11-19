@@ -3,8 +3,8 @@
 // Proves: the workflow path under load. Workflow runs go through the shared run substrate and its own
 // dispatcher (MaxConcurrentDispatchedRuns, default 16), and their progress streams are capped both
 // host-wide (MaxConcurrentProgressStreams, 64) and per owner (8). Above 64 VUs, capacity_refusals
-// should start counting 503s on the stream: that is the host-wide cap working, not an error. Compare
-// with stream-soak, where bundle streams have no host-wide cap.
+// should start counting 503s on the stream: that is the host-wide cap working, not an error. Bundle
+// streams have the same pair (MaxConcurrentStreams, 64, and 4 per caller) but answer 429.
 
 import { GRACEFUL_STOP, callerForVu, load } from '../lib/config.js';
 import { awaitWorkflowRun, readWorkflowStream, startWorkflowRun, submitWorkflow, paceIteration } from '../lib/api.js';

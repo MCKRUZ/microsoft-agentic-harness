@@ -404,8 +404,9 @@ paths:
         producing any text. A client must not assume the assistant message opens first.
 
         **Concurrency limit, not a rate limit.** Each open stream holds a permit for its lifetime;
-        a caller may hold `MaxConcurrentStreamsPerCaller` (default 4) at once. Excess connections
-        are rejected outright with `429`, never queued.
+        a caller may hold `MaxConcurrentStreamsPerCaller` (default 4) at once, and the host holds
+        at most `MaxConcurrentStreams` (default 64) across all callers. Excess connections are
+        rejected outright with `429`, never queued.
       responses:
         "200":
           description: The SSE stream. Ends after exactly one `RUN_FINISHED` or `RUN_ERROR` frame.
@@ -459,7 +460,8 @@ paths:
                 detail: This run is not awaiting a stream. Poll its status endpoint for the result.
         "429":
           description: >-
-            The caller already holds `MaxConcurrentStreamsPerCaller` open streams. Close one and retry.
+            The caller already holds `MaxConcurrentStreamsPerCaller` open streams (close one and retry),
+            or the host already holds `MaxConcurrentStreams` across all callers (back off and retry).
 
   # ---------------------------------------------------------------------------
   # Tools — read-only discovery

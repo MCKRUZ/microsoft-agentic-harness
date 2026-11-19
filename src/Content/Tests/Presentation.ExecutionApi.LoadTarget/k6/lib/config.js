@@ -54,6 +54,13 @@ export const GRACEFUL_STOP = '5m';
  */
 export const DISPATCH_SLOTS = 16;
 
+/**
+ * How many live bundle streams the host holds at once across all callers (MaxConcurrentStreams, whose
+ * default the load target does not change). A scenario that holds one stream per caller stays at or under
+ * it, or the host's refusals would read as a failure of the run.
+ */
+export const STREAM_HOST_LIMIT = 64;
+
 /** Roughly how long one model answer takes on the target, in milliseconds. */
 export function modelAnswerMs() {
   const m = TARGET.model;
