@@ -116,11 +116,14 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
       // shows that message from the moment it was sent, so drop it to match the conversation.
       const removedMessageId = fields?.removedMessageId;
       const conversationId = fields?.conversationId;
-      if (typeof removedMessageId === 'string' && typeof conversationId === 'string' && isActiveConversation(conversationId))
-        useChatStore.getState().removeMessage(removedMessageId);
-      // A refused edit leaves the original in place and never sends HistoryTruncated (#962), so the staged replacement
-      // must not wait for one: a later retry's truncation would otherwise insert it.
-      useChatStore.getState().setPendingEditMessage(null);
+      if (typeof conversationId === 'string' && isActiveConversation(conversationId)) {
+        if (typeof removedMessageId === 'string')
+          useChatStore.getState().removeMessage(removedMessageId);
+        // A refused edit leaves the original in place and never sends HistoryTruncated (#962), so the staged
+        // replacement must not wait for one: a later retry's truncation would otherwise insert it. Only for the
+        // active conversation: another conversation's error says nothing about an edit staged here.
+        useChatStore.getState().setPendingEditMessage(null);
+      }
       useChatStore.getState().setError(message);
     });
 
