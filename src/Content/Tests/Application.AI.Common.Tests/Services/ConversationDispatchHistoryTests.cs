@@ -8,8 +8,9 @@ using Moq;
 namespace Application.AI.Common.Tests.Services;
 
 /// <summary>
-/// <see cref="ConversationDispatchHistory"/> (#785): the history a turn is dispatched with excludes the
-/// message being sent, which the interactive transports have already stored.
+/// <see cref="ConversationDispatchHistory"/> (#785, #964): the history a turn is dispatched with holds only the messages
+/// before the one being sent, which is stored only once the turn is admitted, and stops before the part an edit or a
+/// retry replaces, which is still stored.
 /// </summary>
 public sealed class ConversationDispatchHistoryTests
 {
@@ -26,107 +27,100 @@ public sealed class ConversationDispatchHistoryTests
             .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
                 (IReadOnlyList<ConversationMessage>?)transcript.TakeLast(Math.Max(0, n)).ToList());
 
-    private Task<IReadOnlyList<ConversationMessage>> Read(int max, Guid inFlight) =>
-        ConversationDispatchHistory.ReadPriorToAsync(
-            _store.Object, "c1", "u1", max, inFlight, _logger, CancellationToken.None);
+    private Task<IReadOnlyList<ConversationMessage>> Read(int max, Guid? before = null) =>
+        ConversationDispatchHistory.ReadPriorAsync(
+            _store.Object, "c1", "u1", max, before, _logger, CancellationToken.None);
 
     [Fact]
-    public async Task ReadPriorToAsync_WindowEndsWithTheMessageBeingSent_ExcludesIt()
+    public async Task ReadPriorAsync_ANewMessage_ReturnsTheLatestMessages()
     {
-        var sending = Msg(MessageRole.User, "c");
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
+        Transcript(Msg(MessageRole.User, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.User, "3"));
 
-        var prior = await Read(10, sending.Id);
+        var prior = await Read(2);
+
+        prior.Select(m => m.Content).Should().Equal("2", "3");
+        _logger.Warnings.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadPriorAsync_AnEditOrRetry_StopsBeforeTheMessageItReplaces()
+    {
+        // Until admission the replaced part is still stored; the model must not see it as history (#962).
+        var replaced = Msg(MessageRole.User, "original");
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), replaced, Msg(MessageRole.Assistant, "old answer"));
+
+        var prior = await Read(10, replaced.Id);
 
         prior.Select(m => m.Content).Should().Equal("a", "b");
         _logger.Warnings.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_MatchesByIdNotByContent()
+    public async Task ReadPriorAsync_AnEditFarBack_FindsTheMessageBeyondTheWindowAndCapsWhatPrecedesIt()
     {
-        // A store that normalises text on write must not bring the duplicate back: the id is what the
-        // caller stored the message under.
-        var sending = Msg(MessageRole.User, "stored text differs from what was sent");
-        Transcript(Msg(MessageRole.Assistant, "b"), sending);
+        // The read takes the whole conversation, so an edit of an old message still finds it; only the messages before
+        // it are capped.
+        var replaced = Msg(MessageRole.User, "old");
+        Transcript(Msg(MessageRole.User, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.User, "3"), replaced,
+            Msg(MessageRole.Assistant, "4"), Msg(MessageRole.User, "5"), Msg(MessageRole.Assistant, "6"));
 
-        var prior = await Read(10, sending.Id);
+        var prior = await Read(2, replaced.Id);
 
-        prior.Select(m => m.Content).Should().Equal("b");
+        prior.Select(m => m.Content).Should().Equal("2", "3");
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_ReturnsTheFullRequestedNumberOfPriorMessages()
+    public async Task ReadPriorAsync_MatchesByIdNotByContent()
     {
-        // Asking for 3 prior messages must not return 2 because the in-flight one used a slot.
-        var sending = Msg(MessageRole.User, "now");
-        Transcript(Msg(MessageRole.Assistant, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.Assistant, "3"),
-            Msg(MessageRole.Assistant, "4"), sending);
+        var replaced = Msg(MessageRole.User, "same text");
+        Transcript(Msg(MessageRole.User, "same text"), Msg(MessageRole.Assistant, "b"), replaced);
 
-        var prior = await Read(3, sending.Id);
+        var prior = await Read(10, replaced.Id);
 
-        prior.Select(m => m.Content).Should().Equal("2", "3", "4");
+        prior.Select(m => m.Content).Should().Equal("same text", "b");
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_WindowDoesNotEndWithTheMessage_RemovesNothingAndSaysSo()
+    public async Task ReadPriorAsync_AMessageTheConversationDoesNotHold_ReturnsTheLatestAndSaysSo()
     {
-        // Dropping the last message blindly would silently discard real history; the mismatch means a
-        // transport stopped storing the message before reading, which is worth a log line.
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"));
-
-        var prior = await Read(10, Guid.NewGuid());
-
-        prior.Select(m => m.Content).Should().Equal("a", "b");
-        _logger.Warnings.Should().ContainSingle();
-    }
-
-    [Fact]
-    public async Task ReadPriorToAsync_NeverReturnsMoreThanRequestedEvenWhenNothingMatched()
-    {
-        Transcript(Msg(MessageRole.Assistant, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.Assistant, "3"));
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), Msg(MessageRole.User, "c"));
 
         var prior = await Read(2, Guid.NewGuid());
 
-        prior.Select(m => m.Content).Should().Equal("2", "3");
+        prior.Select(m => m.Content).Should().Equal("b", "c");
+        _logger.Warnings.Should().ContainSingle();
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    public async Task ReadPriorToAsync_NonPositiveWindow_ReturnsNothing_NotTheWholeTranscript(int max)
+    public async Task ReadPriorAsync_NonPositiveWindow_ReturnsNothing_NotTheWholeTranscript(int max)
     {
-        // The store defines a non-positive window as none; asking for one more than that must not turn
-        // zero into "the in-flight message", or minus one into something unbounded.
-        var sending = Msg(MessageRole.User, "c");
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
+        var replaced = Msg(MessageRole.User, "c");
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), replaced);
 
-        var prior = await Read(max, sending.Id);
-
-        prior.Should().BeEmpty();
-        _store.Verify(s => s.GetHistoryForDispatch("c1", "u1", 0, It.IsAny<CancellationToken>()), Times.Once);
+        (await Read(max)).Should().BeEmpty();
+        (await Read(max, replaced.Id)).Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_UnboundedWindow_DoesNotOverflowIntoNoHistory()
+    public async Task ReadPriorAsync_UnboundedWindow_ReturnsEverything()
     {
-        // int.MaxValue is a plausible "no limit"; one more than that wraps negative, which the store reads as none.
-        var sending = Msg(MessageRole.User, "c");
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"));
 
-        var prior = await Read(int.MaxValue, sending.Id);
+        var prior = await Read(int.MaxValue);
 
         prior.Select(m => m.Content).Should().Equal("a", "b");
-        _store.Verify(s => s.GetHistoryForDispatch("c1", "u1", int.MaxValue, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_ConversationDoesNotExist_ReturnsEmpty()
+    public async Task ReadPriorAsync_ConversationDoesNotExist_ReturnsEmpty()
     {
         _store
             .Setup(s => s.GetHistoryForDispatch("c1", "u1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IReadOnlyList<ConversationMessage>?)null);
 
+        (await Read(10)).Should().BeEmpty();
         (await Read(10, Guid.NewGuid())).Should().BeEmpty();
     }
 

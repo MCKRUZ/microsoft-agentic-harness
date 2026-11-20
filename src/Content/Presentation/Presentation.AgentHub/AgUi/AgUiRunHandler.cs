@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Security.Claims;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
@@ -281,22 +282,23 @@ public sealed class AgUiRunHandler
     {
         var userMessageText = userMessage.Content!;
 
-        // Persist the user message under the client-supplied id when present so the optimistic
-        // UI message and the server record share the same id. Retry/edit operations reference
-        // this id, so minting a fresh one here would silently desync the client and break them.
-        // Fall back to a server-generated id only when the client omits or sends an invalid id.
+        // Stored under the client-supplied id when present so the optimistic UI message and the server
+        // record share the same id. Retry/edit operations reference this id, so minting a fresh one here
+        // would silently desync the client and break them. Fall back to a server-generated id only when
+        // the client omits or sends an invalid id. Stored once the turn is admitted, not here (#964).
         var userMsg = new ConversationMessage(
             ParseClientId(userMessage.Id),
             MessageRole.User,
             userMessageText,
             DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, userMsg, ct);
+        var admission = new AgentTurnAdmission(
+            admitCt => _conversationStore.AppendMessageAsync(input.ThreadId, callerId, userMsg, admitCt));
 
         // Up to 50 PRIOR messages for dispatch. The hub reads its limit from AgentHubConfig (20 by
         // default); AgUiRunHandler is not wired to that config, so this is its own constant. The message
-        // just appended above is excluded: the turn handler adds it itself (#785).
-        var history = await ConversationDispatchHistory.ReadPriorToAsync(
-            _conversationStore, input.ThreadId, callerId, 50, userMsg.Id, _logger, ct);
+        // being sent is not stored yet, and the turn handler adds it itself (#785).
+        var history = await ConversationDispatchHistory.ReadPriorAsync(
+            _conversationStore, input.ThreadId, callerId, 50, beforeMessageId: null, _logger, ct);
 
         // Counted from the conversation's completed turns, not its message count. Per-turn observability
         // rows are keyed by conversation AND turn number, and the bundle-run path numbers the same
@@ -311,7 +313,7 @@ public sealed class AgUiRunHandler
         var budgetStatus = await _conversationBudget.GetStatusAsync(input.ThreadId, ct);
         if (budgetStatus.IsExhausted)
         {
-            await EmitBudgetExhaustedAsync(writer, input, record.AgentName, callerId, ct);
+            await EmitBudgetExhaustedAsync(writer, input, record.AgentName, ct);
             return;
         }
 
@@ -355,37 +357,43 @@ public sealed class AgUiRunHandler
         var sink = new AgUiTurnStreamSink(writer, messageId);
         var previousSink = AgentTurnStreamSink.Current;
         AgentTurnStreamSink.Current = sink;
-
-        AgentTurnResult result;
+        AdmittedDispatch<AgentTurnResult> dispatched;
         try
         {
-            result = await _mediator.Send(command, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
-        {
-            // Rejected before the model saw it, so nothing was streamed (#959). Every AG-UI run stores its message above.
-            var rejected = await RejectedTurnMessage.RejectAsync(
-                _conversationStore, input.ThreadId, callerId, userMsg.Id, storedForThisTurn: true, ex, _logger);
-            var code = rejected.RemovedMessageId is null ? null : AgUiErrorCodes.MessageRemoved;
-            await writer.WriteAsync(new RunErrorEvent(rejected.ClientMessage, code), ct);
-            return;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
-            if (sink.Started)
-                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-            await writer.WriteAsync(new RunErrorEvent("An error occurred during agent execution."), ct);
-            return;
+            // Closed before anything below is decided, so a turn still screening after a timeout or disconnect cannot
+            // store the message once this run has reported it dropped (#964).
+            dispatched = await admission.DispatchAsync(() => _mediator.Send(command, ct));
         }
         finally
         {
             AgentTurnStreamSink.Current = previousSink;
         }
+
+        // Whether the store holds the message decides the error code, not the exception type: a run that was not
+        // admitted stored nothing, and the client drops the message it shows.
+        var removedCode = dispatched.Admitted ? null : AgUiErrorCodes.MessageRemoved;
+
+        if (dispatched.Failure is { } failure)
+        {
+            if (failure is OperationCanceledException)
+                ExceptionDispatchInfo.Throw(failure);
+
+            var rejected = RejectedTurnMessage.IsRejection(failure);
+            if (rejected)
+                _logger.LogWarning(failure, "AG-UI run {RunId}: turn rejected.", input.RunId);
+            else
+                _logger.LogError(failure, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
+
+            if (sink.Started)
+                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
+            var clientMessage = rejected
+                ? RejectedTurnMessage.ClientMessageFor(failure)
+                : "An error occurred during agent execution.";
+            await writer.WriteAsync(new RunErrorEvent(clientMessage, removedCode), ct);
+            return;
+        }
+
+        var result = dispatched.Result!;
 
         // Before the outcome is looked at: a failed or cancelled turn still spent.
         await _conversationBudget.RecordTurnUsageAsync(input.ThreadId, result, _logger);
@@ -414,7 +422,7 @@ public sealed class AgUiRunHandler
 
             if (sink.Started)
                 await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-            await writer.WriteAsync(new RunErrorEvent(message), ct);
+            await writer.WriteAsync(new RunErrorEvent(message, removedCode), ct);
             return;
         }
 
@@ -460,11 +468,18 @@ public sealed class AgUiRunHandler
 
     /// <summary>
     /// Emits the graceful "budget exhausted" turn over the AG-UI protocol: a normal assistant text
-    /// message (not a RunErrorEvent) carrying the explanatory text, persisted under a stable id, then
-    /// <c>RunFinished</c>. No LLM is dispatched.
+    /// message (not a RunErrorEvent) carrying the explanatory text, then <c>RunFinished</c>. No LLM is
+    /// dispatched.
     /// </summary>
+    /// <remarks>
+    /// Nothing is stored (#964): the turn was never admitted, so its message was never screened, and a
+    /// stored message would replay as history once the budget comes back. The notice is left out too,
+    /// so the conversation stays as it was. AG-UI has no frame that tells a client to drop a message
+    /// from a run that finished, so the client keeps showing the message it sent until it reloads the
+    /// conversation; the conversation itself cannot take another turn until the budget is raised.
+    /// </remarks>
     private async Task EmitBudgetExhaustedAsync(
-        IAgUiEventWriter writer, RunAgentInput input, string agentName, string callerId, CancellationToken ct)
+        IAgUiEventWriter writer, RunAgentInput input, string agentName, CancellationToken ct)
     {
         var message = Services.ConversationBudgetNotice.Message;
 
@@ -474,15 +489,10 @@ public sealed class AgUiRunHandler
         OrchestrationMetrics.ConversationsBudgetStopped.Add(
             1, new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
 
-        var assistantId = Guid.NewGuid();
-        var messageId = assistantId.ToString();
+        var messageId = Guid.NewGuid().ToString();
         await writer.WriteAsync(new TextMessageStartEvent(messageId, "assistant"), ct);
         await writer.WriteAsync(new TextMessageContentEvent(messageId, message), ct);
         await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
-
-        var assistantMsg = new ConversationMessage(
-            assistantId, MessageRole.Assistant, message, DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, assistantMsg, ct);
 
         await writer.WriteAsync(new RunFinishedEvent(input.ThreadId, input.RunId), ct);
     }
