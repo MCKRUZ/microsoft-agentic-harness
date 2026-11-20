@@ -110,6 +110,10 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		_logger.LogInformation("Executing turn {TurnNumber} for agent {AgentName}",
 			request.TurnNumber, request.AgentName);
 
+		// Every request check has passed by the time the handler runs, so this is where a transport's message is
+		// stored (#964). First, before either branch below, so no path runs the model on an unstored message.
+		await AgentTurnAdmission.AdmitCurrentAsync(cancellationToken);
+
 		// Hoisted above the try so a failure caught below still reports which skill(s) this turn was
 		// attempting to run under (#695) — attribution matters for a failed outcome too, not only a
 		// successful one. Stays empty if the turn fails before resolution reaches it.

@@ -27,26 +27,29 @@ public interface IConversationOrchestrator
         string conversationId, ConversationSettings settings, string callerId, CancellationToken ct);
 
     /// <summary>
-    /// Appends a user message and dispatches an agent turn. Streams response chunks via
-    /// <paramref name="onChunk"/> if provided. Acquires the per-conversation lock.
+    /// Dispatches an agent turn for a user message, storing the message only once the turn is admitted:
+    /// after every request check has passed (#964). A turn refused or failed before that stores nothing,
+    /// and the outcome names the message in <see cref="TurnOutcome.RemovedMessageId"/>. Streams response
+    /// chunks via <paramref name="onChunk"/> if provided. Acquires the per-conversation lock.
     /// </summary>
     Task<TurnOutcome> SendMessageAsync(
         string sessionKey, string conversationId, Guid userMessageId, string message, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct);
 
     /// <summary>
-    /// Truncates from the specified assistant message and re-dispatches the preceding user message.
+    /// Re-dispatches the user message preceding the specified assistant message. The old answer is
+    /// removed only once the turn is admitted (#964): a retry refused by an unavailable screening
+    /// service keeps it, while one refused by a screening verdict also removes the user message.
     /// </summary>
     /// <param name="onHistoryTruncated">
-    /// Invoked once with the surviving message count immediately after truncation, BEFORE
-    /// dispatching the retried turn — so a caller streaming <paramref name="onChunk"/> can tell a
-    /// client to drop its stale local tail before any of this turn's own deltas arrive. Emitting
-    /// the truncation signal only after the turn completes (via the returned
-    /// <see cref="TurnOutcome.HistoryKeepCount"/>) would let a client append this turn's streamed
-    /// response onto its still-untruncated message list first — the ordering bug this parameter
-    /// exists to prevent (#328). A failure calling this delegate is caught and logged by the
-    /// implementation, never propagated — the truncation it announces has already committed
-    /// durably, so a failed notification must not abort the turn.
+    /// Invoked once with the surviving message count when the truncation commits at admission, BEFORE
+    /// the model runs — so a caller streaming <paramref name="onChunk"/> can tell a client to drop its
+    /// stale local tail before any of this turn's own deltas arrive. Emitting the truncation signal
+    /// only after the turn completes (via the returned <see cref="TurnOutcome.HistoryKeepCount"/>)
+    /// would let a client append this turn's streamed response onto its still-untruncated message
+    /// list first — the ordering bug this parameter exists to prevent (#328). A failure calling this
+    /// delegate, a cancellation included, is caught and logged, never propagated: the truncation it
+    /// announces has already committed durably.
     /// </param>
     Task<TurnOutcome> RetryFromMessageAsync(
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
@@ -54,11 +57,13 @@ public interface IConversationOrchestrator
         Func<int, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
-    /// Truncates from the specified user message, appends edited content, and re-dispatches.
+    /// Replaces the specified user message, and everything after it, with the edited content and
+    /// re-dispatches. The replacement happens only once the turn is admitted (#962, #964): a refused
+    /// edit leaves the conversation as it was.
     /// </summary>
     /// <param name="onHistoryTruncated">
-    /// Invoked once with the surviving message count, after the edited message is durably appended
-    /// and immediately before dispatching the resubmitted turn — see
+    /// Invoked once with the surviving message count, at admission after the edited message is durably
+    /// appended, before the model runs — see
     /// <see cref="RetryFromMessageAsync"/>'s remarks on this parameter for why the ordering
     /// relative to dispatch matters, and on why a delegate failure is caught rather than propagated.
     /// The append happens first here specifically (unlike <see cref="RetryFromMessageAsync"/>, which

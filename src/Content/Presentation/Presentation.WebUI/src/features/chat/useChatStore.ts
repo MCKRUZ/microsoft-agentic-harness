@@ -29,9 +29,10 @@ interface ChatState {
   error: string | null;
   /**
    * The edited user message awaiting re-insertion after a server-driven history truncation.
-   * EditAndResubmit truncates the old user message (and everything after) via HistoryTruncated;
-   * this holds the replacement so {@link truncateAfter} can re-insert it in the same step,
-   * keeping the local transcript consistent without waiting for a reload.
+   * EditAndResubmit truncates the old user message (and everything after) via HistoryTruncated,
+   * which the server sends only once the edit is admitted; this holds the replacement so
+   * {@link truncateAfter} can re-insert it in the same step. A refused or declined edit sends no
+   * truncation, so the turn's Error or TurnComplete clears it and the original stays (#962).
    */
   pendingEditMessage: ChatMessage | null;
   setConversationId: (id: string) => void;
@@ -96,6 +97,8 @@ export const useChatStore = create<ChatState>()((set) => ({
       isStreaming: false,
       streamingContent: '',
       messages: messages.length > 200 ? messages.slice(-200) : messages,
+      // An admitted edit consumed this on HistoryTruncated; a declined one (a spent budget) never will (#964).
+      pendingEditMessage: null,
     };
   }),
   resetStreaming: () => set({ isStreaming: false, streamingContent: '' }),

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services;
 using Application.AI.Common.Services.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
@@ -119,8 +120,18 @@ public sealed class AgUiRunHandlerTests
         store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(result);
+                .Returns(() => Admitted(result));
         return (mediator, store);
+    }
+
+    /// <summary>
+    /// Stands in for the turn handler: admits the turn, which stores the caller's message (#964), then returns
+    /// <paramref name="result"/>. A mock that skips this is a turn the pipeline stopped before the handler.
+    /// </summary>
+    private static async Task<AgentTurnResult> Admitted(AgentTurnResult result)
+    {
+        await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+        return result;
     }
 
     /// <summary>
@@ -205,7 +216,7 @@ public sealed class AgUiRunHandlerTests
         ExecuteAgentTurnCommand? dispatched = null;
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .Callback<object, CancellationToken>((c, _) => dispatched = (ExecuteAgentTurnCommand)c)
-                .ReturnsAsync(MakeSuccessResult("ok"));
+                .Returns(() => Admitted(MakeSuccessResult("ok")));
 
         var handler = BuildHandler(mediator, store);
 
@@ -507,7 +518,7 @@ public sealed class AgUiRunHandlerTests
         store.Setup(s => s.AppendMessageAsync(threadId, sub, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(MakeSuccessResult("Hello."));
+                .Returns(() => Admitted(MakeSuccessResult("Hello.")));
 
         var handler = BuildHandler(mediator, store);
 
@@ -583,48 +594,69 @@ public sealed class AgUiRunHandlerTests
 
     [Theory]
     [MemberData(nameof(RejectionCases.All), MemberType = typeof(RejectionCases))]
-    public async Task HandleRunAsync_RejectedBeforeDispatch_RemovesTheStoredMessageAndReportsTheRefusal(Exception refusal, string toldTheCaller)
+    public async Task HandleRunAsync_RejectedBeforeAdmission_StoresNothingAndTellsTheClientToDropIt(Exception refusal, string toldTheCaller)
     {
-        // #959: the user message is appended before the turn runs, and the next run reads history back from the
-        // store unscreened. A refused message left in the store reaches the model on the caller's next run.
-        const string threadId = "conv-refused";
-        const string userId = "user-1";
-        var userMessageId = Guid.NewGuid();
-
-        var mediator = new Mock<IMediator>();
-        var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
-             .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
-             .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
-             .Returns(Task.CompletedTask);
+        // #959, #964: the next run reads history back from the store unscreened, so a refused message must never be
+        // stored. It is stored only once the turn is admitted, so a refusal has nothing to remove. The client shows the
+        // message from the moment it is sent, and the code tells it to drop it (#1036).
+        var (mediator, store) = SetupRefusableTurn();
+        const string threadId = RefusedThread, userId = RefusedUser;
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(refusal);
 
-        var handler = BuildHandler(mediator, store);
+        var frames = await RunAsync(mediator, store, threadId, userId);
 
-        using var ms = new MemoryStream();
-        await handler.HandleRunAsync(
-            MakeInput(threadId, "refused text", userMessageId.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
-
-        var frames = ParseSseFrames(ms);
         RunErrorMessage(frames).Should().Be(toldTheCaller, "a rejection is reported as one, not as an error");
+        RunErrorCode(frames).Should().Be(AgUiErrorCodes.MessageRemoved);
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
-        store.Verify(s => s.TruncateFromMessageAsync(threadId, userId, userMessageId, It.IsAny<CancellationToken>()),
-            Times.Once, "the refused message is removed from the store it was appended to");
+        store.Verify(s => s.AppendMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never, "nothing of a turn that was never admitted is stored");
+        store.Verify(s => s.TruncateFromMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Never, "there is nothing to remove");
     }
 
-    [Theory]
-    [InlineData(true, AgUiErrorCodes.MessageRemoved)]
-    [InlineData(false, null)]
-    public async Task HandleRunAsync_RejectedBeforeDispatch_CodesTheErrorOnlyWhenTheStoreDroppedTheMessage(
-        bool storeDropsIt, string? expectedCode)
+    [Fact]
+    public async Task HandleRunAsync_FailureBeforeAdmission_StoresNothingAndTellsTheClientToDropIt()
     {
-        // #1036: the client shows the message before the run starts. The code tells it to drop that message; sent when
-        // the store kept it, the client would hide a message the conversation still holds.
-        const string threadId = "conv-refused";
-        const string userId = "user-1";
+        // A failure before screening (identity, a timeout) used to leave the message stored and replayed unscreened.
+        var (mediator, store) = SetupRefusableTurn();
+        const string threadId = RefusedThread, userId = RefusedUser;
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new TimeoutException());
+
+        var frames = await RunAsync(mediator, store, threadId, userId);
+
+        RunErrorCode(frames).Should().Be(AgUiErrorCodes.MessageRemoved);
+        store.Verify(s => s.AppendMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_RejectedAfterAdmission_KeepsTheMessageAndSendsNoCode()
+    {
+        // An output-side block raised after the model answered must not hide a message the conversation still holds.
+        var (mediator, store) = SetupRefusableTurn();
+        const string threadId = RefusedThread, userId = RefusedUser;
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .Returns(async () =>
+                {
+                    await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+                    throw new ContentSafetyException("Response contained harmful content.", "violence");
+                });
+
+        var frames = await RunAsync(mediator, store, threadId, userId);
+
+        RunErrorCode(frames).Should().BeNull();
+        store.Verify(s => s.AppendMessageAsync(threadId, userId,
+            It.Is<ConversationMessage>(m => m.Role == MessageRole.User), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private const string RefusedThread = "conv-refused";
+    private const string RefusedUser = "user-1";
+
+    private static (Mock<IMediator> Mediator, Mock<IConversationStore> Store) SetupRefusableTurn()
+    {
+        const string threadId = RefusedThread, userId = RefusedUser;
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
         store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
@@ -633,21 +665,22 @@ public sealed class AgUiRunHandlerTests
              .ReturnsAsync([]);
         store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
-        var truncate = store.Setup(s => s.TruncateFromMessageAsync(threadId, userId, It.IsAny<Guid>(), It.IsAny<CancellationToken>()));
-        if (storeDropsIt)
-            truncate.ReturnsAsync(MakeRecord(threadId, userId));
-        else
-            truncate.ThrowsAsync(new IOException("disk"));
-        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new ContentSafetyException("blocked", "hate"));
+        return (mediator, store);
+    }
 
+    private async Task<List<JsonDocument>> RunAsync(
+        Mock<IMediator> mediator, Mock<IConversationStore> store, string threadId, string userId)
+    {
         using var ms = new MemoryStream();
         await BuildHandler(mediator, store).HandleRunAsync(
             MakeInput(threadId, "refused text", Guid.NewGuid().ToString()), new AgUiEventWriter(ms), MakeUser(userId));
+        return ParseSseFrames(ms);
+    }
 
-        var error = ParseSseFrames(ms).Single(f => EventType(f) == AgUiEventType.RunError);
-        var code = error.RootElement.TryGetProperty("code", out var c) ? c.GetString() : null;
-        code.Should().Be(expectedCode);
+    private static string? RunErrorCode(IEnumerable<JsonDocument> frames)
+    {
+        var error = frames.Single(f => EventType(f) == AgUiEventType.RunError);
+        return error.RootElement.TryGetProperty("code", out var c) ? c.GetString() : null;
     }
 
     [Fact]
@@ -686,6 +719,10 @@ public sealed class AgUiRunHandlerTests
         mediator.Verify(
             m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never,
             "no LLM turn should be dispatched once the conversation budget is exhausted");
+
+        // #964: the message was never screened, so storing it would replay it once the budget comes back.
+        store.Verify(s => s.AppendMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationMessage>(),
+            It.IsAny<CancellationToken>()), Times.Never, "neither the message nor the notice is stored");
     }
 
     [Fact]
@@ -785,8 +822,8 @@ public sealed class AgUiRunHandlerTests
     [Fact]
     public async Task HandleRunAsync_TheMessageBeingSent_IsNotAlsoInTheDispatchedHistory()
     {
-        // #785: the user message is appended before the history window is read, so the window ends with
-        // it; the turn handler adds it again. Dispatching the window as-is sent it to the model twice.
+        // #785: the turn handler adds the user message itself. #964: it is stored only once the turn is admitted,
+        // so the window read before dispatch holds only what came before it.
         const string threadId = "conv-once";
         const string userId = "user-once";
         var sending = Guid.NewGuid();
@@ -794,17 +831,16 @@ public sealed class AgUiRunHandlerTests
         {
             new(Guid.NewGuid(), MessageRole.User, "earlier", DateTimeOffset.UtcNow),
             new(Guid.NewGuid(), MessageRole.Assistant, "reply", DateTimeOffset.UtcNow),
-            new(sending, MessageRole.User, "Hi", DateTimeOffset.UtcNow),
         };
         var (mediator, store) = SetupTurn(threadId, userId, MakeSuccessResult("ok"));
-        // The window as the real store answers it: the last N of a transcript that already holds "Hi".
+        // The window as the real store answers it: the last N of what is stored.
         store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
                 (IReadOnlyList<ConversationMessage>?)transcript.TakeLast(Math.Max(0, n)).ToList());
         ExecuteAgentTurnCommand? sent = null;
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .Callback<IRequest<AgentTurnResult>, CancellationToken>((c, _) => sent = (ExecuteAgentTurnCommand)c)
-            .ReturnsAsync(MakeSuccessResult("ok"));
+            .Returns(() => Admitted(MakeSuccessResult("ok")));
         var handler = BuildHandler(mediator, store);
 
         using var ms = new MemoryStream();
@@ -990,7 +1026,7 @@ public sealed class AgUiRunHandlerTests
              .Returns(Task.CompletedTask);
 
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(MakeSuccessResult(agentResponse));
+                .Returns(() => Admitted(MakeSuccessResult(agentResponse)));
 
         var budget = new Mock<IConversationBudgetTracker>();
         budget
@@ -1160,7 +1196,7 @@ public sealed class AgUiRunHandlerTests
              .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(MakeSuccessResult("reply"));
+                .Returns(() => Admitted(MakeSuccessResult("reply")));
 
         var handler = BuildHandler(mediator, store);
 
@@ -1190,7 +1226,7 @@ public sealed class AgUiRunHandlerTests
              .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(MakeSuccessResult("reply"));
+                .Returns(() => Admitted(MakeSuccessResult("reply")));
 
         var handler = BuildHandler(mediator, store);
 
@@ -1220,7 +1256,7 @@ public sealed class AgUiRunHandlerTests
              .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(MakeSuccessResult("assistant reply"));
+                .Returns(() => Admitted(MakeSuccessResult("assistant reply")));
 
         var handler = BuildHandler(mediator, store);
 

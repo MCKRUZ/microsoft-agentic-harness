@@ -647,8 +647,10 @@ public class ConversationOrchestratorTests
     }
 
     [Fact]
-    public async Task SendMessage_MediatorThrows_AppendsSyntheticErrorMessage()
+    public async Task SendMessage_MediatorThrowsAfterAdmission_AppendsSyntheticErrorMessage()
     {
+        // After admission the message is stored, so the failed turn gets its error row. Before admission nothing is
+        // stored at all (ScreeningRefusalReplayTests).
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -658,7 +660,11 @@ public class ConversationOrchestratorTests
             .ReturnsAsync(Guid.NewGuid());
 
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new Exception("boom"));
+            .Returns(async () =>
+            {
+                await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+                throw new Exception("boom");
+            });
 
         var orchestrator = CreateOrchestrator();
 
@@ -781,13 +787,12 @@ public class ConversationOrchestratorTests
         new(id ?? Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
 
     /// <summary>
-    /// A store whose history window behaves like the real one: the last N messages of a transcript that
-    /// ALREADY contains the user message being sent. A stub that returned an empty window is what let
-    /// the message be sent twice unnoticed.
+    /// A store whose history window behaves like the real one: the last N messages of what is stored. The
+    /// message being sent is not in it: it is stored only once the turn is admitted (#964).
     /// </summary>
     private void ArrangeTranscript(IReadOnlyList<ConversationMessage> transcript)
     {
-        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, transcript);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
@@ -804,24 +809,40 @@ public class ConversationOrchestratorTests
         ExecuteAgentTurnCommand? sent = null;
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .Callback<IRequest<AgentTurnResult>, CancellationToken>((c, _) => sent = (ExecuteAgentTurnCommand)c)
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "ok", UpdatedHistory = [] });
+            .Returns(() => Admitted("ok"));
         return () => sent!;
+    }
+
+    /// <summary>Stands in for the turn handler letting the turn through: admission, then the result.</summary>
+    private static async Task<AgentTurnResult> Admitted(string response)
+    {
+        await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+        return new AgentTurnResult { Success = true, Response = response, UpdatedHistory = [] };
     }
 
     [Fact]
     public async Task SendMessage_TheMessageBeingSent_IsNotAlsoInTheDispatchedHistory()
     {
-        // The user message is appended before the window is read, so the window ends with it; the turn
-        // handler adds the message again. Dispatching the window as-is sent it to the model twice.
+        // The turn handler adds the message itself (#785); it is stored only once the turn is admitted (#964), so
+        // the history read before dispatch holds only what came before it.
         var sending = Guid.NewGuid();
-        ArrangeTranscript([Msg(MessageRole.User, "earlier"), Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Hello", sending)]);
-        var sent = CaptureDispatchedCommand();
+        ArrangeTranscript([Msg(MessageRole.User, "earlier"), Msg(MessageRole.Assistant, "reply")]);
+        var appendsBeforeDispatch = -1;
+        ExecuteAgentTurnCommand? sent = null;
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns<IRequest<AgentTurnResult>, CancellationToken>((command, _) =>
+            {
+                sent = (ExecuteAgentTurnCommand)command;
+                appendsBeforeDispatch = _store.Invocations.Count(i => i.Method.Name == nameof(IConversationStore.AppendMessageAsync));
+                return Admitted("ok");
+            });
 
         await CreateOrchestrator().SendMessageAsync(
             "conn1", "c1", sending, "Hello", "user1", null, CancellationToken.None);
 
-        sent().UserMessage.Should().Be("Hello");
-        sent().ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");
+        appendsBeforeDispatch.Should().Be(0, "nothing is stored before the turn is admitted");
+        sent!.UserMessage.Should().Be("Hello");
+        sent.ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");
     }
 
     [Fact]
@@ -831,7 +852,6 @@ public class ConversationOrchestratorTests
         // is MaxHistoryMessages of PRIOR messages (20), not 20 including the one being sent.
         var sending = Guid.NewGuid();
         var transcript = Enumerable.Range(1, 30).Select(i => Msg(MessageRole.Assistant, $"m{i}")).ToList();
-        transcript.Add(Msg(MessageRole.User, "Hello", sending));
         ArrangeTranscript(transcript);
         var sent = CaptureDispatchedCommand();
 
@@ -845,11 +865,14 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task RetryFromMessage_TheRetriedMessage_IsNotAlsoInTheDispatchedHistory()
     {
-        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Original")]);
+        // The old answer is still stored until admission, so the history stops before the retried message.
+        var oldAnswer = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Original"),
+            Msg(MessageRole.Assistant, "old answer", oldAnswer)]);
         var sent = CaptureDispatchedCommand();
 
         await CreateOrchestrator().RetryFromMessageAsync(
-            "conn1", "c1", Guid.NewGuid(), "user1", null, CancellationToken.None);
+            "conn1", "c1", oldAnswer, "user1", null, CancellationToken.None);
 
         sent().UserMessage.Should().Be("Original");
         sent().ConversationHistory.Select(m => m.Text).Should().Equal("reply");
@@ -858,12 +881,14 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task EditAndResubmit_TheEditedMessage_IsNotAlsoInTheDispatchedHistory()
     {
-        var edited = Guid.NewGuid();
-        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "New content", edited)]);
+        // The original and its answer are still stored until admission, so the history stops before the original.
+        var original = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Original", original),
+            Msg(MessageRole.Assistant, "old answer")]);
         var sent = CaptureDispatchedCommand();
 
         await CreateOrchestrator().EditAndResubmitAsync(
-            "conn1", "c1", Guid.NewGuid(), edited, "New content", "user1", null, CancellationToken.None);
+            "conn1", "c1", original, Guid.NewGuid(), "New content", "user1", null, CancellationToken.None);
 
         sent().UserMessage.Should().Be("New content");
         sent().ConversationHistory.Select(m => m.Text).Should().Equal("reply");
@@ -887,7 +912,7 @@ public class ConversationOrchestratorTests
             .ReturnsAsync(Guid.NewGuid());
 
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+            .Returns(() => Admitted("Retried"));
 
         var orchestrator = CreateOrchestrator();
         var outcome = await orchestrator.RetryFromMessageAsync(
@@ -918,9 +943,11 @@ public class ConversationOrchestratorTests
 
         var events = new List<string>();
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() =>
+            .Returns(async () =>
             {
-                events.Add("dispatch"); // the model call itself happens strictly after truncation
+                // The truncation, and its notice, happen when the handler admits the turn: before the model runs.
+                await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+                events.Add("dispatch");
                 return new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] };
             });
 
@@ -933,7 +960,7 @@ public class ConversationOrchestratorTests
 
         outcome.HistoryKeepCount.Should().Be(1);
         events.Should().StartWith("truncated:1",
-            "onHistoryTruncated must fire before the turn (and therefore before any streamed delta) dispatches");
+            "onHistoryTruncated must fire at admission, before the model runs and any delta streams");
     }
 
     [Fact]
@@ -967,7 +994,7 @@ public class ConversationOrchestratorTests
             .ReturnsAsync(Guid.NewGuid());
 
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Edited", UpdatedHistory = [] });
+            .Returns(() => Admitted("Edited"));
 
         var orchestrator = CreateOrchestrator();
         var outcome = await orchestrator.EditAndResubmitAsync(
@@ -994,7 +1021,7 @@ public class ConversationOrchestratorTests
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Edited", UpdatedHistory = [] });
+            .Returns(() => Admitted("Edited"));
 
         var events = new List<string>();
         _store.Setup(s => s.AppendMessageAsync("c1", "user1", It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
@@ -1030,7 +1057,7 @@ public class ConversationOrchestratorTests
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+            .Returns(() => Admitted("Retried"));
 
         var orchestrator = CreateOrchestrator();
         var outcome = await orchestrator.RetryFromMessageAsync(
@@ -1043,35 +1070,11 @@ public class ConversationOrchestratorTests
     }
 
     [Fact]
-    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationMatchingCt_PropagatesRatherThanSwallowed()
+    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellation_IsSwallowed()
     {
-        // A cancellation matching the turn's own token means the client's connection is gone —
-        // there is no one left to stream deltas to, so unlike a generic transport failure this must
-        // propagate and abort rather than be swallowed.
-        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
-        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        var orchestrator = CreateOrchestrator();
-        var act = () => orchestrator.RetryFromMessageAsync(
-            "conn1", "c1", Guid.NewGuid(), "user1",
-            onChunk: null, cts.Token,
-            onHistoryTruncated: (_, ct) => throw new OperationCanceledException(ct));
-
-        await act.Should().ThrowAsync<OperationCanceledException>();
-    }
-
-    [Fact]
-    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationFromUnrelatedToken_IsSwallowed()
-    {
-        // A cancellation from some OTHER token (an internal timeout, not the turn's own connection
-        // token going away) must be swallowed like any other transient notification failure, not
-        // treated as this turn's own disconnect.
+        // The notice runs inside the turn's admission, after the truncation committed (#964). A cancellation escaping
+        // it would report the turn as never admitted, and the client would drop a message the store already changed.
+        // A real disconnect still ends the turn through the turn's own token, after admission.
         var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
@@ -1082,7 +1085,7 @@ public class ConversationOrchestratorTests
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+            .Returns(() => Admitted("Retried"));
 
         using var unrelatedCts = new CancellationTokenSource();
         unrelatedCts.Cancel();

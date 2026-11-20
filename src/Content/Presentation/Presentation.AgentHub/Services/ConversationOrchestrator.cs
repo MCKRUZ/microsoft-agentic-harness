@@ -150,55 +150,41 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 
         return await WithTurnLeaseAsync(conversationId, async leased =>
         {
-            var turnCt = leased.Token;
             var userMsg = new ConversationMessage(
                 userMessageId == Guid.Empty ? Guid.NewGuid() : userMessageId,
                 MessageRole.User, message, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, turnCt);
 
-            return await DispatchTurnAsync(
-                sessionKey, conversationId, message, userMsg.Id, storedForThisTurn: true, callerId, onChunk, leased, turnCt);
+            // Stored once the turn is admitted, not here: see AgentTurnAdmission (#964).
+            var pending = new PendingTurn(
+                message, NewMessageId: userMsg.Id, ReplacesFromId: null, RetriedMessageId: null,
+                OnAdmitted: admitCt => _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, admitCt));
+
+            return await DispatchTurnAsync(sessionKey, conversationId, pending, callerId, onChunk, leased, leased.Token);
         }, ct);
     }
 
     /// <summary>
     /// Invokes <paramref name="onHistoryTruncated"/>, if provided, with the surviving message
-    /// count — swallowing (and logging) any exception it throws, EXCEPT a cancellation matching
-    /// <paramref name="ct"/> itself, which is let through rather than swallowed.
+    /// count — swallowing (and logging) any exception it throws, a cancellation included.
     /// </summary>
     /// <remarks>
     /// The truncation this signals has already committed durably in <see cref="_conversationStore"/>
-    /// by the time this runs. A generic transport failure delivering the notice (a slow client, a
-    /// transient send error) must not abort the turn that follows — the caller already dispatched
-    /// the store mutation that made this notice worth sending, so treating the notice itself as
-    /// best-effort is what keeps that kind of hiccup from turning a durable truncation into a turn
-    /// that never dispatches and a user message that silently vanishes.
-    /// <para>
-    /// A cancellation is different: it means the client's own connection is gone, not that the send
-    /// merely failed. There is no one left to stream deltas to, so letting it propagate and abort —
-    /// rather than swallowing it and dispatching a turn for a vanished client — is the routine
-    /// disconnect handling this codebase already uses elsewhere (see <c>DispatchTurnAsync</c>'s
-    /// <c>OperationCanceledException when (ct.IsCancellationRequested)</c> handling).
-    /// </para>
-    /// See #328 (why this fires before dispatch, not after) and its follow-up hardening (this
-    /// swallow, and the ordering of this call relative to any local mutation that must NOT be
-    /// reported as done before it actually is).
+    /// by the time this runs, inside the turn's admission (#964). An exception escaping from here
+    /// would fail the admission and report the turn as never admitted, so the client would be told to
+    /// drop a message the store already changed. A disconnect still ends the turn: the turn's own token
+    /// is cancelled, and the run stops on it after admission. The notice is sent without that token
+    /// so a disconnect cannot interrupt it halfway. See #328 for why it fires before dispatch.
     /// </remarks>
-    private async Task SignalHistoryTruncatedAsync(
-        Func<int, CancellationToken, Task>? onHistoryTruncated, int keepCount, CancellationToken ct)
+    private async Task SignalHistoryTruncatedAsync(Func<int, CancellationToken, Task>? onHistoryTruncated, int keepCount)
     {
         if (onHistoryTruncated is null) return;
 
         try
         {
-            await onHistoryTruncated(keepCount, ct);
+            await onHistoryTruncated(keepCount, CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (Exception ex)
         {
-            // The filter checks ct.IsCancellationRequested, not just the exception's type: an
-            // OperationCanceledException from some OTHER token (an internal timeout, not this
-            // turn's own connection going away) must still be swallowed like any other transient
-            // failure — only a cancellation that actually matches ct signals a real disconnect.
             _logger.LogWarning(ex,
                 "Failed to notify the client of a history truncation to {KeepCount} messages — " +
                 "the truncation itself already committed and the turn continues.", keepCount);
@@ -218,26 +204,28 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 
         return await WithTurnLeaseAsync(conversationId, async leased =>
         {
-            var turnCt = leased.Token;
-            var truncated = await _conversationStore.TruncateFromMessageAsync(
-                    conversationId, callerId, assistantMessageId, turnCt)
+            var record = await _conversationStore.GetAsync(conversationId, callerId, leased.Token)
                 ?? throw new InvalidOperationException("Conversation not found.");
+            var retried = PrecedingUserMessage(record.Messages, assistantMessageId)
+                ?? throw new InvalidOperationException(ConversationRetryNotice.NoPrecedingUserMessage);
 
-            var last = truncated.Messages.LastOrDefault();
-            if (last is null || last.Role != MessageRole.User)
-                throw new InvalidOperationException(ConversationRetryNotice.NoPrecedingUserMessage);
+            // The old answer is dropped once the turn is admitted, not before: a retry refused by screening keeps it
+            // (#964, the retry sibling of #962). The client is told at that moment, before this turn's deltas (#328).
+            int? keptOnAdmission = null;
+            var pending = new PendingTurn(
+                retried.Content, NewMessageId: null, ReplacesFromId: retried.Id, RetriedMessageId: retried.Id,
+                OnAdmitted: async admitCt =>
+                {
+                    var truncated = await _conversationStore.TruncateFromMessageAsync(
+                            conversationId, callerId, assistantMessageId, admitCt)
+                        ?? throw new InvalidOperationException("Conversation not found.");
+                    keptOnAdmission = truncated.Messages.Count;
+                    await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count);
+                },
+                OnHistoryTruncated: onHistoryTruncated);
 
-            // Signal the truncation BEFORE dispatching — see the interface's remarks (#328): a
-            // caller streaming onChunk must be able to tell its client to drop the stale local
-            // tail before this turn's own deltas arrive, not after the whole turn completes.
-            await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
-
-            var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, last.Content, last.Id, storedForThisTurn: false, callerId, onChunk, leased, turnCt);
-
-            // A refusal can remove the retried message, the last one the truncation kept (#1036).
-            var kept = outcome.RemovedMessageId == last.Id ? truncated.Messages.Count - 1 : truncated.Messages.Count;
-            return outcome with { HistoryKeepCount = kept };
+            var outcome = await DispatchTurnAsync(sessionKey, conversationId, pending, callerId, onChunk, leased, leased.Token);
+            return keptOnAdmission is { } kept ? outcome with { HistoryKeepCount = kept } : outcome;
         }, ct);
     }
 
@@ -255,28 +243,47 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 
         return await WithTurnLeaseAsync(conversationId, async leased =>
         {
-            var turnCt = leased.Token;
-            var truncated = await _conversationStore.TruncateFromMessageAsync(
-                    conversationId, callerId, userMessageId, turnCt)
-                ?? throw new InvalidOperationException("Conversation not found.");
-
             var newUserMsg = new ConversationMessage(
                 newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
                 MessageRole.User, newContent, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, turnCt);
 
-            // The new user message is appended BEFORE the truncation notice goes out, not after:
-            // the notice is what the client acts on (it optimistically re-inserts the edited
-            // message), so telling it "truncated to N" before the edit itself is durably stored
-            // would let a subsequent AppendMessageAsync failure leave the client showing an edit
-            // the server never persisted, with nothing to roll it back. Still before dispatch —
-            // see RetryFromMessageAsync's comment and the interface's remarks (#328) for why.
-            await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
+            // The original and everything after it are replaced once the turn is admitted, not before: an edit refused
+            // by screening, a verdict or an outage, leaves the conversation as it was (#962, #964).
+            int? keptOnAdmission = null;
+            var pending = new PendingTurn(
+                newContent, NewMessageId: newUserMsg.Id, ReplacesFromId: userMessageId, RetriedMessageId: null,
+                OnAdmitted: async admitCt =>
+                {
+                    var truncated = await _conversationStore.TruncateFromMessageAsync(
+                            conversationId, callerId, userMessageId, admitCt)
+                        ?? throw new InvalidOperationException("Conversation not found.");
 
-            var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, newContent, newUserMsg.Id, storedForThisTurn: true, callerId, onChunk, leased, turnCt);
+                    // Not cancellable once the original is gone: a disconnect here must not leave the conversation
+                    // with neither the original nor the edit. A store failure still can, until the store offers one
+                    // atomic replace (#1049); it is logged as the data loss it is, not just as a failed turn.
+                    try
+                    {
+                        await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex,
+                            "Edit on conversation {ConversationId} removed message {OriginalMessageId} and everything after " +
+                            "it, then failed to store the edit; the conversation now holds {KeptCount} messages and neither " +
+                            "the original nor the edit (#1049).",
+                            conversationId, userMessageId, truncated.Messages.Count);
+                        throw;
+                    }
 
-            return outcome with { HistoryKeepCount = truncated.Messages.Count };
+                    keptOnAdmission = truncated.Messages.Count;
+
+                    // After the edit is stored: the client re-inserts the edit on this notice, so sending it first could
+                    // leave the client showing an edit the server never stored. Before this turn's deltas (#328).
+                    await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count);
+                });
+
+            var outcome = await DispatchTurnAsync(sessionKey, conversationId, pending, callerId, onChunk, leased, leased.Token);
+            return keptOnAdmission is { } kept ? outcome with { HistoryKeepCount = kept } : outcome;
         }, ct);
     }
 

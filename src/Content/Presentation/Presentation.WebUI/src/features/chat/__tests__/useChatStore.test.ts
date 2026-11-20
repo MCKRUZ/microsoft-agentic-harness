@@ -64,6 +64,17 @@ describe('useChatStore', () => {
     expect(state.pendingEditMessage).toBeNull();
   });
 
+  it('finalizeStream clears an edit that was never admitted', () => {
+    // #964: an edit declined for a spent budget completes without HistoryTruncated, so nothing else would consume it.
+    useChatStore.setState({
+      pendingEditMessage: { id: 'u-new', role: 'user', content: 'declined edit', timestamp: new Date() },
+    });
+
+    useChatStore.getState().finalizeStream('budget spent', 'a1');
+
+    expect(useChatStore.getState().pendingEditMessage).toBeNull();
+  });
+
   it('clearMessages resets all state', () => {
     const store = useChatStore.getState();
     store.addMessage({ id: '1', role: 'user', content: 'hi', timestamp: new Date() });

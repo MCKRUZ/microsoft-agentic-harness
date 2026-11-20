@@ -92,8 +92,12 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
       useChatStore.getState().appendToken(payload.token);
     });
 
-    connection.on('TurnComplete', (payload: { conversationId: string; turnNumber: number; fullResponse: string; assistantMessageId?: string }) => {
+    connection.on('TurnComplete', (payload: { conversationId: string; turnNumber: number; fullResponse: string; assistantMessageId?: string; removedMessageId?: string | null }) => {
       if (!isActiveConversation(payload.conversationId)) return;
+      // A turn declined because the conversation's budget is spent completes without storing the message it was
+      // sent with (#964), so the transcript drops it to match the conversation.
+      if (typeof payload.removedMessageId === 'string')
+        useChatStore.getState().removeMessage(payload.removedMessageId);
       useChatStore.getState().finalizeStream(payload.fullResponse, payload.assistantMessageId);
     });
 
@@ -108,12 +112,18 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
         typeof payload === 'string' ? payload
         : typeof fields?.message === 'string' ? fields.message
         : JSON.stringify(payload);
-      // A turn rejected before the model saw it names the message the server removed (#1036). The transcript shows
-      // that message from the moment it was sent, so drop it to match the conversation.
+      // A turn that was never admitted names the message the conversation does not hold (#1036, #964). The transcript
+      // shows that message from the moment it was sent, so drop it to match the conversation.
       const removedMessageId = fields?.removedMessageId;
       const conversationId = fields?.conversationId;
-      if (typeof removedMessageId === 'string' && typeof conversationId === 'string' && isActiveConversation(conversationId))
-        useChatStore.getState().removeMessage(removedMessageId);
+      if (typeof conversationId === 'string' && isActiveConversation(conversationId)) {
+        if (typeof removedMessageId === 'string')
+          useChatStore.getState().removeMessage(removedMessageId);
+        // A refused edit leaves the original in place and never sends HistoryTruncated (#962), so the staged
+        // replacement must not wait for one: a later retry's truncation would otherwise insert it. Only for the
+        // active conversation: another conversation's error says nothing about an edit staged here.
+        useChatStore.getState().setPendingEditMessage(null);
+      }
       useChatStore.getState().setError(message);
     });
 

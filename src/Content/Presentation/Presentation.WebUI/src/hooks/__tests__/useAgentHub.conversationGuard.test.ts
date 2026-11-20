@@ -209,4 +209,73 @@ describe('useAgentHub conversation guard', () => {
 
     expect(useChatStore.getState().messages).toHaveLength(1);
   });
+
+  it('Error_ClearsAStagedEdit_SoALaterTruncationCannotInsertIt', async () => {
+    // #962: a refused edit leaves the original in place and the server sends no HistoryTruncated for it. A staged
+    // replacement left behind would be inserted by the next retry's truncation.
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [{ id: 'm1', role: 'user', content: 'original', timestamp: new Date() }],
+      pendingEditMessage: { id: 'm1-edit', role: 'user', content: 'refused edit', timestamp: new Date() },
+    });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-B', message: 'blocked', code: 'AGENT_ERROR', removedMessageId: null });
+    });
+
+    const state = useChatStore.getState();
+    expect(state.pendingEditMessage).toBeNull();
+    expect(state.messages.map((m) => m.content)).toEqual(['original']);
+  });
+
+  it('Error_ForeignConversation_KeepsTheActiveConversationsStagedEdit', async () => {
+    // An error for another conversation says nothing about an edit staged here; clearing it would make this
+    // conversation's HistoryTruncated drop the original without inserting the edit.
+    await mountConnected();
+    const staged = { id: 'm1-edit', role: 'user' as const, content: 'edit', timestamp: new Date() };
+    useChatStore.setState({ conversationId: 'conv-B', messages: [], pendingEditMessage: staged });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-A', message: 'blocked', code: 'AGENT_ERROR', removedMessageId: null });
+    });
+
+    expect(useChatStore.getState().pendingEditMessage).toBe(staged);
+  });
+
+  it('TurnComplete_NamingARemovedMessage_DropsItFromTheTranscript', async () => {
+    // #964: a turn declined for a spent budget completes with a notice but never stores the message it was sent with.
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [
+        { id: 'm1', role: 'user', content: 'earlier', timestamp: new Date() },
+        { id: 'm2', role: 'user', content: 'declined', timestamp: new Date() },
+      ],
+    });
+
+    act(() => {
+      getHandler('TurnComplete')({
+        conversationId: 'conv-B', turnNumber: 0, fullResponse: 'budget spent', assistantMessageId: 'a1', removedMessageId: 'm2',
+      });
+    });
+
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['m1', 'a1']);
+  });
+
+  it('TurnComplete_NamingNoRemovedMessage_KeepsTheTranscript', async () => {
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [{ id: 'm1', role: 'user', content: 'kept', timestamp: new Date() }],
+    });
+
+    act(() => {
+      getHandler('TurnComplete')({
+        conversationId: 'conv-B', turnNumber: 1, fullResponse: 'answer', assistantMessageId: 'a1', removedMessageId: null,
+      });
+    });
+
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['m1', 'a1']);
+  });
 });

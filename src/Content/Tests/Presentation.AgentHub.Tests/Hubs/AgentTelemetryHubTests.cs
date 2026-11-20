@@ -1,3 +1,4 @@
+using Application.AI.Common.Services;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using FluentAssertions;
 using MediatR;
@@ -411,12 +412,18 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
     /// so the conversation record reflects the failed turn.
     /// </summary>
     [Fact]
-    public async Task SendMessage_OnMediatorException_AppendsSyntheticErrorMessageToStore()
+    public async Task SendMessage_OnMediatorExceptionAfterAdmission_AppendsSyntheticErrorMessageToStore()
     {
+        // Admitted first, as the turn handler does: only an admitted turn's message is stored, and so only it gets an
+        // error row (#964).
         _factory.MockMediator.Reset();
         _factory.MockMediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("Agent failure"));
+            .Returns(async () =>
+            {
+                await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+                throw new InvalidOperationException("Agent failure");
+            });
 
         var errorTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var connection = CreateConnection("test-user");

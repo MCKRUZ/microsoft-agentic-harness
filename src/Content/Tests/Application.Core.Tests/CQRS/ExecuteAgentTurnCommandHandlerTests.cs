@@ -4,6 +4,7 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Notifications;
+using Application.AI.Common.Services;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.Tests.Fakes;
 using Application.Core.Tests.Helpers;
@@ -90,6 +91,61 @@ public class ExecuteAgentTurnCommandHandlerTests
         result.Success.Should().BeTrue();
         result.Response.Should().Be("Agent response text");
         result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_TransportWaitingToStoreTheMessage_StoresItBeforeTheAgentIsBuilt()
+    {
+        // #964: the handler is the first point every request check has passed, so it is where the caller's message is
+        // stored. Storing it any later lets a model run on a message the conversation does not hold.
+        var events = new List<string>();
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => events.Add("agent"))
+            .ReturnsAsync(new TestableAIAgent("ok"));
+        var admission = new AgentTurnAdmission(_ =>
+        {
+            events.Add("stored");
+            return Task.CompletedTask;
+        });
+
+        var result = await HandleUnderAsync(admission);
+
+        result.Success.Should().BeTrue();
+        events.Should().Equal("stored", "agent");
+        (await admission.CloseAsync()).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_TransportAlreadyGaveUpOnTheTurn_StopsBeforeTheAgentIsBuilt()
+    {
+        // A timeout or disconnect closes the admission while the pipeline still screens; the abandoned turn must not
+        // go on to call the model with a message the transport reported as dropped.
+        var admission = new AgentTurnAdmission(_ => Task.CompletedTask);
+        await admission.CloseAsync();
+
+        var act = () => HandleUnderAsync(admission);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        _agentCache.Verify(c => c.GetOrCreateAsync(
+            It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private async Task<AgentTurnResult> HandleUnderAsync(AgentTurnAdmission admission)
+    {
+        var previous = AgentTurnAdmission.Current;
+        AgentTurnAdmission.Current = admission;
+        try
+        {
+            return await _handler.Handle(CreateCommand(), CancellationToken.None);
+        }
+        finally
+        {
+            AgentTurnAdmission.Current = previous;
+        }
     }
 
     [Fact]

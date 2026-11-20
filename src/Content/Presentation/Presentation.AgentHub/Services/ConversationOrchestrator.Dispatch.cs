@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.AI;
@@ -85,8 +86,50 @@ public sealed partial class ConversationOrchestrator
         }
     }
 
+    /// <summary>A turn waiting to be dispatched, and what is written when it is admitted (#964).</summary>
+    /// <param name="Text">The user message the model is sent.</param>
+    /// <param name="NewMessageId">
+    /// The id of the message stored on admission (a send or an edit), or <see langword="null"/> for a retry, which
+    /// re-sends a stored message. Named to the client as removed when the turn is not admitted, since the client shows
+    /// the message from the moment it is sent (#1036).
+    /// </param>
+    /// <param name="ReplacesFromId">The first stored message the turn replaces; its history stops before it.</param>
+    /// <param name="RetriedMessageId">For a retry, the stored message it re-sends; a verdict against it removes it.</param>
+    /// <param name="OnAdmitted">What admission writes: the message, and an edit's or retry's truncation.</param>
+    /// <param name="OnHistoryTruncated">For a retry, how the client is told a rejection removed messages.</param>
+    private sealed record PendingTurn(
+        string Text,
+        Guid? NewMessageId,
+        Guid? ReplacesFromId,
+        Guid? RetriedMessageId,
+        Func<CancellationToken, Task> OnAdmitted,
+        Func<int, CancellationToken, Task>? OnHistoryTruncated = null);
+
+    /// <summary>
+    /// The user message a retry of <paramref name="assistantMessageId"/> re-sends: the one just before it, or the last
+    /// message when the conversation does not hold that id. <see langword="null"/> when that is not a user message.
+    /// </summary>
+    private static ConversationMessage? PrecedingUserMessage(
+        IReadOnlyList<ConversationMessage> messages, Guid assistantMessageId)
+    {
+        var index = -1;
+        for (var i = 0; i < messages.Count && index < 0; i++)
+        {
+            if (messages[i].Id == assistantMessageId)
+                index = i;
+        }
+
+        var candidate = index switch
+        {
+            -1 => messages.Count > 0 ? messages[^1] : null,
+            0 => null,
+            _ => messages[index - 1],
+        };
+        return candidate?.Role == MessageRole.User ? candidate : null;
+    }
+
     private async Task<TurnOutcome> DispatchTurnAsync(
-        string sessionKey, string conversationId, string userMessage, Guid userMessageId, bool storedForThisTurn,
+        string sessionKey, string conversationId, PendingTurn pending,
         string callerId, Func<string, CancellationToken, Task>? onChunk, LeasedTurn leased, CancellationToken ct)
     {
         // The agent to dispatch to is resolved HERE, fresh under the lease, rather than accepted as
@@ -111,7 +154,8 @@ public sealed partial class ConversationOrchestrator
             // separate gap this method cannot close on its own -- but it is now an explicit failure
             // outcome, not a silent fallback to a value nothing has captured for this call at all.
             return await HandleTurnErrorAsync(conversationId, callerId,
-                new InvalidOperationException("Conversation not found."), AgentTurnErrorKind.Internal, ct);
+                new InvalidOperationException("Conversation not found."), AgentTurnErrorKind.Internal, pending,
+                admitted: false, ct);
         }
 
         var dispatchAgentName = updatedRecord.AgentName;
@@ -125,10 +169,6 @@ public sealed partial class ConversationOrchestrator
         var telemetry = await EnsureSessionTrackedAsync(
             sessionKey, conversationId, dispatchAgentName, callerId, updatedRecord, ct);
 
-        // The messages BEFORE the one being sent: it is already stored, and the turn handler adds it itself (#785).
-        var history = await ConversationDispatchHistory.ReadPriorToAsync(
-            _conversationStore, conversationId, callerId, _config.MaxHistoryMessages, userMessageId, _logger, ct);
-
         // Numbered from the conversation's turn count, not its message count. A message count advances
         // by two per turn, so the same conversation produced a different sequence over this transport
         // than over the bundle path — in one key space, on one dashboard (issues #255, #280).
@@ -136,17 +176,23 @@ public sealed partial class ConversationOrchestrator
 
         // Conversation-lifetime budget gate: if prior turns already exhausted the cumulative token
         // ceiling, decline this turn gracefully (no LLM dispatch, no cost) with an explanatory
-        // assistant message rather than throwing or surfacing an error to the client.
+        // assistant message rather than throwing or surfacing an error to the client. Ahead of the
+        // history read, which a declined turn does not use.
         var budgetStatus = await _conversationBudget.GetStatusAsync(conversationId, ct);
         if (budgetStatus.IsExhausted)
-            return await BuildBudgetExhaustedOutcomeAsync(conversationId, callerId, dispatchAgentName, turnNumber, ct);
+            return BuildBudgetExhaustedOutcome(conversationId, dispatchAgentName, pending, updatedRecord.Messages.Count);
+
+        // The messages BEFORE the one being sent: the turn handler adds that one itself (#785), and it is not stored
+        // until admission (#964). An edit or retry stops before the part it replaces, which is still stored.
+        var history = await ConversationDispatchHistory.ReadPriorAsync(
+            _conversationStore, conversationId, callerId, _config.MaxHistoryMessages, pending.ReplacesFromId, _logger, ct);
 
         var obsSessionId = telemetry.SessionId;
 
         var command = new ExecuteAgentTurnCommand
         {
             AgentName = dispatchAgentName,
-            UserMessage = userMessage,
+            UserMessage = pending.Text,
             ConversationHistory = ToMeaiHistory(history),
             ConversationId = conversationId,
             TurnNumber = turnNumber,
@@ -156,58 +202,13 @@ public sealed partial class ConversationOrchestrator
             ObservabilitySessionId = obsSessionId,
         };
 
-        // Attach the streaming sink so the agent-turn handler streams real model token
-        // deltas to the caller as they arrive. Flowing it ambiently (AsyncLocal) keeps the
-        // MediatR command a pure data record. Restored in finally so nested/subsequent
-        // dispatches on this async flow are unaffected.
-        AgentTurnResult result;
-        var previousSink = AgentTurnStreamSink.Current;
-        if (onChunk is not null)
-            AgentTurnStreamSink.Current = new AgentTurnStreamSink(onChunk);
+        var (dispatched, failure, admitted) = await SendWithAdmissionAsync(
+            command, pending, onChunk, dispatchAgentName, ct);
+        if (failure is not null)
+            return await HandleDispatchFailureAsync(
+                conversationId, callerId, pending, dispatchAgentName, failure, admitted, ct);
 
-        // A hub turn is agent work in flight, so it belongs on the same gauge as a bundle run and an
-        // AG-UI run. Counting it only on those two would leave "Active Runs" reading zero on a
-        // SignalR-only deployment while the agent is generating — the same defect the split was for,
-        // pointing the other way. It sits around the dispatch rather than the whole method because the
-        // budget-exhausted return above never reaches a model.
-        var runTag = new TagList { { AgentConventions.Name, dispatchAgentName } };
-        OrchestrationMetrics.RunsActive.Add(1, runTag);
-        try
-        {
-            result = await _mediator.Send(command, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // The connection token cancelled mid-turn: a routine client disconnect, not an
-            // agent error. Abort without recording health errors or a synthetic message. A
-            // genuine timeout cancels a linked token (surfaced as TimeoutException with `ct`
-            // uncancelled) and falls through to the error handler below.
-            _logger.LogInformation(
-                "Turn dispatch for conversation {ConversationId} cancelled by client disconnect.", conversationId);
-            throw;
-        }
-        catch (Exception ex) when (RejectedTurnMessage.IsRejection(ex))
-        {
-            // Rejected before the model saw it (#959). Not the agent failing, so not counted against its health, and no
-            // error row is added to the transcript.
-            var rejected = await RejectedTurnMessage.RejectAsync(
-                _conversationStore, conversationId, callerId, userMessageId, storedForThisTurn, ex, _logger);
-            return new TurnOutcome
-            {
-                Success = false, ErrorMessage = rejected.ClientMessage, RemovedMessageId = rejected.RemovedMessageId,
-            };
-        }
-        catch (Exception ex)
-        {
-            _healthTracker.RecordError(dispatchAgentName);
-            var kind = ex is AiProviderNotConfiguredException ? AgentTurnErrorKind.Configuration : AgentTurnErrorKind.Internal;
-            return await HandleTurnErrorAsync(conversationId, callerId, ex, kind, ct);
-        }
-        finally
-        {
-            OrchestrationMetrics.RunsActive.Add(-1, runTag);
-            AgentTurnStreamSink.Current = previousSink;
-        }
+        var result = dispatched!;
 
         // Before the outcome is looked at: a failed or cancelled turn still spent.
         await _conversationBudget.RecordTurnUsageAsync(conversationId, result, _logger);
@@ -232,7 +233,7 @@ public sealed partial class ConversationOrchestrator
             _healthTracker.RecordError(dispatchAgentName);
             return await HandleTurnErrorAsync(conversationId, callerId,
                 new InvalidOperationException(result.Error ?? "Agent returned a failure result."),
-                result.ErrorKind, ct);
+                result.ErrorKind, pending, admitted, ct);
         }
 
         var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, dispatchAgentName);
@@ -264,6 +265,110 @@ public sealed partial class ConversationOrchestrator
             Response = result.Response,
             AssistantMessageId = assistantMessageId,
             FinalTurnNumber = finalTurnNumber,
+        };
+    }
+
+    /// <summary>
+    /// Sends the turn with its admission attached, and reports whether it was admitted once the dispatch has stopped.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The streaming sink and the admission both flow ambiently, so the command stays a pure data record; both are
+    /// restored afterwards so a nested or later dispatch on this flow is unaffected.
+    /// </para>
+    /// <para>
+    /// A failure is returned rather than thrown so the admission is closed first, whatever happened: the dispatch can
+    /// stop waiting while the pipeline is still screening (a timeout, a disconnect), and a late admission must not store
+    /// the message after this method has reported it unstored. See <see cref="AgentTurnAdmission.DispatchAsync{TResult}"/>.
+    /// </para>
+    /// <para>
+    /// A hub turn is agent work in flight, so it sits on the same active-runs gauge as a bundle run and an AG-UI run,
+    /// around the dispatch only: the budget-exhausted return never reaches a model.
+    /// </para>
+    /// </remarks>
+    private async Task<AdmittedDispatch<AgentTurnResult>> SendWithAdmissionAsync(
+        ExecuteAgentTurnCommand command, PendingTurn pending, Func<string, CancellationToken, Task>? onChunk,
+        string agentName, CancellationToken ct)
+    {
+        var previousSink = AgentTurnStreamSink.Current;
+        if (onChunk is not null)
+            AgentTurnStreamSink.Current = new AgentTurnStreamSink(onChunk);
+
+        var runTag = new TagList { { AgentConventions.Name, agentName } };
+        OrchestrationMetrics.RunsActive.Add(1, runTag);
+        try
+        {
+            return await new AgentTurnAdmission(pending.OnAdmitted).DispatchAsync(() => _mediator.Send(command, ct));
+        }
+        finally
+        {
+            OrchestrationMetrics.RunsActive.Add(-1, runTag);
+            AgentTurnStreamSink.Current = previousSink;
+        }
+    }
+
+    /// <summary>Turns a dispatch that threw into the outcome the caller sees, or rethrows a client disconnect.</summary>
+    /// <remarks>
+    /// What happened to the message follows from <paramref name="admitted"/>, not from the exception type (#964). A
+    /// genuine timeout cancels a linked token and surfaces as <see cref="TimeoutException"/> with
+    /// <paramref name="ct"/> uncancelled, so it is an error, not a disconnect.
+    /// </remarks>
+    private async Task<TurnOutcome> HandleDispatchFailureAsync(
+        string conversationId, string callerId, PendingTurn pending, string agentName, Exception failure,
+        bool admitted, CancellationToken ct)
+    {
+        if (failure is OperationCanceledException && ct.IsCancellationRequested)
+        {
+            // A routine client disconnect, not an agent error: no health error and no synthetic message. Nothing to
+            // clean up either: a turn stopped before admission stored nothing.
+            _logger.LogInformation(
+                "Turn dispatch for conversation {ConversationId} cancelled by client disconnect.", conversationId);
+            ExceptionDispatchInfo.Throw(failure);
+        }
+
+        // A rejection is not the agent failing, so it is not counted against its health, and adds no error row.
+        if (RejectedTurnMessage.IsRejection(failure))
+            return await RejectTurnAsync(conversationId, callerId, pending, failure, admitted);
+
+        _healthTracker.RecordError(agentName);
+        var kind = failure is AiProviderNotConfiguredException ? AgentTurnErrorKind.Configuration : AgentTurnErrorKind.Internal;
+        return await HandleTurnErrorAsync(conversationId, callerId, failure, kind, pending, admitted, ct);
+    }
+
+    /// <summary>The outcome of a rejected turn, and the retried message a verdict removes.</summary>
+    /// <remarks>
+    /// A rejection after admission (an output-side block a consumer raises from inside the turn) leaves the message: it
+    /// was admitted, and the model may already have answered it. Before admission a send or an edit stored nothing,
+    /// and the client is told to drop the message it shows. A retry re-sends a stored message, which a verdict removes
+    /// with the answer after it; the client is told through the same truncation notice a retry already uses.
+    /// </remarks>
+    private async Task<TurnOutcome> RejectTurnAsync(
+        string conversationId, string callerId, PendingTurn pending, Exception rejection, bool admitted)
+    {
+        _logger.LogWarning(rejection, "Turn on conversation {ConversationId} rejected.", conversationId);
+        var clientMessage = RejectedTurnMessage.ClientMessageFor(rejection);
+
+        if (admitted)
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
+
+        if (pending.RetriedMessageId is not { } retried)
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage, RemovedMessageId = pending.NewMessageId };
+
+        if (!RejectedTurnMessage.RemovesRetriedMessage(rejection))
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
+
+        var remaining = await RejectedTurnMessage.RemoveRetriedMessageAsync(
+            _conversationStore, conversationId, callerId, retried, _logger);
+        if (remaining is null)
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
+
+        await SignalHistoryTruncatedAsync(pending.OnHistoryTruncated, remaining.Messages.Count);
+        return new TurnOutcome
+        {
+            Success = false,
+            ErrorMessage = clientMessage,
+            RemovedMessageId = retried,
+            HistoryKeepCount = remaining.Messages.Count,
         };
     }
 
@@ -433,8 +538,14 @@ public sealed partial class ConversationOrchestrator
         });
     }
 
+    /// <summary>
+    /// Logs a failed turn and builds what the caller is told. An admitted turn gets an error row after its message; a
+    /// turn that was not admitted left the conversation as it was, so nothing is added and the client is told to drop
+    /// the message it shows (#964).
+    /// </summary>
     private async Task<TurnOutcome> HandleTurnErrorAsync(
-        string conversationId, string callerId, Exception ex, AgentTurnErrorKind errorKind, CancellationToken ct)
+        string conversationId, string callerId, Exception ex, AgentTurnErrorKind errorKind, PendingTurn pending,
+        bool admitted, CancellationToken ct)
     {
         _logger.LogError(ex, "Agent turn failed for conversation {ConversationId}.", conversationId);
 
@@ -446,6 +557,9 @@ public sealed partial class ConversationOrchestrator
             && !string.IsNullOrWhiteSpace(ex.Message)
                 ? ex.Message
                 : "An error occurred processing your request.";
+
+        if (!admitted)
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage, RemovedMessageId = pending.NewMessageId };
 
         try
         {
@@ -469,36 +583,31 @@ public sealed partial class ConversationOrchestrator
     }
 
     /// <summary>
-    /// Builds the graceful outcome for a turn declined because the conversation exhausted its
-    /// lifetime token budget: persists an explanatory assistant message, records the metric, and
-    /// returns a successful outcome flagged <see cref="TurnOutcome.BudgetExhausted"/> so the client can
-    /// surface it (e.g. disable further input) without treating it as an error. No LLM is dispatched.
+    /// Builds the graceful outcome for a turn declined because the conversation exhausted its lifetime token budget:
+    /// records the metric, and returns a successful outcome flagged <see cref="TurnOutcome.BudgetExhausted"/> so the
+    /// client can surface it (e.g. disable further input) without treating it as an error. No LLM is dispatched.
     /// </summary>
-    private async Task<TurnOutcome> BuildBudgetExhaustedOutcomeAsync(
-        string conversationId, string callerId, string agentName, int turnNumber, CancellationToken ct)
+    /// <remarks>
+    /// Nothing is stored. The turn was never admitted, so its message was never screened, and storing it would let a
+    /// caller queue unscreened text that replays as history once the budget comes back (#964). The notice is not stored
+    /// either: the conversation is left as it was, and the client is told to drop the message it shows.
+    /// </remarks>
+    private TurnOutcome BuildBudgetExhaustedOutcome(
+        string conversationId, string agentName, PendingTurn pending, int messageCount)
     {
-        var message = ConversationBudgetNotice.Message;
-
         _logger.LogWarning(
             "Conversation {ConversationId} declined a turn: lifetime token budget exhausted", conversationId);
         OrchestrationMetrics.ConversationsBudgetStopped.Add(
             1, new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
 
-        var assistantMessageId = Guid.NewGuid();
-        var assistantMsg = new ConversationMessage(
-            assistantMessageId, MessageRole.Assistant, message, DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(conversationId, callerId, assistantMsg, ct);
-
-        var finalRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
-        var finalTurnNumber = finalRecord?.Messages.Count ?? turnNumber + 1;
-
         return new TurnOutcome
         {
             Success = true,
-            Response = message,
-            AssistantMessageId = assistantMessageId,
-            FinalTurnNumber = finalTurnNumber,
+            Response = ConversationBudgetNotice.Message,
+            AssistantMessageId = Guid.NewGuid(),
+            FinalTurnNumber = messageCount,
             BudgetExhausted = true,
+            RemovedMessageId = pending.NewMessageId,
         };
     }
 
