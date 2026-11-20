@@ -162,6 +162,33 @@ public sealed class AgentsControllerTests : IClassFixture<TestWebApplicationFact
     }
 
     /// <summary>
+    /// GET /api/conversations/{id} sends a saved widget's version (#342). This endpoint is where the browser
+    /// loads history from, and the version is what tells it whether it can still render the widget, so a
+    /// response that dropped it would make every saved widget read as version 1.
+    /// </summary>
+    [Fact]
+    public async Task GetConversationById_SavedWidget_SendsItsVersion()
+    {
+        var owner = $"widget-owner-{Guid.NewGuid():N}";
+        var conversation = await _store.CreateAsync("test-agent", owner);
+        using (var args = System.Text.Json.JsonDocument.Parse("""{"columns":["Name"],"rows":[["Ada"]]}"""))
+        {
+            await _store.AppendMessageAsync(conversation.Id, owner, new ConversationMessage(
+                Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow,
+                Widget: new WidgetSpec("render_table", args.RootElement.Clone(), Version: 2)));
+        }
+
+        using var client = CreateClientAs(owner);
+        var response = await client.GetAsync($"/api/conversations/{conversation.Id}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var widget = body.RootElement.GetProperty("messages")[0].GetProperty("widget");
+        widget.GetProperty("type").GetString().Should().Be("render_table");
+        widget.GetProperty("version").GetInt32().Should().Be(2);
+    }
+
+    /// <summary>
     /// DELETE /api/conversations/{id} returns 403 when the conversation belongs to a different user.
     /// </summary>
     [Fact]
