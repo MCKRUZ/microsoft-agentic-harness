@@ -259,8 +259,22 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
                         ?? throw new InvalidOperationException("Conversation not found.");
 
                     // Not cancellable once the original is gone: a disconnect here must not leave the conversation
-                    // with neither the original nor the edit.
-                    await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, CancellationToken.None);
+                    // with neither the original nor the edit. A store failure still can, until the store offers one
+                    // atomic replace (#1049); it is logged as the data loss it is, not just as a failed turn.
+                    try
+                    {
+                        await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex,
+                            "Edit on conversation {ConversationId} removed message {OriginalMessageId} and everything after " +
+                            "it, then failed to store the edit; the conversation now holds {KeptCount} messages and neither " +
+                            "the original nor the edit (#1049).",
+                            conversationId, userMessageId, truncated.Messages.Count);
+                        throw;
+                    }
+
                     keptOnAdmission = truncated.Messages.Count;
 
                     // After the edit is stored: the client re-inserts the edit on this notice, so sending it first could
