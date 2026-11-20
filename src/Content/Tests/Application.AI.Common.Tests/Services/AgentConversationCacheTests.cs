@@ -541,10 +541,24 @@ public sealed class AgentConversationCacheTraceLifecycleTests
         return (cache, writer, memory, finalized.Task);
     }
 
+    /// <summary>
+    /// How long to wait for the post-eviction callback. These tests prove that the callback runs, never
+    /// how quickly, so the budget only has to be out of reach of scheduling delay.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="MemoryCache"/> queues the callback to the thread pool. It was 5s until #1057: under the
+    /// full parallel assembly run on a CI runner the callback was not scheduled within 5s, and the test
+    /// failed reading like a missing cleanup. A minute matches <c>EscalationTestDeadlines.BackgroundWork</c>,
+    /// the budget that folder settled on for the same reason (#537); it is kept separate because the two
+    /// mechanisms are independent. A cleanup that genuinely never runs still fails the test, after the
+    /// minute.
+    /// </remarks>
+    private static readonly TimeSpan EvictionCallbackBudget = TimeSpan.FromSeconds(60);
+
     /// <summary>Awaits the eviction callback, failing loudly rather than hanging if it never runs.</summary>
     private static async Task AwaitFinalization(Task finalized)
     {
-        var completed = await Task.WhenAny(finalized, Task.Delay(TimeSpan.FromSeconds(5)));
+        var completed = await Task.WhenAny(finalized, Task.Delay(EvictionCallbackBudget));
         completed.Should().BeSameAs(finalized,
             "the post-eviction callback must run — a timeout here means nothing finalizes the writer");
     }
