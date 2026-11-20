@@ -116,8 +116,11 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         // live widget never rendered real arguments (streamedArgs.Json is the "{}" placeholder), so
         // persisting it would reload as a widget with no signal that its arguments were withheld — the
         // exact confusion useAgentStream.ts/useDashboardAgent.ts were changed to prevent on the live path.
-        if (_widgetCatalog.IsWidget(toolName) && !streamedArgs.Withheld)
-            await PersistWidgetAsync(threadId, callerId, toolName, streamedArgs.Json, cancellationToken).ConfigureAwait(false);
+        if (_widgetCatalog.TryGetVersion(toolName, out var widgetVersion) && !streamedArgs.Withheld)
+        {
+            await PersistWidgetAsync(threadId, callerId, toolName, widgetVersion, streamedArgs.Json, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         return result;
     }
@@ -154,16 +157,18 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
 
     /// <summary>
     /// Appends an assistant message carrying the widget spec (empty text, so it renders as the widget
-    /// only, matching the live in-browser message). Errors are logged and swallowed — durability is
-    /// best-effort and must never fail the turn.
+    /// only, matching the live in-browser message), stamped with the catalogue's current version for the
+    /// widget so a later change to its argument shape can tell this copy apart. Errors are logged and
+    /// swallowed — durability is best-effort and must never fail the turn.
     /// </summary>
     private async Task PersistWidgetAsync(
-        string threadId, string callerId, string toolName, string? argumentsJson, CancellationToken cancellationToken)
+        string threadId, string callerId, string toolName, int version, string? argumentsJson,
+        CancellationToken cancellationToken)
     {
         try
         {
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
-            var widget = new WidgetSpec(toolName, doc.RootElement.Clone());
+            var widget = new WidgetSpec(toolName, doc.RootElement.Clone(), version);
             var message = new ConversationMessage(
                 Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow, Widget: widget);
             await _conversationStore.AppendMessageAsync(threadId, callerId, message, cancellationToken).ConfigureAwait(false);

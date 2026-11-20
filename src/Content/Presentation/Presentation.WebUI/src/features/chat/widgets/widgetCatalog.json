@@ -1,0 +1,8 @@
+{
+  "$comment": "The WebUI inline-widget catalogue (#342): each client tool the agent may summon as a re-renderable widget, and the version of its argument shape. Declared once here. registry.tsx is typed from it, so the compiler refuses a widget missing from either side. AgentHub's ClientWidgetCatalog persists exactly these names at these versions, and ClientWidgetCatalogParityTests fails if it drifts. Bump a widget's version when its arguments change in a way an older saved copy would no longer render; saved copies of the old version then show a placeholder instead of disappearing.",
+  "widgets": {
+    "render_image": 1,
+    "render_form": 1,
+    "render_table": 1
+  }
+}

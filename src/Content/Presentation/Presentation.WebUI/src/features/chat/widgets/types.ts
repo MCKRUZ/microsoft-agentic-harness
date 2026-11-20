@@ -7,6 +7,12 @@ export interface AgentWidget {
   type: string;
   /** Raw arguments the agent supplied. Each renderer re-validates these before use (untrusted input). */
   args: Record<string, unknown>;
+  /**
+   * The version of this widget's argument shape it was produced at (see `widgetCatalog.json`). Absent on
+   * widgets saved before versioning, which were all produced at version 1. A version the registry does
+   * not currently render shows a placeholder instead of the widget.
+   */
+  version?: number;
 }
 
 /** Validated arguments for the `render_image` widget. */
