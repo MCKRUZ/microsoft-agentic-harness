@@ -703,7 +703,7 @@ public abstract partial class ConversationStoreContractTests
             DurationMs: 42,
             CallId: "call-1",
             RoundOrdinal: 0);
-        var widget = new WidgetSpec("render_table", JsonDocument.Parse("""{"rows":[1,2]}""").RootElement);
+        var widget = new WidgetSpec("render_table", JsonDocument.Parse("""{"rows":[1,2]}""").RootElement, Version: 2);
 
         await Store.AppendMessageAsync(
             record.Id,
@@ -722,6 +722,8 @@ public abstract partial class ConversationStoreContractTests
         message.Widget.Should().NotBeNull();
         message.Widget!.Type.Should().Be("render_table");
         message.Widget.Args.GetRawText().Should().Contain("rows");
+        message.Widget.Version.Should().Be(2,
+            "the version is what lets the browser tell a saved widget from an older argument shape (#342)");
     }
 
     [Fact]

@@ -65,7 +65,8 @@ function runWidgetToolCall(name: string, argsJson: string, withheld: boolean): s
   const check = widget.validate(args);
   if (!check.ok) return check.reason;
 
-  const rendered: AgentWidget = { type: name, args };
+  // Stamped with the current version: an unstamped widget reads as version 1 (the pre-versioning shape).
+  const rendered: AgentWidget = { type: name, args, version: widget.version };
   useChatStore.getState().addMessage({
     id: crypto.randomUUID(),
     role: 'assistant',
@@ -81,7 +82,8 @@ function runWidgetToolCall(name: string, argsJson: string, withheld: boolean): s
  * effect) and POSTs it back so the parked server-side tool unblocks and the run resumes. A result is
  * posted for every callId — including one with no matching START — so the awaiting server tool never
  * hangs. A failed POST surfaces an error rather than leaving the run stuck. Widget dispatch is generic
- * over the widget registry, so adding a widget touches only widgets/registry.tsx.
+ * over the widget registry, so adding a widget never touches this hook (see registry.tsx for what it does
+ * touch).
  */
 async function finishToolCall(threadId: string, callId: string, pending: PendingCall | undefined): Promise<void> {
   const result = pending

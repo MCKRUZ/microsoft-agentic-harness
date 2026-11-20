@@ -185,9 +185,11 @@ return InvokeClientAsync(argumentsJson, TimeoutMessage, cancellationToken);</cod
                     <h2>The frontend registry — one entry per widget</h2>
                     <p>
                         On the browser side (<code>Presentation.WebUI</code>), every widget the agent is allowed to
-                        summon is one entry in a single file:
-                        <code>src/features/chat/widgets/registry.tsx</code>. If a widget is not in that file, the agent
-                        cannot draw it — which is the safety model from the top of this chapter, made concrete.
+                        summon is declared once, in <code>src/features/chat/widgets/widgetCatalog.json</code>, with the
+                        version of its argument shape, and has one entry in
+                        <code>src/features/chat/widgets/registry.tsx</code>. The registry is typed from the catalogue, so
+                        the compiler refuses a widget that is in one and not the other. If a widget is not there, the
+                        agent cannot draw it — which is the safety model from the top of this chapter, made concrete.
                     </p>
                     <p>Each entry answers three questions, and you must supply all three:</p>
                     <ul>
@@ -206,19 +208,19 @@ return InvokeClientAsync(argumentsJson, TimeoutMessage, cancellationToken);</cod
                     </ul>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">tsx · widgets/registry.tsx</span></div>
-                        <pre><code>export interface WidgetDefinition {
-  render: (args: Record&lt;string, unknown&gt;) =&gt; ReactNode;
-  validate: (args: Record&lt;string, unknown&gt;) =&gt; ValidationResult;
-  ack: string;
-}
+                        <pre><code>// widgetCatalog.json: { "widgets": { "render_image": 1, "render_form": 1, "render_table": 1 } }
+type WidgetType = keyof typeof catalog.widgets;
+
+// A record over the catalogue's names: a missing or extra entry is a compile error.
+const DEFINITIONS: Record&lt;WidgetType, Omit&lt;WidgetDefinition, 'version'&gt;&gt; = {
+  render_image: { render: (a) =&gt; &lt;AgentImage args={a} /&gt;, validate: parseImageArgs, ack: 'Displayed the image to the user.' },
+  render_form:  { render: (a) =&gt; &lt;AgentForm  args={a} /&gt;, validate: parseFormArgs,  ack: 'Displayed the form to the user; their answers will arrive as their next message.' },
+  render_table: { render: (a) =&gt; &lt;AgentTable args={a} /&gt;, validate: parseTableArgs, ack: 'Displayed the table to the user.' },
+};
 
 // A Map — never a plain object — so an agent-influenced widget name can never
 // resolve to an inherited member like "constructor" and get invoked.
-const WIDGET_REGISTRY = new Map&lt;string, WidgetDefinition&gt;([
-  ['render_image', { render: (a) =&gt; &lt;AgentImage args={a} /&gt;, validate: parseImageArgs, ack: 'Displayed the image to the user.' }],
-  ['render_form',  { render: (a) =&gt; &lt;AgentForm  args={a} /&gt;, validate: parseFormArgs,  ack: 'Displayed the form to the user; their answers will arrive as their next message.' }],
-  ['render_table', { render: (a) =&gt; &lt;AgentTable args={a} /&gt;, validate: parseTableArgs, ack: 'Displayed the table to the user.' }],
-]);</code></pre>
+const WIDGET_REGISTRY = new Map&lt;string, WidgetDefinition&gt;(/* DEFINITIONS + each catalogue version */);</code></pre>
                     </div>
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
@@ -227,13 +229,24 @@ const WIDGET_REGISTRY = new Map&lt;string, WidgetDefinition&gt;([
                             <p style="margin: 0">
                                 First, the registry is a <code>Map</code>, not an object literal — a lookup can never
                                 land on a prototype member, so an agent-supplied name like <code>"constructor"</code>
-                                can't be invoked. Second, an unknown widget type renders <em>nothing</em> (a safe
-                                fallback) rather than throwing: the transcript must never crash on an unexpected agent
-                                tool call. The WebUI registry ships three widgets (image / form / table);
-                                <code>render_chart</code> lives on the Dashboard side, covered below.
+                                can't be invoked. Second, a widget the app cannot render — an unknown type, or one saved
+                                at an older version — shows a short "can no longer be shown" placeholder rather than
+                                throwing or vanishing: the transcript must never crash on an unexpected agent tool call,
+                                and must never silently lose content. The WebUI registry ships three widgets
+                                (image / form / table); <code>render_chart</code> lives on the Dashboard side, covered
+                                below.
                             </p>
                         </div>
                     </div>
+                    <h3>Saved widgets carry a version</h3>
+                    <p>
+                        AgentHub saves each displayed widget into the conversation so it re-renders on reload, and
+                        stamps it with the catalogue version of its type. When you change a widget's arguments in a way
+                        an older saved copy would no longer render, bump its number in <code>widgetCatalog.json</code>
+                        and in AgentHub's <code>ClientWidgetCatalog</code>. Older copies then show the placeholder
+                        instead of rendering blank or wrong. A widget saved before versioning has no number and is read
+                        as version 1.
+                    </p>
 
                     <h2>Generic dispatch — <code>useAgentStream</code></h2>
                     <p>
@@ -339,9 +352,13 @@ return widget.ack;                      // the string the agent observes as the 
                             messages, and a <code>ValidateArguments</code> override that rejects unsafe input.</li>
                         <li>Register it by keyed DI in <code>Infrastructure.AI/DependencyInjection.Tools.cs</code>,
                             injecting <code>IClientToolBridge</code>.</li>
-                        <li>Add one entry to <code>WIDGET_REGISTRY</code> in <code>registry.tsx</code>: a
-                            <code>render</code> component, a <code>validate</code> parser, and an <code>ack</code>
-                            string. The stream hook needs no changes.</li>
+                        <li>Add it to <code>widgetCatalog.json</code> at version 1, and one entry to
+                            <code>DEFINITIONS</code> in <code>registry.tsx</code>: a <code>render</code> component, a
+                            <code>validate</code> parser, and an <code>ack</code> string. The compiler refuses one
+                            without the other. The stream hook needs no changes.</li>
+                        <li>Add the same name and version to AgentHub's <code>ClientWidgetCatalog</code>, so the
+                            widget is saved and survives a reload. <code>ClientWidgetCatalogParityTests</code> fails if
+                            you forget, or if a new render tool is neither in the catalogue nor excluded with a reason.</li>
                         <li>Grant it to a skill via <code>allowed-tools</code>.</li>
                     </ol>
 
