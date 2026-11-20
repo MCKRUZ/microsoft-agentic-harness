@@ -35,6 +35,12 @@ namespace Infrastructure.AI.Resilience;
 /// into a hard stop.
 /// </para>
 /// <para>
+/// <b>A credential failure is read from its type.</b> Azure.Identity reports a token it could not get as an
+/// exception with no HTTP status, and most of its wordings match no pattern. Its type says which kind it is: a
+/// credential that was rejected stops the chain, one that could not be reached at all may recover. See
+/// <see cref="ReadCredentialFailure"/>.
+/// </para>
+/// <para>
 /// Anything not positively recognised is <see cref="ProviderFailureKind.Unknown"/>: not
 /// retried, because an unrecognised failure may not be safe to repeat, but still counted
 /// against the provider's health, because it remains evidence something is wrong. A caller
@@ -43,7 +49,7 @@ namespace Infrastructure.AI.Resilience;
 /// provider at all.
 /// </para>
 /// </remarks>
-public class DefaultProviderErrorClassifier : IProviderErrorClassifier
+public partial class DefaultProviderErrorClassifier : IProviderErrorClassifier
 {
     private const int MaxInnerExceptionDepth = 5;
 
@@ -157,6 +163,17 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         if (facts.IsCancellation && cancellationToken.IsCancellationRequested)
             return ProviderFailureClassification.CallerCancelled;
 
+        // A credential failure's type names its cause better than the token service's own 4xx status, or than its
+        // wording: DefaultAzureCredential lists every credential it tried in one message, so a chain where nothing
+        // was reachable can still read "authentication failed".
+        switch (facts.CredentialFailure)
+        {
+            case CredentialFailure.Unavailable:
+                return ProviderFailureClassification.Transient;
+            case CredentialFailure.Rejected:
+                return ProviderFailureClassification.FatalForChain(ProviderFatalReason.InvalidCredentials);
+        }
+
         if (facts.Status is int nonTransientStatus)
         {
             if (nonTransientStatus is >= 400 and < 500)
@@ -189,6 +206,7 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         var isNetworkLevel = false;
         var isTransportFault = false;
         var isCancellation = false;
+        var credentialFailure = CredentialFailure.None;
         var current = exception;
 
         for (var depth = 0; current is not null && depth < MaxInnerExceptionDepth; depth++)
@@ -197,6 +215,8 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
             isNetworkLevel |= IsNetworkLevelFailure(current);
             isTransportFault |= IsTransportFault(current);
             isCancellation |= current is OperationCanceledException;
+            if (credentialFailure is CredentialFailure.None)
+                credentialFailure = ReadCredentialFailure(current);
 
             if (!string.IsNullOrEmpty(current.Message))
                 messages.Add(current.Message);
@@ -206,12 +226,17 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
                 : current.InnerException;
         }
 
-        return new FailureFacts(status, messages, isNetworkLevel, isTransportFault, isCancellation);
+        return new FailureFacts(status, messages, isNetworkLevel, isTransportFault, isCancellation, credentialFailure);
     }
 
     /// <summary>What one walk of the exception chain yielded.</summary>
     private readonly record struct FailureFacts(
-        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel, bool IsTransportFault, bool IsCancellation);
+        int? Status,
+        IReadOnlyList<string> Messages,
+        bool IsNetworkLevel,
+        bool IsTransportFault,
+        bool IsCancellation,
+        CredentialFailure CredentialFailure);
 
     /// <summary>
     /// Reads the HTTP status out of a single exception, whichever provider SDK shape it is.
