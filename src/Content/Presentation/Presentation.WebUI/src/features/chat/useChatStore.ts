@@ -31,14 +31,22 @@ interface ChatState {
    * The edited user message awaiting re-insertion after a server-driven history truncation.
    * EditAndResubmit truncates the old user message (and everything after) via HistoryTruncated,
    * which the server sends only once the edit is admitted; this holds the replacement so
-   * {@link truncateAfter} can re-insert it in the same step. A refused or declined edit sends no
+   * {@link truncateFrom} can re-insert it in the same step. A refused or declined edit sends no
    * truncation, so the turn's Error or TurnComplete clears it and the original stays (#962).
    */
   pendingEditMessage: ChatMessage | null;
   setConversationId: (id: string) => void;
   addMessage: (message: ChatMessage) => void;
   setMessages: (messages: ChatMessage[]) => void;
-  truncateAfter: (keepCount: number) => void;
+  /**
+   * Applies a retry's or edit's truncation: drops the message with id `fromMessageId` and everything after it, then
+   * re-inserts a staged edit. The cut is anchored on the id, not on the server's message count, because this list may
+   * not match the conversation position for position: it keeps only the newest 200 messages (#961). `null` means the
+   * conversation removed nothing. A named message this list does not show is older than every message it does show
+   * (a retry or edit always names a message the user picked from this list, or the one just before it), so everything
+   * shown goes.
+   */
+  truncateFrom: (fromMessageId: string | null) => void;
   /**
    * Drops the message with this id, if shown. Used when the server says it removed a refused message from the
    * conversation, so the transcript stops showing text the conversation no longer holds (#1036).
@@ -71,8 +79,9 @@ export const useChatStore = create<ChatState>()((set) => ({
     return { messages: messages.length > 200 ? messages.slice(-200) : messages };
   }),
   setMessages: (messages) => set({ messages }),
-  truncateAfter: (keepCount) => set((state) => {
-    const kept = state.messages.slice(0, Math.max(0, keepCount));
+  truncateFrom: (fromMessageId) => set((state) => {
+    const at = fromMessageId === null ? state.messages.length : state.messages.findIndex((m) => m.id === fromMessageId);
+    const kept = at >= 0 ? state.messages.slice(0, at) : [];
     // An EditAndResubmit truncates the old user message; re-insert the edited replacement
     // so it stays visible in the transcript without waiting for a reload.
     const messages = state.pendingEditMessage ? [...kept, state.pendingEditMessage] : kept;
@@ -97,7 +106,8 @@ export const useChatStore = create<ChatState>()((set) => ({
       isStreaming: false,
       streamingContent: '',
       messages: messages.length > 200 ? messages.slice(-200) : messages,
-      // An admitted edit consumed this on HistoryTruncated; a declined one (a spent budget) never will (#964).
+      // An admitted edit consumed this on HistoryTruncated. If that notice never arrived (its send can fail without
+      // failing the turn), a staged edit left here would be inserted by the next truncation (#962).
       pendingEditMessage: null,
     };
   }),

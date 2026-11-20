@@ -34,28 +34,67 @@ describe('useChatStore', () => {
     expect(state.messages[0]?.role).toBe('assistant');
   });
 
-  it('truncateAfter drops messages beyond keepCount', () => {
+  it('truncateFrom drops the named message and everything after it', () => {
     const store = useChatStore.getState();
     store.setMessages([
       { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
       { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
       { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
     ]);
-    store.truncateAfter(1);
+    store.truncateFrom('a1');
     const state = useChatStore.getState();
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]?.id).toBe('u1');
   });
 
-  it('truncateAfter re-inserts the pending edit message after truncation', () => {
+  it('truncateFrom cuts at the id, whatever the list holds before it', () => {
+    // #961: the list keeps only the newest 200 messages, so the server's count is not a position in it. The id is.
+    const store = useChatStore.getState();
+    store.setMessages([
+      { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
+      { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
+      { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
+      { id: 'a2', role: 'assistant', content: 'retried reply', timestamp: new Date() },
+    ]);
+    store.truncateFrom('a2');
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2']);
+  });
+
+  it('truncateFrom with no id keeps every message', () => {
+    // The server names no message when the one the request named was not in the conversation, so nothing was removed.
+    const store = useChatStore.getState();
+    store.setMessages([
+      { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
+      { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
+    ]);
+    store.truncateFrom(null);
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1', 'a1']);
+  });
+
+  it('truncateFrom drops every shown message when the named one is older than the window', () => {
+    // A retry from the oldest shown reply removes the user message just before it, which the 200-message window may
+    // already have dropped. Everything shown comes after that message, so all of it goes; a count would keep it all.
+    const store = useChatStore.getState();
+    store.setMessages([
+      { id: 'a1', role: 'assistant', content: 'oldest shown reply', timestamp: new Date() },
+      { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
+    ]);
+    store.setPendingEditMessage({ id: 'u-new', role: 'user', content: 'edited', timestamp: new Date() });
+    store.truncateFrom('windowed-out');
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => m.id)).toEqual(['u-new']);
+    expect(state.pendingEditMessage).toBeNull();
+  });
+
+  it('truncateFrom re-inserts the pending edit message after truncation', () => {
     const store = useChatStore.getState();
     store.setMessages([
       { id: 'u1', role: 'user', content: 'old user', timestamp: new Date() },
       { id: 'a1', role: 'assistant', content: 'old reply', timestamp: new Date() },
     ]);
-    // Simulate EditAndResubmit: client stages the edited user message, server truncates to keepCount=0.
+    // Simulate EditAndResubmit: client stages the edited user message, server truncates from the original.
     store.setPendingEditMessage({ id: 'u-new', role: 'user', content: 'edited user', timestamp: new Date() });
-    store.truncateAfter(0);
+    store.truncateFrom('u1');
 
     const state = useChatStore.getState();
     expect(state.messages).toHaveLength(1);

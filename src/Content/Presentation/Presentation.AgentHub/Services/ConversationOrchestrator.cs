@@ -164,8 +164,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     }
 
     /// <summary>
-    /// Invokes <paramref name="onHistoryTruncated"/>, if provided, with the surviving message
-    /// count — swallowing (and logging) any exception it throws, a cancellation included.
+    /// Invokes <paramref name="onHistoryTruncated"/>, if provided, with what the truncation removed —
+    /// swallowing (and logging) any exception it throws, a cancellation included.
     /// </summary>
     /// <remarks>
     /// The truncation this signals has already committed durably in <see cref="_conversationStore"/>
@@ -175,27 +175,36 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     /// is cancelled, and the run stops on it after admission. The notice is sent without that token
     /// so a disconnect cannot interrupt it halfway. See #328 for why it fires before dispatch.
     /// </remarks>
-    private async Task SignalHistoryTruncatedAsync(Func<int, CancellationToken, Task>? onHistoryTruncated, int keepCount)
+    private async Task SignalHistoryTruncatedAsync(
+        Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated, HistoryTruncation truncation)
     {
         if (onHistoryTruncated is null) return;
 
         try
         {
-            await onHistoryTruncated(keepCount, CancellationToken.None);
+            await onHistoryTruncated(truncation, CancellationToken.None);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "Failed to notify the client of a history truncation to {KeepCount} messages — " +
-                "the truncation itself already committed and the turn continues.", keepCount);
+                "the truncation itself already committed and the turn continues.", truncation.KeepCount);
         }
     }
+
+    /// <summary>
+    /// What truncating from <paramref name="messageId"/> removed: that message onwards, or nothing when the conversation
+    /// did not hold it (the store's truncation is then a no-op), so the client never cuts a message the server kept.
+    /// </summary>
+    private static HistoryTruncation TruncationFrom(
+        IReadOnlyList<ConversationMessage> before, Guid messageId, ConversationRecord after) =>
+        new(before.Any(m => m.Id == messageId) ? messageId : null, after.Messages.Count);
 
     /// <inheritdoc />
     public async Task<TurnOutcome> RetryFromMessageAsync(
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
-        Func<int, CancellationToken, Task>? onHistoryTruncated = null)
+        Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated = null)
     {
         // Existence/ownership check only -- DispatchTurnAsync resolves its own dispatch agent fresh,
         // under the lease, rather than trusting whatever this pre-lease read saw.
@@ -220,7 +229,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
                             conversationId, callerId, assistantMessageId, admitCt)
                         ?? throw new InvalidOperationException("Conversation not found.");
                     keptOnAdmission = truncated.Messages.Count;
-                    await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count);
+                    await SignalHistoryTruncatedAsync(
+                        onHistoryTruncated, TruncationFrom(record.Messages, assistantMessageId, truncated));
                 },
                 OnHistoryTruncated: onHistoryTruncated);
 
@@ -234,7 +244,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid userMessageId, Guid newUserMessageId,
         string newContent, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
-        Func<int, CancellationToken, Task>? onHistoryTruncated = null)
+        Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated = null)
     {
         // Existence/ownership check only -- DispatchTurnAsync resolves its own dispatch agent fresh,
         // under the lease, rather than trusting whatever this pre-lease read saw.
@@ -243,6 +253,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 
         return await WithTurnLeaseAsync(conversationId, async leased =>
         {
+            // Read under the lease to tell the client whether the original was there to remove (#961).
+            var record = await _conversationStore.GetAsync(conversationId, callerId, leased.Token)
+                ?? throw new InvalidOperationException("Conversation not found.");
             var newUserMsg = new ConversationMessage(
                 newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
                 MessageRole.User, newContent, DateTimeOffset.UtcNow);
@@ -279,7 +292,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 
                     // After the edit is stored: the client re-inserts the edit on this notice, so sending it first could
                     // leave the client showing an edit the server never stored. Before this turn's deltas (#328).
-                    await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count);
+                    await SignalHistoryTruncatedAsync(
+                        onHistoryTruncated, TruncationFrom(record.Messages, userMessageId, truncated));
                 });
 
             var outcome = await DispatchTurnAsync(sessionKey, conversationId, pending, callerId, onChunk, leased, leased.Token);

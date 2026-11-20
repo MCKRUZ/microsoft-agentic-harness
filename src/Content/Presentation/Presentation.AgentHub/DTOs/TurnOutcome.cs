@@ -1,3 +1,5 @@
+using Application.AI.Common.Models.Conversations;
+
 namespace Presentation.AgentHub.DTOs;
 
 /// <summary>
@@ -31,6 +33,13 @@ public sealed record TurnOutcome
     /// shows that message before the turn runs, so the hub names it for the client to drop (#1036).
     /// </summary>
     public Guid? RemovedMessageId { get; init; }
+
+    /// <summary>
+    /// The error row this failed turn added to the conversation, or <see langword="null"/> when it added none. An
+    /// admitted turn that fails gets an assistant row saying so; the hub sends it so the client shows the same row
+    /// under the same id, and a later retry or edit names the same messages on both sides (#961).
+    /// </summary>
+    public ConversationMessage? ErrorRow { get; init; }
 
     /// <summary>
     /// True when this turn was declined because the conversation exhausted its lifetime token budget.

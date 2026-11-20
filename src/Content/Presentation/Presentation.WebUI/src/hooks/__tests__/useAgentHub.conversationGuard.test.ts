@@ -243,8 +243,9 @@ describe('useAgentHub conversation guard', () => {
     expect(useChatStore.getState().pendingEditMessage).toBe(staged);
   });
 
-  it('TurnComplete_NamingARemovedMessage_DropsItFromTheTranscript', async () => {
-    // #964: a turn declined for a spent budget completes with a notice but never stores the message it was sent with.
+  it('TurnComplete_BudgetDeclined_DropsTheMessageAndShowsTheNoticeOutsideTheTranscript', async () => {
+    // #964: a turn declined for a spent budget completes with a notice but stores neither the message nor the notice.
+    // #961: a notice row in the transcript would be a message the conversation does not hold.
     await mountConnected();
     useChatStore.setState({
       conversationId: 'conv-B',
@@ -257,10 +258,14 @@ describe('useAgentHub conversation guard', () => {
     act(() => {
       getHandler('TurnComplete')({
         conversationId: 'conv-B', turnNumber: 0, fullResponse: 'budget spent', assistantMessageId: 'a1', removedMessageId: 'm2',
+        budgetExhausted: true,
       });
     });
 
-    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['m1', 'a1']);
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => m.id)).toEqual(['m1']);
+    expect(state.error).toBe('budget spent');
+    expect(state.isStreaming).toBe(false);
   });
 
   it('TurnComplete_NamingNoRemovedMessage_KeepsTheTranscript', async () => {
@@ -277,5 +282,83 @@ describe('useAgentHub conversation guard', () => {
     });
 
     expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['m1', 'a1']);
+  });
+
+  it('Error_NamingAStoredErrorRow_AddsItUnderTheSameId', async () => {
+    // #961: a turn that failed after it was admitted keeps its message and gains an error row in the conversation.
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [{ id: 'm1', role: 'user', content: 'question', timestamp: new Date() }],
+    });
+
+    act(() => {
+      getHandler('Error')({
+        conversationId: 'conv-B', message: 'failed', code: 'AGENT_ERROR', removedMessageId: null,
+        errorRow: { id: 'e1', content: '[Error] The agent encountered an error.' },
+      });
+    });
+
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => [m.id, m.role, m.content])).toEqual([
+      ['m1', 'user', 'question'],
+      ['e1', 'assistant', '[Error] The agent encountered an error.'],
+    ]);
+    expect(state.error).toBe('failed');
+  });
+
+  it('Error_ForeignConversation_DoesNotAddItsErrorRow', async () => {
+    await mountConnected();
+    useChatStore.setState({ conversationId: 'conv-B', messages: [] });
+
+    act(() => {
+      getHandler('Error')({
+        conversationId: 'conv-A', message: 'failed', code: 'AGENT_ERROR', removedMessageId: null,
+        errorRow: { id: 'e1', content: '[Error] The agent encountered an error.' },
+      });
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(0);
+  });
+
+  it('RefusedSend_ThenRetryOfAnEarlierReply_LeavesTheTranscriptMatchingTheConversation', async () => {
+    // #961: the refused message is dropped, then the retry's truncation names the reply it cut from. Cutting at a count
+    // instead would land one message off whenever the two lists had drifted.
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [
+        { id: 'u1', role: 'user', content: 'question', timestamp: new Date() },
+        { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
+        { id: 'u2', role: 'user', content: 'refused', timestamp: new Date() },
+      ],
+    });
+
+    act(() => {
+      getHandler('Error')({ conversationId: 'conv-B', message: 'blocked', code: 'AGENT_ERROR', removedMessageId: 'u2' });
+      getHandler('HistoryTruncated')({ conversationId: 'conv-B', keepCount: 1, fromMessageId: 'a1' });
+      getHandler('TurnComplete')({
+        conversationId: 'conv-B', turnNumber: 2, fullResponse: 'a better reply', assistantMessageId: 'a2', removedMessageId: null,
+      });
+    });
+
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1', 'a2']);
+  });
+
+  it('HistoryTruncated_NamingNoMessage_KeepsTheTranscript', async () => {
+    await mountConnected();
+    useChatStore.setState({
+      conversationId: 'conv-B',
+      messages: [
+        { id: 'u1', role: 'user', content: 'question', timestamp: new Date() },
+        { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
+      ],
+    });
+
+    act(() => {
+      getHandler('HistoryTruncated')({ conversationId: 'conv-B', keepCount: 0, fromMessageId: null });
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(2);
   });
 });
