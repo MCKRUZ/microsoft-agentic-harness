@@ -70,6 +70,23 @@ public sealed partial class DefaultProviderErrorClassifierTests
     }
 
     [Fact]
+    public void Classify_ChainedCredentialRefusal_OverAnEarlierUnavailableOne_IsTheRefusal()
+    {
+        // A chained credential that found its first credential unavailable and then had the next one refused throws the
+        // refusal, with what it tried inside it. The outermost credential link is the chain's own verdict.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new AuthenticationFailedException(
+            "ChainedTokenCredential could not get a token.",
+            new AggregateException(
+                new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable."),
+                new AuthenticationFailedException("ClientCertificateCredential could not load the certificate."))));
+
+        classification.Kind.Should().Be(ProviderFailureKind.FatalForChain);
+        classification.ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
+    }
+
+    [Fact]
     public void Classify_RejectedAzureCredential_OverAClientErrorFromTheTokenService_NamesTheCredential()
     {
         // The token service's own 400 is about the identity, not about the request the provider would have served.
