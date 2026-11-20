@@ -20,7 +20,7 @@ import type { HubConnection } from '@microsoft/signalr';
 import { buildHubConnection } from '@/lib/signalrClient';
 import { loginRequest } from '@/lib/authConfig';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
-import { useChatStore } from '@/stores/chatStore';
+import { useChatStore, type ChatMessage } from '@/stores/chatStore';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -55,6 +55,14 @@ export interface UseAgentHubReturn {
 }
 
 const AgentHubContext = createContext<UseAgentHubReturn | null>(null);
+
+/** The error row an `Error` event names, as a transcript message, or `null` when it names none (#961). */
+function storedErrorRow(value: unknown): ChatMessage | null {
+  if (value == null || typeof value !== 'object') return null;
+  const { id, content } = value as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof content !== 'string') return null;
+  return { id, role: 'assistant', content, timestamp: new Date() };
+}
 
 export function AgentHubProvider({ children }: { children: ReactNode }) {
   const { instance } = useMsal();
@@ -92,18 +100,27 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
       useChatStore.getState().appendToken(payload.token);
     });
 
-    connection.on('TurnComplete', (payload: { conversationId: string; turnNumber: number; fullResponse: string; assistantMessageId?: string; removedMessageId?: string | null }) => {
+    connection.on('TurnComplete', (payload: { conversationId: string; turnNumber: number; fullResponse: string; assistantMessageId?: string; removedMessageId?: string | null; budgetExhausted?: boolean }) => {
       if (!isActiveConversation(payload.conversationId)) return;
       // A turn declined because the conversation's budget is spent completes without storing the message it was
       // sent with (#964), so the transcript drops it to match the conversation.
       if (typeof payload.removedMessageId === 'string')
         useChatStore.getState().removeMessage(payload.removedMessageId);
+      if (payload.budgetExhausted === true) {
+        // The conversation stores neither the message nor the notice, so the notice is shown outside the transcript: a
+        // row here would be one the conversation does not hold, and a retry from it would name a message it never had
+        // (#961).
+        useChatStore.getState().setPendingEditMessage(null);
+        useChatStore.getState().setError(payload.fullResponse);
+        return;
+      }
       useChatStore.getState().finalizeStream(payload.fullResponse, payload.assistantMessageId);
     });
 
-    connection.on('HistoryTruncated', (payload: { conversationId: string; keepCount: number }) => {
+    connection.on('HistoryTruncated', (payload: { conversationId: string; keepCount: number; fromMessageId?: string | null }) => {
       if (!isActiveConversation(payload.conversationId)) return;
-      useChatStore.getState().truncateAfter(payload.keepCount);
+      const fromMessageId = typeof payload.fromMessageId === 'string' ? payload.fromMessageId : null;
+      useChatStore.getState().truncateFrom(fromMessageId, payload.keepCount);
     });
 
     connection.on('Error', (payload: unknown) => {
@@ -119,6 +136,10 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
       if (typeof conversationId === 'string' && isActiveConversation(conversationId)) {
         if (typeof removedMessageId === 'string')
           useChatStore.getState().removeMessage(removedMessageId);
+        // A turn that failed after it was admitted keeps its message and gains an error row; show the same row under
+        // the same id, so a later retry or edit names a message both sides hold (#961).
+        const errorRow = storedErrorRow(fields?.errorRow);
+        if (errorRow) useChatStore.getState().addMessage(errorRow);
         // A refused edit leaves the original in place and never sends HistoryTruncated (#962), so the staged
         // replacement must not wait for one: a later retry's truncation would otherwise insert it. Only for the
         // active conversation: another conversation's error says nothing about an edit staged here.

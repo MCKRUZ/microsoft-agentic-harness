@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Services;
 using Xunit;
@@ -38,7 +39,7 @@ namespace Presentation.AgentHub.Tests.Services;
 /// handler.
 /// </para>
 /// </remarks>
-public sealed class ScreeningRefusalReplayTests : IDisposable
+public sealed partial class ScreeningRefusalReplayTests : IDisposable
 {
     private const string Refused = "text the screen refused";
 
@@ -134,7 +135,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         // #962: the edit used to cut the original before screening, so a refused edit lost both, with nothing to retry.
         var conversation = await SeedExchangeAsync("the original question");
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>())).ThrowsAsync(refusal);
-        var truncations = new List<int>();
+        var truncations = new List<HistoryTruncation>();
 
         var editedMessageId = Guid.NewGuid();
         var outcome = await Orchestrator().EditAndResubmitAsync(
@@ -176,7 +177,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         var conversation = await SeedExchangeAsync(Refused);
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>())).ThrowsAsync(rejection);
 
-        var truncations = new List<int>();
+        var truncations = new List<HistoryTruncation>();
 
         var outcome = await Orchestrator().RetryFromMessageAsync(
             "conn", conversation.Id, conversation.AssistantMessageId, "user-a", null, CancellationToken.None,
@@ -185,7 +186,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
         outcome.ErrorMessage.Should().Be(toldTheCaller);
         outcome.RemovedMessageId.Should().Be(conversation.UserMessageId, "the client still shows the retried message");
         outcome.HistoryKeepCount.Should().Be(0, "the message and the answer after it are gone (#1036)");
-        truncations.Should().Equal([0], "the client still shows both, and drops them on this notice");
+        truncations.Should().Equal([new HistoryTruncation(conversation.UserMessageId, 0)],
+            "the client still shows both, and drops them from the retried message on this notice");
         (await _store.GetAsync(conversation.Id, "user-a"))!.Messages.Select(m => m.Content)
             .Should().NotContain(content => content.Contains(Refused), "a rejected message stays out of the history");
     }
@@ -348,13 +350,14 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     public async Task AnAdmittedEdit_ReplacesTheOriginalAndIsDispatchedWithoutIt()
     {
         var conversation = await SeedExchangeAsync("the original question");
-        var truncations = new List<int>();
+        var truncations = new List<HistoryTruncation>();
         IReadOnlyList<ChatMessage>? history = null;
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .Returns<ExecuteAgentTurnCommand, CancellationToken>((command, _) =>
             {
                 history = command.ConversationHistory;
-                return AdmitThen(Answer("a new answer"), () => truncations.Should().Equal([0], "told on admission, before the deltas"));
+                return AdmitThen(Answer("a new answer"), () => truncations.Should().Equal(
+                    [new HistoryTruncation(conversation.UserMessageId, 0)], "told on admission, before the deltas"));
             });
 
         var outcome = await Orchestrator().EditAndResubmitAsync(
@@ -370,7 +373,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     public async Task AnAdmittedRetry_ReplacesTheOldAnswer()
     {
         var conversation = await SeedExchangeAsync("the question");
-        var truncations = new List<int>();
+        var truncations = new List<HistoryTruncation>();
         IReadOnlyList<ChatMessage>? history = null;
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .Returns<ExecuteAgentTurnCommand, CancellationToken>((command, _) =>
@@ -384,7 +387,7 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
             RecordTruncation(truncations));
 
         outcome.HistoryKeepCount.Should().Be(1);
-        truncations.Should().Equal(1);
+        truncations.Should().Equal(new HistoryTruncation(conversation.AssistantMessageId, 1));
         history.Should().BeEmpty("the retried question is sent as the message, not as history");
         (await ContentsAsync(conversation.Id)).Should().Equal("the question", "a better answer");
     }
@@ -403,8 +406,8 @@ public sealed class ScreeningRefusalReplayTests : IDisposable
     private static Task<AgentTurnResult> AdmitThen(AgentTurnResult result, Action? afterAdmission = null) =>
         AdmitThen(Task.FromResult(result), afterAdmission);
 
-    private static Func<int, CancellationToken, Task> RecordTruncation(List<int> truncations) =>
-        (keep, _) => { truncations.Add(keep); return Task.CompletedTask; };
+    private static Func<HistoryTruncation, CancellationToken, Task> RecordTruncation(List<HistoryTruncation> truncations) =>
+        (truncation, _) => { truncations.Add(truncation); return Task.CompletedTask; };
 
     private async Task<IReadOnlyList<string>> ContentsAsync(string conversationId) =>
         (await _store.GetAsync(conversationId, "user-a"))!.Messages.Select(m => m.Content).ToList();

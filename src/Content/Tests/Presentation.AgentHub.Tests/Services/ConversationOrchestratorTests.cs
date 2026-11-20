@@ -666,13 +666,49 @@ public class ConversationOrchestratorTests
                 throw new Exception("boom");
             });
 
+        ConversationMessage? stored = null;
+        _store.Setup(s => s.AppendMessageAsync("c1", "user1",
+                It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant), It.IsAny<CancellationToken>()))
+            .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => stored = m)
+            .Returns(Task.CompletedTask);
+
         var orchestrator = CreateOrchestrator();
 
-        await orchestrator.SendMessageAsync("conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+        var outcome = await orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
 
-        _store.Verify(s => s.AppendMessageAsync("c1", "user1",
-            It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant && m.Content.Contains("[Error]")),
-            It.IsAny<CancellationToken>()), Times.Once);
+        stored.Should().NotBeNull();
+        stored!.Content.Should().Contain("[Error]");
+        outcome.ErrorRow.Should().Be(stored,
+            "the client shows the row the conversation holds, under the same id, or a later retry cuts in the wrong place (#961)");
+    }
+
+    [Fact]
+    public async Task SendMessage_ErrorRowCannotBeStored_ReportsNoErrorRow()
+    {
+        // The client adds the error row only when told about it; telling it about a row the store refused would put the
+        // client one message ahead of the conversation (#961).
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _store.Setup(s => s.AppendMessageAsync("c1", "user1",
+                It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                await AgentTurnAdmission.AdmitCurrentAsync(CancellationToken.None);
+                throw new Exception("boom");
+            });
+
+        var outcome = await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        outcome.Success.Should().BeFalse();
+        outcome.ErrorRow.Should().BeNull();
     }
 
     [Fact]
@@ -956,7 +992,7 @@ public class ConversationOrchestratorTests
             "conn1", "c1", Guid.NewGuid(), "user1",
             onChunk: (_, _) => { events.Add("chunk"); return Task.CompletedTask; },
             CancellationToken.None,
-            onHistoryTruncated: (keepCount, _) => { events.Add($"truncated:{keepCount}"); return Task.CompletedTask; });
+            onHistoryTruncated: (truncation, _) => { events.Add($"truncated:{truncation.KeepCount}"); return Task.CompletedTask; });
 
         outcome.HistoryKeepCount.Should().Be(1);
         events.Should().StartWith("truncated:1",

@@ -408,11 +408,13 @@ public sealed class AgentTelemetryHub : Hub
     /// aborting the turn, but the caller still needs to know a client may already have acted on the
     /// notice, so a later failure in this same turn can be surfaced rather than left as a silent gap.
     /// </param>
-    private Func<int, CancellationToken, Task> EmitHistoryTruncatedAsync(string conversationId, Action onInvoked) =>
-        (keepCount, cct) =>
+    private Func<HistoryTruncation, CancellationToken, Task> EmitHistoryTruncatedAsync(
+        string conversationId, Action onInvoked) =>
+        (truncation, cct) =>
         {
             onInvoked();
-            return Clients.Caller.SendAsync(EventHistoryTruncated, new { conversationId, keepCount }, cct);
+            return Clients.Caller.SendAsync(EventHistoryTruncated,
+                new { conversationId, keepCount = truncation.KeepCount, fromMessageId = truncation.FromMessageId }, cct);
         };
 
     /// <summary>
@@ -494,6 +496,8 @@ public sealed class AgentTelemetryHub : Hub
     /// message because the turn was never admitted (null otherwise): the client shows that message
     /// before the turn runs, and must drop it to match the conversation (#1036, #964). A turn declined
     /// for budget completes rather than errors, which is why TurnComplete carries it too.
+    /// Error names <c>errorRow</c> when the failed turn added an error row to the conversation, so the
+    /// client shows the same row under the same id (#961).
     /// </summary>
     private async Task EmitTurnEventsAsync(string conversationId, TurnOutcome outcome, CancellationToken ct)
     {
@@ -522,6 +526,7 @@ public sealed class AgentTelemetryHub : Hub
                     message = outcome.ErrorMessage ?? "An error occurred.",
                     code = "AGENT_ERROR",
                     removedMessageId = outcome.RemovedMessageId,
+                    errorRow = outcome.ErrorRow is { } row ? new { id = row.Id, content = row.Content } : null,
                 }, ct);
         }
     }

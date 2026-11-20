@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
@@ -159,6 +160,38 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
     }
 
     [Fact]
+    public async Task FailedTurnThatStoredAnErrorRow_ErrorFrameCarriesTheRow_SoTheClientShowsTheSameMessages()
+    {
+        // #961: the conversation holds the error row; a client that never adds it is one message short of the server.
+        var fixture = Build();
+        var row = new ConversationMessage(Guid.NewGuid(), MessageRole.Assistant, "[Error] The agent encountered an error.", DateTimeOffset.UtcNow);
+        fixture.Orchestrator
+            .Setup(o => o.SendMessageAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TurnOutcome { Success = false, ErrorMessage = "failed", ErrorRow = row });
+
+        await fixture.Hub.SendMessage("conv-1", Guid.NewGuid(), "Hi");
+
+        var error = fixture.Captured.Single(f => f.EventName == AgentTelemetryHub.EventError);
+        var sent = error.Payload.GetProperty("errorRow");
+        sent.GetProperty("id").GetGuid().Should().Be(row.Id);
+        sent.GetProperty("content").GetString().Should().Be(row.Content);
+    }
+
+    [Fact]
+    public async Task FailedTurnWithoutAnErrorRow_ErrorFrameCarriesNoRow()
+    {
+        var fixture = Build();
+        ScriptErrorOutcome(fixture.Orchestrator, "model unavailable");
+
+        await fixture.Hub.SendMessage("conv-1", Guid.NewGuid(), "Hi");
+
+        var error = fixture.Captured.Single(f => f.EventName == AgentTelemetryHub.EventError);
+        error.Payload.GetProperty("errorRow").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
     public void AssertExactlyOneTerminalFrame_FrameAfterTerminal_Throws()
     {
         // The check itself, proven against a synthetic violation — production code never emits
@@ -235,17 +268,18 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
         // truncation and before dispatch (ConversationOrchestrator.cs), and moving the hub's own
         // emission out of the post-turn EmitTurnEventsAsync into that callback (#328).
         var fixture = Build();
+        var removedFrom = Guid.NewGuid();
         fixture.Orchestrator
             .Setup(o => o.RetryFromMessageAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>(),
-                It.IsAny<Func<int, CancellationToken, Task>?>()))
+                It.IsAny<Func<HistoryTruncation, CancellationToken, Task>?>()))
             .Returns(async (string _, string _, Guid _, string _,
                 Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
-                Func<int, CancellationToken, Task>? onHistoryTruncated) =>
+                Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated) =>
             {
                 if (onHistoryTruncated is not null)
-                    await onHistoryTruncated(4, ct);
+                    await onHistoryTruncated(new HistoryTruncation(removedFrom, 4), ct);
                 if (onChunk is not null)
                     await onChunk("Recovered", ct);
                 return new TurnOutcome { Success = true, Response = "Recovered", FinalTurnNumber = 2, HistoryKeepCount = 4 };
@@ -254,6 +288,10 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
         await fixture.Hub.RetryFromMessage("conv-1", Guid.NewGuid());
 
         fixture.Captured.Should().Contain(f => f.EventName == AgentTelemetryHub.EventHistoryTruncated);
+        var truncated = fixture.Captured[0].Payload;
+        truncated.GetProperty("fromMessageId").GetGuid().Should().Be(removedFrom,
+            "the client cuts at this id, not at a count its own list may not match (#961)");
+        truncated.GetProperty("keepCount").GetInt32().Should().Be(4);
         fixture.Captured[0].EventName.Should().Be(AgentTelemetryHub.EventHistoryTruncated,
             "the truncation signal must reach the client before this turn's own streamed deltas");
         var act = () => StreamInvariants.AssertHistoryTruncatedPrecedesTokens(fixture.Captured);
@@ -274,13 +312,13 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
             .Setup(o => o.RetryFromMessageAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>(),
-                It.IsAny<Func<int, CancellationToken, Task>?>()))
+                It.IsAny<Func<HistoryTruncation, CancellationToken, Task>?>()))
             .Returns(async (string _, string _, Guid _, string _,
                 Func<string, CancellationToken, Task>? _, CancellationToken ct,
-                Func<int, CancellationToken, Task>? onHistoryTruncated) =>
+                Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated) =>
             {
                 if (onHistoryTruncated is not null)
-                    await onHistoryTruncated(4, ct);
+                    await onHistoryTruncated(new HistoryTruncation(Guid.NewGuid(), 4), ct);
                 throw new IOException("store write failed after truncation");
             });
 
@@ -312,13 +350,13 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
             .Setup(o => o.RetryFromMessageAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>(),
-                It.IsAny<Func<int, CancellationToken, Task>?>()))
+                It.IsAny<Func<HistoryTruncation, CancellationToken, Task>?>()))
             .Returns(async (string _, string _, Guid _, string _,
                 Func<string, CancellationToken, Task>? _, CancellationToken ct,
-                Func<int, CancellationToken, Task>? onHistoryTruncated) =>
+                Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated) =>
             {
                 if (onHistoryTruncated is not null)
-                    await onHistoryTruncated(4, ct);
+                    await onHistoryTruncated(new HistoryTruncation(Guid.NewGuid(), 4), ct);
                 throw new InvalidOperationException("Another host now owns this conversation's turn.");
             });
 

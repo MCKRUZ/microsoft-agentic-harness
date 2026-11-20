@@ -42,7 +42,8 @@ public interface IConversationOrchestrator
     /// service keeps it, while one refused by a screening verdict also removes the user message.
     /// </summary>
     /// <param name="onHistoryTruncated">
-    /// Invoked once with the surviving message count when the truncation commits at admission, BEFORE
+    /// Invoked once with what the truncation removed, the first removed message's id and the surviving
+    /// message count (<see cref="HistoryTruncation"/>), when the truncation commits at admission, BEFORE
     /// the model runs — so a caller streaming <paramref name="onChunk"/> can tell a client to drop its
     /// stale local tail before any of this turn's own deltas arrive. Emitting the truncation signal
     /// only after the turn completes (via the returned <see cref="TurnOutcome.HistoryKeepCount"/>)
@@ -54,7 +55,7 @@ public interface IConversationOrchestrator
     Task<TurnOutcome> RetryFromMessageAsync(
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
-        Func<int, CancellationToken, Task>? onHistoryTruncated = null);
+        Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
     /// Replaces the specified user message, and everything after it, with the edited content and
@@ -62,7 +63,8 @@ public interface IConversationOrchestrator
     /// edit leaves the conversation as it was.
     /// </summary>
     /// <param name="onHistoryTruncated">
-    /// Invoked once with the surviving message count, at admission after the edited message is durably
+    /// Invoked once with what the truncation removed (<see cref="HistoryTruncation"/>), at admission after the
+    /// edited message is durably
     /// appended, before the model runs — see
     /// <see cref="RetryFromMessageAsync"/>'s remarks on this parameter for why the ordering
     /// relative to dispatch matters, and on why a delegate failure is caught rather than propagated.
@@ -74,7 +76,7 @@ public interface IConversationOrchestrator
         string sessionKey, string conversationId, Guid userMessageId, Guid newUserMessageId,
         string newContent, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
-        Func<int, CancellationToken, Task>? onHistoryTruncated = null);
+        Func<HistoryTruncation, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
     /// Rebinds the conversation to a different agent. A no-op reassignment (the requested name

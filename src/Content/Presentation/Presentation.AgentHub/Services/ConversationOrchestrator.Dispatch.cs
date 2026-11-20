@@ -103,7 +103,7 @@ public sealed partial class ConversationOrchestrator
         Guid? ReplacesFromId,
         Guid? RetriedMessageId,
         Func<CancellationToken, Task> OnAdmitted,
-        Func<int, CancellationToken, Task>? OnHistoryTruncated = null);
+        Func<HistoryTruncation, CancellationToken, Task>? OnHistoryTruncated = null);
 
     /// <summary>
     /// The user message a retry of <paramref name="assistantMessageId"/> re-sends: the one just before it, or the last
@@ -362,7 +362,8 @@ public sealed partial class ConversationOrchestrator
         if (remaining is null)
             return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
 
-        await SignalHistoryTruncatedAsync(pending.OnHistoryTruncated, remaining.Messages.Count);
+        await SignalHistoryTruncatedAsync(
+            pending.OnHistoryTruncated, new HistoryTruncation(retried, remaining.Messages.Count));
         return new TurnOutcome
         {
             Success = false,
@@ -561,24 +562,27 @@ public sealed partial class ConversationOrchestrator
         if (!admitted)
             return new TurnOutcome { Success = false, ErrorMessage = clientMessage, RemovedMessageId = pending.NewMessageId };
 
+        var errorRow = new ConversationMessage(
+            Guid.NewGuid(),
+            MessageRole.Assistant,
+            "[Error] The agent encountered an error.",
+            DateTimeOffset.UtcNow);
         try
         {
-            var errorMsg = new ConversationMessage(
-                Guid.NewGuid(),
-                MessageRole.Assistant,
-                "[Error] The agent encountered an error.",
-                DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, callerId, errorMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, errorRow, ct);
         }
         catch (Exception storeEx)
         {
+            // Not stored, so the client is not told about it either: both sides keep the same messages (#961).
             _logger.LogError(storeEx, "Failed to append error message to conversation {ConversationId}.", conversationId);
+            return new TurnOutcome { Success = false, ErrorMessage = clientMessage };
         }
 
         return new TurnOutcome
         {
             Success = false,
             ErrorMessage = clientMessage,
+            ErrorRow = errorRow,
         };
     }
 
