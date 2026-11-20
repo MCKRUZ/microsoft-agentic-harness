@@ -120,7 +120,7 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
     connection.on('HistoryTruncated', (payload: { conversationId: string; keepCount: number; fromMessageId?: string | null }) => {
       if (!isActiveConversation(payload.conversationId)) return;
       const fromMessageId = typeof payload.fromMessageId === 'string' ? payload.fromMessageId : null;
-      useChatStore.getState().truncateFrom(fromMessageId, payload.keepCount);
+      useChatStore.getState().truncateFrom(fromMessageId);
     });
 
     connection.on('Error', (payload: unknown) => {

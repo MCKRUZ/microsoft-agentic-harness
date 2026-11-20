@@ -41,15 +41,14 @@ describe('useChatStore', () => {
       { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
       { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
     ]);
-    store.truncateFrom('a1', 1);
+    store.truncateFrom('a1');
     const state = useChatStore.getState();
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]?.id).toBe('u1');
   });
 
-  it('truncateFrom cuts at the id even when the count disagrees with this list', () => {
-    // #961: the list keeps only the newest 200 messages, and a failed turn can leave it a message out of step, so the
-    // server's count is not a position in it. The id is.
+  it('truncateFrom cuts at the id, whatever the list holds before it', () => {
+    // #961: the list keeps only the newest 200 messages, so the server's count is not a position in it. The id is.
     const store = useChatStore.getState();
     store.setMessages([
       { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
@@ -57,7 +56,7 @@ describe('useChatStore', () => {
       { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
       { id: 'a2', role: 'assistant', content: 'retried reply', timestamp: new Date() },
     ]);
-    store.truncateFrom('a2', 250);
+    store.truncateFrom('a2');
     expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2']);
   });
 
@@ -68,18 +67,23 @@ describe('useChatStore', () => {
       { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
       { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
     ]);
-    store.truncateFrom(null, 0);
+    store.truncateFrom(null);
     expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1', 'a1']);
   });
 
-  it('truncateFrom falls back to the count when the named message is not shown', () => {
+  it('truncateFrom drops every shown message when the named one is older than the window', () => {
+    // A retry from the oldest shown reply removes the user message just before it, which the 200-message window may
+    // already have dropped. Everything shown comes after that message, so all of it goes; a count would keep it all.
     const store = useChatStore.getState();
     store.setMessages([
-      { id: 'u1', role: 'user', content: 'first', timestamp: new Date() },
-      { id: 'a1', role: 'assistant', content: 'reply', timestamp: new Date() },
+      { id: 'a1', role: 'assistant', content: 'oldest shown reply', timestamp: new Date() },
+      { id: 'u2', role: 'user', content: 'second', timestamp: new Date() },
     ]);
-    store.truncateFrom('not-shown', 1);
-    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['u1']);
+    store.setPendingEditMessage({ id: 'u-new', role: 'user', content: 'edited', timestamp: new Date() });
+    store.truncateFrom('windowed-out');
+    const state = useChatStore.getState();
+    expect(state.messages.map((m) => m.id)).toEqual(['u-new']);
+    expect(state.pendingEditMessage).toBeNull();
   });
 
   it('truncateFrom re-inserts the pending edit message after truncation', () => {
@@ -90,7 +94,7 @@ describe('useChatStore', () => {
     ]);
     // Simulate EditAndResubmit: client stages the edited user message, server truncates from the original.
     store.setPendingEditMessage({ id: 'u-new', role: 'user', content: 'edited user', timestamp: new Date() });
-    store.truncateFrom('u1', 0);
+    store.truncateFrom('u1');
 
     const state = useChatStore.getState();
     expect(state.messages).toHaveLength(1);

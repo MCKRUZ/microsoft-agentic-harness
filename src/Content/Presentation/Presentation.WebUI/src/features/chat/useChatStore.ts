@@ -40,11 +40,13 @@ interface ChatState {
   setMessages: (messages: ChatMessage[]) => void;
   /**
    * Applies a retry's or edit's truncation: drops the message with id `fromMessageId` and everything after it, then
-   * re-inserts a staged edit. The cut is anchored on the id, not on `keepCount`, because this list may not match the
-   * conversation position for position: it keeps only the newest 200 messages (#961). `null` means the conversation
-   * removed nothing. `keepCount` is used only when the named message is not in this list.
+   * re-inserts a staged edit. The cut is anchored on the id, not on the server's message count, because this list may
+   * not match the conversation position for position: it keeps only the newest 200 messages (#961). `null` means the
+   * conversation removed nothing. A named message this list does not show is older than every message it does show
+   * (a retry or edit always names a message the user picked from this list, or the one just before it), so everything
+   * shown goes.
    */
-  truncateFrom: (fromMessageId: string | null, keepCount: number) => void;
+  truncateFrom: (fromMessageId: string | null) => void;
   /**
    * Drops the message with this id, if shown. Used when the server says it removed a refused message from the
    * conversation, so the transcript stops showing text the conversation no longer holds (#1036).
@@ -77,9 +79,9 @@ export const useChatStore = create<ChatState>()((set) => ({
     return { messages: messages.length > 200 ? messages.slice(-200) : messages };
   }),
   setMessages: (messages) => set({ messages }),
-  truncateFrom: (fromMessageId, keepCount) => set((state) => {
+  truncateFrom: (fromMessageId) => set((state) => {
     const at = fromMessageId === null ? state.messages.length : state.messages.findIndex((m) => m.id === fromMessageId);
-    const kept = state.messages.slice(0, at >= 0 ? at : Math.max(0, keepCount));
+    const kept = at >= 0 ? state.messages.slice(0, at) : [];
     // An EditAndResubmit truncates the old user message; re-insert the edited replacement
     // so it stays visible in the transcript without waiting for a reload.
     const messages = state.pendingEditMessage ? [...kept, state.pendingEditMessage] : kept;
