@@ -1,3 +1,4 @@
+using Azure.Identity;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.Resilience;
@@ -70,6 +71,43 @@ public sealed class ProviderResiliencePipelineTests
 
         callCount.Should().Be(2);
         result.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Pipeline_UnreachableAzureCredential_TriggersRetry()
+    {
+        // A managed identity endpoint that did not answer can answer the next time (#957).
+        var config = CreateTestConfig(maxAttempts: 2);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var callCount = 0;
+
+        var result = await pipeline.ExecuteAsync(async ct =>
+        {
+            callCount++;
+            if (callCount == 1)
+                throw new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable.");
+            return CreateSuccessResponse();
+        }, CancellationToken.None);
+
+        callCount.Should().Be(2);
+        result.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Pipeline_RejectedAzureCredential_IsNotRetried()
+    {
+        var config = CreateTestConfig(maxAttempts: 3);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var callCount = 0;
+
+        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(_ =>
+        {
+            callCount++;
+            throw new AuthenticationFailedException("ClientCertificateCredential could not load the certificate.");
+        }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<AuthenticationFailedException>();
+        callCount.Should().Be(1, "asking again with the same rejected identity gets the same answer");
     }
 
     [Fact]

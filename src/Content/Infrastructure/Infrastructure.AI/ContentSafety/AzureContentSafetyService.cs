@@ -3,7 +3,6 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Resilience;
 using Azure;
 using Azure.AI.ContentSafety;
-using Azure.Identity;
 using Domain.AI.Constants;
 using Domain.AI.Models;
 using Domain.AI.Resilience;
@@ -29,10 +28,10 @@ namespace Infrastructure.AI.ContentSafety;
 /// <b>When screening cannot run</b> the call throws <see cref="ContentSafetyUnavailableException"/>, which is never a
 /// block: an outage is not a verdict on the text. Whether the request is then refused or let through unscreened is
 /// <c>ContentSafetyBehavior</c>'s decision. A failure counts as an outage when the harness's provider error classifier
-/// (<see cref="IProviderErrorClassifier"/>) recognises it as a transport fault, a timeout or a service-reported error;
-/// it unwraps the SDK's retry aggregate, so a host that cannot be reached is an outage after the retry as well as
-/// before it. Any request the SDK itself reports as failed is an outage too, as are a credential that cannot be
-/// obtained and a response that does not score every requested category. Anything else is a bug, not an outage, and
+/// (<see cref="IProviderErrorClassifier"/>) recognises it as a transport fault, a timeout, a service-reported error or
+/// a credential that could not get a token; it unwraps the SDK's retry aggregate, so a host that cannot be reached is
+/// an outage after the retry as well as before it. Any request the SDK itself reports as failed is an outage too, as
+/// is a response that does not score every requested category. Anything else is a bug, not an outage, and
 /// propagates as it is; so does the caller cancelling, even when a timeout raced the cancellation. The failure is
 /// logged with the classifier's reason (a rejected key or a wrong endpoint reads as a misconfiguration there, not as
 /// a passing outage) and without the text.
@@ -131,10 +130,6 @@ public sealed class AzureContentSafetyService : ITextContentSafetyService
                 options.Categories.Add(category);
             var analysis = (await _client.AnalyzeTextAsync(options, cancellationToken).ConfigureAwait(false)).Value;
             return analysis?.CategoriesAnalysis ?? [];
-        }
-        catch (AuthenticationFailedException ex)
-        {
-            throw Unavailable("credential unavailable", ex);
         }
         catch (Exception ex) when (Outage(ex, cancellationToken) is { } failure)
         {

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Runtime.CompilerServices;
 using Application.AI.Common.Interfaces.Resilience;
+using Azure.Identity;
 using Domain.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.Resilience;
@@ -32,6 +33,36 @@ public sealed class ResilientChatClientFatalErrorTests
         secondary.CallCount.Should().Be(
             0,
             "the key is shared configuration — rotating providers cannot fix it and only hides the cause");
+    }
+
+    [Fact]
+    public async Task GetResponse_RejectedAzureCredential_DoesNotTryTheNextProvider()
+    {
+        // A Foundry or Entra-authenticated client that cannot get a token throws with no HTTP status (#957).
+        var primary = new FakeChatClient(
+            () => new AuthenticationFailedException("ClientCertificateCredential could not load the certificate."));
+        var secondary = new FakeChatClient(() => new InvalidOperationException("must never be reached"));
+        var sut = CreateClient(primary, secondary);
+
+        var act = () => sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+
+        (await act.Should().ThrowAsync<ProviderFatalErrorException>())
+            .Which.ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
+        secondary.CallCount.Should().Be(0, "the identity is shared configuration, as an API key is");
+    }
+
+    [Fact]
+    public async Task GetResponse_UnreachableAzureCredential_StillFallsBackToTheNextProvider()
+    {
+        var primary = new FakeChatClient(
+            () => new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable."));
+        var secondary = new FakeChatClient("ok");
+        var sut = CreateClient(primary, secondary);
+
+        var response = await sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+
+        response.Should().NotBeNull();
+        secondary.CallCount.Should().Be(1, "a token endpoint that did not answer is an outage, and the next provider may not need it");
     }
 
     [Fact]

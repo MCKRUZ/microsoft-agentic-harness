@@ -283,6 +283,20 @@ public sealed class AzureContentSafetyServiceTests
     }
 
     [Fact]
+    public async Task ScreenAsync_TheCredentialIsRejected_ReportsUnavailable()
+    {
+        // The provider error classifier is the one definition of a credential failure (#957): this wording matches none
+        // of its patterns, so only its reading of the exception type turns it into an outage rather than a bug.
+        var rejecting = new FailingCredential(
+            () => new AuthenticationFailedException("ClientCertificateCredential could not load the certificate."));
+
+        var act = async () => await Service(credential: rejecting).ScreenAsync("anything", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ContentSafetyUnavailableException>();
+        _handler.Bodies.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ScreenAsync_Cancelled_PropagatesRatherThanReportingAnOutage()
     {
         _handler.Respond(Clean);
@@ -321,13 +335,16 @@ public sealed class AzureContentSafetyServiceTests
         options.Retry.NetworkTimeout.Should().Be(TimeSpan.FromSeconds(10));
     }
 
-    private sealed class FailingCredential : TokenCredential
+    private sealed class FailingCredential(Func<Exception>? failure = null) : TokenCredential
     {
+        private readonly Func<Exception> _failure =
+            failure ?? (() => new CredentialUnavailableException("No managed identity is assigned."));
+
         public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
-            throw new CredentialUnavailableException("No managed identity is assigned.");
+            throw _failure();
 
         public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
-            throw new CredentialUnavailableException("No managed identity is assigned.");
+            throw _failure();
     }
 
     private sealed class StubHandler : HttpMessageHandler

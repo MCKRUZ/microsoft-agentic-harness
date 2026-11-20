@@ -21,7 +21,7 @@ namespace Infrastructure.AI.Tests.Resilience;
 /// defect — a pipeline that recognised Anthropic's shape and silently ignored the two providers
 /// actually in the shipped fallback chain.
 /// </remarks>
-public sealed class DefaultProviderErrorClassifierTests
+public sealed partial class DefaultProviderErrorClassifierTests
 {
     [Theory]
     [InlineData(429)]
