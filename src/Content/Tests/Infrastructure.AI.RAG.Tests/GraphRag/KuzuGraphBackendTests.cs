@@ -286,4 +286,58 @@ public sealed class KuzuGraphBackendTests : IDisposable
         Assert.Equal(["e-owned"], deleted);
         Assert.Equal(2, await _sut.GetEdgeCountAsync());
     }
+
+    // ── Dispose ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Two instances on one file is a supported setup (see the class remarks). Disposing one while the other is open
+    /// must not wait for a lock the other holds: every app host in an AgentHub test class shares this file, and a
+    /// 30-second wait per dispose once made that suite take 21 minutes instead of 2 (#1059).
+    /// </summary>
+    [Fact]
+    public async Task Dispose_AnotherInstanceHoldsTheSameFile_ReturnsQuicklyAndLeavesTheOtherWorking()
+    {
+        // Arrange: _sut keeps the file open while a second instance on the same directory is disposed.
+        await _sut.AddNodesAsync([new GraphNode { Id = "n1", Name = "A", Type = "T", ChunkIds = ["c1"] }]);
+        var second = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
+
+        // Act: throws TimeoutException if the dispose waits on the other instance.
+        await Task.Run(second.Dispose).WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Assert
+        await _sut.AddNodesAsync([new GraphNode { Id = "n2", Name = "B", Type = "T", ChunkIds = ["c2"] }]);
+        Assert.NotNull(await _sut.GetNodeAsync("n1"));
+        Assert.NotNull(await _sut.GetNodeAsync("n2"));
+    }
+
+    /// <summary>
+    /// The other direction of the test above: the file stays in WAL mode, so the last instance's dispose must still
+    /// leave nothing open or behind. The -wal and -shm checks show closing the last handle removed the sidecars; the
+    /// directory delete shows every handle was released, which on Windows fails while a pooled handle holds graph.db.
+    /// </summary>
+    [Fact]
+    public async Task Dispose_OnlyInstanceOnTheFile_RemovesTheSidecarsAndReleasesTheDirectory()
+    {
+        // Arrange: a directory of its own, because _sut stays open on the class's directory.
+        var dataDir = Path.Combine(Path.GetTempPath(), $"kuzu_test_{Guid.NewGuid():N}");
+        try
+        {
+            // Act: the using block disposes the instance, even if seeding fails.
+            using (var lone = new KuzuGraphBackend(dataDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator()))
+            {
+                await lone.AddNodesAsync([new GraphNode { Id = "n1", Name = "A", Type = "T", ChunkIds = ["c1"] }]);
+            }
+
+            // Assert
+            Assert.False(File.Exists(Path.Combine(dataDir, "graph.db-wal")), "graph.db-wal was left behind.");
+            Assert.False(File.Exists(Path.Combine(dataDir, "graph.db-shm")), "graph.db-shm was left behind.");
+            Directory.Delete(dataDir, recursive: true);
+            Assert.False(Directory.Exists(dataDir));
+        }
+        finally
+        {
+            // Best-effort cleanup after a failure; an IOException here would hide the assertion that failed.
+            try { Directory.Delete(dataDir, recursive: true); } catch (IOException) { }
+        }
+    }
 }
