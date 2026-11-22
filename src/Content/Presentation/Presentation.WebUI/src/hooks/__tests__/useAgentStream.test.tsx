@@ -4,6 +4,7 @@ import { EventType } from '@ag-ui/core';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { useAgentStream } from '../useAgentStream';
 import { useChatStore } from '@/stores/chatStore';
+import catalog from '@/features/chat/widgets/widgetCatalog.json';
 
 const postToolResult = vi.fn<(threadId: string, callId: string, result: string) => Promise<void>>();
 
@@ -55,6 +56,9 @@ describe('useAgentStream — render_image round-trip', () => {
 
     const widgetMsg = useChatStore.getState().messages.find((m) => m.widget?.type === 'render_image');
     expect(widgetMsg?.widget?.args).toMatchObject({ url: 'https://example.com/cat.png', caption: 'Fluffy' });
+    // Stamped with the current version: an unstamped widget reads as version 1, so once render_image
+    // moves past 1 a live widget left unstamped would show the "no longer supported" placeholder.
+    expect(widgetMsg?.widget?.version).toBe(catalog.widgets.render_image);
   });
 
   it('accumulates argument deltas that arrive in multiple chunks', async () => {

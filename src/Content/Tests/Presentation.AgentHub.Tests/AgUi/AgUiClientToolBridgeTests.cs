@@ -126,6 +126,33 @@ public sealed class AgUiClientToolBridgeTests
     }
 
     /// <summary>
+    /// The saved widget carries the catalogue's version for its type (#342), so a later change to that
+    /// widget's argument shape can tell this saved copy apart from a current one. Version 3 rather than the
+    /// shipped 1, because 1 is also what an unstamped widget reads back as.
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_WidgetTool_StampsTheCatalogueVersion()
+    {
+        var accessor = new AgUiEventWriterAccessor
+        {
+            Writer = new CapturingEventWriter(), ThreadId = "thread-v", CallerId = "user-v",
+        };
+        var registry = new PendingToolCallRegistry();
+        var store = new RecordingConversationStore();
+        var catalog = new ClientWidgetCatalog(new Dictionary<string, int> { ["render_table"] = 3 });
+        var bridge = new AgUiClientToolBridge(accessor, registry, Options(), store, catalog,
+            NullLogger<AgUiClientToolBridge>.Instance, redactor: null);
+
+        var invokeTask = bridge.InvokeAsync("render_table", "{\"columns\":[\"Name\"],\"rows\":[[\"Ada\"]]}");
+        await WaitForAsync(() => ((CapturingEventWriter)accessor.Writer!).Events.Count >= 3);
+        var callId = ((ToolCallStartEvent)((CapturingEventWriter)accessor.Writer!).Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-v", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        store.Appended.Should().ContainSingle().Which.Message.Widget!.Version.Should().Be(3);
+    }
+
+    /// <summary>
     /// Client round-trip tool arguments are redacted before they stream to the browser — the same
     /// treatment the bundle SSE path applies, since this is an equally live exposure point that
     /// previously streamed arguments completely unredacted.
