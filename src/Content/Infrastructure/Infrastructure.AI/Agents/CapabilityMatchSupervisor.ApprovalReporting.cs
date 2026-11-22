@@ -36,9 +36,10 @@ public sealed partial class CapabilityMatchSupervisor
     /// caller sees.
     /// </para>
     /// <para>
-    /// Reports go out on <see cref="CancellationToken.None"/>, as the tool path's do: the most common
+    /// Reports go out on <see cref="CancellationToken.None"/>, not <paramref name="ct"/>: the most common
     /// reason to be reporting a cancellation is that <paramref name="ct"/> was cancelled, and reporting
-    /// on it would cancel the report before it was written.
+    /// on it would cancel the report before it was written. Each report is still time-limited by
+    /// <see cref="ScopedApprovalExecutionReporter"/>, so a hung audit store cannot hold the caller up.
     /// </para>
     /// </remarks>
     private async Task<DelegationAttempt> RetryApprovedDelegationAsync(
@@ -92,8 +93,18 @@ public sealed partial class CapabilityMatchSupervisor
                 escalationId, EscalationNotExecutedReason.RunCancelled, ApprovalReportedBy, CancellationToken.None),
             DelegationOutcome.NotStarted => _approvalReporter.ReportNotExecutedAsync(
                 escalationId, attempt.NotStartedReason!.Value, ApprovalReportedBy, CancellationToken.None),
-            _ => throw new InvalidOperationException($"Unhandled delegation outcome {attempt.Outcome}.")
+            // Never throw here: the delegation has already ended, and an exception now would turn its
+            // result into an error for the caller. An outcome this switch does not know is logged instead.
+            _ => LogUnreportedOutcome(escalationId, attempt.Outcome)
         };
+    }
+
+    private Task LogUnreportedOutcome(Guid escalationId, DelegationOutcome outcome)
+    {
+        _logger.LogError(
+            "Approved delegation for escalation {EscalationId} ended as {Outcome}, which has no execution " +
+            "report mapping; the approver was not told how it ended.", escalationId, outcome);
+        return Task.CompletedTask;
     }
 
     /// <summary>How a delegation ended, as distinct from the <see cref="DelegationResult"/> its caller sees.</summary>

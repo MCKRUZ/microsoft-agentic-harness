@@ -39,7 +39,7 @@ public sealed class ScopedApprovalExecutionReporterTests
         await Create(ScopeFactoryResolving(reporter.Object)).ReportSucceededAsync(id, "delegation", CancellationToken.None);
 
         reporter.Verify(r => r.ReportSucceededAsync(
-            new ApprovedCall(id, null), "delegation", CancellationToken.None), Times.Once);
+            new ApprovedCall(id, null), "delegation", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class ScopedApprovalExecutionReporterTests
             new ApprovedCall(id, null),
             new PreparedFailureText("Delegation timed out.", FailureTextSubstitution.None),
             "delegation",
-            CancellationToken.None), Times.Once);
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class ScopedApprovalExecutionReporterTests
 
         reporter.Verify(r => r.ReportNotExecutedAsync(
             new ApprovedCall(id, null), EscalationNotExecutedReason.NoAgentAvailable, "delegation",
-            CancellationToken.None), Times.Once);
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -106,5 +106,22 @@ public sealed class ScopedApprovalExecutionReporterTests
             Create(ScopeFactoryResolving(reporter.Object)).ReportSucceededAsync(Guid.NewGuid(), "delegation", CancellationToken.None));
 
         Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task AReportThatHangs_IsAbandonedAtTheTimeLimit_SoTheCallerIsNotHeldUp()
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        reporter.Setup(r => r.ReportSucceededAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<ApprovedCall, string, CancellationToken>(
+                async (_, _, ct) => await Task.Delay(Timeout.InfiniteTimeSpan, ct));
+        var scoped = new ScopedApprovalExecutionReporter(
+            ScopeFactoryResolving(reporter.Object), NullLogger.Instance, TimeSpan.FromMilliseconds(100));
+
+        var report = scoped.ReportSucceededAsync(Guid.NewGuid(), "delegation", CancellationToken.None);
+        var finished = await Task.WhenAny(report, Task.Delay(TimeSpan.FromSeconds(30)));
+
+        Assert.Same(report, finished);
+        await report;
     }
 }

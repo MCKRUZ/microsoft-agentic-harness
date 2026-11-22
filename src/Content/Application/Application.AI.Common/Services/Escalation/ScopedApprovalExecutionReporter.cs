@@ -26,22 +26,34 @@ namespace Application.AI.Common.Services.Escalation;
 /// approved delegation that succeeded into an error its caller may retry.
 /// </para>
 /// <para>
+/// <strong>Every report is time-limited</strong> (<see cref="DefaultReportTimeout"/> unless the
+/// constructor says otherwise), on top of whatever token the caller passes. Both sites report on the
+/// caller's own path after the approved action has ended, so a hung audit store or notifier must not
+/// hold that caller up indefinitely.
+/// </para>
+/// <para>
 /// A fresh scope still reaches the approver: the AG-UI notifier finds its writer through an
 /// <c>AsyncLocal</c>, which flows into a new scope on the same async path.
 /// </para>
 /// </remarks>
 public sealed class ScopedApprovalExecutionReporter
 {
+    /// <summary>How long one report may take before it is abandoned, unless the constructor sets another limit.</summary>
+    public static readonly TimeSpan DefaultReportTimeout = TimeSpan.FromSeconds(5);
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger _logger;
+    private readonly TimeSpan _reportTimeout;
 
     /// <summary>Creates the reporter.</summary>
     /// <param name="scopeFactory">Opens the scope each report resolves the reporter from.</param>
     /// <param name="logger">The owning service's logger, so a failed report is logged under the site that made it.</param>
-    public ScopedApprovalExecutionReporter(IServiceScopeFactory scopeFactory, ILogger logger)
+    /// <param name="reportTimeout">How long one report may take; <see cref="DefaultReportTimeout"/> when null.</param>
+    public ScopedApprovalExecutionReporter(IServiceScopeFactory scopeFactory, ILogger logger, TimeSpan? reportTimeout = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _reportTimeout = reportTimeout ?? DefaultReportTimeout;
     }
 
     /// <summary>Reports that the approved action ran and completed.</summary>
@@ -49,7 +61,7 @@ public sealed class ScopedApprovalExecutionReporter
     /// <param name="reportedBy">The calling site; see <see cref="IApprovalExecutionReporter.ReportSucceededAsync"/>.</param>
     /// <param name="ct">Bounds the report itself, not the action.</param>
     public Task ReportSucceededAsync(Guid escalationId, string reportedBy, CancellationToken ct) =>
-        ReportAsync(escalationId, (reporter, call) => reporter.ReportSucceededAsync(call, reportedBy, ct));
+        ReportAsync(escalationId, ct, (reporter, call, bounded) => reporter.ReportSucceededAsync(call, reportedBy, bounded));
 
     /// <summary>Reports that the approved action ran and failed.</summary>
     /// <param name="escalationId">The escalation whose approval permitted the action.</param>
@@ -61,8 +73,8 @@ public sealed class ScopedApprovalExecutionReporter
     /// <param name="reportedBy">The calling site; see <see cref="IApprovalExecutionReporter.ReportSucceededAsync"/>.</param>
     /// <param name="ct">Bounds the report itself, not the action.</param>
     public Task ReportFailedAsync(Guid escalationId, string fixedFailureText, string reportedBy, CancellationToken ct) =>
-        ReportAsync(escalationId, (reporter, call) => reporter.ReportFailedAsync(
-            call, new PreparedFailureText(fixedFailureText, FailureTextSubstitution.None), reportedBy, ct));
+        ReportAsync(escalationId, ct, (reporter, call, bounded) => reporter.ReportFailedAsync(
+            call, new PreparedFailureText(fixedFailureText, FailureTextSubstitution.None), reportedBy, bounded));
 
     /// <summary>Reports that the approved action never ran.</summary>
     /// <param name="escalationId">The escalation whose approval permitted the action.</param>
@@ -71,12 +83,17 @@ public sealed class ScopedApprovalExecutionReporter
     /// <param name="ct">Bounds the report itself, not the action.</param>
     public Task ReportNotExecutedAsync(
         Guid escalationId, EscalationNotExecutedReason reason, string reportedBy, CancellationToken ct) =>
-        ReportAsync(escalationId, (reporter, call) => reporter.ReportNotExecutedAsync(call, reason, reportedBy, ct));
+        ReportAsync(escalationId, ct, (reporter, call, bounded) => reporter.ReportNotExecutedAsync(call, reason, reportedBy, bounded));
 
-    private async Task ReportAsync(Guid escalationId, Func<IApprovalExecutionReporter, ApprovedCall, ValueTask> report)
+    private async Task ReportAsync(
+        Guid escalationId,
+        CancellationToken ct,
+        Func<IApprovalExecutionReporter, ApprovedCall, CancellationToken, ValueTask> report)
     {
         try
         {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(_reportTimeout);
             await using var scope = _scopeFactory.CreateAsyncScope();
             var reporter = scope.ServiceProvider.GetService<IApprovalExecutionReporter>();
             if (reporter is null)
@@ -88,7 +105,7 @@ public sealed class ScopedApprovalExecutionReporter
                 return;
             }
 
-            await report(reporter, new ApprovedCall(escalationId, Key: null)).ConfigureAwait(false);
+            await report(reporter, new ApprovedCall(escalationId, Key: null), bounded.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
