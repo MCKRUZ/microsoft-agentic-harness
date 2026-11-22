@@ -1,10 +1,12 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Escalation;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -41,6 +43,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
     private readonly IContentRedactionFilter _contentRedactionFilter;
     private readonly IMagenticProgressNotifier _progress;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ScopedApprovalExecutionReporter _approvalReporter;
     private readonly ILogger<MagenticOrchestrator> _logger;
 
     /// <summary>Creates a new orchestrator.</summary>
@@ -52,6 +55,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
         IMagenticProgressNotifier progress,
+        IServiceScopeFactory scopeFactory,
         ILoggerFactory loggerFactory)
     {
         _spanEmitter = spanEmitter;
@@ -63,6 +67,10 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         _progress = progress;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<MagenticOrchestrator>();
+        // The orchestrator is a singleton and IApprovalExecutionReporter is scoped, so each report
+        // opens its own scope (#395).
+        _approvalReporter = new ScopedApprovalExecutionReporter(
+            scopeFactory, loggerFactory.CreateLogger<MagenticEventSubscriber>());
     }
 
     /// <inheritdoc />
@@ -83,6 +91,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             _sanitizer,
             _contentRedactionFilter,
             _progress,
+            _approvalReporter,
             _loggerFactory.CreateLogger<MagenticEventSubscriber>());
 
         subscriber.StartWorkflow(request, workflowName, workflowId);
@@ -139,7 +148,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return await FailAndEndSpanAsync(subscriber, "magentic.cancelled").ConfigureAwait(false);
+            return await FailAndEndSpanAsync(subscriber, MagenticEventSubscriber.CancelledErrorCode).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

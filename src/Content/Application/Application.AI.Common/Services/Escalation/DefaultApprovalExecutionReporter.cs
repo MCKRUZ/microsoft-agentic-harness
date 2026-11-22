@@ -46,7 +46,7 @@ public sealed class DefaultApprovalExecutionReporter : IApprovalExecutionReporte
         ReportAsync(
             call,
             () => EscalationExecutionRecord.Succeeded(call.EscalationId, _timeProvider.GetUtcNow(), reportedBy),
-            onRecorded: () => _failureMemory.Clear(call.Key),
+            onRecorded: call.Key is { } key ? () => _failureMemory.Clear(key) : null,
             ct);
 
     /// <inheritdoc />
@@ -56,8 +56,9 @@ public sealed class DefaultApprovalExecutionReporter : IApprovalExecutionReporte
             call,
             () => EscalationExecutionRecord.Failed(
                 call.EscalationId, failureReason.Text, failureReason.Substitution, _timeProvider.GetUtcNow(), reportedBy),
-            onRecorded: () => _failureMemory.RecordFailure(
-                call.Key, failureReason.Text, failureReason.Substitution, call.EscalationId),
+            onRecorded: call.Key is { } key
+                ? () => _failureMemory.RecordFailure(key, failureReason.Text, failureReason.Substitution, call.EscalationId)
+                : null,
             ct);
 
     /// <inheritdoc />

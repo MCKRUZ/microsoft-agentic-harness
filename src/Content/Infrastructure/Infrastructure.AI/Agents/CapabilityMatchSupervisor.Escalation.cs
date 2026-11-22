@@ -75,7 +75,7 @@ public sealed partial class CapabilityMatchSupervisor
             PredecessorEscalationId = predecessorEscalationId
         };
 
-    private async Task<DelegationResult?> HandleAutonomyEscalationAsync(
+    private async Task<DelegationAttempt?> HandleAutonomyEscalationAsync(
         string taskDescription,
         IReadOnlyList<string> requiredCapabilities,
         AutonomyLevel minimumTier,
@@ -147,16 +147,16 @@ public sealed partial class CapabilityMatchSupervisor
             _logger.LogInformation("Escalation {EscalationId} approved — retrying delegation with Restricted tier",
                 outcome.EscalationId);
 
-            // +1: an approved-escalation retry is another attempt at the same delegation, not a
-            // fresh call — without advancing depth here, an approver who keeps approving (or a
-            // misconfigured selector that never finds a match) could retry indefinitely with
-            // MaxDelegationDepth never tripping.
-            return await DelegateAsync(
-                taskDescription, requiredCapabilities, AutonomyLevel.Restricted,
-                currentDelegationDepth + 1, toolOverrides, ct);
+            return await RetryApprovedDelegationAsync(
+                outcome.EscalationId, taskDescription, requiredCapabilities, currentDelegationDepth,
+                toolOverrides, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Pre-existing, left as it was by #395: this also catches an approved retry that threw, and
+            // the caller then reads "No capable agent found" for a delegation that was found and
+            // started. The approver is still told the truth: RetryApprovedDelegationAsync reports the
+            // failure before rethrowing into here.
             _logger.LogError(ex,
                 "Escalation service failed for delegation {TaskDescription} — denying (fail-closed)",
                 taskDescription);
@@ -176,7 +176,7 @@ public sealed partial class CapabilityMatchSupervisor
     /// empty escalated roster denies (fail-closed) — the same posture as an empty tier-1 roster in
     /// <see cref="HandleAutonomyEscalationAsync"/>.
     /// </summary>
-    private async Task<DelegationResult?> HandleEscalatedTierAsync(
+    private async Task<DelegationAttempt?> HandleEscalatedTierAsync(
         EscalationOutcome tier1Outcome,
         string taskDescription,
         IReadOnlyList<string> requiredCapabilities,
@@ -235,14 +235,15 @@ public sealed partial class CapabilityMatchSupervisor
             "Escalated-tier escalation {EscalationId} approved — retrying delegation with Restricted tier",
             tier2Outcome.EscalationId);
 
-        // Restricted, not tier1Outcome.EscalatedToTier — see this method's remarks. +1 for the
-        // same unbounded-retry reason as the ordinary-approval retry in HandleAutonomyEscalationAsync.
-        return await DelegateAsync(
-            taskDescription, requiredCapabilities, AutonomyLevel.Restricted,
-            currentDelegationDepth + 1, toolOverrides, ct);
+        // Restricted, not tier1Outcome.EscalatedToTier — see this method's remarks. Reported under the
+        // tier-2 escalation, since that is the approval that let this run; the tier-1 escalation was
+        // never approved, so it has no outcome to report.
+        return await RetryApprovedDelegationAsync(
+            tier2Outcome.EscalationId, taskDescription, requiredCapabilities, currentDelegationDepth,
+            toolOverrides, ct);
     }
 
-    private async Task<DelegationResult> ExecuteAndTrack(
+    private async Task<DelegationAttempt> ExecuteAndTrack(
         Guid delegationId,
         DelegationRecord pendingRecord,
         AgentSelection selection,
@@ -258,7 +259,9 @@ public sealed partial class CapabilityMatchSupervisor
         if (!acquired)
         {
             await RecordFailure(pendingRecord, "Concurrency semaphore acquisition timed out.", ct);
-            return DelegationResult.Fail("Concurrency semaphore acquisition timed out.");
+            return DelegationAttempt.NotStarted(
+                DelegationResult.Fail("Concurrency semaphore acquisition timed out."),
+                EscalationNotExecutedReason.DelegationCapacityExhausted);
         }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -267,13 +270,17 @@ public sealed partial class CapabilityMatchSupervisor
 
         try
         {
-            return await ExecuteAgent(pendingRecord, selection, toolOverrides, currentDepth, stopwatch, cts.Token);
+            return DelegationAttempt.Succeeded(
+                await ExecuteAgent(pendingRecord, selection, toolOverrides, currentDepth, stopwatch, cts.Token));
         }
         catch (OperationCanceledException)
         {
-            var reason = ct.IsCancellationRequested ? "Delegation cancelled." : "Delegation timed out.";
+            var callerCancelled = ct.IsCancellationRequested;
+            var reason = callerCancelled ? "Delegation cancelled." : "Delegation timed out.";
             await RecordCancellation(pendingRecord, reason, ct);
-            return DelegationResult.Fail(reason);
+            return callerCancelled
+                ? DelegationAttempt.Cancelled(DelegationResult.Fail(reason))
+                : DelegationAttempt.Failed(DelegationResult.Fail(reason), ApprovedDelegationTimedOut);
         }
         catch (Exception ex)
         {
@@ -286,7 +293,7 @@ public sealed partial class CapabilityMatchSupervisor
                 delegationId, selection.SelectedAgent.AgentId);
             var reason = SafeFailureText.For("Delegation failed", ex);
             await RecordFailure(pendingRecord, reason, ct);
-            return DelegationResult.Fail(reason);
+            return DelegationAttempt.Failed(DelegationResult.Fail(reason), reason);
         }
         finally
         {

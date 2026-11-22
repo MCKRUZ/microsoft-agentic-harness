@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Escalation;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.AI.Telemetry.Redaction;
@@ -38,7 +39,7 @@ namespace Infrastructure.AI.Orchestration.Magentic;
 /// each subsequent <see cref="MagenticReplannedEvent"/> increments it.
 /// </para>
 /// </remarks>
-public sealed class MagenticEventSubscriber : IDisposable
+public sealed partial class MagenticEventSubscriber : IDisposable
 {
     private readonly MagenticSpanEmitter _emitter;
     private readonly IMagenticPlanReviewBridge _planReviewBridge;
@@ -107,9 +108,11 @@ public sealed class MagenticEventSubscriber : IDisposable
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
         IMagenticProgressNotifier progress,
+        ScopedApprovalExecutionReporter approvalReporter,
         ILogger<MagenticEventSubscriber> logger,
         TimeSpan? terminalReportTimeout = null)
     {
+        _approvalReporter = approvalReporter;
         _emitter = emitter;
         _planReviewBridge = planReviewBridge;
         _changeProposalRouter = changeProposalRouter;
@@ -337,6 +340,8 @@ public sealed class MagenticEventSubscriber : IDisposable
         _planReviewCount++;
         _stalledOnLastPlanReview = review.IsStalled;
 
+        await CloseSupersededApprovalAsync().ConfigureAwait(false);
+
         _planReviewSpan = _emitter.StartPlanReviewSpan(
             _managerSpan,
             review.IsStalled,
@@ -383,6 +388,9 @@ public sealed class MagenticEventSubscriber : IDisposable
         MagenticSpanEmitter.EndPlanReviewSpan(_planReviewSpan, outcome.Approved);
         _planReviewSpan = null;
 
+        if (outcome.Approved)
+            _openApproval = outcome.EscalationId;
+
         var response = outcome.Approved
             ? review.Approve()
             : review.Revise(outcome.RevisionFeedback ?? "Plan revised by reviewer.");
@@ -415,14 +423,29 @@ public sealed class MagenticEventSubscriber : IDisposable
             _workflowId, _workflowName, participants, ct), ct);
     }
 
-    /// <summary>Reports that the workflow ended with a result, to the progress notifier.</summary>
-    public Task NotifyCompletedAsync(string completionReason, CancellationToken ct)
-        => ReportTerminalAsync("completed", t => _progress.NotifyWorkflowCompletedAsync(
-            _workflowId, completionReason, _roundCount, t), ct);
+    /// <summary>
+    /// Reports that the workflow ended with a result, to the progress notifier and to the approver of the
+    /// plan that ran, if one did.
+    /// </summary>
+    public async Task NotifyCompletedAsync(string completionReason, CancellationToken ct)
+    {
+        await ReportTerminalAsync("completed", t => _progress.NotifyWorkflowCompletedAsync(
+            _workflowId, completionReason, _roundCount, t), ct).ConfigureAwait(false);
+        await CloseApprovalOnCompletionAsync(completionReason).ConfigureAwait(false);
+    }
 
-    /// <summary>Reports that the workflow ended without a usable result, to the progress notifier.</summary>
-    public Task NotifyFailedAsync(string errorCode, CancellationToken ct)
-        => ReportTerminalAsync("failed", t => _progress.NotifyWorkflowFailedAsync(_workflowId, errorCode, t), ct);
+    /// <summary>
+    /// Reports that the workflow ended without a usable result, to the progress notifier and to the
+    /// approver of the plan that ran, if one did.
+    /// </summary>
+    /// <param name="errorCode">A stable code the orchestrator chose; never model or exception text.</param>
+    /// <param name="ct">The run's token. Not used for the reports themselves; see <see cref="ReportTerminalAsync"/>.</param>
+    public async Task NotifyFailedAsync(string errorCode, CancellationToken ct)
+    {
+        await ReportTerminalAsync("failed", t => _progress.NotifyWorkflowFailedAsync(_workflowId, errorCode, t), ct)
+            .ConfigureAwait(false);
+        await CloseApprovalOnFailureAsync(errorCode).ConfigureAwait(false);
+    }
 
     // Sanitize, then redact, then bound: the same order every other trust-boundary exit uses (#470), so an
     // invisible character cannot split a secret past the redaction patterns. The plan and the manager's

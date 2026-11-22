@@ -41,7 +41,7 @@ public sealed class DefaultApprovalExecutionReporterTests
         await Create().ReportSucceededAsync(call, "tool-invocation", CancellationToken.None);
 
         Assert.Equal(["audit", "notify"], order);
-        _failureMemory.Verify(m => m.Clear(call.Key), Times.Once);
+        _failureMemory.Verify(m => m.Clear(call.Key!.Value), Times.Once);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class DefaultApprovalExecutionReporterTests
         await Create().ReportFailedAsync(call, new PreparedFailureText("permission denied", FailureTextSubstitution.None), "tool-invocation", CancellationToken.None);
 
         _failureMemory.Verify(
-            m => m.RecordFailure(call.Key, "permission denied", FailureTextSubstitution.None, call.EscalationId), Times.Once);
+            m => m.RecordFailure(call.Key!.Value, "permission denied", FailureTextSubstitution.None, call.EscalationId), Times.Once);
         _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
     }
 
@@ -187,5 +187,24 @@ public sealed class DefaultApprovalExecutionReporterTests
             () => Create().ReportFailedAsync(Call(), new PreparedFailureText("boom", FailureTextSubstitution.None), "tool-invocation", cts.Token).AsTask());
 
         Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task AReportWithNoFailureKey_IsAuditedAndNotified_ButLeavesFailureMemoryAlone()
+    {
+        // #395: a delegation or a Magentic plan review has no tool call failure memory is ever consulted
+        // for, so it reports with no key — the approver still hears, and memory takes no orphan entry.
+        var call = new ApprovedCall(Guid.NewGuid(), Key: null);
+        var reporter = Create();
+
+        await reporter.ReportSucceededAsync(call, "delegation", CancellationToken.None);
+        await reporter.ReportFailedAsync(
+            call, new PreparedFailureText("Delegation timed out.", FailureTextSubstitution.None), "delegation", CancellationToken.None);
+
+        _auditStore.Verify(
+            s => s.RecordExecutionAsync(It.IsAny<EscalationExecutionRecord>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _notifier.Verify(
+            n => n.NotifyExecutionReportedAsync(It.IsAny<EscalationExecutionRecord>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _failureMemory.VerifyNoOtherCalls();
     }
 }
