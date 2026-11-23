@@ -1,0 +1,1839 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-23T15:56:37.630Z",
+  "repo": "MCKRUZ/microsoft-agentic-harness",
+  "window": {
+    "label": "2026-W47",
+    "since": "2026-11-16T00:00:00.000Z",
+    "until": "2026-11-23T00:00:00.000Z",
+    "until_exclusive": true,
+    "days": 7,
+    "iso_week_of_since": "2026-W47"
+  },
+  "instrument": {
+    "script": "scripts/rails/collect-review-metrics.mjs",
+    "git_ref": "origin/main",
+    "window_end_commit": "cb012c770794a0c40a538ca60e2fa2439a59d945"
+  },
+  "definitions": {
+    "version": 1,
+    "window": "PRs whose mergedAt is in [since, until) UTC; per_week values = count * 7 / window days",
+    "review_fix_commit": {
+      "rule": "a non-merge PR commit (parents < 2) whose subject matches scope OR whose description (subject minus type prefix) matches description",
+      "subject": "first line of the full commit message (never GraphQL messageHeadline, which truncates)",
+      "scope": "/^(?:review(?:\\([^)]*\\))?|\\w+\\((?:[^)]*[,/ ])?review-(?:fix(?:es)?|follow-?ups?)\\))!?:/i",
+      "type_prefix": "/^\\w+(?:\\([^)]*\\))?!?:\\s*/",
+      "description": "/\\bfindings?\\b|\\b(?:review\\w*|correctness|run-gates|grader)\\b[^,;]{0,25}\\badvisor(?:y|ies)\\b|\\badvisor(?:y|ies)\\b[^,;]{0,40}\\breview(?:ers?|s)?\\b|\\b(?:review(?:ers?|s)?|grader|run-gates)\\b[^,;]{0,30}?\\b(?:found|flagged|caught|raised|follow-?ups?|fix(?:es)?|cleanups?|hardening)\\b|\\b(?:review(?:ers?|s)?|simplify|grader|run-gates)\\s+(?:round|pass)\\b|\\b(?:found|flagged|caught|raised)\\b[^,;]{0,35}?\\b(?:review(?:ers?|s)?|grader|run-gates|gates?|CI)\\b|\\bgates?\\s+(?:found|flagged|caught)\\b|\\b(?:after|per|from|act on|address(?:es|ed)?|appl(?:y|ies|ied))\\s+(?:the\\s+|a\\s+)?(?:[\\w#/'-]+\\s+){0,3}?(?:[\\w/]+-)?review(?:ers?)?\\b(?!\\s+(?:cycle|skill|receipts?|process|rails?|agents?|bridge|artifacts?|content|models?|gates?)\\b)|\\((?:#\\d+\\s+|PR\\s+#?\\d+\\s+)?\\/?(?:code-|security-|correctness-)?(?:review|simplify)(?:\\s+fix(?:es)?)?(?:,[^)]*)?\\)|\\bround[- ]?\\d+[a-z]?\\b|\\b(?:\\d+(?:st|nd|rd|th)|second|third|fourth|fifth|sixth|final)[- ](?:(?:\\/?code-review|security-review|correctness-review|review|\\/?simplify|run-gates|grader)\\s+)?(?:round|pass)\\b(?!-)|\\breview(?:er)?'s\\b[^,;]{0,30}?\\bgaps?\\b|\\/simplify\\b|\\bsimplify\\s+(?:review|findings?|fix(?:es)?|cleanups?)\\b/i",
+      "share": "review-fix commits / non-merge commits, over all PRs merged in the window"
+    },
+    "revert": {
+      "regex": "/^(?:Revert\\b|revert(?:\\([^)]*\\))?!?:)/",
+      "source": "git log <ref> --since --until (all commits reachable from main, not first-parent)"
+    },
+    "incident_label": "/^incident(?::.*)?$/",
+    "weekly_file": "/^(\\d{4}-W\\d{2})\\.json$/",
+    "ci_runs": {
+      "workflows": [
+        ".github/workflows/correctness-review.yml",
+        ".github/workflows/security-review.yml",
+        ".github/workflows/grader.yml"
+      ],
+      "matching": "workflow runs with event=pull_request, head_branch = PR head branch, created_at in [PR createdAt, PR mergedAt]",
+      "runs": "every matched run, any conclusion (latest attempt only, as the runs API lists it)",
+      "verdict_runs": "matched runs that concluded success or failure (excludes cancelled-by-concurrency and skipped)",
+      "rounds_to_pass_ci": "ci_correctness_runs = correctness-review runs per PR, any conclusion (the definition behind the review-process plan's §0 figure of 2.02); ci_correctness_verdict_runs = verdict_runs only"
+    },
+    "verdict_comments": {
+      "author_logins": [
+        "github-actions",
+        "github-actions[bot]"
+      ],
+      "kind": {
+        "correctness": "/^\\s*(?:<!--\\s*correctness-review\\s*-->\\s*)?##\\s*Correctness review\\b/i",
+        "grader": "/^\\s*(?:<!--\\s*grader(?:-verdict)?\\s*-->\\s*)?##\\s*Grader verdict\\b/i",
+        "security": "/^\\s*(?:<!--[^>]*-->\\s*)?##\\s*Security review\\b/i"
+      },
+      "correctness": {
+        "order": "inline Blocking-defects section, else heading Blocking-defects section (\"none\" = correct, any other content = defects-found), else first token",
+        "inline_section": "/\\*\\*Blocking defects:?\\*\\*:?[ \\t]*([^\\n]*)/i",
+        "heading_section": "/^#{2,4}[ \\t]*Blocking defects[ \\t]*:?[ \\t]*\\n([\\s\\S]*?)(?=^#{2,4}[ \\t]|(?![\\s\\S]))/im",
+        "section_none": "/^\\W*none\\b/i",
+        "token": "/\\b(DEFECTS FOUND|CORRECT)\\b/"
+      },
+      "grader": "/\\bLOOKS (GOOD|RISKY)\\b/",
+      "security": "/\\b(PASS|BLOCK)\\b/",
+      "final_per_pr": "verdict of the last comment of that kind on the PR"
+    },
+    "conventions": {
+      "tier_label": "/^tier:([012])$/",
+      "review_rounds": "/^Review-rounds:[ \\t]*(\\d+|cap)[ \\t]*$/im",
+      "reviewed_minutes": "/^Reviewed:[ \\t]*(\\d+(?:\\.\\d+)?)[ \\t]*min\\b/im in a PR comment by human_reviewer; last one wins",
+      "signoff": "/^Reviewed-by:[ \\t]*@MCKRUZ[ \\t]+([0-9a-f]{7,40})[ \\t]+[—–-]/im",
+      "finding_marker": "/^\\s*<!--\\s*rail:(correctness|security|deep-review)\\s+sha=([0-9a-f]{7,40})\\s+anchor=(\\S+)\\s+class=([a-z0-9-]+)\\s+tag=(important|nit|pre-existing)\\s*-->/i on the first comment of an inline review thread",
+      "severity_tag": "/^\\s*\\[(Important|Nit|Pre-existing)\\]/i",
+      "disposition": "/^Disposition:[ \\t]*(fixed|wrong|intentional|didnt-matter)[ \\t]*(?:—|–|--?)[ \\t]*(\\S.*)$/im in any reply on the finding's thread; last one wins"
+    },
+    "noise_rate": "(wrong + didnt-matter) / (fixed + wrong + intentional + didnt-matter), over marker-carrying findings",
+    "human_reviewer": "MCKRUZ",
+    "matt_comments": {
+      "rule": "issue comments, non-empty review bodies and inline comments authored by human_reviewer, minus those matching convention_comment. UPPER BOUND: agents post with the same token, so their comments are counted too",
+      "convention_comment": "/^\\s*(?:Disposition:|Reviewed:|Reviewed-by:)/i"
+    },
+    "no_data": "\"no data\" means the convention that produces the value has not been used in the window. It is never written for a failed API call (the run fails instead) and never for a real zero",
+    "percentile": "linear interpolation between closest ranks: rank = p/100 * (n-1) over ascending values (numpy default, Excel PERCENTILE.INC); median = p50",
+    "checks": "required = live rules/branches/main and committed .github/rulesets/*.json targeting the default branch; declared = static read of pull_request-triggered workflow job names (matrix expanded) plus literal commit-status contexts; observed = check runs and statuses on the head commit of every PR in the window",
+    "claude_md_bytes": "size of CLAUDE.md at the last first-parent commit on main before until"
+  },
+  "aggregates": {
+    "pr_count": 25,
+    "prs_per_week": 25,
+    "open_to_merge_hours": {
+      "n": 25,
+      "mean": 6.5,
+      "median": 1.16,
+      "p90": 28.51,
+      "max": 35.71
+    },
+    "changed_lines": {
+      "n": 25,
+      "mean": 486.04,
+      "median": 316,
+      "p90": 856.6,
+      "max": 3067
+    },
+    "changed_files": {
+      "n": 25,
+      "mean": 10.12,
+      "median": 7,
+      "p90": 22.6,
+      "max": 33
+    },
+    "commits_per_pr": {
+      "n": 25,
+      "mean": 2.36,
+      "median": 2,
+      "p90": 5,
+      "max": 6
+    },
+    "prs_with_truncated_commit_list": 0,
+    "review_fix": {
+      "commits": 1,
+      "non_merge_commits": 59,
+      "share": 0.0169,
+      "per_pr": {
+        "n": 25,
+        "mean": 0.04,
+        "median": 0,
+        "p90": 0,
+        "max": 1
+      },
+      "prs_with_at_least": {
+        "1": 1,
+        "2": 0,
+        "3": 0
+      },
+      "share_of_prs_with_at_least": {
+        "1": 0.04,
+        "2": 0,
+        "3": 0
+      },
+      "per_week": 1
+    },
+    "ci": {
+      "correctness-review": {
+        "runs_per_pr": {
+          "n": 25,
+          "mean": 2.64,
+          "median": 3,
+          "p90": 4,
+          "max": 4
+        },
+        "verdict_runs_per_pr": {
+          "n": 25,
+          "mean": 1.28,
+          "median": 1,
+          "p90": 2,
+          "max": 3
+        },
+        "runs_total": 66,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 10,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      },
+      "security-review": {
+        "runs_per_pr": {
+          "n": 25,
+          "mean": 2.68,
+          "median": 3,
+          "p90": 4,
+          "max": 4
+        },
+        "verdict_runs_per_pr": {
+          "n": 25,
+          "mean": 1.92,
+          "median": 2,
+          "p90": 3,
+          "max": 3
+        },
+        "runs_total": 67,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 19,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      },
+      "grader": {
+        "runs_per_pr": {
+          "n": 25,
+          "mean": 1.92,
+          "median": 2,
+          "p90": 3,
+          "max": 3
+        },
+        "verdict_runs_per_pr": {
+          "n": 25,
+          "mean": 1.32,
+          "median": 1,
+          "p90": 2,
+          "max": 3
+        },
+        "runs_total": 48,
+        "failed_runs_total": 0,
+        "cancelled_runs_total": 0,
+        "prs_with_failed_run": 0,
+        "prs_with_no_run": 0
+      }
+    },
+    "rounds_to_pass": {
+      "ci_correctness_runs": {
+        "n": 25,
+        "mean": 2.64,
+        "median": 3,
+        "p90": 4,
+        "max": 4
+      },
+      "ci_correctness_verdict_runs": {
+        "n": 25,
+        "mean": 1.28,
+        "median": 1,
+        "p90": 2,
+        "max": 3
+      },
+      "local": {
+        "prs_reporting": 2,
+        "cap_hit": 0,
+        "rounds": {
+          "n": 2,
+          "mean": 2.5,
+          "median": 2.5,
+          "p90": 2.9,
+          "max": 3
+        }
+      }
+    },
+    "verdicts": {
+      "correctness": {
+        "comments": {
+          "unclassified": 1,
+          "correct": 2
+        },
+        "final_per_pr": {
+          "unclassified": 1,
+          "correct": 2
+        },
+        "prs_without_comment": 22
+      },
+      "grader": {
+        "comments": {
+          "looks-good": 21,
+          "looks-risky": 2
+        },
+        "final_per_pr": {
+          "looks-good": 18,
+          "looks-risky": 1
+        },
+        "prs_without_comment": 6
+      },
+      "security": {
+        "comments": {
+          "pass": 17
+        },
+        "final_per_pr": {
+          "pass": 12
+        },
+        "prs_without_comment": 13
+      }
+    },
+    "matt_comments": {
+      "total": 1,
+      "prs_with_any": 1
+    },
+    "findings": {
+      "by_tag": "no data",
+      "by_disposition": "no data",
+      "by_reviewer": "no data",
+      "noise_rate": "no data"
+    },
+    "matt_minutes_by_tier": "no data",
+    "tier_distribution": "no data",
+    "tier2_signoffs": "no data"
+  },
+  "guardrails": {
+    "reverts": {
+      "count": 0,
+      "per_week": 0,
+      "commits": []
+    },
+    "incident_issues_opened": "no data",
+    "incident_labels": "no data",
+    "open_breakers": {
+      "count": 0,
+      "issues": []
+    }
+  },
+  "gates": {
+    "checks": {
+      "required_live": [
+        "OWASP Agentic Top-10 Gate",
+        "build-and-test",
+        "correctness-review",
+        "frontend (Presentation.Dashboard)",
+        "frontend (Presentation.WebUI)",
+        "security-review"
+      ],
+      "required_committed": [
+        "OWASP Agentic Top-10 Gate",
+        "build-and-test",
+        "correctness-review",
+        "frontend (Presentation.Dashboard)",
+        "frontend (Presentation.WebUI)",
+        "security-review"
+      ],
+      "required_not_declared": [],
+      "required_not_observed": [],
+      "committed_not_live": [],
+      "live_not_committed": [],
+      "committed_not_declared": [],
+      "observed_not_required": [
+        "AgentHub container build",
+        "Links, anchors, and sidebar consistency",
+        "NuGet and npm advisories",
+        "grader"
+      ]
+    },
+    "convention_labels": {
+      "tier:0": true,
+      "tier:1": true,
+      "tier:2": true,
+      "rails:breaker": true,
+      "incident": false,
+      "risk:high": true,
+      "accepted-risk:correctness": true,
+      "accepted-risk:security": true
+    },
+    "claude_md_bytes": 12202
+  },
+  "telemetry_health": {
+    "weekly_files_seen": 4,
+    "missing_weeks_before_this_one": []
+  },
+  "warnings": [],
+  "prs": [
+    {
+      "number": 1022,
+      "created_at": "2026-11-17T15:09:43Z",
+      "merged_at": "2026-11-17T17:52:08Z",
+      "open_to_merge_hours": 2.71,
+      "tier": null,
+      "changed_lines": 573,
+      "changed_files": 7,
+      "commits": 5,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1025,
+      "created_at": "2026-11-17T21:31:03Z",
+      "merged_at": "2026-11-18T20:08:12Z",
+      "open_to_merge_hours": 22.62,
+      "tier": null,
+      "changed_lines": 3067,
+      "changed_files": 33,
+      "commits": 6,
+      "commits_truncated": false,
+      "review_fix_commits": 1,
+      "review_fix_subjects": [
+        "fix: harden load scenarios and target after review round 1"
+      ],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": 2,
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1026,
+      "created_at": "2026-11-18T12:53:06Z",
+      "merged_at": "2026-11-18T14:35:53Z",
+      "open_to_merge_hours": 1.71,
+      "tier": null,
+      "changed_lines": 96,
+      "changed_files": 8,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1027,
+      "created_at": "2026-11-18T13:35:33Z",
+      "merged_at": "2026-11-18T17:08:33Z",
+      "open_to_merge_hours": 3.55,
+      "tier": null,
+      "changed_lines": 185,
+      "changed_files": 7,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1028,
+      "created_at": "2026-11-18T14:25:27Z",
+      "merged_at": "2026-11-18T14:58:34Z",
+      "open_to_merge_hours": 0.55,
+      "tier": null,
+      "changed_lines": 208,
+      "changed_files": 2,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1029,
+      "created_at": "2026-11-18T17:45:13Z",
+      "merged_at": "2026-11-18T20:07:57Z",
+      "open_to_merge_hours": 2.38,
+      "tier": null,
+      "changed_lines": 316,
+      "changed_files": 7,
+      "commits": 6,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": 3,
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1030,
+      "created_at": "2026-11-18T20:17:30Z",
+      "merged_at": "2026-11-18T21:06:12Z",
+      "open_to_merge_hours": 0.81,
+      "tier": null,
+      "changed_lines": 46,
+      "changed_files": 6,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1031,
+      "created_at": "2026-11-18T20:40:45Z",
+      "merged_at": "2026-11-18T21:46:44Z",
+      "open_to_merge_hours": 1.1,
+      "tier": null,
+      "changed_lines": 523,
+      "changed_files": 12,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1032,
+      "created_at": "2026-11-18T22:43:13Z",
+      "merged_at": "2026-11-19T00:14:19Z",
+      "open_to_merge_hours": 1.52,
+      "tier": null,
+      "changed_lines": 388,
+      "changed_files": 14,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1034,
+      "created_at": "2026-11-19T14:02:05Z",
+      "merged_at": "2026-11-19T14:34:20Z",
+      "open_to_merge_hours": 0.54,
+      "tier": null,
+      "changed_lines": 691,
+      "changed_files": 22,
+      "commits": 4,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1035,
+      "created_at": "2026-11-19T14:28:50Z",
+      "merged_at": "2026-11-19T15:29:35Z",
+      "open_to_merge_hours": 1.01,
+      "tier": null,
+      "changed_lines": 85,
+      "changed_files": 5,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {
+            "unclassified": 1
+          },
+          "final": "unclassified"
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 2
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1037,
+      "created_at": "2026-11-19T15:29:08Z",
+      "merged_at": "2026-11-19T16:38:53Z",
+      "open_to_merge_hours": 1.16,
+      "tier": null,
+      "changed_lines": 967,
+      "changed_files": 23,
+      "commits": 5,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1039,
+      "created_at": "2026-11-19T18:54:41Z",
+      "merged_at": "2026-11-19T19:29:22Z",
+      "open_to_merge_hours": 0.58,
+      "tier": null,
+      "changed_lines": 34,
+      "changed_files": 2,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1040,
+      "created_at": "2026-11-19T19:56:29Z",
+      "merged_at": "2026-11-19T20:26:18Z",
+      "open_to_merge_hours": 0.5,
+      "tier": null,
+      "changed_lines": 406,
+      "changed_files": 20,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1041,
+      "created_at": "2026-11-19T21:49:43Z",
+      "merged_at": "2026-11-19T22:30:09Z",
+      "open_to_merge_hours": 0.67,
+      "tier": null,
+      "changed_lines": 329,
+      "changed_files": 2,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "security-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 1
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1042,
+      "created_at": "2026-11-19T22:24:06Z",
+      "merged_at": "2026-11-19T22:59:17Z",
+      "open_to_merge_hours": 0.59,
+      "tier": null,
+      "changed_lines": 209,
+      "changed_files": 5,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "security-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1043,
+      "created_at": "2026-11-19T22:29:25Z",
+      "merged_at": "2026-11-19T23:00:57Z",
+      "open_to_merge_hours": 0.53,
+      "tier": null,
+      "changed_lines": 177,
+      "changed_files": 3,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "security-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1045,
+      "created_at": "2026-11-19T22:50:13Z",
+      "merged_at": "2026-11-19T23:19:21Z",
+      "open_to_merge_hours": 0.49,
+      "tier": null,
+      "changed_lines": 121,
+      "changed_files": 5,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "security-review": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {
+            "correct": 1
+          },
+          "final": "correct"
+        },
+        "grader": {
+          "comments": {},
+          "final": null
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1046,
+      "created_at": "2026-11-19T23:08:46Z",
+      "merged_at": "2026-11-19T23:52:41Z",
+      "open_to_merge_hours": 0.73,
+      "tier": null,
+      "changed_lines": 80,
+      "changed_files": 2,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1047,
+      "created_at": "2026-11-19T23:17:13Z",
+      "merged_at": "2026-11-20T02:12:54Z",
+      "open_to_merge_hours": 2.93,
+      "tier": null,
+      "changed_lines": 293,
+      "changed_files": 3,
+      "commits": 3,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 2
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 2
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1048,
+      "created_at": "2026-11-20T02:10:26Z",
+      "merged_at": "2026-11-20T15:07:32Z",
+      "open_to_merge_hours": 12.95,
+      "tier": null,
+      "changed_lines": 1999,
+      "changed_files": 24,
+      "commits": 3,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "security-review": {
+          "runs": 4,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 4
+        },
+        "grader": {
+          "runs": 3,
+          "verdict_runs": 3,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 3
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1,
+            "looks-risky": 2
+          },
+          "final": "looks-risky"
+        },
+        "security": {
+          "comments": {
+            "pass": 2
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1052,
+      "created_at": "2026-11-20T15:28:02Z",
+      "merged_at": "2026-11-20T17:02:40Z",
+      "open_to_merge_hours": 1.58,
+      "tier": null,
+      "changed_lines": 522,
+      "changed_files": 15,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {
+            "correct": 1
+          },
+          "final": "correct"
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 2
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1054,
+      "created_at": "2026-11-20T17:16:22Z",
+      "merged_at": "2026-11-22T04:59:04Z",
+      "open_to_merge_hours": 35.71,
+      "tier": null,
+      "changed_lines": 316,
+      "changed_files": 8,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "security-review": {
+          "runs": 3,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 3
+        },
+        "grader": {
+          "runs": 2,
+          "verdict_runs": 2,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 2
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 2
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {
+            "pass": 2
+          },
+          "final": "pass"
+        }
+      },
+      "matt_comments": 1,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1056,
+      "created_at": "2026-11-20T19:45:56Z",
+      "merged_at": "2026-11-22T04:58:58Z",
+      "open_to_merge_hours": 33.22,
+      "tier": null,
+      "changed_lines": 504,
+      "changed_files": 17,
+      "commits": 2,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    },
+    {
+      "number": 1058,
+      "created_at": "2026-11-20T20:32:16Z",
+      "merged_at": "2026-11-22T04:58:52Z",
+      "open_to_merge_hours": 32.44,
+      "tier": null,
+      "changed_lines": 16,
+      "changed_files": 1,
+      "commits": 1,
+      "commits_truncated": false,
+      "review_fix_commits": 0,
+      "review_fix_subjects": [],
+      "ci": {
+        "correctness-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "security-review": {
+          "runs": 2,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 1,
+          "attempts": 2
+        },
+        "grader": {
+          "runs": 1,
+          "verdict_runs": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "attempts": 1
+        }
+      },
+      "verdicts": {
+        "correctness": {
+          "comments": {},
+          "final": null
+        },
+        "grader": {
+          "comments": {
+            "looks-good": 1
+          },
+          "final": "looks-good"
+        },
+        "security": {
+          "comments": {},
+          "final": null
+        }
+      },
+      "matt_comments": 0,
+      "findings_by_tag": {},
+      "findings_by_disposition": {},
+      "findings_by_reviewer": {},
+      "review_rounds": "no data",
+      "reviewed_minutes": "no data",
+      "signoff_sha": "no data"
+    }
+  ]
+}
