@@ -135,11 +135,15 @@ else
 
 **Scope — global, not per-client:** the limiter is registered with a **constant partition key** (`RateLimitPartition.GetFixedWindowLimiter("mcp", ...)` in `Program.cs`), so every inbound request maps to the *same* partition. The 100 req/min budget is therefore shared across all callers, not allocated per authenticated client or per IP. One busy client can exhaust the window for everyone. If you need per-client fairness, replace the constant key with a per-caller partition key (e.g. derived from the authenticated principal or an `X-Forwarded-For` value). Note this differs from the AgentHub SignalR limiter, which *is* partitioned per user id.
 
-### Resource Subscriptions
+### Protocol versions and session mode
 
-**What it is:** Handlers for MCP's resource subscription protocol (subscribe/unsubscribe/notification).
+**Session mode:** `McpServerExtensions` sets the HTTP transport to `HttpServerSessionMode.Stateless` on purpose rather than inheriting the library default, so an SDK upgrade cannot change it silently. Stateless serves 2026-07-28 clients, which send no `initialize` and no `Mcp-Session-Id`, and still answers a 2025-11-25 client's `initialize` on each request. It keeps no per-client session in memory and needs no session affinity, so the server scales out behind a plain load balancer. `Stateful` refuses 2026-07-28 requests. `StatefulForInitializeClients` also serves both revisions, but keeps per-client sessions in memory.
 
-**Why it exists:** MCP clients can subscribe to resource changes and receive notifications when resources update. The server maintains a `ConcurrentDictionary` of active subscriptions.
+**Tested protocol versions:** 2026-07-28 (a tool call with no handshake) and 2025-11-25 (`initialize`, then `tools/list`). `McpServerProtocolVersionTests` pins both.
+
+**Intentionally not supported:**
+- **Resource subscriptions.** Nothing sends `notifications/resources/updated`, and a stateless server has no session to send one on. `resources.subscribe` is not advertised, and `resources/subscribe` and `resources/unsubscribe` fail with JSON-RPC `-32601` (method not found). `resources/list` and `resources/read` are still served; with no resource assembly configured, the list is empty.
+- **Client-set log level.** The server registers no `logging/setLevel` handler. Log verbosity is server configuration (ILogger and OpenTelemetry). 2026-07-28 requests for `logging/setLevel` are refused with `-32601`. The `logging` capability stays advertised: ModelContextProtocol 2.2.0 always sets it and installs its own `logging/setLevel` handler for older revisions. The 2026-07-28 spec deprecates the capability rather than removing it, so advertising it is still valid.
 
 ## Data Flow
 
@@ -160,7 +164,6 @@ External MCP Client (e.g., Claude Desktop)
   - resources/list --> enumerate resource providers
   - resources/read --> read specific resource content
   - prompts/list --> enumerate prompt types
-  - logging/setLevel --> adjust server log verbosity
        |
        v
 [Tool Implementation (e.g., SkillTools)]
@@ -183,7 +186,7 @@ Infrastructure.AI.MCPServer/
 ├── Authorization/
 │   └── McpToolAuthorizationFilter.cs   Per-tool-call gate (defense-in-depth)
 ├── Extensions/
-│   ├── McpServerExtensions.cs          Server setup, fail-closed auth, subscription handlers
+│   ├── McpServerExtensions.cs          Server setup, session mode, fail-closed auth, tool-call gate
 │   └── McpServerBuilderExtensions.cs   Assembly scanning for tools/prompts/resources
 ├── Tools/
 │   └── SkillTools.cs                   list_skills, get_skill, find_skills_by_tag
@@ -199,7 +202,7 @@ Infrastructure.AI.MCPServer/
 |------|---------|----------|
 | `Program` | Application entry point and pipeline setup | -- |
 | `SkillTools` | MCP tools for skill catalog queries | Transient (per-request) |
-| `McpServerExtensions` | Server registration + auth + subscriptions | -- (static) |
+| `McpServerExtensions` | Server registration, session mode, auth, tool-call gate | -- (static) |
 | `McpServerBuilderExtensions` | Assembly scanning helpers | -- (static) |
 
 ## Configuration
