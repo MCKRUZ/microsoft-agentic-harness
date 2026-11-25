@@ -1,6 +1,5 @@
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -44,7 +43,7 @@ public sealed class McpServerProtocolVersionTests
         using var client = factory.CreateClient();
 
         using var response = await client.SendAsync(CreateCurrentRevisionRequest(
-            authMode, "tools/call", toolName: "list_skills",
+            authMode, "tools/call",
             new JsonObject { ["name"] = "list_skills", ["arguments"] = new JsonObject() }));
         var message = await ReadJsonRpcMessageAsync(response);
 
@@ -60,7 +59,7 @@ public sealed class McpServerProtocolVersionTests
         using var client = factory.CreateClient();
 
         using var response = await client.SendAsync(CreateCurrentRevisionRequest(
-            AuthMode.Anonymous, "tools/call", toolName: "list_skills",
+            AuthMode.Anonymous, "tools/call",
             new JsonObject { ["name"] = "list_skills", ["arguments"] = new JsonObject() }));
 
         response.Headers.Contains(SessionIdHeader).Should().BeFalse(
@@ -131,7 +130,7 @@ public sealed class McpServerProtocolVersionTests
         using var client = factory.CreateClient();
 
         using var response = await client.SendAsync(CreateCurrentRevisionRequest(
-            AuthMode.Anonymous, "logging/setLevel", toolName: null, new JsonObject { ["level"] = "info" }));
+            AuthMode.Anonymous, "logging/setLevel", new JsonObject { ["level"] = "info" }));
         // The SDK refuses removed methods before dispatch, with an HTTP error status around the
         // JSON-RPC error body; the body is what a client acts on, so the status is not pinned.
         var message = await ReadJsonRpcMessageAsync(response, requireSuccessStatus: false);
@@ -162,7 +161,7 @@ public sealed class McpServerProtocolVersionTests
         using var client = factory.CreateClient();
 
         using var response = await client.SendAsync(CreateCurrentRevisionRequest(
-            AuthMode.Anonymous, "server/discover", toolName: null, new JsonObject()));
+            AuthMode.Anonymous, "server/discover", new JsonObject()));
         var message = await ReadJsonRpcMessageAsync(response);
 
         AssertNoResourceSubscriptions(message["result"]?["capabilities"], message);
@@ -231,10 +230,11 @@ public sealed class McpServerProtocolVersionTests
     /// <summary>
     /// Builds a <c>2026-07-28</c> request: the revision in both the <c>MCP-Protocol-Version</c> header
     /// and <c>params._meta</c>, the client's identity and capabilities in <c>_meta</c> on every request
-    /// (SEP-2575), and the standard <c>Mcp-Method</c> / <c>Mcp-Name</c> headers.
+    /// (SEP-2575), and the standard <c>Mcp-Method</c> header, plus <c>Mcp-Name</c> taken from
+    /// <c>params.name</c> when the request names a tool.
     /// </summary>
     private static HttpRequestMessage CreateCurrentRevisionRequest(
-        AuthMode authMode, string method, string? toolName, JsonObject parameters)
+        AuthMode authMode, string method, JsonObject parameters)
     {
         parameters["_meta"] = new JsonObject
         {
@@ -245,8 +245,8 @@ public sealed class McpServerProtocolVersionTests
         var request = CreatePost(BuildEnvelope(1, method, parameters));
         request.Headers.Add("MCP-Protocol-Version", CurrentRevision);
         request.Headers.Add("Mcp-Method", method);
-        if (toolName is not null)
-            request.Headers.Add("Mcp-Name", toolName);
+        if (parameters["name"]?.GetValue<string>() is { } name)
+            request.Headers.Add("Mcp-Name", name);
         if (authMode == AuthMode.ApiKey)
             request.Headers.Add("X-API-Key", TestApiKey);
         return request;

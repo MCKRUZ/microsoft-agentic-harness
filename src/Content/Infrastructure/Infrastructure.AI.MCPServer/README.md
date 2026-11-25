@@ -143,7 +143,7 @@ else
 
 **Intentionally not supported:**
 - **Resource subscriptions.** Nothing sends `notifications/resources/updated`, and a stateless server has no session to send one on. `resources.subscribe` is not advertised, and `resources/subscribe` and `resources/unsubscribe` fail with JSON-RPC `-32601` (method not found). `resources/list` and `resources/read` are still served; with no resource assembly configured, the list is empty.
-- **Client-set log level.** The server registers no `logging/setLevel` handler. Log verbosity is server configuration (ILogger and OpenTelemetry). 2026-07-28 requests for `logging/setLevel` are refused with `-32601`. The `logging` capability stays advertised: ModelContextProtocol 2.2.0 always sets it and installs its own `logging/setLevel` handler for older revisions. The 2026-07-28 spec deprecates the capability rather than removing it, so advertising it is still valid.
+- **Client-set log level.** The harness registers no `logging/setLevel` handler of its own. Log verbosity is server configuration (ILogger and OpenTelemetry). 2026-07-28 requests for `logging/setLevel` are refused with `-32601`. The `logging` capability stays advertised: ModelContextProtocol 2.2.0 always sets it and installs its own `logging/setLevel` handler for older revisions. The 2026-07-28 spec deprecates the capability rather than removing it, so advertising it is still valid.
 
 ## Data Flow
 
