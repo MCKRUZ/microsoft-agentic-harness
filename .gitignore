@@ -63,6 +63,12 @@ logs/
 .claude/worktrees/
 .claude/.session-manifest.json
 
+## Harness runtime state. Default state paths are relative, so every host writes this folder into whatever
+## folder it runs from (repo root, or a host project under `dotnet run`). It holds the audit pseudonym key,
+## the audit and governance logs, mailboxes and offloaded tool output: none of it may ever be committed.
+## No leading slash: matches at any depth. Pinned by RuntimeStateIsNeverCommittedTests.
+.agent-sessions/
+
 ## AgentHub runtime artifacts
 src/Content/Presentation/Presentation.AgentHub/conversations/
 src/Content/Presentation/Presentation.AgentHub/traces/
