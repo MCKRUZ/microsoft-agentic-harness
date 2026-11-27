@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Skills;
@@ -56,7 +57,7 @@ public partial class AgentFactory
         foreach (var id in skillIds)
         {
             var skill = ResolveSkill(id, options.OwningAgentId, ownedSkills)
-                ?? throw new InvalidOperationException(
+                ?? throw new SkillNotFoundException(
                     $"Skill '{id}' not found. Ensure it exists in the configured skill paths " +
                     "or the owning agent's skills/ directory.");
             skills.Add(skill);

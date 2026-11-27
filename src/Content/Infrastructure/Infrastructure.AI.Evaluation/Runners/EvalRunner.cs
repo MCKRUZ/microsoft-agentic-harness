@@ -22,7 +22,10 @@ namespace Infrastructure.AI.Evaluation.Runners;
 /// <para>
 /// Exceptions thrown by the invoker are captured per-case as
 /// <see cref="EvalResult.Error"/> and counted toward <see cref="EvalRunReport.ErroredCount"/>;
-/// they do not abort the run.
+/// they do not abort the run. That includes the
+/// <see cref="Application.AI.Common.Exceptions.AgentInvocationFaultException"/> an invoker throws for a turn the
+/// harness could not run, so such a case reports its reason instead of scoring as an empty wrong answer (#1070).
+/// A returned result with <see cref="AgentInvocationResult.Success"/> false (a refusal) is still scored.
 /// </para>
 /// </remarks>
 public sealed class EvalRunner : IEvalRunner

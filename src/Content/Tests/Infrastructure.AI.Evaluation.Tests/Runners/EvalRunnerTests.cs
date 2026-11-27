@@ -140,6 +140,40 @@ public sealed class EvalRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_AgentTurnTheHarnessCouldNotRun_IsCountedAsErroredWithItsReason()
+    {
+        // The real invoker over a turn that failed before the agent ran (#1070). It used to be scored as an empty
+        // wrong answer: verdict fail, ErroredCount 0, and the reason in no report.
+        var mediator = new Mock<MediatR.IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<Application.Core.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "Skill 'default' not found.",
+                ErrorKind = Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnErrorKind.Configuration
+            });
+        var scopes = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>(
+            Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(
+                Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped(
+                    new Microsoft.Extensions.DependencyInjection.ServiceCollection(), _ => mediator.Object)));
+        var invoker = new Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker(
+            scopes, NullLogger<Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker>.Instance);
+        var sut = new EvalRunner(invoker, [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()], NullLogger<EvalRunner>.Instance);
+        var dataset = DatasetWith(Case("c1", expected: "4") with
+        {
+            InvocationOverrides = new Dictionary<string, string> { ["agent_name"] = "default" }
+        });
+
+        var report = await sut.RunAsync([dataset], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(1);
+        report.Results[0].Error.Should().Contain("Skill 'default' not found.");
+    }
+
+    [Fact]
     public async Task RunAsync_UnknownMetric_RecordsWarnNotError()
     {
         var sut = BuildSut(out var invoker, out _);

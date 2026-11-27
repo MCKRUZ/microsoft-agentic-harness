@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using FluentAssertions;
@@ -165,15 +166,15 @@ public sealed class HarnessAgentInvokerTests
     }
 
     [Fact]
-    public async Task Returns_failure_when_no_agent_name_anywhere_and_does_not_send()
+    public async Task InvokeAsync_NoAgentNameAnywhere_ThrowsAFaultWithoutSending()
     {
+        // A case that names no agent cannot be run, so it is a broken case, not a wrong answer.
         var mediator = new Mock<IMediator>(MockBehavior.Strict);
         var sut = MakeSut(mediator.Object);
 
-        var result = await sut.InvokeAsync(MakeCase(), null, forceDeterministic: false, CancellationToken.None);
+        var act = () => sut.InvokeAsync(MakeCase(), null, forceDeterministic: false, CancellationToken.None);
 
-        result.Success.Should().BeFalse();
-        result.Error.Should().Contain("agent_name");
+        (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which.Message.Should().Contain("agent_name");
         mediator.VerifyNoOtherCalls();
     }
 
@@ -274,13 +275,47 @@ public sealed class HarnessAgentInvokerTests
         result.Error.Should().Be("[content-safety blocked]");
     }
 
-    [Fact]
-    public async Task Returns_failure_when_mediator_throws()
+    public static TheoryData<Exception> HarnessFaults() => new()
+    {
+        new InvalidOperationException("downstream gone"),
+        // A screen that could not run did not judge the input, so a case relying on it was not evaluated.
+        new ContentSafetyUnavailableException("downstream gone")
+    };
+
+    [Theory]
+    [MemberData(nameof(HarnessFaults))]
+    public async Task InvokeAsync_PipelineThrowsSomethingOtherThanARefusal_ThrowsAFaultCarryingTheReason(Exception thrown)
     {
         var mediator = new Mock<IMediator>();
         mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("downstream gone"));
+            .ThrowsAsync(thrown);
+
+        var sut = MakeSut(mediator.Object);
+        var act = () => sut.InvokeAsync(
+            MakeCase(overrides: new Dictionary<string, string> { ["agent_name"] = "a" }),
+            null, forceDeterministic: false, CancellationToken.None);
+
+        var fault = (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which;
+        fault.Message.Should().Contain("downstream gone");
+        fault.InnerException.Should().BeSameAs(thrown);
+    }
+
+    public static TheoryData<Exception> ScreeningRefusals() => new()
+    {
+        new ContentSafetyException("blocked: violence", "Violence"),
+        new PromptInjectionBlockedException("blocked: injection")
+    };
+
+    [Theory]
+    [MemberData(nameof(ScreeningRefusals))]
+    public async Task InvokeAsync_ScreeningRefusesTheInput_ReturnsAFailedResultForMetricsToScore(Exception refusal)
+    {
+        // A refusal is the pipeline working as designed; a case may expect it, so it stays a scored outcome.
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(refusal);
 
         var sut = MakeSut(mediator.Object);
         var result = await sut.InvokeAsync(
@@ -288,7 +323,36 @@ public sealed class HarnessAgentInvokerTests
             null, forceDeterministic: false, CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        result.Error.Should().Contain("downstream gone");
+        result.Output.Should().BeEmpty();
+        result.Error.Should().Be(refusal.Message);
+    }
+
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    [InlineData(AgentTurnErrorKind.Cancelled)]
+    public async Task InvokeAsync_TurnTheHarnessCouldNotRun_ThrowsAFaultCarryingTheReason(AgentTurnErrorKind kind)
+    {
+        // The handler reports these as a returned failure, not a throw. Before #1070 the invoker passed them on as an
+        // empty answer, which the eval runner scored as a wrong answer with no reason in any report.
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "Skill 'default' not found.",
+                ErrorKind = kind
+            });
+
+        var sut = MakeSut(mediator.Object);
+        var act = () => sut.InvokeAsync(
+            MakeCase(overrides: new Dictionary<string, string> { ["agent_name"] = "a" }),
+            null, forceDeterministic: false, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which.Message.Should().Contain("Skill 'default' not found.");
     }
 
     [Fact]

@@ -55,7 +55,14 @@ public interface IAgentInvoker
     /// <param name="runLevelOverrides">Run-wide invocation overrides (merged under case-level overrides).</param>
     /// <param name="forceDeterministic">When true, temperature is forced to 0 regardless of overrides.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The invocation result. Never null; <see cref="AgentInvocationResult.Success"/> indicates outcome.</returns>
+    /// <returns>
+    /// The invocation result. Never null. <see cref="AgentInvocationResult.Success"/> is false when the agent ran and
+    /// did not answer, for example because screening refused the input: an outcome metrics can score.
+    /// </returns>
+    /// <exception cref="Application.AI.Common.Exceptions.AgentInvocationFaultException">
+    /// The harness could not run the agent turn at all (not configured, internal error). Callers treat this as a
+    /// broken case rather than a wrong answer.
+    /// </exception>
     Task<AgentInvocationResult> InvokeAsync(
         EvalCase @case,
         IReadOnlyDictionary<string, string>? runLevelOverrides,

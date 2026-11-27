@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Application.AI.Common.Evaluation.Interfaces;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Evaluation.Models;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
@@ -60,6 +61,11 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
     }
 
     /// <inheritdoc />
+    /// <exception cref="AgentInvocationFaultException">
+    /// The harness could not run the turn: no <c>agent_name</c>, a configuration or internal failure, an unavailable
+    /// screening service, or any other exception from the pipeline. A screening refusal is not a fault; it comes back
+    /// as a failed result for metrics to score.
+    /// </exception>
     public async Task<AgentInvocationResult> InvokeAsync(
         EvalCase @case,
         IReadOnlyDictionary<string, string>? runLevelOverrides,
@@ -73,7 +79,8 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
         var agentName = Resolve(@case.InvocationOverrides, runLevelOverrides, AgentNameKey);
         if (string.IsNullOrWhiteSpace(agentName))
         {
-            return Failed("Missing required 'agent_name' invocation override; cannot dispatch agent turn.", sw);
+            throw new AgentInvocationFaultException(
+                "Missing required 'agent_name' invocation override; cannot dispatch agent turn.");
         }
 
         var command = new ExecuteAgentTurnCommand
@@ -85,51 +92,78 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
             Temperature = ResolveTemperature(@case.Id, @case.InvocationOverrides, runLevelOverrides, forceDeterministic)
         };
 
+        AgentTurnResult turn;
         try
         {
             // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
             // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
             await using var scope = _scopeFactory.CreateAsyncScope();
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-            var turn = await mediator.Send(command, cancellationToken).ConfigureAwait(false);
-            sw.Stop();
-
-            // Per AgentInvocationResult contract: Output must be empty when Success is false.
-            // A handler may still return a non-empty Response on failure (e.g. content-safety
-            // refusal text) — preserve that text in Error instead so it surfaces in reports
-            // without contaminating metric scoring. If neither Error nor Response carries any
-            // detail on a failure, surface a generic diagnostic rather than null so reports
-            // never show a "failed case with no reason".
-            var output = turn.Success ? (turn.Response ?? string.Empty) : string.Empty;
-            var error = ChooseError(turn);
-
-            return new AgentInvocationResult
-            {
-                Success = turn.Success,
-                Output = output,
-                Error = error,
-                ToolsInvoked = turn.ToolsInvoked,
-                ToolCalls = turn.ToolCalls,
-                InputTokens = turn.InputTokens,
-                OutputTokens = turn.OutputTokens,
-                CostUsd = turn.CostUsd,
-                Model = turn.Model,
-                Duration = sw.Elapsed,
-                Governance = turn.Governance
-            };
+            turn = await mediator.Send(command, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (Exception ex) when (IsRefusal(ex))
+        {
+            // The screen judged the input and refused it: the pipeline working as designed, and an outcome a case
+            // may expect, so it is returned for the metrics to score.
+            return Failed(ex.Message, sw);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "Agent invocation failed for case {CaseId} on agent {AgentName}.",
                 @case.Id, agentName);
-            return Failed(ex.Message, sw);
+            throw new AgentInvocationFaultException(ex.Message, ex);
         }
+
+        sw.Stop();
+        ThrowIfTheHarnessCouldNotRun(turn, cancellationToken);
+        return ToResult(turn, sw);
+    }
+
+    // A refusal is a screen that judged the input. One that could not run judged nothing, so a case relying on it
+    // was not evaluated: that is a fault, or a down safety service would score as a correct block.
+    private static bool IsRefusal(Exception ex) =>
+        ex is IScreeningRefusal and not ContentSafetyUnavailableException;
+
+    // The handler reports these as a returned failure rather than a throw. Passing them on as an empty answer made
+    // the eval runner score a turn that never ran as a wrong answer, with the reason in no report (#1070).
+    private static void ThrowIfTheHarnessCouldNotRun(AgentTurnResult turn, CancellationToken cancellationToken)
+    {
+        if (turn.Success || turn.ErrorKind is AgentTurnErrorKind.None)
+            return;
+
+        if (turn.ErrorKind is AgentTurnErrorKind.Cancelled)
+            cancellationToken.ThrowIfCancellationRequested();
+
+        throw new AgentInvocationFaultException(ChooseError(turn)!);
+    }
+
+    private static AgentInvocationResult ToResult(AgentTurnResult turn, Stopwatch sw)
+    {
+        // Per AgentInvocationResult contract: Output must be empty when Success is false.
+        // A handler may still return a non-empty Response on failure (e.g. content-safety
+        // refusal text) — preserve that text in Error instead so it surfaces in reports
+        // without contaminating metric scoring. If neither Error nor Response carries any
+        // detail on a failure, surface a generic diagnostic rather than null so reports
+        // never show a "failed case with no reason".
+        return new AgentInvocationResult
+        {
+            Success = turn.Success,
+            Output = turn.Success ? (turn.Response ?? string.Empty) : string.Empty,
+            Error = ChooseError(turn),
+            ToolsInvoked = turn.ToolsInvoked,
+            ToolCalls = turn.ToolCalls,
+            InputTokens = turn.InputTokens,
+            OutputTokens = turn.OutputTokens,
+            CostUsd = turn.CostUsd,
+            Model = turn.Model,
+            Duration = sw.Elapsed,
+            Governance = turn.Governance
+        };
     }
 
     private static string? ChooseError(Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnResult turn)

@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
@@ -158,6 +159,6 @@ public sealed class AgentFactoryAgentOwnedSkillTests
         var act = () => _factory.CreateAgentFromSkillsAsync(
             ["missing"], new SkillAgentOptions { OwningAgentId = "agent-a" });
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*missing*not found*");
+        await act.Should().ThrowAsync<SkillNotFoundException>().WithMessage("*missing*not found*");
     }
 }

@@ -357,7 +357,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
 			_logger.LogError(ex,
-				"Agent {AgentName} turn {TurnNumber} failed — AI provider not configured",
+				"Agent {AgentName} turn {TurnNumber} failed — the host is not configured to run it",
 				request.AgentName, request.TurnNumber);
 
 			RecordTurnError(request.AgentName);
@@ -744,11 +744,13 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	/// Walks the exception chain for an <see cref="AiProviderNotConfiguredException"/> so a
 	/// provider-misconfiguration is classified even when the agent pipeline wraps it.
 	/// </summary>
-	private static AiProviderNotConfiguredException? FindConfigurationError(Exception? ex)
+	// Setup problems the operator can fix and whose messages are written to be shown: a missing AI provider, or a
+	// skill the agent needs that is not in this host's skill paths. Anything else stays a generic internal error.
+	private static Exception? FindConfigurationError(Exception? ex)
 	{
 		for (; ex is not null; ex = ex.InnerException)
-			if (ex is AiProviderNotConfiguredException configError)
-				return configError;
+			if (ex is AiProviderNotConfiguredException or SkillNotFoundException)
+				return ex;
 		return null;
 	}
 

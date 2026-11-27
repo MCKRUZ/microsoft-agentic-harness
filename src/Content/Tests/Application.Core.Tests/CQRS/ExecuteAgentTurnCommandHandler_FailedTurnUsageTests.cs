@@ -120,6 +120,25 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
     }
 
     [Fact]
+    public async Task Handle_TheAgentsSkillIsNotInThisHost_ReportsAConfigurationErrorThatNamesIt()
+    {
+        // The skill the agent needs is not in this host's skill paths. That is a setup problem the caller can fix, so
+        // the turn says which skill is missing instead of the generic internal-error text (#1070).
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new SkillNotFoundException("Skill 'default' not found. Ensure it exists in the configured skill paths."));
+
+        var result = await CreateHandler(CreateCapture()).Handle(Command(), CancellationToken.None);
+
+        (result.Success, result.ErrorKind).Should().Be((false, AgentTurnErrorKind.Configuration));
+        result.Error.Should().Contain("Skill 'default' not found");
+    }
+
+    [Fact]
     public async Task Handle_RunSucceedsButRecordingTheTurnThrows_StillReportsWhatTheRunSpent()
     {
         // The run completed and drained the capture; a step after it (here the observability write)
