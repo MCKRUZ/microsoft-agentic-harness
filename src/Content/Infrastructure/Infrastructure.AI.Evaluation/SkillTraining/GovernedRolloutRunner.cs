@@ -26,8 +26,9 @@ namespace Infrastructure.AI.Evaluation.SkillTraining;
 /// <b>What it refuses.</b> A dataset case that sets its own <c>system_prompt</c>, <c>agent_name</c> or
 /// router <c>target</c> override would replace the candidate or bypass the agent, and the rollout would
 /// measure nothing about it; the batch is refused rather than run. So is a case with no metrics, a metric key nothing is registered under, a
-/// dataset with no <c>split:</c> tags and a pinned item that is not in the split. Everything is checked
-/// before the first agent turn so a misconfiguration costs no tokens.
+/// dataset with no <c>split:</c> tags and a pinned item that is not in the split. The case checks run over
+/// every case in any split when the dataset is first read, whichever split the first batch draws, so a
+/// misconfiguration costs no tokens.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Scoped: the dataset is read once per instance, so one training run sees one stable
@@ -82,7 +83,6 @@ public sealed class GovernedRolloutRunner : IRolloutRunner
 
         var dataset = await LoadDatasetAsync(config.DatasetPath, cancellationToken).ConfigureAwait(false);
         var cases = RolloutItemSelector.Select(dataset, batch);
-        ValidateCases(cases);
 
         var overrides = new Dictionary<string, string>
         {
@@ -211,9 +211,10 @@ public sealed class GovernedRolloutRunner : IRolloutRunner
                 ?? throw new InvalidOperationException(
                     $"skill_training.rollout_dataset_format: no dataset loader handles '.{extension}' files.");
 
+            EvalDataset loaded;
             try
             {
-                _dataset = await loader.LoadAsync(Path.GetFullPath(path), cancellationToken).ConfigureAwait(false);
+                loaded = await loader.LoadAsync(Path.GetFullPath(path), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException or DirectoryNotFoundException)
             {
@@ -221,6 +222,11 @@ public sealed class GovernedRolloutRunner : IRolloutRunner
                 throw new InvalidOperationException("skill_training.rollout_dataset_unreadable: the dataset could not be loaded.");
             }
 
+            // Every case a batch could draw is checked here, once, rather than per batch: the run's
+            // first batch is validation, so a bad training case would otherwise surface only after
+            // validation turns had already been paid for.
+            ValidateCases(loaded.Cases.Where(c => c.Tags.Any(RolloutItemSelector.IsSplitTag)).ToList());
+            _dataset = loaded;
             return _dataset;
         }
         finally

@@ -61,7 +61,15 @@ public sealed record TrainSkillConfig
     /// <summary>Whether to maintain a cross-epoch meta-skill memory via <c>IKnowledgeMemory</c>.</summary>
     public bool UseMetaSkill { get; init; } = true;
 
-    /// <summary>Seed for sampling the train/val batches; 0 = nondeterministic.</summary>
+    /// <summary>
+    /// Seed for sampling the train/val batches. Every value, 0 included, gives the same draws on every run.
+    /// </summary>
+    /// <remarks>
+    /// Validation uses this seed on every step, so every validation score in a run comes from the same cases
+    /// and the gate compares like with like. Training derives a different seed for each step from this one,
+    /// so the proposer sees a fresh draw of training cases each step, and a resumed run repeats the draws
+    /// the interrupted one would have made.
+    /// </remarks>
     public int Seed { get; init; }
 
     /// <summary>

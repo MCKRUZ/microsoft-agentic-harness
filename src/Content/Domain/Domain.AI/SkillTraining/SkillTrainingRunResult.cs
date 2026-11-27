@@ -12,7 +12,10 @@ public sealed record SkillTrainingRunResult
     /// <summary>The best skill document found across the run.</summary>
     public required string BestSkill { get; init; }
 
-    /// <summary>Score of <see cref="BestSkill"/> in metric space [0, 1].</summary>
+    /// <summary>
+    /// Validation score of <see cref="BestSkill"/> in metric space [0, 1]. When nothing was accepted this is
+    /// the starting skill's own score, taken once before step 1.
+    /// </summary>
     public required double BestScore { get; init; }
 
     /// <summary>Step at which <see cref="BestSkill"/> was promoted.</summary>
@@ -27,7 +30,7 @@ public sealed record SkillTrainingRunResult
     /// <summary>
     /// True iff at least one step produced <see cref="GateAction.AcceptNewBest"/> or
     /// <see cref="GateAction.Accept"/>. When false, <see cref="BestSkill"/> equals the
-    /// initial skill and <see cref="BestScore"/> is 0 — the run made no progress.
+    /// initial skill and <see cref="BestScore"/> is that skill's validation score: the run made no progress.
     /// </summary>
     public required bool HasAcceptedAny { get; init; }
 

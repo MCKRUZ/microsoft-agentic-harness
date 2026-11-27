@@ -96,7 +96,7 @@ public partial class TrainSkillCommandHandlerTests
     {
         RunId = "run-1",
         SkillId = "skill-X",
-        InitialSkill = "# initial\n- baseline rule",
+        InitialSkill = StartingSkill,
         Config = config
     };
 
@@ -104,12 +104,7 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_AcceptedCandidate_UpdatesStateAndPersistsCheckpoint()
     {
         // Stub runner: train rollouts fail (so the optimizer has reason to propose); val rollouts pass (so gate accepts).
-        var runner = new StubRolloutRunner((skill, batch) => batch.Split switch
-        {
-            "train" => [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.2 }],
-            "val" => [new RolloutResult { ItemId = "v1", Hard = 1.0, Soft = 1.0 }],
-            _ => []
-        });
+        var runner = new StubRolloutRunner((skill, batch) => AcceptingRollouts(skill, batch.Split));
         var proposer = new StubProposer(input => new Patch
         {
             Edits = [new Edit { Op = EditOp.Append, Content = "- new rule" }]
@@ -191,7 +186,8 @@ public partial class TrainSkillCommandHandlerTests
             s.Action.Should().Be(GateAction.Reject);
             s.AppliedEditCount.Should().Be(0);
         });
-        result.Value.BestScore.Should().Be(0.0, because: "no candidate was ever accepted");
+        result.Value.BestScore.Should().Be(1.0,
+            because: "no candidate was ever accepted, so the best skill is the starting one and this is its validation score");
     }
 
     [Fact]
@@ -244,7 +240,7 @@ public partial class TrainSkillCommandHandlerTests
         {
             ("train", true) => [new RolloutResult { ItemId = "t", Hard = 0.0, Soft = 0.0 }],  // candidate worse on held-in
             ("train", false) => [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }], // current/initial baseline
-            ("val", _) => [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }],       // candidate better on held-out
+            ("val", _) => [ValRollout("v", skill)],                                             // candidate better on held-out
             _ => []
         });
         var proposer = new StubProposer(_ => new Patch
@@ -276,7 +272,7 @@ public partial class TrainSkillCommandHandlerTests
         {
             ("train", true) => [new RolloutResult { ItemId = "t", Hard = 0.0, Soft = 0.0 }],
             ("train", false) => [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }],
-            ("val", _) => [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }],
+            ("val", _) => [ValRollout("v", skill)],
             _ => []
         });
         var proposer = new StubProposer(_ => new Patch
@@ -327,7 +323,7 @@ public partial class TrainSkillCommandHandlerTests
             CancellationToken.None);
 
         trainCalls.Should().Be(2, because: "the proposer's reflection rollout plus the candidate's held-in rollout");
-        valCalls.Should().Be(1);
+        valCalls.Should().Be(2, because: "the starting skill is scored once before step 1, then the candidate");
     }
 
     [Fact]
@@ -539,8 +535,8 @@ public partial class TrainSkillCommandHandlerTests
         // A run targeting an unlocked prose surface, with an edit on that same surface, flows all the
         // way through: fence passes, run-scope passes, candidate accepted — and the accepted apply is
         // written to the governance audit (audit-everything-it-changes).
-        var runner = new StubRolloutRunner((_, batch) => batch.Split == "val"
-            ? [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }]
+        var runner = new StubRolloutRunner((skill, batch) => batch.Split == "val"
+            ? [ValRollout("v", skill)]
             : [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }]);
         var proposer = new StubProposer(_ => new Patch
         {
@@ -571,8 +567,8 @@ public partial class TrainSkillCommandHandlerTests
     {
         // The default skill-document path also audits accepted applies — the common case, not just
         // widened prose surfaces.
-        var runner = new StubRolloutRunner((_, batch) => batch.Split == "val"
-            ? [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }]
+        var runner = new StubRolloutRunner((skill, batch) => batch.Split == "val"
+            ? [ValRollout("v", skill)]
             : [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }]);
         var proposer = new StubProposer(_ => new Patch
         {
@@ -596,8 +592,8 @@ public partial class TrainSkillCommandHandlerTests
 
     // ── Harness-change suggestions (Phase 2 Step 2) ───────────────────────────────
 
-    private static StubRolloutRunner AcceptingRunner() => new((_, batch) => batch.Split == "val"
-        ? [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }]
+    private static StubRolloutRunner AcceptingRunner() => new((skill, batch) => batch.Split == "val"
+        ? [ValRollout("v", skill)]
         : [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }]);
 
     private static StubProposer AppendProposer() => new(_ => new Patch
@@ -935,13 +931,23 @@ public partial class TrainSkillCommandHandlerTests
         Epochs = 1, StepsPerEpoch = 3, LrStart = 4, LrMin = 1, LrScheduler = "constant", Patience = 6
     };
 
-    /// <summary>Train fails (so the proposer has a reason to propose) and val passes (so the gate accepts).</summary>
-    private static IReadOnlyList<RolloutResult> AcceptingRollouts(string split) => split switch
+    /// <summary>
+    /// Train fails (so the proposer has a reason to propose); val fails for the starting skill and passes
+    /// for any edited one, so the first candidate beats the score the run starts from and the gate accepts.
+    /// </summary>
+    private static IReadOnlyList<RolloutResult> AcceptingRollouts(string skill, string split) => split switch
     {
         "train" => [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.2 }],
-        "val" => [new RolloutResult { ItemId = "v1", Hard = 1.0, Soft = 1.0 }],
+        "val" => [ValRollout("v1", skill)],
         _ => []
     };
+
+    private const string StartingSkill = "# initial\n- baseline rule";
+
+    /// <summary>A validation result that fails for the starting skill and passes for any edited skill.</summary>
+    private static RolloutResult ValRollout(string itemId, string skill) => skill == StartingSkill
+        ? new RolloutResult { ItemId = itemId, Hard = 0.0, Soft = 0.0 }
+        : new RolloutResult { ItemId = itemId, Hard = 1.0, Soft = 1.0 };
 
     private static StubProposer AppendingProposer() =>
         new(_ => new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] });
@@ -965,7 +971,7 @@ public partial class TrainSkillCommandHandlerTests
     {
         var store = new InMemorySkillTrainingCheckpointStore();
         var first = () => NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store)
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), InterruptedDuringStepTwo(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
         await first.Should().ThrowAsync<OperationCanceledException>();
         (await store.ListAsync("run-1", CancellationToken.None)).Should().ContainSingle("only step 1 finished");
@@ -976,7 +982,7 @@ public partial class TrainSkillCommandHandlerTests
             proposerCalls++;
             return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- a rule" }] };
         });
-        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), resumedProposer, store)
+        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), resumedProposer, store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
@@ -989,7 +995,7 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_Resuming_StartsFromTheSkillTheLastCheckpointHolds()
     {
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), InterruptedDuringStepTwo(), store)
             .Invoking(s => s.Handle(NewCommand(ThreeStepConfig), CancellationToken.None))
             .Should().ThrowAsync<OperationCanceledException>();
 
@@ -997,7 +1003,7 @@ public partial class TrainSkillCommandHandlerTests
         var resumedRunner = new StubRolloutRunner((skill, batch) =>
         {
             if (batch.Split == "train") firstSkillOfTheResumedRun ??= skill;
-            return AcceptingRollouts(batch.Split);
+            return AcceptingRollouts(skill, batch.Split);
         });
         await NewSut(resumedRunner, AppendingProposer(), store).Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
@@ -1008,12 +1014,12 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_TheRunAlreadyFinished_ReturnsItsResultWithoutRunningAnything()
     {
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
         var rollouts = 0;
         var result = await NewSut(
-                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(s, b.Split); }),
                 AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
@@ -1049,12 +1055,12 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_TheRunIdHoldsCheckpointsFromADifferentConfiguration_RefusesRatherThanSplicing()
     {
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
         var rollouts = 0;
         var result = await NewSut(
-                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(s, b.Split); }),
                 AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig with { StepsPerEpoch = 5 }), CancellationToken.None);
 
@@ -1073,7 +1079,7 @@ public partial class TrainSkillCommandHandlerTests
             UseSlowUpdate = false, UseMetaSkill = true
         };
         await NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStepTwo(), store,
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), InterruptedDuringStepTwo(), store,
                 mediator: new MetaMemoryMediator("memory after epoch 1"))
             .Invoking(s => s.Handle(NewCommand(config), CancellationToken.None))
             .Should().ThrowAsync<OperationCanceledException>();
@@ -1088,7 +1094,7 @@ public partial class TrainSkillCommandHandlerTests
             seenMemory = input.MetaSkillMemory;
             return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- again" }] };
         });
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store,
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), proposer, store,
                 mediator: new MetaMemoryMediator("memory after epoch 1"))
             .Handle(NewCommand(config), CancellationToken.None);
 
@@ -1103,16 +1109,16 @@ public partial class TrainSkillCommandHandlerTests
         // The interrupted attempt dies in step 4, so the rejects of steps 2 and 3 are already stored.
         var config = ThreeStepConfig with { StepsPerEpoch = 5 };
         var uninterrupted = await NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(),
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(),
                 new InMemorySkillTrainingCheckpointStore())
             .Handle(NewCommand(config), CancellationToken.None);
 
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), InterruptedDuringStep(4), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), InterruptedDuringStep(4), store)
             .Invoking(x => x.Handle(NewCommand(config), CancellationToken.None))
             .Should().ThrowAsync<OperationCanceledException>();
         (await store.ListAsync("run-1", CancellationToken.None)).Should().HaveCount(3);
-        var resumed = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        var resumed = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(config), CancellationToken.None);
 
         uninterrupted.Value!.Steps.Select(st => st.Action).Should().Equal(
@@ -1133,7 +1139,7 @@ public partial class TrainSkillCommandHandlerTests
             UseSlowUpdate = false, UseMetaSkill = true
         };
         var crashing = new MetaMemoryMediator("memory after epoch 1", cancelTheFirstUpdate: true);
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, mediator: crashing)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store, mediator: crashing)
             .Invoking(x => x.Handle(NewCommand(config), CancellationToken.None))
             .Should().ThrowAsync<OperationCanceledException>();
         (await store.GetAsync("run-1", 1, CancellationToken.None))!.EpochBoundaryDone
@@ -1146,7 +1152,7 @@ public partial class TrainSkillCommandHandlerTests
             return new Patch { Edits = [new Edit { Op = EditOp.Append, Content = "- again" }] };
         });
         var healthy = new MetaMemoryMediator("memory after epoch 1");
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store, mediator: healthy)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), proposer, store, mediator: healthy)
             .Handle(NewCommand(config), CancellationToken.None);
 
         healthy.Updates.Should().Be(1, "the unfinished boundary is done once, on resume");
@@ -1159,13 +1165,13 @@ public partial class TrainSkillCommandHandlerTests
     {
         var store = new InMemorySkillTrainingCheckpointStore();
         var original = ThreeStepConfig with { UseMetaSkill = false, UseSlowUpdate = false };
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(original), CancellationToken.None);
 
         var proposerCalls = 0;
         var extended = original with { Epochs = 2, Patience = 9 };
         var result = await NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)),
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)),
                 new StubProposer(_ => { proposerCalls++; return new Patch(); }), store)
             .Handle(NewCommand(extended), CancellationToken.None);
 
@@ -1178,14 +1184,14 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_StoredCheckpointCarriesAVerdict_RefusesToResume()
     {
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
         var last = (await store.GetAsync("run-1", 3, CancellationToken.None))!;
         await store.SaveAsync(last with { SkillContent = "# skill {\"PassedCount\": 3}" }, CancellationToken.None);
 
         var rollouts = 0;
         var result = await NewSut(
-                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(b.Split); }),
+                new StubRolloutRunner((s, b) => { rollouts++; return AcceptingRollouts(s, b.Split); }),
                 AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
@@ -1198,13 +1204,13 @@ public partial class TrainSkillCommandHandlerTests
     public async Task Handle_StoredCheckpointPredatesResume_SaysSoInsteadOfBlamingTheInputs()
     {
         var store = new InMemorySkillTrainingCheckpointStore();
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
         var last = (await store.GetAsync("run-1", 3, CancellationToken.None))!;
         await store.SaveAsync(last with { RunFingerprint = string.Empty }, CancellationToken.None);
 
         var result = await NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
@@ -1218,12 +1224,12 @@ public partial class TrainSkillCommandHandlerTests
         var firstIsInTheProposer = new TaskCompletionSource();
         var releaseFirst = new TaskCompletionSource();
         var blocking = new BlockingProposer(firstIsInTheProposer, releaseFirst.Task);
-        var first = NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), blocking, store)
+        var first = NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), blocking, store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
         await firstIsInTheProposer.Task;
 
         var second = await NewSut(
-                new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store)
+                new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store)
             .Handle(NewCommand(ThreeStepConfig), CancellationToken.None);
         releaseFirst.SetResult();
         var firstResult = await first;
@@ -1239,11 +1245,11 @@ public partial class TrainSkillCommandHandlerTests
         var store = new InMemorySkillTrainingCheckpointStore();
         var suggester = new CountingSuggester();
         var config = ThreeStepConfig with { EmitHarnessChangeSuggestions = true };
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, suggester: suggester)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store, suggester: suggester)
             .Handle(NewCommand(config), CancellationToken.None);
         suggester.Calls.Should().Be(1);
 
-        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), AppendingProposer(), store, suggester: suggester)
+        await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), AppendingProposer(), store, suggester: suggester)
             .Handle(NewCommand(config), CancellationToken.None);
 
         suggester.Calls.Should().Be(1, "a resume that runs no step has no evidence for the suggester and must not repeat its audit rows");
@@ -1260,7 +1266,7 @@ public partial class TrainSkillCommandHandlerTests
             Edits = [new Edit { Op = EditOp.Append, Content = "x", Surface = HarnessSurface.SystemPrompt }]
         });
 
-        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(b.Split)), proposer, store)
+        var result = await NewSut(new StubRolloutRunner((s, b) => AcceptingRollouts(s, b.Split)), proposer, store)
             .Handle(NewCommand(OneStepConfig), CancellationToken.None);
 
         result.Value!.Steps.Should().ContainSingle(st => st.Action == GateAction.Reject);

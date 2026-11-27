@@ -34,6 +34,12 @@ namespace Infrastructure.AI.SkillTraining;
 /// (the loop records a reject) rather than guessing.
 /// </para>
 /// <para>
+/// <b>How big a change it may make.</b> When the loop passes <see cref="ReflectionInput.EditBudget"/>, the
+/// session is told how many separate places this step keeps. A document that changes more places is sent
+/// back once with the reason rather than cut down: the loop would keep only the first few edits, a partial
+/// rewrite nobody wrote.
+/// </para>
+/// <para>
 /// <b>What it is never shown.</b> No score and no judge text: <see cref="ProposerRolloutView"/> carries a
 /// pass/fail flag and the trajectory, the evidence is scanned for grader output once more where it is
 /// written to disk (a leaking rollout is left out, a leaking skill or memory file ends the step), and the
@@ -120,7 +126,7 @@ public sealed class AgenticPatchProposer : IPatchProposer
     private async Task<Patch> ProposeFromEvidenceAsync(
         ReflectionInput input, ProposerEvidenceTree.Written tree, CancellationToken cancellationToken)
     {
-        var mission = BuildMission(tree, _config.CurrentValue.WorkDescription);
+        var mission = BuildMission(tree, _config.CurrentValue.WorkDescription, input.EditBudget);
         var rejection = string.Empty;
 
         for (var attempt = 1; attempt <= Attempts; attempt++)
@@ -156,7 +162,7 @@ public sealed class AgenticPatchProposer : IPatchProposer
                 return Empty(reply.Notes);
 
             var patch = new Patch { Edits = SkillDocumentDiff.Between(input.CurrentSkill, proposed), Reasoning = reply.Notes };
-            var problem = Verify(_applier, _fence, input.CurrentSkill, proposed, patch);
+            var problem = Verify(_applier, _fence, input.CurrentSkill, proposed, patch) ?? OverBudget(patch, input.EditBudget);
             if (problem is null)
                 return patch;
 
@@ -180,6 +186,17 @@ public sealed class AgenticPatchProposer : IPatchProposer
         var verdict = fence.Validate(patch);
         return verdict.IsAllowed ? null : "the proposal touches a surface the loop may not edit";
     }
+
+    /// <summary>
+    /// The reason a proposal changes more places than the step keeps, or <see langword="null"/>. The loop
+    /// would apply only the first <paramref name="budget"/> of them, a partial rewrite nobody wrote, so the
+    /// proposer is asked for a smaller change instead.
+    /// </summary>
+    private static string? OverBudget(Patch patch, int? budget) =>
+        budget is { } limit && patch.Edits.Count > limit
+            ? $"the change touches {patch.Edits.Count} separate places, and this step keeps at most {limit}. " +
+              "Make the change that matters most within that limit"
+            : null;
 
     private async Task<string> RunSessionAsync(string mission, string evidenceDirectory, CancellationToken cancellationToken)
     {
@@ -229,13 +246,17 @@ public sealed class AgenticPatchProposer : IPatchProposer
         text.Contains("\r\n", StringComparison.Ordinal)
         && !text.Replace("\r\n", string.Empty, StringComparison.Ordinal).Contains('\n');
 
-    private static string BuildMission(ProposerEvidenceTree.Written tree, string workDescription)
+    private static string BuildMission(ProposerEvidenceTree.Written tree, string workDescription, int? editBudget)
     {
         var dir = tree.Directory.Replace('\\', '/');
         var work = string.IsNullOrWhiteSpace(workDescription)
             ? string.Empty
             : $"# THE WORK\n\n{workDescription.Trim()}\n\n";
         var memory = tree.HasMemory ? $"  {dir}/memory/EXPERIENCE.md    lessons from earlier rounds\n" : string.Empty;
+        var size = editBudget is { } limit
+            ? $"\nThis round keeps changes in at most {limit} separate places (a place is a run of consecutive changed lines). " +
+              "A larger change is sent back, so choose the one that matters most."
+            : string.Empty;
 
         return
             $"You are improving one skill document.\n\n{work}" +
@@ -244,6 +265,7 @@ public sealed class AgenticPatchProposer : IPatchProposer
             $"  {dir}/skill/SKILL.md              the current skill document\n" +
             $"  {dir}/rollouts/                   {tree.RolloutCount} run(s): {tree.PassedCount} passed, {tree.RolloutCount - tree.PassedCount} did not\n" +
             memory +
+            size +
             "\nOpen every run before you decide. Reply in the format your skill describes.";
     }
 
