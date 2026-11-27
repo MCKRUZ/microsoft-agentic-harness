@@ -149,6 +149,55 @@ public partial class TrainSkillCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ResumingALongRunWhosePromotionWasEvicted_ReportsThePromotedSkillAndScore()
+    {
+        // Step 1 is promoted and every later candidate is worse, so each later checkpoint repeats the
+        // promoted score. The shipped store keeps 64 checkpoints and, among equal scores, the latest, so by
+        // step 70 the promoted checkpoint has been evicted and only rejects remain. A resumed run must
+        // still report the promoted skill with its score, not the starting skill with the promoted score.
+        StubRolloutRunner OneRuleIsBest(string initial) => new((skill, batch) => batch.Split == "val"
+            ? [new RolloutResult { ItemId = "v1", Hard = skill == initial ? 0.5 : skill.Split(NewRule.TrimStart('-', ' ')).Length == 2 ? 1.0 : 0.0, Soft = 0.0 }]
+            : [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.0 }]);
+        var command = NewCommand(SearchConfig(steps: 80) with { Patience = 100 });
+        var uninterrupted = await NewSut(OneRuleIsBest(command.InitialSkill), NewRuleProposer(), new InMemorySkillTrainingCheckpointStore())
+            .Handle(command, CancellationToken.None);
+        var store = new InMemorySkillTrainingCheckpointStore();
+        var calls = 0;
+        var interruptAtSeventy = new StubProposer(_ => ++calls == 70
+            ? throw new OperationCanceledException()
+            : new Patch { Edits = [new Edit { Op = EditOp.Append, Content = NewRule }] });
+        await FluentActions.Awaiting(() => NewSut(OneRuleIsBest(command.InitialSkill), interruptAtSeventy, store).Handle(command, CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+
+        var resumed = await NewSut(OneRuleIsBest(command.InitialSkill), NewRuleProposer(), store).Handle(command, CancellationToken.None);
+
+        uninterrupted.Value!.BestStep.Should().Be(1, "the scenario needs one early promotion and nothing after it");
+        (await store.GetAsync(command.RunId, 1, CancellationToken.None)).Should().BeNull("the scenario needs the promoted checkpoint evicted");
+        (resumed.Value!.BestSkill, resumed.Value.BestScore).Should().Be((uninterrupted.Value.BestSkill, uninterrupted.Value.BestScore));
+    }
+
+    [Fact]
+    public async Task Handle_ResumingALongRunThatNeverMovedOffTheStart_ReportsNothingAccepted()
+    {
+        // Every candidate is worse, so every checkpoint holds the starting skill and its score. By step 70
+        // the store has dropped the oldest ones, which leaves a gap; the highest-scoring checkpoint left is
+        // a reject of the starting skill, and must not be taken for a promotion.
+        var command = NewCommand(SearchConfig(steps: 80) with { Patience = 100 });
+        StubRolloutRunner WorseThanStart() => new((skill, batch) => batch.Split == "val"
+            ? [new RolloutResult { ItemId = "v1", Hard = skill == command.InitialSkill ? 0.5 : 0.0, Soft = 0.0 }]
+            : [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.0 }]);
+        var store = new InMemorySkillTrainingCheckpointStore();
+        await FluentActions.Awaiting(() => NewSut(WorseThanStart(), InterruptedDuringStep(70), store).Handle(command, CancellationToken.None))
+            .Should().ThrowAsync<OperationCanceledException>();
+
+        var resumed = await NewSut(WorseThanStart(), AppendingProposer(), store).Handle(command, CancellationToken.None);
+
+        (await store.GetAsync(command.RunId, 1, CancellationToken.None)).Should().BeNull("the scenario needs a gap in the history");
+        (resumed.Value!.HasAcceptedAny, resumed.Value.BestStep, resumed.Value.BestSkill, resumed.Value.BestScore)
+            .Should().Be((false, 0, command.InitialSkill, 0.5));
+    }
+
+    [Fact]
     public async Task Handle_CheckpointsFromBeforeTheStartingScoreExisted_RefusesRatherThanResuming()
     {
         // A run saved by the earlier loop compared candidates with 0 and drew the same training cases each

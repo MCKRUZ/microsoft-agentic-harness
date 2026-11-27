@@ -1053,14 +1053,21 @@ public sealed class TrainSkillCommandHandler
 
         // The best skill is the last one the gate promoted. Taking the highest score instead would pick a
         // later checkpoint on a tie (every reject repeats the current score), reporting the wrong step.
-        // Only a gap in the history means the store may have evicted the promoted checkpoint; then its
-        // highest-scoring one stands in. With every step present and none promoted, the best is still the
-        // starting skill, even when a candidate that tied it was kept as current (Accept).
+        // With every step present and none promoted, the best is still the starting skill, even when a
+        // candidate that tied it was kept as current (Accept).
         var promoted = ordered.LastOrDefault(c => c.Action == GateAction.AcceptNewBest);
         var best = promoted;
         var historyComplete = ordered[0].Step == 1 && ordered.Count == last.Step;
-        if (best is null && !historyComplete && ordered.Any(c => c.Action is GateAction.Accept))
-            best = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+        if (best is null && !historyComplete)
+        {
+            // A gap means the store may have evicted the promoted checkpoint, even when only rejects remain:
+            // the shipped store keeps the latest of equal scores, and every reject repeats the promoted score.
+            // Its highest-scoring checkpoint carries the best score, because the gate never lets the current
+            // score rise above the best. One still holding the starting text means nothing ever moved the run.
+            var highest = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+            if (highest is not null && highest.SkillContent != request.InitialSkill)
+                best = highest;
+        }
         var hasAcceptedAny = best is not null || ordered.Any(c => c.Action is GateAction.Accept or GateAction.AcceptNewBest);
 
         // A restored skill or memory is read by the rollout runner and the proposer exactly like a live
