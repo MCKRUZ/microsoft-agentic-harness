@@ -134,6 +134,47 @@ public sealed class EfCoreEvalRunStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRunDetailAsync_round_trips_why_each_repeat_failed()
+    {
+        var refused = Reporters.TestReportFactory.SingleResult("refused", Verdict.Fail) with
+        {
+            InvocationFailurePerRepeat = [null, "Blocked: violence."]
+        };
+        var answered = Reporters.TestReportFactory.SingleResult("answered", Verdict.Pass);
+        var report = Reporters.TestReportFactory.ReportOf(refused, answered);
+        await _sut.AppendAsync(report, ReceivedAt, CancellationToken.None);
+
+        var actual = await _sut.GetRunDetailAsync(report.RunId, CancellationToken.None);
+
+        actual!.Results.Single(r => r.Case.Id == "refused").InvocationFailurePerRepeat
+            .Should().Equal(null, "Blocked: violence.");
+        actual.Results.Single(r => r.Case.Id == "answered").InvocationFailurePerRepeat.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_database_created_before_failure_reasons_existed_is_upgraded_and_keeps_working()
+    {
+        // A deployed dashboard database predates the column. The schema initializer must add it, or the first write
+        // after this release fails on a column that is not there.
+        using (var ctx = _factory.CreateDbContext())
+        {
+            await ctx.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE eval_case_results DROP COLUMN InvocationFailurePerRepeatJson");
+        }
+
+        _ = new Infrastructure.AI.Persistence.SchemaInitializer<EvalDashboardDbContext>(_factory);
+
+        var refused = TestReportFactory.SingleResult("refused", Verdict.Fail) with
+        {
+            InvocationFailurePerRepeat = ["Blocked: violence."]
+        };
+        var report = TestReportFactory.ReportOf(refused);
+        (await _sut.AppendAsync(report, ReceivedAt, CancellationToken.None)).Should().BeTrue();
+        var actual = await _sut.GetRunDetailAsync(report.RunId, CancellationToken.None);
+        actual!.Results.Single().InvocationFailurePerRepeat.Should().Equal("Blocked: violence.");
+    }
+
+    [Fact]
     public async Task GetRecentAsync_orders_descending_by_started_at_utc()
     {
         var t0 = new DateTimeOffset(2026, 5, 31, 12, 0, 0, TimeSpan.Zero);

@@ -72,9 +72,11 @@ public class ToolConverterExample
         {
             try
             {
-                var tool = KeyedToolResolution.Resolve(_serviceProvider, key);
+                var tool = KeyedToolResolution.Resolve(_serviceProvider, key, out var constructionError);
                 if (tool is not null)
                     tools.Add(tool);
+                else if (constructionError is not null)
+                    _logger.LogDebug(constructionError, "Could not build keyed tool '{ToolKey}'", key);
             }
             catch (Exception ex)
             {

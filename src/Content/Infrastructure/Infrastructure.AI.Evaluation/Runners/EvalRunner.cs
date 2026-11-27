@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Domain.AI.Evaluation;
 using Microsoft.Extensions.Logging;
 
@@ -22,11 +23,30 @@ namespace Infrastructure.AI.Evaluation.Runners;
 /// <para>
 /// Exceptions thrown by the invoker are captured per-case as
 /// <see cref="EvalResult.Error"/> and counted toward <see cref="EvalRunReport.ErroredCount"/>;
-/// they do not abort the run.
+/// they do not abort the run. That includes the
+/// <see cref="Application.AI.Common.Exceptions.AgentInvocationFaultException"/> an invoker throws for a turn the
+/// harness could not run, so such a case reports its reason instead of scoring as an empty wrong answer (#1070).
+/// A returned result with <see cref="AgentInvocationResult.Success"/> false (a refusal) is still scored, and its
+/// <see cref="AgentInvocationResult.Error"/> is kept in <see cref="EvalResult.InvocationFailurePerRepeat"/> so every
+/// report can say why it failed.
 /// </para>
 /// </remarks>
 public sealed class EvalRunner : IEvalRunner
 {
+    // A failed invocation that gave no reason still needs one in the report, or it reads as a silent wrong answer.
+    private const string NoFailureReason = "The invocation reported failure without a reason.";
+
+    /// <summary>
+    /// The event every warning found before the first case runs is logged with: an override key the invoker does not
+    /// recognize, or what <see cref="IAgentInvoker.CheckBeforeRun"/> reports, such as an agent the host does not have.
+    /// </summary>
+    /// <remarks>
+    /// These warnings are also in <see cref="EvalRunReport.Warnings"/>, but a report is written only once every case
+    /// has run. A host that wants them at the start of a long run picks this event out of the runner's other warnings,
+    /// which mostly repeat a failure already logged as an error (#1071).
+    /// </remarks>
+    public static readonly EventId PreRunWarningEvent = new(1071, "EvalPreRunWarning");
+
     private readonly IAgentInvoker _invoker;
     private readonly IReadOnlyDictionary<string, IEvalMetric> _metricsByKey;
     private readonly ILogger<EvalRunner> _logger;
@@ -65,6 +85,11 @@ public sealed class EvalRunner : IEvalRunner
             .ToList();
 
         var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case));
+        foreach (var warning in _invoker.CheckBeforeRun([.. allCases.Select(pair => pair.Case)], options.InvocationOverrides))
+        {
+            warnings.Add(warning);
+            _logger.LogWarning(PreRunWarningEvent, "{Warning}", warning);
+        }
 
         _logger.LogInformation(
             "Eval run {RunId} starting — {DatasetCount} dataset(s), {CaseCount} case(s) after filter, repeats={Repeats}, parallelism={Parallelism}",
@@ -138,7 +163,7 @@ public sealed class EvalRunner : IEvalRunner
     /// not checking at all for exactly the class of bug this validation exists to catch.
     /// </para>
     /// </remarks>
-    private IReadOnlyList<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
+    private List<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
     {
         var warnings = new List<string>();
         var invokerName = _invoker.GetType().Name;
@@ -206,7 +231,7 @@ public sealed class EvalRunner : IEvalRunner
             $"{subject} key(s) {string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
             $"not recognized by {owner} (recognized: {string.Join(", ", recognizedKeys)}).";
         warnings.Add(warning);
-        _logger.LogWarning("{Warning}", warning);
+        _logger.LogWarning(PreRunWarningEvent, "{Warning}", warning);
     }
 
     private async Task<IReadOnlyList<EvalResult>> RunSequentialAsync(
@@ -252,6 +277,7 @@ public sealed class EvalRunner : IEvalRunner
         var sw = Stopwatch.StartNew();
         var outputs = new List<string>(options.Repeats);
         var scoresPerRepeat = new List<IReadOnlyList<MetricScore>>(options.Repeats);
+        var failurePerRepeat = new List<string?>(options.Repeats);
         decimal totalCost = 0m;
         string? caseError = null;
 
@@ -274,10 +300,13 @@ public sealed class EvalRunner : IEvalRunner
             {
                 _logger.LogWarning(ex, "Case {CaseId} repeat {Repeat} failed to invoke harness", @case.Id, i);
                 caseError = ex.Message;
+                // A turn can spend tokens before it fails; that cost was paid, so it stays in the case and run totals.
+                totalCost += (ex as AgentInvocationFaultException)?.PartialResult?.CostUsd ?? 0m;
                 break;
             }
 
             outputs.Add(invocation.Output);
+            failurePerRepeat.Add(invocation.Success ? null : invocation.Error ?? NoFailureReason);
             totalCost += invocation.CostUsd;
 
             var repeatScores = new List<MetricScore>(@case.MetricSpecs.Count);
@@ -333,7 +362,8 @@ public sealed class EvalRunner : IEvalRunner
                 Verdict = Verdict.Fail,
                 CostUsd = totalCost,
                 Duration = sw.Elapsed,
-                Error = caseError
+                Error = caseError,
+                InvocationFailurePerRepeat = failurePerRepeat.Any(f => f is not null) ? failurePerRepeat : []
             };
         }
 
@@ -348,7 +378,8 @@ public sealed class EvalRunner : IEvalRunner
             AggregatedScores = aggregated,
             Verdict = caseVerdict,
             CostUsd = totalCost,
-            Duration = sw.Elapsed
+            Duration = sw.Elapsed,
+            InvocationFailurePerRepeat = failurePerRepeat.Any(f => f is not null) ? failurePerRepeat : []
         };
     }
 

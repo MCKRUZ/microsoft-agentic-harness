@@ -123,15 +123,19 @@ ran with its user-secrets hidden (`APPDATA` pointed at an empty folder), so it c
 - `uv` on this machine needs `UV_NATIVE_TLS=1`: the antivirus re-signs HTTPS traffic with a root only Windows trusts.
 - The vendor's local runner needs Linux process groups; the gateway itself runs on native Windows.
 
-**Not resolved.** The eval case recorded an **empty output** although the model server answered `4`. The same empty
-output appears when the harness is pointed straight at the model server with a strictly standard reply and the
-gateway out of the path, so the gateway is not the cause. The cause is somewhere in how the harness's agent turn
-turns the reply into its output text and was not found within the time-box. It must be understood before the
-EvalRunner can be trusted as the rollout executor.
+**Resolved later (26 Nov 2026): the empty output was a hidden failure, not a parsing bug.** The case named agent
+`default`. The EvalRunner host had no agents path, and its skills path named a folder its output did not contain, so
+the turn failed with `Skill 'default' not found` before the model was asked anything. The one model request that did
+arrive was the router classifying the question. Pointed at the repository's agents, the turn failed again, because the
+`default-agent` skill declares render tools that need a service only AgentHub registers. Neither failure was visible.
+The EvalRunner scored a returned failure as an ordinary wrong answer, counted 0 errors, and kept the reason only in
+console logs, which it suppresses. Control: the same exe, stub and question with a tool-free agent answered `4` and
+passed. Fixed by #1070 (a case the harness could not run is now errored, with its reason), #1071 (the EvalRunner ships
+the repository's agents and skills) and #1072 (a tool this host cannot build is left out with a warning, rather than
+failing the turn). After the fix, the October case passes against the same stub.
 
 ## Still unverified
 
-- Why the eval case output is empty (see above). Blocks using the EvalRunner as the rollout executor.
 - Whether 32 GB of GPU memory fits the chosen model, with ComfyUI currently holding 13 GB of it.
 - Whether the `AgentFramework` environment-variable mapping works unchanged inside a Kubernetes Job.
 - The training stack on this hardware: `verl` 0.8.0, vLLM 0.20.2 and a `flash-attn` source build against CUDA 13 on

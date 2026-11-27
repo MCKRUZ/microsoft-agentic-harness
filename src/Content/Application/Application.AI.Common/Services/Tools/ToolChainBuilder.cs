@@ -953,7 +953,16 @@ public partial class ToolChainBuilder : IToolChainBuilder
         ITool? tool;
         try
         {
-            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName);
+            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName, out var constructionError);
+            if (constructionError is not null)
+            {
+                _logger.LogWarning(
+                    constructionError,
+                    "Tool '{ToolName}' is registered but could not be built in this host, so it is not part of this " +
+                    "agent's tool set: {Reason}",
+                    toolName, constructionError.Message);
+                return null;
+            }
         }
         catch (ToolNameMismatchException ex)
         {

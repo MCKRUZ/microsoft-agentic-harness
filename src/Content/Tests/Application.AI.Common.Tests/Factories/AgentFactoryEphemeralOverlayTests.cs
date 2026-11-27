@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
@@ -130,7 +131,7 @@ public sealed class AgentFactoryEphemeralOverlayTests
         var act = () => _factory.CreateAgentFromSkillsAsync(
             ["bundle-skill"], new SkillAgentOptions { OwningAgentId = "bundle-agent" });
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*bundle-skill*not found*");
+        await act.Should().ThrowAsync<SkillNotFoundException>().WithMessage("*bundle-skill*not found*");
     }
 
     private sealed class FakeOwnedSkillStore : IAgentOwnedSkillStore

@@ -49,16 +49,14 @@ public sealed class EveryKeyedToolIsNamedByItsKeyTests
         {
             try
             {
-                if (KeyedToolResolution.Resolve(provider, key) is not null)
+                if (KeyedToolResolution.Resolve(provider, key, out var constructionError) is not null)
                     built++;
+                else if (constructionError is not null)
+                    unbuilt.Add($"{key}: {constructionError.GetType().Name}: {constructionError.Message}");
             }
             catch (ToolNameMismatchException ex)
             {
                 mismatched.Add($"{ex.Key} reports '{ex.Name}'");
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
-            {
-                unbuilt.Add($"{key}: {ex.GetType().Name}: {ex.Message}");
             }
         }
 

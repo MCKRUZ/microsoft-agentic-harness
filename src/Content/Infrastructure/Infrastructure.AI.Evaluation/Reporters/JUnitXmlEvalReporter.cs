@@ -214,8 +214,14 @@ public sealed class JUnitXmlEvalReporter : IEvalReporter
             .Where(s => s.Verdict != Verdict.Pass)
             .Select(s => $"{s.MetricKey}={s.Score.ToString("F3", CultureInfo.InvariantCulture)}({s.Verdict})");
         var joined = string.Join("; ", offending);
-        return string.IsNullOrEmpty(joined)
+        var message = string.IsNullOrEmpty(joined)
             ? result.Verdict.ToString()
             : joined;
+
+        // A scored case whose invocation failed (a refusal) is a <failure>, not an <error>; without its reason the
+        // message shows only a zero score.
+        return result.InvocationFailurePerRepeat.FirstOrDefault(f => f is not null) is { } failure
+            ? $"{message}; invocation failed: {failure}"
+            : message;
     }
 }

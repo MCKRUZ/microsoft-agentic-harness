@@ -116,4 +116,32 @@ internal static class TestReportFactory
             OverallVerdict = Verdict.Fail
         };
     }
+
+    /// <summary>A one-metric result for a case with the given id and verdict; adjust it with <c>with</c>.</summary>
+    public static EvalResult SingleResult(string caseId, Verdict verdict)
+    {
+        var score = new MetricScore { MetricKey = "exact_match", Score = verdict == Verdict.Pass ? 1.0 : 0.0, Verdict = verdict };
+        return new EvalResult
+        {
+            Case = new EvalCase { Id = caseId, Input = "x", MetricSpecs = [new MetricSpec { MetricKey = "exact_match" }] },
+            OutputPerRepeat = [string.Empty],
+            ScoresPerRepeat = [new[] { score }],
+            AggregatedScores = new Dictionary<string, MetricScore> { ["exact_match"] = score },
+            Verdict = verdict
+        };
+    }
+
+    /// <summary>A report holding exactly <paramref name="results"/>, in one dataset.</summary>
+    public static EvalRunReport ReportOf(params EvalResult[] results) => new()
+    {
+        RunId = "run-single",
+        StartedAtUtc = new DateTimeOffset(2026, 5, 29, 12, 0, 0, TimeSpan.Zero),
+        CompletedAtUtc = new DateTimeOffset(2026, 5, 29, 12, 0, 1, TimeSpan.Zero),
+        Duration = TimeSpan.FromSeconds(1),
+        Datasets = [new EvalDataset { Name = "d", Cases = [.. results.Select(r => r.Case)] }],
+        Results = results,
+        FailedCount = results.Count(r => r.Verdict == Verdict.Fail),
+        ErroredCount = results.Count(r => r.Error is not null),
+        OverallVerdict = Verdict.Fail
+    };
 }

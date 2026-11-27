@@ -275,7 +275,7 @@ internal static class HoldsNoPersonalData
             "System.IO.File::Move",
             "System.IO.File::WriteAllTextAsync"),
         ["Infrastructure.AI.Evaluation/Infrastructure.AI.Evaluation.Persistence.EfCoreEvalRunStore"] = new(
-            "Eval-run reports (case inputs, expected and model outputs, scores) whose cases come only from deployer-authored YAML datasets, not user conversations.",
+            "Eval-run reports (case inputs, expected and model outputs, failure reasons, scores) whose cases come only from deployer-authored YAML datasets, not user conversations.",
             "Microsoft.Data.Sqlite.SqliteException::get_SqliteErrorCode",
             "Microsoft.EntityFrameworkCore.DbContext::SaveChangesAsync",
             "Microsoft.EntityFrameworkCore.DbSet`1::Add",

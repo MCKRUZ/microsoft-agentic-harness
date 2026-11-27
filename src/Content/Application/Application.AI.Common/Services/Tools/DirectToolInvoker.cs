@@ -160,22 +160,23 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         // once and reusing the same reference for both extraction and execution below also removes
         // what used to be a second keyed-DI lookup for the identical tool.
         ITool? tool;
+        Exception? constructionError;
         try
         {
-            tool = KeyedToolResolution.Resolve(armed.Scope.ServiceProvider, armed.ToolName);
+            tool = KeyedToolResolution.Resolve(armed.Scope.ServiceProvider, armed.ToolName, out constructionError);
         }
         catch (ToolNameMismatchException ex)
         {
             _logger.LogError(ex, "Tool {ToolName} was refused for invocation: {Reason}", armed.ToolName, ex.Message);
-            tool = null;
+            return Refused(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool, sw);
         }
 
         if (tool is null)
         {
             // The catalog described it, so it resolved once. Losing it here means the host cannot
             // construct it in this scope — answered as absence, matching how the catalog omits a tool
-            // it cannot build.
-            _logger.LogWarning("Tool {ToolName} is cataloged but did not resolve for invocation", armed.ToolName);
+            // it cannot build. One line per failure, carrying the build error when there is one.
+            _logger.LogWarning(constructionError, "Tool {ToolName} is cataloged but did not resolve for invocation", armed.ToolName);
             return Refused(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool, sw);
         }
 

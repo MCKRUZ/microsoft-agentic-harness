@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
@@ -147,13 +148,13 @@ public class AgentFactoryTests
     }
 
     [Fact]
-    public async Task CreateAgentFromSkillAsync_SkillNotFound_ThrowsInvalidOperation()
+    public async Task CreateAgentFromSkillAsync_SkillNotFound_ThrowsSkillNotFound()
     {
         _skillRegistry.Setup(r => r.TryGet("missing-skill")).Returns((SkillDefinition?)null);
 
         var act = () => _factory.CreateAgentFromSkillAsync("missing-skill");
 
-        await act.Should().ThrowAsync<InvalidOperationException>()
+        await act.Should().ThrowAsync<SkillNotFoundException>()
             .WithMessage("*missing-skill*not found*");
     }
 
@@ -263,7 +264,7 @@ public class AgentFactoryTests
         var act = () => _factory.CreateAgentFromSkillsAsync(
             ["missing"], new SkillAgentOptions());
 
-        await act.Should().ThrowAsync<InvalidOperationException>()
+        await act.Should().ThrowAsync<SkillNotFoundException>()
             .WithMessage("*missing*not found*");
     }
 

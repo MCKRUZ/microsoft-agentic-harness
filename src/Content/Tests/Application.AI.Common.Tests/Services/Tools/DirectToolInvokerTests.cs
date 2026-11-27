@@ -19,9 +19,11 @@ using Domain.Common.Config.AI.DirectToolInvocation;
 using FluentAssertions;
 using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using static Application.AI.Common.Tests.CQRS.Changes.Support.TestHelpers;
 using Xunit;
 
@@ -67,6 +69,7 @@ public sealed class DirectToolInvokerTests
     private readonly DirectToolInvocationConfig _config = new() { Enabled = true };
     private int? _pipelineOutputCeiling;
     private readonly Mock<IApprovalExecutionReporter> _executionReporter = new();
+    private readonly CapturingLogger<DirectToolInvoker> _log = new();
     private FakeClassificationGate? _classificationGate;
     private FakeObserverChain? _observerChain;
 
@@ -210,6 +213,29 @@ public sealed class DirectToolInvokerTests
         var outcome = await Invoke(Request("alpha"), Tool("alpha"));
 
         outcome.Status.Should().Be(DirectToolInvocationStatus.Succeeded);
+    }
+
+    [Fact]
+    public async Task A_cataloged_tool_this_scope_cannot_build_is_reported_as_absent()
+    {
+        // #1072: the tool built once for the catalog, then its factory fails in the invocation's own scope. The
+        // failure comes back from the tool helper instead of escaping the invoker, and is answered the way the
+        // catalog answers a tool it cannot build: as absence.
+        var tool = Tool("alpha");
+        var builds = 0;
+
+        var outcome = await Invoke(Request("alpha"), tool, registerTool: services =>
+            services.AddKeyedTransient<ITool>(tool.Name, (_, _) => ++builds == 1
+                ? tool
+                : throw new InvalidOperationException("No service for type 'IClientToolBridge' has been registered.")));
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.NotFound);
+        tool.Executions.Should().Be(0);
+        builds.Should().BeGreaterThan(1, "the test must reach the invocation's own build, not stop at the catalog");
+
+        // One failure, one line, and it carries the reason the build failed.
+        _log.Entries.Where(e => e.Level >= LogLevel.Warning).Should().ContainSingle();
+        _log.Exceptions.Should().ContainSingle().Which.Message.Should().Contain("IClientToolBridge");
     }
 
     [Fact]
@@ -875,7 +901,10 @@ public sealed class DirectToolInvokerTests
     /// keyed tool resolution are the production ones rather than stand-ins.
     /// </summary>
     private async Task<DirectToolInvocationOutcome> Invoke(
-        DirectToolInvocationRequest request, ExecutableTool tool, CancellationToken cancellationToken = default)
+        DirectToolInvocationRequest request,
+        ExecutableTool tool,
+        CancellationToken cancellationToken = default,
+        Action<IServiceCollection>? registerTool = null)
     {
         // #532: the chain bounds tool output and reads its ceiling from AppConfig. Most tests leave
         // _pipelineOutputCeiling unset, which binds the shipped 50,000-character default, far above the
@@ -893,7 +922,10 @@ public sealed class DirectToolInvokerTests
             classificationGate: _classificationGate,
             observerChain: _observerChain,
             appConfig: new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
-        services.AddKeyedSingleton<ITool>(tool.Name, tool);
+        if (registerTool is null)
+            services.AddKeyedSingleton<ITool>(tool.Name, tool);
+        else
+            registerTool(services);
 
         var provider = services.BuildServiceProvider();
 
@@ -901,7 +933,7 @@ public sealed class DirectToolInvokerTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             new ToolCatalog(provider, [tool.Name], NullLogger<ToolCatalog>.Instance),
             new StaticOptionsMonitor<DirectToolInvocationConfig>(_config),
-            NullLogger<DirectToolInvoker>.Instance);
+            _log);
 
         return await sut.InvokeAsync(request, cancellationToken);
     }

@@ -45,6 +45,23 @@ const { mockReport } = vi.hoisted(() => {
           costUsd: 0,
           error: null,
         },
+        {
+          case: { id: 'refused', input: '', tags: [] },
+          outputPerRepeat: [''],
+          aggregatedScores: { exact_match: { metricKey: 'exact_match', score: 0, verdict: 'Fail', costUsd: 0 } },
+          verdict: 'Fail',
+          costUsd: 0,
+          error: null,
+          invocationFailurePerRepeat: ['Blocked: violence.'],
+        },
+        {
+          case: { id: 'errored', input: '', tags: [] },
+          outputPerRepeat: [],
+          aggregatedScores: {},
+          verdict: 'Fail',
+          costUsd: 0,
+          error: "Skill 'default' not found.",
+        },
       ],
       passedCount: 3,
       failedCount: 0,
@@ -93,5 +110,17 @@ describe('EvalRunDetailPage consensus column', () => {
     // Both a Consensus and a Conflict chip exist; the third row contributes none.
     expect(screen.getByText(/Consensus \(Δ0\.10\)/)).toBeInTheDocument();
     expect(screen.getByText(/Conflict \(Δ0\.80\)/)).toBeInTheDocument();
+  });
+});
+
+describe('EvalRunDetailPage reasons', () => {
+  it('shows why a scored case failed when its invocation failed', () => {
+    renderPage();
+    expect(screen.getByText('Invocation failed: Blocked: violence.')).toBeInTheDocument();
+  });
+
+  it('shows why an errored case could not run', () => {
+    renderPage();
+    expect(screen.getByText("Skill 'default' not found.")).toBeInTheDocument();
   });
 });

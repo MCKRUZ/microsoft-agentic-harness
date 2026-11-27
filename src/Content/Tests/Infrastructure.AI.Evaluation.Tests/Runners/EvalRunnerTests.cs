@@ -1,11 +1,18 @@
 using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
+using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using FluentAssertions;
+using Infrastructure.AI.Evaluation.Invokers;
+using Infrastructure.AI.Evaluation.Metrics;
 using Infrastructure.AI.Evaluation.Runners;
+using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Evaluation.Tests.Runners;
@@ -140,6 +147,149 @@ public sealed class EvalRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_AgentTurnTheHarnessCouldNotRun_IsCountedAsErroredWithItsReason()
+    {
+        // The real invoker over a turn that failed before the agent ran (#1070). It used to be scored as an empty
+        // wrong answer: verdict fail, ErroredCount 0, and the reason in no report.
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "Skill 'default' not found.",
+                ErrorKind = AgentTurnErrorKind.Configuration
+            });
+        var scopes = new ServiceCollection()
+            .AddScoped(_ => mediator.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        var invoker = new HarnessAgentInvoker(scopes, NullLogger<HarnessAgentInvoker>.Instance);
+        var sut = new EvalRunner(invoker, [new ExactMatchMetric()], NullLogger<EvalRunner>.Instance);
+        var dataset = DatasetWith(Case("c1", expected: "4") with
+        {
+            InvocationOverrides = new Dictionary<string, string> { ["agent_name"] = "default" }
+        });
+
+        var report = await sut.RunAsync([dataset], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(1);
+        report.Results[0].Error.Should().Contain("Skill 'default' not found.");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhatTheInvokerFindsBeforeTheRun_IsAReportWarning()
+    {
+        // The report's warnings reach every dispatcher (CLI, dashboard, scheduled job), so the invoker's pre-run check
+        // belongs there rather than only in a log the eval host suppresses.
+        var sut = BuildSut(out var invoker, out _);
+        var runLevel = new Dictionary<string, string> { ["agent_name"] = "default" };
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), runLevel))
+               .Returns(["Agent 'typo' matches no agent or skill in this host."]);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+
+        var report = await sut.RunAsync(
+            [DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { InvocationOverrides = runLevel }, CancellationToken.None);
+
+        report.Warnings.Should().Contain("Agent 'typo' matches no agent or skill in this host.");
+    }
+
+    [Fact]
+    public async Task RunAsync_EveryPreRunWarning_IsLoggedAsOneBeforeAnyCaseRuns()
+    {
+        // The report reaches the operator only once every case has run. The eval host prints this event to stderr as
+        // it is logged (#1071), so a mistyped agent name or override key is known at the start of a long run.
+        var log = new CapturingLogger<EvalRunner>();
+        var sut = BuildSut(out var invoker, out _, log);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns(["Agent 'typo' matches no agent or skill in this host."]);
+        var loggedBeforeTheFirstCase = -1;
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .Callback(() => loggedBeforeTheFirstCase = PreRunWarnings(log).Count)
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+        var dataset = DatasetWith(Case("c1", expected: "4") with
+        {
+            InvocationOverrides = new Dictionary<string, string> { ["agnet_name"] = "default" }
+        });
+
+        await sut.RunAsync([dataset], new EvalRunOptions(), CancellationToken.None);
+
+        PreRunWarnings(log).Should().HaveCount(2)
+            .And.Contain(m => m.Contains("'agnet_name'"))
+            .And.Contain(m => m.Contains("Agent 'typo'"));
+        loggedBeforeTheFirstCase.Should().Be(2);
+    }
+
+    private static List<string> PreRunWarnings(CapturingLogger<EvalRunner> log) =>
+        [.. log.Entries
+            .Where(e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.EventId == EvalRunner.PreRunWarningEvent)
+            .Select(e => e.Message)];
+
+    [Fact]
+    public async Task RunAsync_RefusedInvocation_IsScoredAndKeepsItsReason()
+    {
+        // A refusal is an outcome a metric scores, so it is not errored. Before, its reason reached no report: the
+        // case showed an empty output and a fail with nothing to say why.
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty, Error = "Blocked: violence." });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(0);
+        report.FailedCount.Should().Be(1);
+        report.Results[0].Error.Should().BeNull();
+        report.Results[0].InvocationFailurePerRepeat.Should().Equal("Blocked: violence.");
+    }
+
+    [Fact]
+    public async Task RunAsync_RepeatsWhereOnlySomeFailed_RecordsAReasonPerRepeat()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.SetupSequence(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" })
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty, Error = "Blocked: violence." })
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
+
+        report.Results[0].InvocationFailurePerRepeat.Should().Equal(
+            null, "Blocked: violence.", "The invocation reported failure without a reason.");
+    }
+
+    [Fact]
+    public async Task RunAsync_EveryRepeatSucceeded_RecordsNoFailureReasons()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { Repeats = 2 }, CancellationToken.None);
+
+        report.Results[0].InvocationFailurePerRepeat.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_FaultAfterTheTurnSpentTokens_KeepsTheCostInTheCaseAndTheRunTotal()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ThrowsAsync(new AgentInvocationFaultException("An internal error occurred during the agent turn.")
+               {
+                   PartialResult = new AgentInvocationResult { Success = false, Output = string.Empty, CostUsd = 0.003m }
+               });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(1);
+        report.Results[0].CostUsd.Should().Be(0.003m);
+        report.TotalCostUsd.Should().Be(0.003m, "the tokens were paid for even though the turn did not finish");
+    }
+
+    [Fact]
     public async Task RunAsync_UnknownMetric_RecordsWarnNotError()
     {
         var sut = BuildSut(out var invoker, out _);
@@ -255,13 +405,18 @@ public sealed class EvalRunnerTests
         Cases = cases
     };
 
-    private static EvalRunner BuildSut(out Mock<IAgentInvoker> invoker, out IReadOnlyList<IEvalMetric> metrics)
+    private static EvalRunner BuildSut(
+        out Mock<IAgentInvoker> invoker,
+        out IReadOnlyList<IEvalMetric> metrics,
+        Microsoft.Extensions.Logging.ILogger<EvalRunner>? logger = null)
     {
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
         invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns([]);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
-        return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
+        return new EvalRunner(invoker.Object, metrics, logger ?? NullLogger<EvalRunner>.Instance);
     }
 
     /// <summary>
@@ -282,6 +437,8 @@ public sealed class EvalRunnerTests
             .ReturnsAsync(new AgentInvocationResult { Success = true, Output = output });
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
         invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns([]);
         return invoker;
     }
 

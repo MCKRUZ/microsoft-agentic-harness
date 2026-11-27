@@ -134,24 +134,23 @@ public sealed class ToolCatalog : IToolCatalog
 
         try
         {
-            tool = KeyedToolResolution.Resolve(serviceProvider, key);
+            tool = KeyedToolResolution.Resolve(serviceProvider, key, out var constructionError);
+            if (constructionError is not null)
+            {
+                // The catalog's contract is to describe what the caller may invoke. One unbuildable tool must not
+                // deny every caller the whole listing.
+                logger.LogWarning(
+                    constructionError,
+                    "Tool '{ToolKey}' is registered but could not be constructed in this host, so it is "
+                    + "omitted from the tool catalog. It is equally unavailable to agent runs here.",
+                    key);
+
+                return null;
+            }
         }
         catch (ToolNameMismatchException ex)
         {
             logger.LogError(ex, "Tool '{ToolKey}' is omitted from the tool catalog: {Reason}", key, ex.Message);
-            return null;
-        }
-        catch (Exception ex)
-        {
-            // Catching broadly is deliberate: a tool factory can fail in any way its dependencies can,
-            // and the catalog's contract is to describe what the caller may invoke. One unbuildable
-            // tool must not deny every caller the whole listing.
-            logger.LogWarning(
-                ex,
-                "Tool '{ToolKey}' is registered but could not be constructed in this host, so it is "
-                + "omitted from the tool catalog. It is equally unavailable to agent runs here.",
-                key);
-
             return null;
         }
 

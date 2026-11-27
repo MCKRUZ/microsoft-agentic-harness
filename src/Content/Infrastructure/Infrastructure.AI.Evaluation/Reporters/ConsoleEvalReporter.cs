@@ -20,6 +20,11 @@ namespace Infrastructure.AI.Evaluation.Reporters;
 /// <see cref="Spectre.Console.Markup.Escape(string)"/> before rendering, so values
 /// containing Spectre markup characters (<c>[</c>, <c>]</c>) do not crash the reporter.
 /// </para>
+/// <para>
+/// Under the table, a "Reasons" list gives one line per case that errored (<see cref="EvalResult.Error"/>) or whose
+/// invocation failed while still being scored (<see cref="EvalResult.InvocationFailurePerRepeat"/>), so a fail never
+/// appears without its cause.
+/// </para>
 /// </remarks>
 public sealed class ConsoleEvalReporter : IEvalReporter
 {
@@ -85,6 +90,39 @@ public sealed class ConsoleEvalReporter : IEvalReporter
         }
 
         console.Write(table);
+        WriteReasons(console, report.Results);
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // Under the table rather than in a column: a reason is free text that a narrow table column would wrap into an
+    // unreadable strip. One line per case, so a multi-kilobyte refusal body cannot flood the terminal.
+    private static void WriteReasons(IAnsiConsole console, IReadOnlyList<EvalResult> results)
+    {
+        var reasons = results
+            .Select(r => (r.Case.Id, Reason: r.Error is not null
+                ? "errored: " + r.Error
+                : r.InvocationFailurePerRepeat.FirstOrDefault(f => f is not null) is { } failure
+                    ? "invocation failed: " + failure
+                    : null))
+            .Where(r => r.Reason is not null)
+            .ToList();
+        if (reasons.Count == 0)
+            return;
+
+        console.WriteLine();
+        console.MarkupLine("[bold]Reasons[/]");
+        foreach (var (caseId, reason) in reasons)
+            console.MarkupLine($"  {Markup.Escape(caseId)}: {Markup.Escape(OneLine(reason!))}");
+    }
+
+    private static string OneLine(string text)
+    {
+        const int maxLength = 200;
+        var trimmed = text.Trim();
+        var newline = trimmed.IndexOfAny(['\r', '\n']);
+        var line = newline < 0 ? trimmed : trimmed[..newline].TrimEnd();
+        if (line.Length > maxLength)
+            line = line[..maxLength];
+        return line.Length < trimmed.Length ? line + " …" : line;
     }
 }

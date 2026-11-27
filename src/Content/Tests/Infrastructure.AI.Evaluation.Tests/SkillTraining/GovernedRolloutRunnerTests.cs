@@ -1,5 +1,6 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Models.Conversations;
 using Domain.AI.Evaluation;
 using Domain.AI.SkillTraining;
@@ -240,6 +241,32 @@ public sealed class GovernedRolloutRunnerTests
     }
 
     [Fact]
+    public async Task Run_ARunThatFaultedAfterCallingTools_ShowsThoseCallsInTheTrajectory()
+    {
+        // What the agent did before the harness gave up is still what it did; the proposer reads it from here.
+        var invoker = new FakeInvoker
+        {
+            Fault = new AgentInvocationFaultException("An internal error occurred during the agent turn.")
+            {
+                PartialResult = new AgentInvocationResult
+                {
+                    Success = false,
+                    Output = string.Empty,
+                    Error = "An internal error occurred during the agent turn.",
+                    ToolCalls = [new ToolCallRecord("lookup", "{\"id\":1}", "{\"ok\":true}", 3)]
+                }
+            }
+        };
+        var sut = Sut(invoker, new FakeLoader(Case("a")));
+
+        var result = (await sut.RunAsync(Candidate, Batch(), CancellationToken.None)).Single();
+
+        result.Hard.Should().Be(0.0);
+        result.Trajectory.Should().Contain("Step 1: lookup").And.Contain("THE RUN DID NOT FINISH")
+            .And.NotContain("internal error", "the trajectory says only that the run did not finish");
+    }
+
+    [Fact]
     public async Task Run_ARunThatCarriesToolCalls_ShowsThemInTheTrajectory()
     {
         var invoker = new FakeInvoker { Tools = [new ToolCallRecord("lookup", "{\"id\":1}", "{\"ok\":true}", 3)] };
@@ -316,6 +343,7 @@ public sealed class GovernedRolloutRunnerTests
         public bool Cancel { get; init; }
         public TimeSpan Delay { get; init; }
         public IReadOnlyList<ToolCallRecord> Tools { get; init; } = [];
+        public AgentInvocationFaultException? Fault { get; init; }
         public int MaxConcurrent => _max;
 
         public async Task<AgentInvocationResult> InvokeAsync(
@@ -338,6 +366,8 @@ public sealed class GovernedRolloutRunnerTests
                     throw new OperationCanceledException();
                 if (Throw(@case.Id))
                     throw new InvalidOperationException("boom");
+                if (Fault is not null)
+                    throw Fault;
 
                 return new AgentInvocationResult { Success = true, Output = Answer(@case.Id), ToolCalls = Tools };
             }

@@ -357,12 +357,14 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
 			_logger.LogError(ex,
-				"Agent {AgentName} turn {TurnNumber} failed — AI provider not configured",
+				"Agent {AgentName} turn {TurnNumber} failed — the host is not configured to run it",
 				request.AgentName, request.TurnNumber);
 
 			RecordTurnError(request.AgentName);
 
-			return await FailedTurnAsync(request, skillIds, takenUsage, assistantRowWritten, configError.Message, AgentTurnErrorKind.Configuration);
+			return await FailedTurnAsync(
+				request, skillIds, takenUsage, assistantRowWritten, DescribeConfigurationError(configError, request.AgentName),
+				AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -741,15 +743,36 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	}
 
 	/// <summary>
-	/// Walks the exception chain for an <see cref="AiProviderNotConfiguredException"/> so a
-	/// provider-misconfiguration is classified even when the agent pipeline wraps it.
+	/// Walks the exception chain for a setup problem the operator can fix and whose message is written to be shown:
+	/// an <see cref="AiProviderNotConfiguredException"/>, or a <see cref="SkillNotFoundException"/> for a skill the
+	/// agent needs that is not in this host's skill paths. The chain is walked so either is classified even when the
+	/// agent pipeline wraps it. Anything else stays a generic internal error.
 	/// </summary>
-	private static AiProviderNotConfiguredException? FindConfigurationError(Exception? ex)
+	private static Exception? FindConfigurationError(Exception? ex)
 	{
 		for (; ex is not null; ex = ex.InnerException)
-			if (ex is AiProviderNotConfiguredException configError)
-				return configError;
+			if (ex is AiProviderNotConfiguredException or SkillNotFoundException)
+				return ex;
 		return null;
+	}
+
+	/// <summary>
+	/// The message a configuration error reports. A name no agent answers to is read as a skill id (see
+	/// <see cref="AgentDefinition.ResolveSkillIds"/>), so when it matches neither, the factory's "Skill 'X' not found"
+	/// blamed a skill for what was really a mistyped or undiscovered agent (#1071). Both registries are asked again
+	/// here, so a missing skill that a real agent or skill depends on still reports that skill.
+	/// </summary>
+	private string DescribeConfigurationError(Exception configError, string agentName)
+	{
+		if (configError is SkillNotFoundException
+			&& _agentRegistry.TryGet(agentName) is null
+			&& _skillRegistry.TryGet(agentName) is null)
+		{
+			return $"No agent or skill named '{agentName}' was found. Check that it is in this host's agent paths " +
+				"(AI:Agents) or skill paths (AI:Skills).";
+		}
+
+		return configError.Message;
 	}
 
 

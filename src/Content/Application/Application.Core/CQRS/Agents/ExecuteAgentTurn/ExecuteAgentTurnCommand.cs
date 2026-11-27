@@ -180,7 +180,8 @@ public enum AgentTurnErrorKind
 	None,
 
 	/// <summary>
-	/// The AI provider is not configured (missing endpoint, API key, or registered client).
+	/// The host is not set up to run this turn: the AI provider is not configured (missing endpoint, API key, or
+	/// registered client), or a skill the agent needs is not in this host's skill paths.
 	/// The accompanying message is actionable and secret-free.
 	/// </summary>
 	Configuration,

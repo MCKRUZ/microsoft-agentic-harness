@@ -120,7 +120,9 @@ public sealed class ToolBehaviorRegistry : IToolBehaviorRegistry
         ITool? tool;
         try
         {
-            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName);
+            // A tool this host cannot build has no behaviour to state here, the same as an unregistered name. The
+            // failure is reported where the tool is built for a run or a catalog, not once more per lookup.
+            tool = KeyedToolResolution.Resolve(_serviceProvider, toolName, out _);
         }
         catch (ToolNameMismatchException)
         {

@@ -106,6 +106,9 @@ public sealed class EfCoreEvalRunStore : IEvalRunStore
                 CostUsd = result.CostUsd,
                 DurationTicks = result.Duration.Ticks,
                 Error = result.Error,
+                InvocationFailurePerRepeatJson = result.InvocationFailurePerRepeat.Count == 0
+                    ? null
+                    : JsonSerializer.Serialize(result.InvocationFailurePerRepeat, JsonOptions),
             };
             context.EvalCaseResults.Add(caseEntity);
 
@@ -392,6 +395,9 @@ public sealed class EfCoreEvalRunStore : IEvalRunStore
             CostUsd = row.CostUsd,
             Duration = TimeSpan.FromTicks(row.DurationTicks),
             Error = row.Error,
+            InvocationFailurePerRepeat = row.InvocationFailurePerRepeatJson is null
+                ? []
+                : JsonSerializer.Deserialize<List<string?>>(row.InvocationFailurePerRepeatJson, JsonOptions) ?? [],
         };
     }
 

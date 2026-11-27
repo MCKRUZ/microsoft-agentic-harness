@@ -40,4 +40,17 @@ public sealed record EvalResult
 
     /// <summary>Optional error string when the case failed to execute (not the same as a metric Fail).</summary>
     public string? Error { get; init; }
+
+    /// <summary>
+    /// Why each repeat's invocation came back failed, for a case that was still scored: for example the text of a
+    /// content-safety refusal. Empty when no repeat failed; otherwise one entry per repeat run, aligned with
+    /// <see cref="OutputPerRepeat"/>, null for a repeat that succeeded.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Error"/> on purpose. <see cref="Error"/> marks a case the harness could not run, which
+    /// counts as errored and is not scored. A failed invocation here is an outcome the case's metrics scored (a case
+    /// can expect a refusal), so it must not count as errored, but its reason still belongs in every report. An entry
+    /// can be multi-line, multi-kilobyte text.
+    /// </remarks>
+    public IReadOnlyList<string?> InvocationFailurePerRepeat { get; init; } = [];
 }

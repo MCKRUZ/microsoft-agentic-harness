@@ -110,11 +110,11 @@ public sealed class FirstPartyToolLookup
     /// itself resolves to null.
     /// </summary>
     /// <remarks>
-    /// Private deliberately (#627 code-review): this propagates a keyed tool's constructor exception
-    /// instead of catching it, which is exactly the footgun #627 closed out the last five production
-    /// callers of. Keeping it private, with <see cref="TryResolve"/>/<see cref="TryResolveLogged"/> as
-    /// the only way in or out of the class, makes that bug class structurally impossible to
-    /// reintroduce rather than relying on every future caller remembering the safe overload.
+    /// Private deliberately (#627 code-review): this propagates a <see cref="Application.AI.Common.Exceptions.ToolNameMismatchException"/>
+    /// instead of catching it. Keeping it private, with <see cref="TryResolve"/>/<see cref="TryResolveLogged"/>
+    /// as the only way in or out of the class, means no caller of this type has to remember to catch it.
+    /// A constructor exception is handed back through <paramref name="constructionError"/> by
+    /// <see cref="KeyedToolResolution.Resolve"/> itself (#1072).
     /// <para>
     /// Looks up <paramref name="toolName"/> case-insensitively against the bounded key set and probes
     /// <c>GetKeyedService</c> with the CANONICAL casing <see cref="HashSet{T}.TryGetValue(T,out T)"/>
@@ -124,10 +124,14 @@ public sealed class FirstPartyToolLookup
     /// </para>
     /// </remarks>
     /// <param name="toolName">The tool's published name.</param>
-    private ITool? Resolve(string toolName) =>
-        _registeredFirstPartyToolKeys.TryGetValue(toolName, out var canonicalKey)
-            ? KeyedToolResolution.Resolve(_serviceProvider, canonicalKey)
+    /// <param name="constructionError">The exception the tool's factory threw, if it threw.</param>
+    private ITool? Resolve(string toolName, out Exception? constructionError)
+    {
+        constructionError = null;
+        return _registeredFirstPartyToolKeys.TryGetValue(toolName, out var canonicalKey)
+            ? KeyedToolResolution.Resolve(_serviceProvider, canonicalKey, out constructionError)
             : null;
+    }
 
     /// <summary>
     /// Same bounded resolution as the private <c>Resolve</c>, but catches and reports a construction
@@ -153,7 +157,7 @@ public sealed class FirstPartyToolLookup
 
         try
         {
-            return Resolve(toolName);
+            return Resolve(toolName, out constructionError);
         }
         catch (Exception ex)
         {

@@ -45,6 +45,14 @@ evalrun ds.yaml --out junit:eval.xml --out json:eval.json --deterministic
 
 **Exit codes:** `0` overall verdict Pass · `1` Fail / Warn · `2` argument or load error · `130` cancelled (SIGINT).
 
+**Standard error:** report warnings, and every error the harness logs during the run, with its exception. This host
+ships with `AppConfig:Logging:SuppressConsoleOutput` on so a `--out console` report owns stdout; error-level log
+entries still go to stderr (redacted like every other local log sink), so a case that errored with "An internal error
+occurred" has its real cause there. Warnings found before the first case runs, such as a dataset naming an agent this
+host does not have, are printed as soon as they are found, then again with the report's warnings at the end. Other
+warnings stay out. With `SuppressConsoleOutput` off, the normal console logger prints everything and nothing extra is
+added.
+
 ## Dataset YAML schema
 
 Minimal example:
@@ -116,7 +124,15 @@ See `documentation/security/judged-behavior-eval-fixtures.md` for the fixture ma
 
 ## Seed datasets
 
-`eval-datasets/seed/` ships seven datasets that map to the `ConsoleUI/Examples/*.cs` demos plus RAG fixtures. Customize them in-place or use as templates for your own. Each case uses `agent_name: default` as a placeholder — change to your real agent name before running.
+`eval-datasets/seed/` ships seven datasets that map to the `ConsoleUI/Examples/*.cs` demos plus RAG fixtures. Customize them in-place or use as templates for your own. Each case uses `agent_name: default`, the repo's general-purpose agent. Change it to the agent you want to evaluate.
+
+## Agents and skills
+
+`agent_name` is the `id` in an agent's `AGENT.md`. The build copies the repo's `agents/` and `skills/` folders into the output, and `appsettings.json` points `AI:Agents:BasePath` and `AI:Skills:BasePath` at them. Relative paths resolve against the output folder, so the runner finds them whatever directory you start it from. To evaluate your own agents, add their folders to `AdditionalPaths`.
+
+Some tools are registered in every host but can only be built where their dependency exists. The `render_*` and `dashboard_control` tools need the browser bridge that only AgentHub registers. Here they are left out of the agent's tool set, with a warning in the log. So an eval of an agent that declares them runs with a smaller tool set than the same agent in AgentHub.
+
+A case whose agent turn the harness could not run at all is reported as **errored**, with the reason, and is not scored as a wrong answer. Examples: an agent or skill that is not found, or an AI provider that is not configured. A turn the content-safety screen refused is still scored, because metrics can test for a refusal.
 
 ## Cost tracking
 
