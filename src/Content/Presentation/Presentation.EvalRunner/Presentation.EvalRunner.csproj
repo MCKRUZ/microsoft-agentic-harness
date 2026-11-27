@@ -25,6 +25,17 @@
     </None>
   </ItemGroup>
 
+  <!-- The repo's agents and skills, so an eval case's agent_name names an agent this host can run (#1071).
+       Without them every case failed with "Skill '...' not found". Same items as AgentHub's. -->
+  <ItemGroup>
+    <Content Include="..\..\..\..\skills\**\*" Link="skills\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\..\..\agents\**\*" Link="agents\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />

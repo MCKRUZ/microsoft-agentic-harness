@@ -116,7 +116,15 @@ See `documentation/security/judged-behavior-eval-fixtures.md` for the fixture ma
 
 ## Seed datasets
 
-`eval-datasets/seed/` ships seven datasets that map to the `ConsoleUI/Examples/*.cs` demos plus RAG fixtures. Customize them in-place or use as templates for your own. Each case uses `agent_name: default` as a placeholder — change to your real agent name before running.
+`eval-datasets/seed/` ships seven datasets that map to the `ConsoleUI/Examples/*.cs` demos plus RAG fixtures. Customize them in-place or use as templates for your own. Each case uses `agent_name: default`, the repo's general-purpose agent. Change it to the agent you want to evaluate.
+
+## Agents and skills
+
+`agent_name` is the `id` in an agent's `AGENT.md`. The build copies the repo's `agents/` and `skills/` folders into the output, and `appsettings.json` points `AI:Agents:BasePath` and `AI:Skills:BasePath` at them. Relative paths resolve against the output folder, so the runner finds them whatever directory you start it from. To evaluate your own agents, add their folders to `AdditionalPaths`.
+
+Some tools are registered in every host but can only be built where their dependency exists. The `render_*` and `dashboard_control` tools need the browser bridge that only AgentHub registers. Here they are left out of the agent's tool set, with a warning in the log. So an eval of an agent that declares them runs with a smaller tool set than the same agent in AgentHub.
+
+A case whose agent turn the harness could not run at all is reported as **errored**, with the reason, and is not scored as a wrong answer. Examples: an agent or skill that is not found, or an AI provider that is not configured. A turn the content-safety screen refused is still scored, because metrics can test for a refusal.
 
 ## Cost tracking
 
