@@ -120,18 +120,20 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
         }
 
         sw.Stop();
-        ThrowIfTheHarnessCouldNotRun(turn, cancellationToken);
-        return ToResult(turn, sw);
+        var result = ToResult(turn, sw);
+        ThrowIfTheHarnessCouldNotRun(turn, result, cancellationToken);
+        return result;
     }
 
-    // A refusal is a screen that judged the input. One that could not run judged nothing, so a case relying on it
-    // was not evaluated: that is a fault, or a down safety service would score as a correct block.
-    private static bool IsRefusal(Exception ex) =>
-        ex is IScreeningRefusal and not ContentSafetyUnavailableException;
+    // A refusal is a screen that judged the input. One that could not run judged nothing (IsVerdict false), so a case
+    // relying on it was not evaluated: that is a fault, or a down safety service would score as a correct block.
+    private static bool IsRefusal(Exception ex) => ex is IScreeningRefusal { IsVerdict: true };
 
     // The handler reports these as a returned failure rather than a throw. Passing them on as an empty answer made
-    // the eval runner score a turn that never ran as a wrong answer, with the reason in no report (#1070).
-    private static void ThrowIfTheHarnessCouldNotRun(AgentTurnResult turn, CancellationToken cancellationToken)
+    // the eval runner score a turn that never ran as a wrong answer, with the reason in no report (#1070). The fault
+    // carries what the turn spent before it failed, so its cost is not dropped from the report.
+    private static void ThrowIfTheHarnessCouldNotRun(
+        AgentTurnResult turn, AgentInvocationResult spent, CancellationToken cancellationToken)
     {
         if (turn.Success || turn.ErrorKind is AgentTurnErrorKind.None)
             return;
@@ -139,7 +141,7 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
         if (turn.ErrorKind is AgentTurnErrorKind.Cancelled)
             cancellationToken.ThrowIfCancellationRequested();
 
-        throw new AgentInvocationFaultException(ChooseError(turn)!);
+        throw new AgentInvocationFaultException(spent.Error!) { PartialResult = spent };
     }
 
     private static AgentInvocationResult ToResult(AgentTurnResult turn, Stopwatch sw)

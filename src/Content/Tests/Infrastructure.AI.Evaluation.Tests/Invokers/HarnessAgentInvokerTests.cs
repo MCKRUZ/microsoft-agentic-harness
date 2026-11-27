@@ -356,6 +356,92 @@ public sealed class HarnessAgentInvokerTests
     }
 
     [Fact]
+    public async Task InvokeAsync_TurnThatSpentTokensBeforeItFailed_FaultCarriesWhatItSpent()
+    {
+        // A turn can call the model and tools, then hit an internal error. Its cost was paid, so a report that drops
+        // it undercounts the run.
+        var calls = new[] { new Application.AI.Common.Models.Conversations.ToolCallRecord("read", "{}", "contents", 4) };
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "An internal error occurred during the agent turn.",
+                ErrorKind = AgentTurnErrorKind.Internal,
+                ToolsInvoked = ["read"],
+                ToolCalls = calls,
+                InputTokens = 120,
+                OutputTokens = 30,
+                CostUsd = 0.002m,
+                Model = "gpt-4o"
+            });
+
+        var sut = MakeSut(mediator.Object);
+        var act = () => sut.InvokeAsync(
+            MakeCase(overrides: new Dictionary<string, string> { ["agent_name"] = "a" }),
+            null, forceDeterministic: false, CancellationToken.None);
+
+        var spent = (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which.PartialResult;
+        spent.Should().NotBeNull();
+        spent!.Success.Should().BeFalse();
+        spent.CostUsd.Should().Be(0.002m);
+        spent.InputTokens.Should().Be(120);
+        spent.OutputTokens.Should().Be(30);
+        spent.ToolCalls.Should().Equal(calls);
+        spent.Model.Should().Be("gpt-4o");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_PipelineThrows_FaultCarriesNothingSpent()
+    {
+        // The exception left the pipeline without a turn result, so there is no usage to carry, and none is invented.
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("downstream gone"));
+
+        var sut = MakeSut(mediator.Object);
+        var act = () => sut.InvokeAsync(
+            MakeCase(overrides: new Dictionary<string, string> { ["agent_name"] = "a" }),
+            null, forceDeterministic: false, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which.PartialResult.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task InvokeAsync_TurnCancelledByTheCallersToken_PropagatesCancellationNotAFault()
+    {
+        // The handler reports a caller cancellation as a returned Cancelled turn. When the caller's token really is
+        // cancelled, that is the caller stopping the run, not a broken case.
+        using var cts = new CancellationTokenSource();
+        var mediator = new Mock<IMediator>();
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                cts.Cancel();
+                return new AgentTurnResult
+                {
+                    Success = false,
+                    Response = string.Empty,
+                    UpdatedHistory = [],
+                    Error = "The agent turn was cancelled.",
+                    ErrorKind = AgentTurnErrorKind.Cancelled
+                };
+            });
+
+        var sut = MakeSut(mediator.Object);
+        var act = () => sut.InvokeAsync(
+            MakeCase(overrides: new Dictionary<string, string> { ["agent_name"] = "a" }),
+            null, forceDeterministic: false, cts.Token);
+
+        (await act.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeOfType<AgentInvocationFaultException>();
+    }
+
+    [Fact]
     public async Task Propagates_cancellation()
     {
         var mediator = new Mock<IMediator>();

@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using FluentAssertions;
@@ -175,6 +176,23 @@ public sealed class EvalRunnerTests
 
         report.ErroredCount.Should().Be(1);
         report.Results[0].Error.Should().Contain("Skill 'default' not found.");
+    }
+
+    [Fact]
+    public async Task RunAsync_FaultAfterTheTurnSpentTokens_KeepsTheCostInTheCaseAndTheRunTotal()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ThrowsAsync(new AgentInvocationFaultException("An internal error occurred during the agent turn.")
+               {
+                   PartialResult = new AgentInvocationResult { Success = false, Output = string.Empty, CostUsd = 0.003m }
+               });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(1);
+        report.Results[0].CostUsd.Should().Be(0.003m);
+        report.TotalCostUsd.Should().Be(0.003m, "the tokens were paid for even though the turn did not finish");
     }
 
     [Fact]

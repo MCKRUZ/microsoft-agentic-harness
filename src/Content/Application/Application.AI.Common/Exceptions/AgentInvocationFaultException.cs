@@ -44,4 +44,16 @@ public sealed class AgentInvocationFaultException : ApplicationExceptionBase
         : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// What the turn spent and did before the harness gave up: its cost, token counts, model and tool calls, with
+    /// <see cref="Evaluation.Models.AgentInvocationResult.Success"/> false. Null when the fault came before the turn
+    /// produced a result (no agent name, or an exception thrown out of the pipeline), so there is nothing to carry.
+    /// </summary>
+    /// <remarks>
+    /// A turn can call the model and its tools and then fail. Those tokens were paid for, so the eval runner adds this
+    /// cost to the case and the run, and the skill-training rollout runner shows these tool calls in the trajectory.
+    /// It is not an answer: callers must not score it.
+    /// </remarks>
+    public Evaluation.Models.AgentInvocationResult? PartialResult { get; init; }
 }

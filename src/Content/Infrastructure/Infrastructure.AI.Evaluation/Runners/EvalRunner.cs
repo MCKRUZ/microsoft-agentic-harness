@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Domain.AI.Evaluation;
 using Microsoft.Extensions.Logging;
 
@@ -277,6 +278,8 @@ public sealed class EvalRunner : IEvalRunner
             {
                 _logger.LogWarning(ex, "Case {CaseId} repeat {Repeat} failed to invoke harness", @case.Id, i);
                 caseError = ex.Message;
+                // A turn can spend tokens before it fails; that cost was paid, so it stays in the case and run totals.
+                totalCost += (ex as AgentInvocationFaultException)?.PartialResult?.CostUsd ?? 0m;
                 break;
             }
 

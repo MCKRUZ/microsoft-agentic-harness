@@ -1,5 +1,6 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.SkillTraining;
 using Domain.AI.Evaluation;
 using Domain.AI.SkillTraining;
@@ -140,9 +141,16 @@ public sealed class GovernedRolloutRunner : IRolloutRunner
         catch (Exception ex)
         {
             // One rollout that cannot run is a failed rollout, not a failed batch. The detail goes to the
-            // log; the trajectory says only that the run did not finish.
+            // log; the trajectory says only that the run did not finish, plus any tool calls the turn made first.
             _logger.LogWarning(ex, "Skill-training rollout {CaseId} could not be invoked", @case.Id);
-            return new AgentInvocationResult { Success = false, Output = string.Empty };
+            var spent = (ex as AgentInvocationFaultException)?.PartialResult;
+            return new AgentInvocationResult
+            {
+                Success = false,
+                Output = string.Empty,
+                ToolCalls = spent?.ToolCalls ?? [],
+                CostUsd = spent?.CostUsd ?? 0m
+            };
         }
     }
 
