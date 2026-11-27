@@ -1,5 +1,6 @@
 using Domain.Common.Config;
 using FluentAssertions;
+using Runner = Infrastructure.AI.Evaluation.Runners.EvalRunner;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -43,6 +44,22 @@ public sealed class EvalRunnerErrorLoggingTests
         Logger(provider).LogInformation("Executing turn 1 for agent default");
 
         stderr.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ConsoleSuppressed_APreRunWarningIsWrittenAsItHappensButTheRunnersOtherWarningsAreNot()
+    {
+        // #1071: the report prints only after every case has run, so a mistyped agent name must reach the operator
+        // at the start. The runner's per-case warnings stay out: each repeats an error line already written.
+        using var stderr = new StringWriter();
+        using var provider = Build(new LoggingConfig { SuppressConsoleOutput = true }, stderr);
+        var runner = provider.GetRequiredService<ILoggerFactory>().CreateLogger<Runner>();
+
+        runner.LogWarning(Runner.PreRunWarningEvent, "Agent 'typo' matches no agent or skill in this host");
+        runner.LogWarning(new InvalidOperationException("boom"), "Case c1 repeat 0 failed to invoke harness");
+
+        stderr.ToString().Should().Contain("Warning: ").And.Contain("Agent 'typo' matches no agent or skill")
+            .And.NotContain("failed to invoke harness");
     }
 
     [Fact]

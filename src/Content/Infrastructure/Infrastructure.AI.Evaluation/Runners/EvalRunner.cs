@@ -36,6 +36,17 @@ public sealed class EvalRunner : IEvalRunner
     // A failed invocation that gave no reason still needs one in the report, or it reads as a silent wrong answer.
     private const string NoFailureReason = "The invocation reported failure without a reason.";
 
+    /// <summary>
+    /// The event every warning found before the first case runs is logged with: an override key the invoker does not
+    /// recognize, or what <see cref="IAgentInvoker.CheckBeforeRun"/> reports, such as an agent the host does not have.
+    /// </summary>
+    /// <remarks>
+    /// These warnings are also in <see cref="EvalRunReport.Warnings"/>, but a report is written only once every case
+    /// has run. A host that wants them at the start of a long run picks this event out of the runner's other warnings,
+    /// which mostly repeat a failure already logged as an error (#1071).
+    /// </remarks>
+    public static readonly EventId PreRunWarningEvent = new(1071, "EvalPreRunWarning");
+
     private readonly IAgentInvoker _invoker;
     private readonly IReadOnlyDictionary<string, IEvalMetric> _metricsByKey;
     private readonly ILogger<EvalRunner> _logger;
@@ -77,7 +88,7 @@ public sealed class EvalRunner : IEvalRunner
         foreach (var warning in _invoker.CheckBeforeRun([.. allCases.Select(pair => pair.Case)], options.InvocationOverrides))
         {
             warnings.Add(warning);
-            _logger.LogWarning("{Warning}", warning);
+            _logger.LogWarning(PreRunWarningEvent, "{Warning}", warning);
         }
 
         _logger.LogInformation(
@@ -220,7 +231,7 @@ public sealed class EvalRunner : IEvalRunner
             $"{subject} key(s) {string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
             $"not recognized by {owner} (recognized: {string.Join(", ", recognizedKeys)}).";
         warnings.Add(warning);
-        _logger.LogWarning("{Warning}", warning);
+        _logger.LogWarning(PreRunWarningEvent, "{Warning}", warning);
     }
 
     private async Task<IReadOnlyList<EvalResult>> RunSequentialAsync(

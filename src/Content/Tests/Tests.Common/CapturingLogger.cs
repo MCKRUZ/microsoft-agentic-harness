@@ -11,7 +11,7 @@ namespace Tests.Common;
 /// <typeparam name="T">The category type the logger is created for.</typeparam>
 public sealed class CapturingLogger<T> : ILogger<T>
 {
-    private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+    private readonly ConcurrentQueue<(LogLevel Level, EventId EventId, string Message)> _entries = new();
     private readonly ConcurrentQueue<Exception> _exceptions = new();
 
     /// <summary>Every exception handed to the logger so far, oldest first, as a sink would receive it.</summary>
@@ -21,8 +21,8 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public bool Logged(LogLevel level, string fragment) =>
         _entries.Any(e => e.Level == level && e.Message.Contains(fragment, StringComparison.Ordinal));
 
-    /// <summary>Every entry written so far, with its level, oldest first.</summary>
-    public IReadOnlyList<(LogLevel Level, string Message)> Entries => [.. _entries];
+    /// <summary>Every entry written so far, with its level and event id, oldest first.</summary>
+    public IReadOnlyList<(LogLevel Level, EventId EventId, string Message)> Entries => [.. _entries];
 
     /// <summary>Every rendered message written so far, at any level, oldest first.</summary>
     public IReadOnlyList<string> Messages => _entries.Select(e => e.Message).ToList();
@@ -37,7 +37,7 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public void Log<TState>(
         LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
-        _entries.Enqueue((logLevel, formatter(state, exception)));
+        _entries.Enqueue((logLevel, eventId, formatter(state, exception)));
         if (exception is not null)
             _exceptions.Enqueue(exception);
     }

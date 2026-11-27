@@ -12,6 +12,7 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Evaluation.Tests.Runners;
@@ -197,6 +198,37 @@ public sealed class EvalRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_EveryPreRunWarning_IsLoggedAsOneBeforeAnyCaseRuns()
+    {
+        // The report reaches the operator only once every case has run. The eval host prints this event to stderr as
+        // it is logged (#1071), so a mistyped agent name or override key is known at the start of a long run.
+        var log = new CapturingLogger<EvalRunner>();
+        var sut = BuildSut(out var invoker, out _, log);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns(["Agent 'typo' matches no agent or skill in this host."]);
+        var loggedBeforeTheFirstCase = -1;
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .Callback(() => loggedBeforeTheFirstCase = PreRunWarnings(log).Count)
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+        var dataset = DatasetWith(Case("c1", expected: "4") with
+        {
+            InvocationOverrides = new Dictionary<string, string> { ["agnet_name"] = "default" }
+        });
+
+        await sut.RunAsync([dataset], new EvalRunOptions(), CancellationToken.None);
+
+        PreRunWarnings(log).Should().HaveCount(2)
+            .And.Contain(m => m.Contains("'agnet_name'"))
+            .And.Contain(m => m.Contains("Agent 'typo'"));
+        loggedBeforeTheFirstCase.Should().Be(2);
+    }
+
+    private static List<string> PreRunWarnings(CapturingLogger<EvalRunner> log) =>
+        [.. log.Entries
+            .Where(e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.EventId == EvalRunner.PreRunWarningEvent)
+            .Select(e => e.Message)];
+
+    [Fact]
     public async Task RunAsync_RefusedInvocation_IsScoredAndKeepsItsReason()
     {
         // A refusal is an outcome a metric scores, so it is not errored. Before, its reason reached no report: the
@@ -373,7 +405,10 @@ public sealed class EvalRunnerTests
         Cases = cases
     };
 
-    private static EvalRunner BuildSut(out Mock<IAgentInvoker> invoker, out IReadOnlyList<IEvalMetric> metrics)
+    private static EvalRunner BuildSut(
+        out Mock<IAgentInvoker> invoker,
+        out IReadOnlyList<IEvalMetric> metrics,
+        Microsoft.Extensions.Logging.ILogger<EvalRunner>? logger = null)
     {
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
@@ -381,7 +416,7 @@ public sealed class EvalRunnerTests
         invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
                .Returns([]);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
-        return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
+        return new EvalRunner(invoker.Object, metrics, logger ?? NullLogger<EvalRunner>.Instance);
     }
 
     /// <summary>

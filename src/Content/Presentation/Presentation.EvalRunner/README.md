@@ -48,8 +48,10 @@ evalrun ds.yaml --out junit:eval.xml --out json:eval.json --deterministic
 **Standard error:** report warnings, and every error the harness logs during the run, with its exception. This host
 ships with `AppConfig:Logging:SuppressConsoleOutput` on so a `--out console` report owns stdout; error-level log
 entries still go to stderr (redacted like every other local log sink), so a case that errored with "An internal error
-occurred" has its real cause there. Warnings and lower stay out. With `SuppressConsoleOutput` off, the normal console
-logger prints everything and nothing extra is added.
+occurred" has its real cause there. Warnings found before the first case runs, such as a dataset naming an agent this
+host does not have, are printed as soon as they are found, then again with the report's warnings at the end. Other
+warnings stay out. With `SuppressConsoleOutput` off, the normal console logger prints everything and nothing extra is
+added.
 
 ## Dataset YAML schema
 

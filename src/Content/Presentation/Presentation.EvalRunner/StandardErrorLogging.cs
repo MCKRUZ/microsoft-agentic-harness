@@ -4,11 +4,13 @@ using Domain.Common.Config;
 using Domain.Common.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Runner = Infrastructure.AI.Evaluation.Runners.EvalRunner;
 
 namespace Presentation.EvalRunner;
 
 /// <summary>
-/// Sends error-level log entries to standard error when the host has console logging switched off.
+/// Sends error-level log entries, and the eval runner's pre-run warnings, to standard error when the host has console
+/// logging switched off.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -18,10 +20,12 @@ namespace Presentation.EvalRunner;
 /// out of the returned error text, reached no place an operator could read (#1070).
 /// </para>
 /// <para>
-/// Only errors are written: warnings include one per tool a host cannot build, on every agent build, and would bury
-/// them. The entries pass through the same redacting logger factory as every other local sink, so a secret in an
-/// exception's text is redacted here too. With console logging on, errors already reach the console, so nothing is
-/// added.
+/// Errors are written, plus the runner's <see cref="Runner.PreRunWarningEvent"/> warnings (an agent the host does
+/// not have, an override key nothing reads), which the report would otherwise show only after every case has run
+/// (#1071). Other warnings stay out: they include one per tool a host cannot build, on every agent build, and the
+/// runner's per-case ones repeat an error already written. The entries pass through the same redacting logger factory
+/// as every other local sink, so a secret in an exception's text is redacted here too. With console logging on, errors
+/// already reach the console, so nothing is added.
 /// </para>
 /// </remarks>
 internal static class StandardErrorLogging
@@ -46,12 +50,16 @@ internal static class StandardErrorLogging
 
         return services.AddLogging(builder => builder
             .AddCallback(entry => Write(writer, entry))
-            .AddFilter<CallbackLoggerProvider>(category: null, LogLevel.Error));
+            .AddFilter<CallbackLoggerProvider>(category: null, LogLevel.Error)
+            .AddFilter<CallbackLoggerProvider>(typeof(Runner).FullName, LogLevel.Warning));
     }
 
     // Cases can run in parallel, so lines from two failures must not interleave.
     private static void Write(TextWriter writer, LogEntry entry)
     {
+        if (entry.Level < LogLevel.Error && entry.EventId != Runner.PreRunWarningEvent)
+            return;
+
         lock (writer)
         {
             writer.WriteLine($"{entry.Level}: {entry.Category}: {entry.Message}");
