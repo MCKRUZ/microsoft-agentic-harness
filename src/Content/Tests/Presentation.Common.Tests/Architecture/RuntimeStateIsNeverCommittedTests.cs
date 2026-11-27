@@ -29,6 +29,14 @@ namespace Presentation.Common.Tests.Architecture;
 /// </remarks>
 public sealed class RuntimeStateIsNeverCommittedTests
 {
+    /// <summary>
+    /// One case per default state path per folder a host can run from: the setting's name, and a repo-relative file
+    /// inside where that setting writes when a host starts in that folder.
+    /// </summary>
+    /// <remarks>
+    /// Only the shipped defaults are checked. A consumer who points a setting at another folder name, or at an absolute
+    /// path, chooses where that state lives and owns ignoring it.
+    /// </remarks>
     public static TheoryData<string, string> DefaultStatePaths()
     {
         var paths = new (string Setting, string Path, bool IsFile)[]
@@ -63,17 +71,18 @@ public sealed class RuntimeStateIsNeverCommittedTests
             $"'{probe}' is where {setting} writes when a host runs from that folder, and git would let it be committed");
     }
 
-    // The repo root, plus every host project folder: each is a folder `dotnet run` uses as the working directory.
+    // The repo root, plus every Presentation project folder: `dotnet run` uses a project's folder as the working
+    // directory. Found by project file rather than appsettings.json, so a new host that ships no settings file is
+    // still checked; a library folder among them costs one extra probe each.
     private static IEnumerable<string> WhereAHostRuns()
     {
         yield return string.Empty;
 
         var presentation = Path.Combine(RepoRoot.Path, "src", "Content", "Presentation");
-        foreach (var appsettings in Directory.EnumerateFiles(presentation, "appsettings.json", SearchOption.AllDirectories)
-                     .Where(p => !p.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                                 && !p.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
+        foreach (var project in Directory.EnumerateDirectories(presentation)
+                     .Where(folder => Directory.EnumerateFiles(folder, "*.*proj").Any()))
         {
-            yield return Path.GetRelativePath(RepoRoot.Path, Path.GetDirectoryName(appsettings)!).Replace('\\', '/');
+            yield return Path.GetRelativePath(RepoRoot.Path, project).Replace('\\', '/');
         }
     }
 
