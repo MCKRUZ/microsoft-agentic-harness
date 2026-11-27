@@ -105,6 +105,21 @@ public sealed class RouterEvalInvoker : IAgentInvoker
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Hands the agent cases, picked by the same <see cref="TryResolveRouterKey"/> discriminator
+    /// <see cref="InvokeAsync"/> dispatches on, to the wrapped invoker's check. This class is the
+    /// <see cref="IAgentInvoker"/> a host resolves, so keeping the interface's empty default here would mean the
+    /// harness invoker's check never ran. Router cases name a probe, not an agent, so they are left out.
+    /// </remarks>
+    public IReadOnlyList<string> CheckBeforeRun(
+        IReadOnlyList<EvalCase> cases,
+        IReadOnlyDictionary<string, string>? runLevelOverrides)
+    {
+        ArgumentNullException.ThrowIfNull(cases);
+        return _inner.CheckBeforeRun([.. cases.Where(c => !TryResolveRouterKey(c, out _))], runLevelOverrides);
+    }
+
+    /// <inheritdoc />
     public async Task<AgentInvocationResult> InvokeAsync(
         EvalCase @case,
         IReadOnlyDictionary<string, string>? runLevelOverrides,

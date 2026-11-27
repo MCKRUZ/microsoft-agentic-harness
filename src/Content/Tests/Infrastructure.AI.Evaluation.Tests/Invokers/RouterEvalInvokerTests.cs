@@ -183,6 +183,22 @@ public sealed class RouterEvalInvokerTests
         keys.Should().BeEquivalentTo(["target"]);
     }
 
+    [Fact]
+    public void CheckBeforeRun_PassesAgentCasesToTheHarnessCheckAndLeavesRouterCasesOut()
+    {
+        // This decorator is the IAgentInvoker a real host resolves. If it kept the interface's empty default, the
+        // harness invoker's check would never run anywhere. A router case names no agent, so checking it for one
+        // would raise a false alarm.
+        var inner = HarnessAgentInvokerTests.SutWithRegistries(agentIds: ["default"], skillIds: []);
+        var sut = new RouterEvalInvoker(inner, [new FakeProbe("query_type", _ => Decision("MultiHop"))], NullLogger<RouterEvalInvoker>.Instance);
+        var typo = Case(overrides: new Dictionary<string, string> { ["agent_name"] = "typo" }) with { Id = "agent-case" };
+        var routed = CaseFor("router:query_type") with { Id = "router-case" };
+
+        var warnings = sut.CheckBeforeRun([typo, routed], runLevelOverrides: null);
+
+        warnings.Should().ContainSingle().Which.Should().Contain("'typo'").And.Contain("agent-case").And.NotContain("router-case");
+    }
+
     private static RouterEvalInvoker MakeSut(Mock<IMediator> mediator, params IRouterEvalProbe[] probes)
     {
         var inner = new HarnessAgentInvoker(ScopeFactoryFor(mediator.Object), NullLogger<HarnessAgentInvoker>.Instance);

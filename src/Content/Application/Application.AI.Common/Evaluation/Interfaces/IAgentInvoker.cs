@@ -49,6 +49,21 @@ public interface IAgentInvoker
     IReadOnlySet<string> RecognizedOverrideKeysFor(EvalCase @case) => RecognizedOverrideKeys;
 
     /// <summary>
+    /// Problems this invoker can see in the cases before any of them runs, each worded as a report warning: for
+    /// example a case naming an agent this host does not have. Empty by default.
+    /// </summary>
+    /// <remarks>
+    /// The cases still run, and one this flags errors with its own reason. The warning exists so an operator sees the
+    /// cause once, at the top of the report, instead of reading it off every errored row (#1071). An invoker that
+    /// decorates another must pass the cases it hands on to the inner invoker's check, or the check never runs.
+    /// </remarks>
+    /// <param name="cases">The cases the run is about to invoke.</param>
+    /// <param name="runLevelOverrides">Run-wide invocation overrides, merged under case-level ones as in <see cref="InvokeAsync"/>.</param>
+    IReadOnlyList<string> CheckBeforeRun(
+        IReadOnlyList<EvalCase> cases,
+        IReadOnlyDictionary<string, string>? runLevelOverrides) => [];
+
+    /// <summary>
     /// Invokes the harness for the given case.
     /// </summary>
     /// <param name="case">The case being evaluated. Carries input and optional invocation overrides.</param>

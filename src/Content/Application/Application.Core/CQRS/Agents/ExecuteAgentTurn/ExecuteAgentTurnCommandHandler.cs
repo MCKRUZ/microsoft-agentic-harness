@@ -362,7 +362,9 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return await FailedTurnAsync(request, skillIds, takenUsage, assistantRowWritten, configError.Message, AgentTurnErrorKind.Configuration);
+			return await FailedTurnAsync(
+				request, skillIds, takenUsage, assistantRowWritten, DescribeConfigurationError(configError, request.AgentName),
+				AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -752,6 +754,25 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			if (ex is AiProviderNotConfiguredException or SkillNotFoundException)
 				return ex;
 		return null;
+	}
+
+	/// <summary>
+	/// The message a configuration error reports. A name no agent answers to is read as a skill id (see
+	/// <see cref="AgentDefinition.ResolveSkillIds"/>), so when it matches neither, the factory's "Skill 'X' not found"
+	/// blamed a skill for what was really a mistyped or undiscovered agent (#1071). Both registries are asked again
+	/// here, so a missing skill that a real agent or skill depends on still reports that skill.
+	/// </summary>
+	private string DescribeConfigurationError(Exception configError, string agentName)
+	{
+		if (configError is SkillNotFoundException
+			&& _agentRegistry.TryGet(agentName) is null
+			&& _skillRegistry.TryGet(agentName) is null)
+		{
+			return $"No agent or skill named '{agentName}' was found. Check that it is in this host's agent paths " +
+				"(AI:Agents) or skill paths (AI:Skills).";
+		}
+
+		return configError.Message;
 	}
 
 

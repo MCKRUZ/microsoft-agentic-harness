@@ -441,6 +441,76 @@ public sealed class HarnessAgentInvokerTests
         (await act.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeOfType<AgentInvocationFaultException>();
     }
 
+    /// <summary>An invoker whose scopes see an agent registry and a skill registry holding exactly these ids.</summary>
+    internal static Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker SutWithRegistries(
+        string[] agentIds, string[] skillIds)
+    {
+        var agents = new Mock<Application.AI.Common.Interfaces.IAgentMetadataRegistry>();
+        agents.Setup(r => r.TryGet(It.IsAny<string>())).Returns((string id) => agentIds.Contains(id)
+            ? new Domain.AI.Agents.AgentDefinition { Id = id, Name = id }
+            : null);
+        var skills = new Mock<Application.AI.Common.Interfaces.ISkillMetadataRegistry>();
+        skills.Setup(r => r.TryGet(It.IsAny<string>())).Returns((string id) => skillIds.Contains(id)
+            ? new Domain.AI.Skills.SkillDefinition { Id = id, Name = id, Instructions = "x" }
+            : null);
+        var scopes = new ServiceCollection()
+            .AddSingleton(agents.Object)
+            .AddSingleton(skills.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        return new(scopes, NullLogger<Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker>.Instance);
+    }
+
+    private static EvalCase CaseNaming(string id, string? agentName) => MakeCase(
+        overrides: agentName is null ? null : new Dictionary<string, string> { ["agent_name"] = agentName }) with { Id = id };
+
+    [Fact]
+    public void CheckBeforeRun_ACaseNamingNoAgentOrSkillThisHostHas_IsOneWarningListingItsCases()
+    {
+        // Every case naming an unknown agent errors on its own; one warning up front names the cause once (#1071).
+        var sut = SutWithRegistries(agentIds: ["default"], skillIds: ["summarize"]);
+
+        var warnings = sut.CheckBeforeRun(
+            [CaseNaming("c1", "default"), CaseNaming("c2", "summarize"), CaseNaming("c3", "typo"), CaseNaming("c4", "typo")],
+            runLevelOverrides: null);
+
+        warnings.Should().ContainSingle().Which.Should()
+            .Contain("'typo'").And.Contain("c3").And.Contain("c4")
+            .And.NotContain("c1").And.NotContain("c2");
+    }
+
+    [Fact]
+    public void CheckBeforeRun_ResolvesTheAgentNameTheWayInvokeAsyncDoes()
+    {
+        // Case-level wins over run-level, and a run-level name covers a case that names none. A check that read the
+        // overrides differently from the dispatch would warn about cases that run fine, or miss ones that will not.
+        var sut = SutWithRegistries(agentIds: ["default"], skillIds: []);
+
+        var warnings = sut.CheckBeforeRun(
+            [CaseNaming("inherits", null), CaseNaming("overrides", "typo")],
+            runLevelOverrides: new Dictionary<string, string> { ["agent_name"] = "default" });
+
+        warnings.Should().ContainSingle().Which.Should().Contain("'typo'").And.Contain("overrides").And.NotContain("inherits");
+    }
+
+    [Fact]
+    public void CheckBeforeRun_ACaseThatNamesNoAgentAnywhere_IsWarnedAbout()
+    {
+        var sut = SutWithRegistries(agentIds: ["default"], skillIds: []);
+
+        var warnings = sut.CheckBeforeRun([CaseNaming("nameless", null)], runLevelOverrides: null);
+
+        warnings.Should().ContainSingle().Which.Should().Contain("nameless").And.Contain("agent_name");
+    }
+
+    [Fact]
+    public void CheckBeforeRun_AHostWithNoAgentRegistry_ChecksNothingRatherThanWarningAboutEverything()
+    {
+        var sut = MakeSut(new Mock<IMediator>().Object);
+
+        sut.CheckBeforeRun([CaseNaming("c1", "anything")], runLevelOverrides: null).Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Propagates_cancellation()
     {

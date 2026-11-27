@@ -74,6 +74,11 @@ public sealed class EvalRunner : IEvalRunner
             .ToList();
 
         var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case));
+        foreach (var warning in _invoker.CheckBeforeRun([.. allCases.Select(pair => pair.Case)], options.InvocationOverrides))
+        {
+            warnings.Add(warning);
+            _logger.LogWarning("{Warning}", warning);
+        }
 
         _logger.LogInformation(
             "Eval run {RunId} starting — {DatasetCount} dataset(s), {CaseCount} case(s) after filter, repeats={Repeats}, parallelism={Parallelism}",
@@ -147,7 +152,7 @@ public sealed class EvalRunner : IEvalRunner
     /// not checking at all for exactly the class of bug this validation exists to catch.
     /// </para>
     /// </remarks>
-    private IReadOnlyList<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
+    private List<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
     {
         var warnings = new List<string>();
         var invokerName = _invoker.GetType().Name;

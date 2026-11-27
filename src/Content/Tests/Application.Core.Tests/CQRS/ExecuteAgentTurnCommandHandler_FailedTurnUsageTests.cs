@@ -29,10 +29,12 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
     private readonly Mock<IAgentConversationCache> _agentCache = new();
 
     private ExecuteAgentTurnCommandHandler CreateHandler(
-        LlmUsageCapture capture, Mock<IObservabilityStore>? observability = null)
+        LlmUsageCapture capture, Mock<IObservabilityStore>? observability = null,
+        Domain.AI.Agents.AgentDefinition? knownAgent = null)
     {
         var registry = new Mock<IAgentMetadataRegistry>();
-        registry.Setup(r => r.TryGet(It.IsAny<string>())).Returns((Domain.AI.Agents.AgentDefinition?)null);
+        registry.Setup(r => r.TryGet(It.IsAny<string>()))
+            .Returns((string id) => knownAgent is not null && knownAgent.Id == id ? knownAgent : null);
 
         return new ExecuteAgentTurnCommandHandler(
             _agentCache.Object,
@@ -131,11 +133,31 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new SkillNotFoundException("Skill 'default' not found. Ensure it exists in the configured skill paths."));
+        var agent = new Domain.AI.Agents.AgentDefinition { Id = "TestAgent", Name = "TestAgent", Skills = ["default"] };
+
+        var result = await CreateHandler(CreateCapture(), knownAgent: agent).Handle(Command(), CancellationToken.None);
+
+        (result.Success, result.ErrorKind).Should().Be((false, AgentTurnErrorKind.Configuration));
+        result.Error.Should().Contain("Skill 'default' not found");
+    }
+
+    [Fact]
+    public async Task Handle_TheNameMatchesNoAgentAndNoSkill_SaysSoRatherThanBlamingASkill()
+    {
+        // An unknown agent name falls back to being read as a skill id, so the factory reported "Skill 'X' not found"
+        // for what was really a mistyped or undiscovered agent: the message pointed at the wrong thing (#1071).
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new SkillNotFoundException("Skill 'TestAgent' not found. Ensure it exists in the configured skill paths."));
 
         var result = await CreateHandler(CreateCapture()).Handle(Command(), CancellationToken.None);
 
         (result.Success, result.ErrorKind).Should().Be((false, AgentTurnErrorKind.Configuration));
-        result.Error.Should().Contain("Skill 'default' not found");
+        result.Error.Should().Contain("No agent or skill named 'TestAgent'").And.Contain("AI:Agents").And.Contain("AI:Skills");
     }
 
     [Fact]

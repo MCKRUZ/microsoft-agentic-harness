@@ -3,6 +3,7 @@ using System.Globalization;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using MediatR;
@@ -59,6 +60,53 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
         _scopeFactory = scopeFactory;
         _logger = logger;
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Resolves each case's agent name exactly as <see cref="InvokeAsync"/> does (case-level over run-level), then looks
+    /// it up the way the turn handler does: as an agent, then as a skill id. A name neither registry knows is one
+    /// warning listing its cases. A host without both registries is not one this check can speak for, so it reports no
+    /// unknown names there rather than flagging every case.
+    /// </remarks>
+    public IReadOnlyList<string> CheckBeforeRun(
+        IReadOnlyList<EvalCase> cases,
+        IReadOnlyDictionary<string, string>? runLevelOverrides)
+    {
+        ArgumentNullException.ThrowIfNull(cases);
+
+        var named = cases.Select(c => (c.Id, Name: Resolve(c.InvocationOverrides, runLevelOverrides, AgentNameKey))).ToList();
+        var warnings = new List<string>();
+
+        var nameless = named.Where(c => c.Name is null).Select(c => c.Id).ToList();
+        if (nameless.Count > 0)
+        {
+            warnings.Add(
+                $"Case(s) {Quote(nameless)} name no agent, so they will error. Set the '{AgentNameKey}' invocation " +
+                "override on the case or the run.");
+        }
+
+        warnings.AddRange(FindUnknownAgents(named));
+        return warnings;
+    }
+
+    private List<string> FindUnknownAgents(IReadOnlyList<(string Id, string? Name)> named)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var agents = scope.ServiceProvider.GetService<IAgentMetadataRegistry>();
+        var skills = scope.ServiceProvider.GetService<ISkillMetadataRegistry>();
+        if (agents is null || skills is null)
+            return [];
+
+        return named
+            .Where(c => c.Name is not null && agents.TryGet(c.Name) is null && skills.TryGet(c.Name) is null)
+            .GroupBy(c => c.Name!, StringComparer.Ordinal)
+            .Select(g =>
+                $"Agent '{g.Key}' matches no agent or skill in this host, so case(s) {Quote(g.Select(c => c.Id))} " +
+                "will error. Check the agent paths (AI:Agents) and skill paths (AI:Skills).")
+            .ToList();
+    }
+
+    private static string Quote(IEnumerable<string> ids) => string.Join(", ", ids.Select(id => $"'{id}'"));
 
     /// <inheritdoc />
     /// <exception cref="AgentInvocationFaultException">

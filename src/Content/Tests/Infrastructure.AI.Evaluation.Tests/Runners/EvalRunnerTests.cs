@@ -179,6 +179,24 @@ public sealed class EvalRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_WhatTheInvokerFindsBeforeTheRun_IsAReportWarning()
+    {
+        // The report's warnings reach every dispatcher (CLI, dashboard, scheduled job), so the invoker's pre-run check
+        // belongs there rather than only in a log the eval host suppresses.
+        var sut = BuildSut(out var invoker, out _);
+        var runLevel = new Dictionary<string, string> { ["agent_name"] = "default" };
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), runLevel))
+               .Returns(["Agent 'typo' matches no agent or skill in this host."]);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+
+        var report = await sut.RunAsync(
+            [DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { InvocationOverrides = runLevel }, CancellationToken.None);
+
+        report.Warnings.Should().Contain("Agent 'typo' matches no agent or skill in this host.");
+    }
+
+    [Fact]
     public async Task RunAsync_RefusedInvocation_IsScoredAndKeepsItsReason()
     {
         // A refusal is an outcome a metric scores, so it is not errored. Before, its reason reached no report: the
@@ -360,6 +378,8 @@ public sealed class EvalRunnerTests
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
         invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns([]);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
         return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
     }
@@ -382,6 +402,8 @@ public sealed class EvalRunnerTests
             .ReturnsAsync(new AgentInvocationResult { Success = true, Output = output });
         invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
         invoker.Setup(i => i.RecognizedOverrideKeysFor(It.IsAny<EvalCase>())).Returns(ImmutableHashSet<string>.Empty);
+        invoker.Setup(i => i.CheckBeforeRun(It.IsAny<IReadOnlyList<EvalCase>>(), It.IsAny<IReadOnlyDictionary<string, string>?>()))
+               .Returns([]);
         return invoker;
     }
 
