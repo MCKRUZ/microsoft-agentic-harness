@@ -1,9 +1,14 @@
 using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using FluentAssertions;
+using Infrastructure.AI.Evaluation.Invokers;
+using Infrastructure.AI.Evaluation.Metrics;
 using Infrastructure.AI.Evaluation.Runners;
+using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -144,24 +149,23 @@ public sealed class EvalRunnerTests
     {
         // The real invoker over a turn that failed before the agent ran (#1070). It used to be scored as an empty
         // wrong answer: verdict fail, ErroredCount 0, and the reason in no report.
-        var mediator = new Mock<MediatR.IMediator>();
+        var mediator = new Mock<IMediator>();
         mediator
-            .Setup(m => m.Send(It.IsAny<Application.Core.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnResult
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
             {
                 Success = false,
                 Response = string.Empty,
                 UpdatedHistory = [],
                 Error = "Skill 'default' not found.",
-                ErrorKind = Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnErrorKind.Configuration
+                ErrorKind = AgentTurnErrorKind.Configuration
             });
-        var scopes = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>(
-            Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(
-                Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped(
-                    new Microsoft.Extensions.DependencyInjection.ServiceCollection(), _ => mediator.Object)));
-        var invoker = new Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker(
-            scopes, NullLogger<Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker>.Instance);
-        var sut = new EvalRunner(invoker, [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()], NullLogger<EvalRunner>.Instance);
+        var scopes = new ServiceCollection()
+            .AddScoped(_ => mediator.Object)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+        var invoker = new HarnessAgentInvoker(scopes, NullLogger<HarnessAgentInvoker>.Instance);
+        var sut = new EvalRunner(invoker, [new ExactMatchMetric()], NullLogger<EvalRunner>.Instance);
         var dataset = DatasetWith(Case("c1", expected: "4") with
         {
             InvocationOverrides = new Dictionary<string, string> { ["agent_name"] = "default" }

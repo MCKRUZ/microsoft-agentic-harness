@@ -1,4 +1,5 @@
 using Application.AI.Common.Evaluation.Interfaces;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Evaluation.Models;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
@@ -75,30 +76,33 @@ public sealed class RouterEvalInvokerTests
     }
 
     [Fact]
-    public async Task UnknownRouterKey_ReturnsFailedResultNamingTheKey()
+    public async Task UnknownRouterKey_ThrowsAFaultNamingTheKey()
     {
+        // #1070: a router that is not registered never classified anything, so the case was not evaluated. It is a
+        // fault (an errored case with this reason), not a failed answer for metrics to score.
         var sut = MakeSut(MediatorReturning("x"), new FakeProbe("query_type", _ => Decision("MultiHop")));
 
-        var result = await sut.InvokeAsync(
+        var act = () => sut.InvokeAsync(
             CaseFor("router:does_not_exist"), null, forceDeterministic: false, CancellationToken.None);
 
-        result.Success.Should().BeFalse();
-        result.Error.Should().Contain("does_not_exist");
-        result.Error.Should().Contain("query_type"); // lists the registered probe
+        var fault = (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which;
+        fault.Message.Should().Contain("does_not_exist");
+        fault.Message.Should().Contain("query_type"); // lists the registered probe
     }
 
     [Fact]
-    public async Task ProbeThrows_ReturnsFailedResult()
+    public async Task ProbeThrows_ThrowsAFaultCarryingTheReason()
     {
         var sut = MakeSut(
             MediatorReturning("x"),
             new FakeProbe("query_type", _ => throw new InvalidOperationException("boom")));
 
-        var result = await sut.InvokeAsync(
+        var act = () => sut.InvokeAsync(
             CaseFor("router:query_type"), null, forceDeterministic: false, CancellationToken.None);
 
-        result.Success.Should().BeFalse();
-        result.Error.Should().Contain("boom");
+        var fault = (await act.Should().ThrowAsync<AgentInvocationFaultException>()).Which;
+        fault.Message.Should().Contain("boom");
+        fault.InnerException.Should().BeOfType<InvalidOperationException>();
     }
 
     [Fact]

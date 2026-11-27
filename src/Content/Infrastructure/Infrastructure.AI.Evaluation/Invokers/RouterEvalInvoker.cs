@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Domain.AI.Evaluation;
 using Microsoft.Extensions.Logging;
 
@@ -123,7 +124,7 @@ public sealed class RouterEvalInvoker : IAgentInvoker
         if (!_probesByKey.TryGetValue(routerKey, out var probe))
         {
             var known = _probesByKey.Count == 0 ? "(none registered)" : string.Join(", ", _probesByKey.Keys.OrderBy(k => k));
-            return Failed($"No router probe registered for key '{routerKey}'. Registered: {known}.", sw);
+            throw new AgentInvocationFaultException($"No router probe registered for key '{routerKey}'. Registered: {known}.");
         }
 
         try
@@ -145,9 +146,10 @@ public sealed class RouterEvalInvoker : IAgentInvoker
         }
         catch (Exception ex)
         {
+            // A probe that threw classified nothing, so the case was not evaluated: a fault, not an answer (#1070).
             _logger.LogWarning(ex,
                 "Router probe '{RouterKey}' threw classifying case {CaseId}.", routerKey, @case.Id);
-            return Failed(ex.Message, sw);
+            throw new AgentInvocationFaultException(ex.Message, ex);
         }
     }
 
@@ -174,17 +176,5 @@ public sealed class RouterEvalInvoker : IAgentInvoker
 
         routerKey = target[RouterPrefix.Length..].Trim();
         return routerKey.Length > 0;
-    }
-
-    private static AgentInvocationResult Failed(string error, Stopwatch sw)
-    {
-        sw.Stop();
-        return new AgentInvocationResult
-        {
-            Success = false,
-            Output = string.Empty,
-            Error = error,
-            Duration = sw.Elapsed
-        };
     }
 }

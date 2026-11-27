@@ -741,11 +741,11 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	}
 
 	/// <summary>
-	/// Walks the exception chain for an <see cref="AiProviderNotConfiguredException"/> so a
-	/// provider-misconfiguration is classified even when the agent pipeline wraps it.
+	/// Walks the exception chain for a setup problem the operator can fix and whose message is written to be shown:
+	/// an <see cref="AiProviderNotConfiguredException"/>, or a <see cref="SkillNotFoundException"/> for a skill the
+	/// agent needs that is not in this host's skill paths. The chain is walked so either is classified even when the
+	/// agent pipeline wraps it. Anything else stays a generic internal error.
 	/// </summary>
-	// Setup problems the operator can fix and whose messages are written to be shown: a missing AI provider, or a
-	// skill the agent needs that is not in this host's skill paths. Anything else stays a generic internal error.
 	private static Exception? FindConfigurationError(Exception? ex)
 	{
 		for (; ex is not null; ex = ex.InnerException)

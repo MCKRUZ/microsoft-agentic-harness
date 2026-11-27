@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using Application.AI.Common.Evaluation.Interfaces;
-using Application.AI.Common.Exceptions;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Exceptions;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using MediatR;
