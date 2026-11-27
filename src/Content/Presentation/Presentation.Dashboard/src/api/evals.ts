@@ -48,6 +48,12 @@ export interface EvalResult {
   verdict: 'Pass' | 'Fail' | 'Warn';
   costUsd: number;
   error?: string | null;
+  /**
+   * Why each repeat's invocation failed for a case that was still scored (a refusal, for example); null for a
+   * repeat that succeeded. Empty or absent when no repeat failed. Separate from {@link error}, which marks a case
+   * the harness could not run.
+   */
+  invocationFailurePerRepeat?: (string | null)[];
 }
 
 export interface EvalDataset {

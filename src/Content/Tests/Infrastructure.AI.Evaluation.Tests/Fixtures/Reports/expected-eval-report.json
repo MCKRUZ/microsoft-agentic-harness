@@ -98,7 +98,8 @@
       },
       "verdict": "pass",
       "cost_usd": 0,
-      "duration": "00:00:00.0500000"
+      "duration": "00:00:00.0500000",
+      "invocation_failure_per_repeat": []
     },
     {
       "case": {
@@ -144,7 +145,8 @@
       },
       "verdict": "fail",
       "cost_usd": 0,
-      "duration": "00:00:00.0400000"
+      "duration": "00:00:00.0400000",
+      "invocation_failure_per_repeat": []
     },
     {
       "case": {
@@ -189,7 +191,8 @@
       },
       "verdict": "warn",
       "cost_usd": 0,
-      "duration": "00:00:00.0300000"
+      "duration": "00:00:00.0300000",
+      "invocation_failure_per_repeat": []
     }
   ],
   "passed_count": 1,

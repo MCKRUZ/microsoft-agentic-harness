@@ -68,4 +68,10 @@ public sealed class EvalCaseResultEntity
 
     /// <summary>Optional error string set when the case failed to execute.</summary>
     public string? Error { get; set; }
+
+    /// <summary>
+    /// Why each repeat's invocation failed for a scored case, serialized as a JSON array of strings and nulls. Null
+    /// when no repeat failed, and for rows written before this column existed.
+    /// </summary>
+    public string? InvocationFailurePerRepeatJson { get; set; }
 }

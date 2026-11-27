@@ -47,6 +47,13 @@ function ConsensusCell({ scores }: { scores: Record<string, MetricScore> }) {
   );
 }
 
+// An errored case says why it could not run; a scored case whose invocation failed (a refusal) says why it failed.
+function reasonOf(result: EvalResult): string | null {
+  if (result.error) return result.error;
+  const failure = result.invocationFailurePerRepeat?.find((f) => f != null);
+  return failure ? `Invocation failed: ${failure}` : null;
+}
+
 function CaseRow({ result }: { result: EvalResult }) {
   return (
     <tr className="border-t border-border">
@@ -63,7 +70,7 @@ function CaseRow({ result }: { result: EvalResult }) {
       </td>
       <td className="px-3 py-2"><ConsensusCell scores={result.aggregatedScores} /></td>
       <td className="px-3 py-2 text-right font-mono tabular-nums">${result.costUsd.toFixed(4)}</td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">{result.error ?? '—'}</td>
+      <td className="px-3 py-2 text-xs text-muted-foreground">{reasonOf(result) ?? '—'}</td>
     </tr>
   );
 }

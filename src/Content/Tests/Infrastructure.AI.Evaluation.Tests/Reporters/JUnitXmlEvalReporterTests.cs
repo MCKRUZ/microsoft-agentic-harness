@@ -128,6 +128,22 @@ public sealed class JUnitXmlEvalReporterTests
         xml.Should().Contain("<property name=\"passed\"");
     }
 
+    [Fact]
+    public async Task A_failure_whose_invocation_failed_carries_the_reason_in_its_message()
+    {
+        // A refused turn is scored, so it is a <failure>, not an <error>; the reason belongs in its message.
+        var refused = TestReportFactory.SingleResult("refused", Verdict.Fail) with
+        {
+            InvocationFailurePerRepeat = ["Blocked: violence."]
+        };
+
+        using var ms = new MemoryStream();
+        await new JUnitXmlEvalReporter().WriteAsync(TestReportFactory.ReportOf(refused), ms, CancellationToken.None);
+        var xml = Encoding.UTF8.GetString(ms.ToArray());
+
+        xml.Should().Contain("<failure message=\"exact_match=0.000(Fail); invocation failed: Blocked: violence.\"");
+    }
+
     private static string Normalize(string s) =>
         s.Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd();
 }

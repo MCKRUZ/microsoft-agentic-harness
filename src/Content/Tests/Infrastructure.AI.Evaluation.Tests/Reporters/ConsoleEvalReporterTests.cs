@@ -73,4 +73,42 @@ public sealed class ConsoleEvalReporterTests
         var text = Encoding.UTF8.GetString(ms.ToArray());
         text.Should().Contain("rag[smoke]");
     }
+
+    [Fact]
+    public async Task Shows_why_a_case_failed_or_errored()
+    {
+        // Before, the table had no column for either: an errored case and a refused one showed only their verdicts.
+        var refused = TestReportFactory.SingleResult("refused", Verdict.Fail) with
+        {
+            InvocationFailurePerRepeat = ["Blocked: [violence]."]
+        };
+        var errored = TestReportFactory.SingleResult("errored", Verdict.Fail) with
+        {
+            Error = "Skill 'default' not found."
+        };
+
+        var text = await RenderAsync(TestReportFactory.ReportOf(refused, errored));
+
+        text.Should().Contain("Blocked: [violence].", "markup characters in a reason must be escaped, not parsed");
+        text.Should().Contain("Skill 'default' not found.");
+    }
+
+    [Fact]
+    public async Task Shortens_a_long_reason_to_one_line()
+    {
+        // A refusal body can run to several kilobytes over many lines; the table keeps one readable line.
+        var longReason = "first line\n" + new string('x', 2000);
+        var refused = TestReportFactory.SingleResult("refused", Verdict.Fail) with { InvocationFailurePerRepeat = [longReason] };
+
+        var text = await RenderAsync(TestReportFactory.ReportOf(refused));
+
+        text.Should().Contain("first line").And.NotContain(new string('x', 500));
+    }
+
+    private static async Task<string> RenderAsync(EvalRunReport report)
+    {
+        using var ms = new MemoryStream();
+        await new ConsoleEvalReporter().WriteAsync(report, ms, CancellationToken.None);
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
 }

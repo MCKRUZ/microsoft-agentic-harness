@@ -26,11 +26,16 @@ namespace Infrastructure.AI.Evaluation.Runners;
 /// they do not abort the run. That includes the
 /// <see cref="Application.AI.Common.Exceptions.AgentInvocationFaultException"/> an invoker throws for a turn the
 /// harness could not run, so such a case reports its reason instead of scoring as an empty wrong answer (#1070).
-/// A returned result with <see cref="AgentInvocationResult.Success"/> false (a refusal) is still scored.
+/// A returned result with <see cref="AgentInvocationResult.Success"/> false (a refusal) is still scored, and its
+/// <see cref="AgentInvocationResult.Error"/> is kept in <see cref="EvalResult.InvocationFailurePerRepeat"/> so every
+/// report can say why it failed.
 /// </para>
 /// </remarks>
 public sealed class EvalRunner : IEvalRunner
 {
+    // A failed invocation that gave no reason still needs one in the report, or it reads as a silent wrong answer.
+    private const string NoFailureReason = "The invocation reported failure without a reason.";
+
     private readonly IAgentInvoker _invoker;
     private readonly IReadOnlyDictionary<string, IEvalMetric> _metricsByKey;
     private readonly ILogger<EvalRunner> _logger;
@@ -256,6 +261,7 @@ public sealed class EvalRunner : IEvalRunner
         var sw = Stopwatch.StartNew();
         var outputs = new List<string>(options.Repeats);
         var scoresPerRepeat = new List<IReadOnlyList<MetricScore>>(options.Repeats);
+        var failurePerRepeat = new List<string?>(options.Repeats);
         decimal totalCost = 0m;
         string? caseError = null;
 
@@ -284,6 +290,7 @@ public sealed class EvalRunner : IEvalRunner
             }
 
             outputs.Add(invocation.Output);
+            failurePerRepeat.Add(invocation.Success ? null : invocation.Error ?? NoFailureReason);
             totalCost += invocation.CostUsd;
 
             var repeatScores = new List<MetricScore>(@case.MetricSpecs.Count);
@@ -339,7 +346,8 @@ public sealed class EvalRunner : IEvalRunner
                 Verdict = Verdict.Fail,
                 CostUsd = totalCost,
                 Duration = sw.Elapsed,
-                Error = caseError
+                Error = caseError,
+                InvocationFailurePerRepeat = failurePerRepeat.Any(f => f is not null) ? failurePerRepeat : []
             };
         }
 
@@ -354,7 +362,8 @@ public sealed class EvalRunner : IEvalRunner
             AggregatedScores = aggregated,
             Verdict = caseVerdict,
             CostUsd = totalCost,
-            Duration = sw.Elapsed
+            Duration = sw.Elapsed,
+            InvocationFailurePerRepeat = failurePerRepeat.Any(f => f is not null) ? failurePerRepeat : []
         };
     }
 

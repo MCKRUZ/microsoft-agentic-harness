@@ -179,6 +179,50 @@ public sealed class EvalRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_RefusedInvocation_IsScoredAndKeepsItsReason()
+    {
+        // A refusal is an outcome a metric scores, so it is not errored. Before, its reason reached no report: the
+        // case showed an empty output and a fail with nothing to say why.
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty, Error = "Blocked: violence." });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions(), CancellationToken.None);
+
+        report.ErroredCount.Should().Be(0);
+        report.FailedCount.Should().Be(1);
+        report.Results[0].Error.Should().BeNull();
+        report.Results[0].InvocationFailurePerRepeat.Should().Equal("Blocked: violence.");
+    }
+
+    [Fact]
+    public async Task RunAsync_RepeatsWhereOnlySomeFailed_RecordsAReasonPerRepeat()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.SetupSequence(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" })
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty, Error = "Blocked: violence." })
+               .ReturnsAsync(new AgentInvocationResult { Success = false, Output = string.Empty });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
+
+        report.Results[0].InvocationFailurePerRepeat.Should().Equal(
+            null, "Blocked: violence.", "The invocation reported failure without a reason.");
+    }
+
+    [Fact]
+    public async Task RunAsync_EveryRepeatSucceeded_RecordsNoFailureReasons()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "4" });
+
+        var report = await sut.RunAsync([DatasetWith(Case("c1", expected: "4"))], new EvalRunOptions { Repeats = 2 }, CancellationToken.None);
+
+        report.Results[0].InvocationFailurePerRepeat.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RunAsync_FaultAfterTheTurnSpentTokens_KeepsTheCostInTheCaseAndTheRunTotal()
     {
         var sut = BuildSut(out var invoker, out _);
