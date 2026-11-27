@@ -192,8 +192,13 @@ public sealed class TrainSkillCommandHandler
 
         var currentSkill = resume?.CurrentSkill ?? request.InitialSkill;
         var bestSkill = resume?.BestSkill ?? currentSkill;
-        var currentScore = resume?.CurrentScore ?? 0.0;
-        var bestScore = resume?.BestScore ?? 0.0;
+        // A fresh run scores the skill it starts from on validation, so the first candidate has to beat
+        // what the run began with rather than 0. A resumed run carries that score in its checkpoint.
+        var startingScore = resume is null
+            ? await ScoreStartingSkillAsync(request.InitialSkill, cfg, cancellationToken).ConfigureAwait(false)
+            : 0.0;
+        var currentScore = resume?.CurrentScore ?? startingScore;
+        var bestScore = resume?.BestScore ?? startingScore;
         var bestStep = resume?.BestStep ?? 0;
         var consecutiveRejects = resume?.ConsecutiveRejects ?? 0;
         var globalStep = resume?.GlobalStep ?? 0;
@@ -242,7 +247,7 @@ public sealed class TrainSkillCommandHandler
                 {
                     Split = "train",
                     BatchSize = cfg.TrainBatchSize,
-                    Seed = cfg.Seed
+                    Seed = TrainSeed(cfg.Seed, globalStep)
                 };
                 var trainRollouts = await _rolloutRunner
                     .RunAsync(currentSkill, trainBatch, cancellationToken).ConfigureAwait(false);
@@ -276,12 +281,14 @@ public sealed class TrainSkillCommandHandler
                     return Result<SkillTrainingRunResult>.Fail(GraderMarkerScanner.EvidenceLeakCode);
                 }
 
+                var lr = scheduler.GetLearningRate(globalStep - 1, totalSteps, cfg.LrStart, cfg.LrMin);
                 var input = new ReflectionInput
                 {
                     CurrentSkill = currentSkill,
                     Rollouts = screened.Clean,
                     MetaSkillMemory = memoryText,
-                    IncludeSuccesses = true
+                    IncludeSuccesses = true,
+                    EditBudget = lr
                 };
 
                 Patch proposed;
@@ -390,7 +397,6 @@ public sealed class TrainSkillCommandHandler
 
                 // ── Aggregate + select ────────────────────────────────────────
                 var aggregated = _aggregator.Aggregate([proposed]);
-                var lr = scheduler.GetLearningRate(globalStep - 1, totalSteps, cfg.LrStart, cfg.LrMin);
                 var selected = _selector.SelectTopK(aggregated, lr);
 
                 if (selected.Edits.Count == 0)
@@ -421,14 +427,8 @@ public sealed class TrainSkillCommandHandler
                 }
 
                 // ── Score candidate on val split ──────────────────────────────
-                var valBatch = new RolloutBatch
-                {
-                    Split = "val",
-                    BatchSize = cfg.ValBatchSize,
-                    Seed = cfg.Seed
-                };
                 var valRollouts = await _rolloutRunner
-                    .RunAsync(applyReport.NewSkillContent, valBatch, cancellationToken).ConfigureAwait(false);
+                    .RunAsync(applyReport.NewSkillContent, ValBatch(cfg), cancellationToken).ConfigureAwait(false);
                 if (valRollouts.Count == 0)
                 {
                     _logger.LogWarning(
@@ -776,6 +776,50 @@ public sealed class TrainSkillCommandHandler
         };
     }
 
+    /// <summary>
+    /// Scores the skill the run starts from on the validation cases every candidate is later scored on,
+    /// projected the way the gate projects a candidate, so the first gate compares like with like.
+    /// </summary>
+    private async Task<double> ScoreStartingSkillAsync(string initialSkill, TrainSkillConfig cfg, CancellationToken cancellationToken)
+    {
+        var rollouts = await _rolloutRunner.RunAsync(initialSkill, ValBatch(cfg), cancellationToken).ConfigureAwait(false);
+        if (rollouts.Count == 0)
+        {
+            _logger.LogWarning(
+                "Val split returned 0 rollouts for the starting skill. Check ValBatchSize and IRolloutRunner configuration; the run will compare candidates with 0.");
+        }
+
+        var (hard, soft) = RolloutBatchScorer.Score(rollouts);
+        return _gate.SelectGateScore(hard, soft, cfg.GateMetric, cfg.MixedWeight);
+    }
+
+    /// <summary>
+    /// The seed for one step's training draw. Validation keeps <paramref name="runSeed"/> for the whole run,
+    /// because the gate compares scores taken on it; training mixes in the step so each step's proposer
+    /// reflects on a fresh draw. Deterministic, so a resumed run draws what the uninterrupted one would have.
+    /// </summary>
+    private static int TrainSeed(int runSeed, int globalStep) => unchecked((runSeed * TrainSeedStride) + globalStep);
+
+    /// <summary>
+    /// Part of the run fingerprint. Raise it when a change means checkpoints from the earlier loop would not
+    /// resume correctly under this one, so they are refused instead of spliced. 2: the starting skill is
+    /// scored before step 1, and training draws change each step.
+    /// </summary>
+    private const string LoopVersion = "loop-2";
+
+    /// <summary>
+    /// A prime well above any realistic step count, so runs with nearby seeds draw different training cases on
+    /// every step of their first 7,919.
+    /// </summary>
+    private const int TrainSeedStride = 7919;
+
+    /// <summary>
+    /// The validation batch. Every validation score in a run, the starting skill's included, is taken on it,
+    /// so it uses the run seed unchanged and is built in this one place.
+    /// </summary>
+    private static RolloutBatch ValBatch(TrainSkillConfig cfg) =>
+        new() { Split = "val", BatchSize = cfg.ValBatchSize, Seed = cfg.Seed };
+
     private ILrScheduler ResolveScheduler(string key) => key.ToLowerInvariant() switch
     {
         "cosine" => new CosineScheduler(),
@@ -897,7 +941,7 @@ public sealed class TrainSkillCommandHandler
         if (cfg.UseSlowUpdate && priorEpochValRollouts.Count > 0 && lastValRollouts.Count > 0)
         {
             // Paired comparison uses already-computed val rollouts — no extra LLM cost.
-            // When Seed is fixed in TrainSkillConfig, item ids overlap and SlowUpdate finds them.
+            // Validation draws use the run seed on every step, so item ids overlap and SlowUpdate finds them.
             var slowCmd = new SlowUpdate.SlowUpdateCommand
             {
                 PriorRollouts = priorEpochValRollouts,
@@ -1004,16 +1048,26 @@ public sealed class TrainSkillCommandHandler
         if (last.RunFingerprint != fingerprint)
         {
             return (null, Result<SkillTrainingRunResult>.ValidationFailure(
-                [$"RunId '{request.RunId}' already holds checkpoints from a different skill, starting text or configuration; use a new RunId to start a new run."]));
+                [$"RunId '{request.RunId}' already holds checkpoints from a different skill, starting text or configuration, or from an earlier version of the training loop; use a new RunId to start a new run."]));
         }
 
         // The best skill is the last one the gate promoted. Taking the highest score instead would pick a
         // later checkpoint on a tie (every reject repeats the current score), reporting the wrong step.
-        // The store may have evicted the promoted checkpoint; then its highest-scoring one stands in.
+        // With every step present and none promoted, the best is still the starting skill, even when a
+        // candidate that tied it was kept as current (Accept).
         var promoted = ordered.LastOrDefault(c => c.Action == GateAction.AcceptNewBest);
         var best = promoted;
-        if (best is null && ordered.Any(c => c.Action is GateAction.Accept))
-            best = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+        var historyComplete = ordered[0].Step == 1 && ordered.Count == last.Step;
+        if (best is null && !historyComplete)
+        {
+            // A gap means the store may have evicted the promoted checkpoint, even when only rejects remain:
+            // the shipped store keeps the latest of equal scores, and every reject repeats the promoted score.
+            // Its highest-scoring checkpoint carries the best score, because the gate never lets the current
+            // score rise above the best. One still holding the starting text means nothing ever moved the run.
+            var highest = await _checkpointStore.GetBestAsync(request.RunId, cancellationToken).ConfigureAwait(false);
+            if (highest is not null && highest.SkillContent != request.InitialSkill)
+                best = highest;
+        }
         var hasAcceptedAny = best is not null || ordered.Any(c => c.Action is GateAction.Accept or GateAction.AcceptNewBest);
 
         // A restored skill or memory is read by the rollout runner and the proposer exactly like a live
@@ -1042,7 +1096,9 @@ public sealed class TrainSkillCommandHandler
             CurrentSkill: last.SkillContent,
             CurrentScore: last.Score,
             BestSkill: best?.SkillContent ?? request.InitialSkill,
-            BestScore: best?.Score ?? 0.0,
+            // Nothing promoted means the current score never moved off the starting skill's, which the
+            // last checkpoint therefore still carries.
+            BestScore: best?.Score ?? last.Score,
             BestStep: best?.Step ?? 0,
             ConsecutiveRejects: trailingRejects,
             GlobalStep: last.Step,
@@ -1064,6 +1120,7 @@ public sealed class TrainSkillCommandHandler
     /// </summary>
     private static string ComputeRunFingerprint(TrainSkillCommand request) =>
         SkillContentHash.Of(string.Join('\n',
+            LoopVersion,
             request.SkillId,
             request.Domain,
             SkillContentHash.Of(request.InitialSkill),

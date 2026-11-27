@@ -31,4 +31,16 @@ public sealed record ReflectionInput
     /// patterns; when <c>false</c>, only failures are surfaced.
     /// </summary>
     public bool IncludeSuccesses { get; init; } = true;
+
+    /// <summary>
+    /// The most edits the loop will apply from this proposal, or <see langword="null"/> when the caller
+    /// sets no limit (the standalone reflect command).
+    /// </summary>
+    /// <remarks>
+    /// The training loop keeps only this many edits of a proposal, ranked by support and then by their
+    /// order in the patch. A single proposal's edits all have the same support, so without knowing the
+    /// limit a proposer that changes five places would see only the first few applied: a partial rewrite
+    /// it never wrote. Telling it the limit lets it make the change it most wants within it.
+    /// </remarks>
+    public int? EditBudget { get; init; }
 }

@@ -195,6 +195,43 @@ public class GateEvaluatorTests
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    // ── The invariant a resumed run relies on ────────────────────────────────────
+    //
+    // A run that never promoted reports BestScore from its last checkpoint (TrainSkillCommandHandler's
+    // resume path). That is the starting score only if, while current == best, every outcome other than a
+    // promotion leaves the current score where it was. A tolerance band that let a slightly worse candidate
+    // be kept would break it without any error, so it is pinned across a grid of candidates in both modes.
+
+    private static readonly double[] Grid = [0.0, 0.25, 0.49, 0.5, 0.51, 0.75, 1.0];
+
+    [Fact]
+    public void Evaluate_CurrentEqualsBest_OnlyAPromotionMovesTheCurrentScore()
+    {
+        foreach (var candidate in Grid)
+        {
+            var result = Sut.Evaluate(
+                candidateSkill: "cand", candidateHard: candidate, candidateSoft: candidate,
+                currentSkill: "start", currentScore: 0.5, bestSkill: "start", bestScore: 0.5, bestStep: 0,
+                globalStep: 1, metric: GateMetric.Hard);
+
+            if (result.Action != GateAction.AcceptNewBest)
+                result.CurrentScore.Should().Be(0.5, $"candidate {candidate} was not promoted");
+        }
+    }
+
+    [Fact]
+    public void EvaluateTwoSplit_CurrentEqualsBest_OnlyAPromotionMovesTheCurrentScore()
+    {
+        foreach (var heldOut in Grid)
+        foreach (var heldIn in Grid)
+        {
+            var result = Sut.EvaluateTwoSplit(Eval(candHo: heldOut, candIn: heldIn, curHo: 0.5, curIn: 0.5, bestHo: 0.5, bestStep: 0, globalStep: 1));
+
+            if (result.Action != GateAction.AcceptNewBest)
+                result.CurrentScore.Should().Be(0.5, $"candidate held-out {heldOut} / held-in {heldIn} was not promoted");
+        }
+    }
+
     // ── EvaluateTwoSplit (non-regression) ────────────────────────────────────────
     //
     // Δ_ho = candidate_ho − current_ho,  Δ_in = candidate_in − current_in (metric-projected).

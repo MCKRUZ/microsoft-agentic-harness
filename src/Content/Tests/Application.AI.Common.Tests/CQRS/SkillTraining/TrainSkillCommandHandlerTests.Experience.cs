@@ -49,7 +49,7 @@ public partial class TrainSkillCommandHandlerTests
 
     /// <summary>
     /// A rollout runner whose validation score follows the script, one value per candidate evaluation:
-    /// 1.0 beats the starting score of 0, so it is accepted; a lower or equal one is rejected.
+    /// the starting skill scores 0 without using a value, so 1.0 is accepted and a lower or equal one rejected.
     /// </summary>
     private static StubRolloutRunner ScriptedValidation(params double[] valScores)
     {
@@ -57,6 +57,7 @@ public partial class TrainSkillCommandHandlerTests
         return new StubRolloutRunner((s, b) => b.Split switch
         {
             "train" => [new RolloutResult { ItemId = "t1", Hard = 0.0, Soft = 0.0 }],
+            "val" when s == StartingSkill => [new RolloutResult { ItemId = "v1", Hard = 0.0, Soft = 0.0 }],
             "val" => [new RolloutResult { ItemId = "v1", Hard = valScores[Math.Min(next++, valScores.Length - 1)], Soft = 0.0 }],
             _ => []
         });

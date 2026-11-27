@@ -296,8 +296,8 @@ Application.AI.Common/
     │   ├── TopKEditSelector.cs         # Stable ranking by support → merge level → insertion order
     │   ├── RolloutBatchScorer.cs       # Project per-item rollouts to batch (hard, soft) means
     │   ├── InMemorySkillTrainingCheckpointStore.cs  # Best + latest 64 per run; concurrent-safe
-    │   ├── NotConfiguredPatchProposer.cs    # Fail-fast default — replace before TrainSkillCommand
-    │   ├── NotConfiguredRolloutRunner.cs    # Fail-fast default — replace before TrainSkillCommand
+    │   ├── NotConfiguredPatchProposer.cs    # Fail-fast placeholder; Infrastructure replaces it
+    │   ├── NotConfiguredRolloutRunner.cs    # Fail-fast placeholder; Infrastructure replaces it
     │   └── Schedulers/                # CosineScheduler, LinearScheduler, ConstantScheduler, SchedulerArgs
     └── Tools/
         ├── AIToolConverter.cs         # ITool → AIFunction bridge
@@ -316,7 +316,7 @@ The `CQRS/SkillTraining/` subtree wires the SkillOpt-port training loop into the
 | `SlowUpdateCommand` | Paired longitudinal classification (improved/regressed/persistent_fail/stable_success) + guidance synthesis at epoch boundary. |
 | `MetaSkillUpdateCommand` | Persists cross-epoch strategy memory via `IKnowledgeMemory` under `skill-training/meta/{skillId}/{runId}`. |
 
-All validators enforce score ranges in [0, 1], `MaxSkillLength = 262_144` on every skill string, and cross-field invariants (`BestStep ≤ GlobalStep`, `IncludeSuccesses=false` requires ≥1 failure rollout). DI is auto-wired via `AddSkillTrainingDependencies()` from `Application.AI.Common/Extensions/`; consumers replace the `NotConfigured*` defaults with agent-backed Infrastructure impls.
+All validators enforce score ranges in [0, 1], `MaxSkillLength = 262_144` on every skill string, and cross-field invariants (`BestStep ≤ GlobalStep`, `IncludeSuccesses=false` requires ≥1 failure rollout). DI is auto-wired via `AddSkillTrainingDependencies()` from `Application.AI.Common/Extensions/`; the `NotConfigured*` defaults are fail-fast placeholders that Infrastructure replaces with `AgenticPatchProposer` and `GovernedRolloutRunner`.
 
 ## Key Types Reference
 

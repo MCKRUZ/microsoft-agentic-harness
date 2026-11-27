@@ -106,6 +106,47 @@ public sealed partial class AgenticPatchProposerTests : IDisposable
     }
 
     [Fact]
+    public async Task Propose_WithAnEditBudget_TellsTheSessionTheLimit()
+    {
+        var session = new ScriptedSession(Reply("# skill\n- rule\n- second rule\n"));
+
+        await NewSut(session).ProposeAsync(Input() with { EditBudget = 2 }, CancellationToken.None);
+
+        session.Missions[0].Should().Contain("at most 2 separate places");
+    }
+
+    [Fact]
+    public async Task Propose_AChangeLargerThanTheBudget_IsSentBackOnceRatherThanCutDown()
+    {
+        // Three separate places changed, budget two: the loop would keep only the first two, a rewrite
+        // the proposer never wrote. The proposer is asked for a smaller change instead.
+        var tooBig = Reply("# new title\n- rule\nmiddle\n- tail\n");
+        var current = "# skill\n- rule\n- tail\n";
+        var smaller = Reply("# skill\n- rule\nmiddle\n- tail\n");
+        var session = new ScriptedSession(tooBig, smaller);
+
+        var patch = await NewSut(session).ProposeAsync(
+            Input() with { CurrentSkill = current, EditBudget = 1 }, CancellationToken.None);
+
+        session.Calls.Should().Be(2);
+        session.Missions[1].Should().Contain("YOUR PREVIOUS ATTEMPT WAS REJECTED").And.Contain("at most 1");
+        patch.Edits.Should().HaveCount(1);
+        Applier.Apply(current, patch).NewSkillContent.Should().Be("# skill\n- rule\nmiddle\n- tail\n");
+    }
+
+    [Fact]
+    public async Task Propose_NoBudget_LeavesTheChangeSizeToTheLoop()
+    {
+        var session = new ScriptedSession(Reply("# new title\n- rule\nmiddle\n"));
+
+        var patch = await NewSut(session).ProposeAsync(Input(), CancellationToken.None);
+
+        session.Calls.Should().Be(1);
+        session.Missions[0].Should().NotContain("separate places");
+        patch.Edits.Should().HaveCountGreaterThan(1);
+    }
+
+    [Fact]
     public async Task Propose_TwoUnusableReplies_ReturnAnEmptyPatchRatherThanGuessing()
     {
         var session = new ScriptedSession("no format", Doc(string.Empty));

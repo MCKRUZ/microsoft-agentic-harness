@@ -105,12 +105,14 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
 
                     <h2>The six stages, per step</h2>
                     <pre><code>┌──────────────────────────────────────────────────────────────┐
+│  before step 1: score the starting skill on val (fresh run)  │
 │  for epoch in 1..Epochs:                                     │
 │    for step in 1..StepsPerEpoch:                             │
 │      1. Rollout    — IRolloutRunner on train batch          │
-│      2. Reflect    — IPatchProposer turns failures into Patch│
+│      2. Reflect    — IPatchProposer turns runs into a Patch  │
+│                      (told this step's edit budget)          │
 │      3. Aggregate  — dedup edits, sum SupportCount           │
-│      4. Select     — clip to LR budget                       │
+│      4. Select     — clip to LR budget (safety net)          │
 │      5. Apply      — PatchApplier walks edits over the doc   │
 │      6. Gate       — score candidate on val, decide          │
 │    Epoch boundary:                                           │
@@ -141,7 +143,7 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
                             <tr><td><code>TopKEditSelector</code></td><td>…/Services/SkillTraining</td><td>Stable rank by support → merge depth → insertion order.</td></tr>
                             <tr><td><code>ILrScheduler</code> impls</td><td>…/Services/SkillTraining/Schedulers</td><td>CosineScheduler (default), LinearScheduler, ConstantScheduler. Shared <code>SchedulerArgs.Validate</code>.</td></tr>
                             <tr><td><code>InMemorySkillTrainingCheckpointStore</code></td><td>…/Services/SkillTraining</td><td>Default: best + last 64 per run. Swap to EF Core for durability.</td></tr>
-                            <tr><td><code>NotConfigured*</code> defaults</td><td>…/Services/SkillTraining</td><td>Fail-fast stubs for <code>IPatchProposer</code> and <code>IRolloutRunner</code>. Replace with agent-backed Infrastructure impls before invoking <code>TrainSkillCommand</code>.</td></tr>
+                            <tr><td><code>NotConfigured*</code> placeholders</td><td>…/Services/SkillTraining</td><td>Fail-fast stand-ins for <code>IPatchProposer</code> and <code>IRolloutRunner</code> in the Application layer. Infrastructure replaces them with <code>AgenticPatchProposer</code> and <code>GovernedRolloutRunner</code>; they only throw in a host that registers Application without Infrastructure.</td></tr>
                         </tbody>
                     </table>
 
@@ -168,7 +170,12 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
                     <h2>Gate metrics</h2>
                     <p>
                         The gate compares the candidate against the current and the running best. Strict greater-than
-                        semantics — ties Reject — to avoid thrashing across statistically equivalent skills.
+                        semantics — ties Reject — to avoid thrashing across statistically equivalent skills. On a fresh
+                        run the starting skill is scored on the validation batch once before step 1, so the first
+                        candidate has to beat what the run began with, not 0. That costs one extra validation batch per
+                        run; a resumed run takes the score from its checkpoint instead. Checkpoints saved by the earlier loop, which
+                        compared the first candidate with 0, are refused on resume: start those runs again under a new
+                        <code>RunId</code>.
                     </p>
                     <table>
                         <thead><tr><th>Metric</th><th>Projection</th><th>When to use</th></tr></thead>
@@ -197,7 +204,7 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
                             <tr><td><code>Patience</code></td><td>6</td><td>Early stop after this many consecutive Rejects.</td></tr>
                             <tr><td><code>UseSlowUpdate</code></td><td><code>true</code></td><td>Run the paired longitudinal analysis at each epoch boundary.</td></tr>
                             <tr><td><code>UseMetaSkill</code></td><td><code>true</code></td><td>Maintain cross-epoch strategy memory via <code>IKnowledgeMemory</code>.</td></tr>
-                            <tr><td><code>Seed</code></td><td><code>0</code></td><td>Deterministic batch sampling when non-zero (required for SlowUpdate item-id overlap).</td></tr>
+                            <tr><td><code>Seed</code></td><td><code>0</code></td><td>Batch sampling is always repeatable; 0 is an ordinary seed. Validation uses it on every step, so every validation score comes from the same cases (the gate and SlowUpdate rely on that). Training derives a different seed per step, so the proposer sees fresh cases each step and a resumed run repeats the same draws.</td></tr>
                         </tbody>
                     </table>
 
@@ -238,55 +245,42 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
                         </li>
                         <li>
                             <strong><code>HasAcceptedAny</code> on the run result.</strong> When false, the run made no
-                            progress; <code>BestSkill</code> equals the initial skill and <code>BestScore</code> is 0.
+                            progress; <code>BestSkill</code> equals the initial skill and <code>BestScore</code> is that skill's own validation score.
                             Surfaced explicitly so a Reject-only run doesn't masquerade as having a meaningful "best".
                         </li>
                     </ul>
 
-                    <h2>Plugging in real proposer + runner</h2>
+                    <h2>The proposer and runner that ship</h2>
                     <p>
-                        The subsystem ships complete except for two deliberately empty slots. Both need an actual LLM
-                        behind them, so the template cannot fill them in for you:
+                        Both slots that need a model behind them are filled by Infrastructure. The Application layer
+                        registers fail-fast placeholders (<code>NotConfiguredPatchProposer</code> /
+                        <code>NotConfiguredRolloutRunner</code>) so a host that leaves Infrastructure out fails loudly
+                        on first use rather than doing nothing.
                     </p>
                     <ul>
                         <li>
-                            <strong><code>IPatchProposer</code></strong> — the "optimizer". It reads what happened
-                            during the trial runs and proposes an edit to the skill document, as a JSON
-                            <code>Patch</code>. This is the part that decides <em>what to change</em>.
+                            <strong><code>AgenticPatchProposer</code></strong> (<code>Infrastructure.AI/SkillTraining</code>)
+                            — the optimizer. Each step's evidence (the current skill, every run with its trajectory, any
+                            lessons from earlier epochs) is written to a folder, and a <code>skill-optimizer</code> agent
+                            session (<code>agents/skill-optimizer/AGENT.md</code>) reads it with the read-only
+                            <code>evidence_reader</code> tool, through the normal MediatR pipeline. It replies with the
+                            whole new skill document, which is turned into bounded edits and checked before the loop
+                            sees it. It is told how many separate places the step keeps; a bigger change is sent back
+                            once rather than cut down. It never sees a score.
                         </li>
                         <li>
-                            <strong><code>IRolloutRunner</code></strong> — the "test bench". It takes a candidate
-                            version of the skill and runs it against a batch of eval items, so the edit can be scored.
-                            This is the part that decides <em>whether the change helped</em>.
+                            <strong><code>GovernedRolloutRunner</code></strong> (<code>Infrastructure.AI.Evaluation/SkillTraining</code>)
+                            — the test bench. It draws cases from an eval dataset by <code>split:train</code> /
+                            <code>split:val</code> tags, runs each as a real agent turn with the candidate skill in place
+                            of the agent's system prompt, and scores it with the eval metrics. Every case in a split is
+                            checked when the dataset is first read, so a misconfigured case costs no tokens.
                         </li>
                     </ul>
                     <p>
-                        Until you supply both, the registered defaults
-                        (<code>NotConfiguredPatchProposer</code> / <code>NotConfiguredRolloutRunner</code>) throw on
-                        first use — loudly and immediately, rather than silently doing nothing. Skeleton outline:
-                    </p>
-                    <pre><code>// Infrastructure.AI/SkillTraining/AgentPatchProposer.cs
-public sealed class AgentPatchProposer : IPatchProposer
-{
-    private readonly IMediator _mediator;
-    // ...
-    public async Task&lt;Patch&gt; ProposeAsync(ReflectionInput input, CancellationToken ct)
-    {
-        var result = await _mediator.Send(new RunOrchestratedTaskCommand
-        {
-            OrchestratorName = "skill-optimizer",
-            TaskDescription  = BuildOptimizerPrompt(input),
-            // ...
-        }, ct);
-        return ParsePatchJson(result.FinalSynthesis);  // tolerate prose + balanced-braces
-    }
-}</code></pre>
-                    <p>
-                        Authoring a <code>skill-optimizer</code> SKILL.md with a JSON-schema-constrained output is the
-                        natural follow-up — it lets you swap optimizer model deployments without touching code.
-                        For <code>IRolloutRunner</code>, wrap the existing <code>IAgentInvoker</code> with a
-                        skill-content override hook so the candidate skill content lands in the system prompt for
-                        each invocation.
+                        Configure both under <code>AppConfig:AI:SkillTraining</code>: <code>DatasetPath</code> and
+                        <code>RolloutAgentName</code> for the runner; <code>ProposerAgentName</code> (default
+                        <code>skill-optimizer</code>), <code>MaxProposerTurns</code> and <code>WorkDescription</code> for
+                        the proposer.
                     </p>
 
                     <h2>Where to go next</h2>
@@ -294,7 +288,7 @@ public sealed class AgentPatchProposer : IPatchProposer
                         <li>Read <code>src/Content/Application/Application.AI.Common/README.md</code> — Skill Training CQRS section lists every command, validator rule, and pure component.</li>
                         <li>Run the demo: <code>dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example skill-training</code> — deterministic stubs, no LLM cost.</li>
                         <li>Cross-reference Chapter <a href="13-evaluation.html">13 — Evaluation Framework</a>: the eval framework is where rollouts come from in production wiring.</li>
-                        <li>Or jump to Chapter <a href="11-extending.html">11 — Extending the Harness</a> to author a <code>skill-optimizer</code> SKILL.md and wire a real <code>AgentPatchProposer</code>.</li>
+                        <li>Or jump to Chapter <a href="11-extending.html">11 — Extending the Harness</a> to replace <code>AgenticPatchProposer</code> or <code>GovernedRolloutRunner</code> with your own implementation.</li>
                         <li>Upstream methodology paper and code: <a href="https://github.com/microsoft/SkillOpt">microsoft/SkillOpt</a>.</li>
                     </ul>
                 </div>

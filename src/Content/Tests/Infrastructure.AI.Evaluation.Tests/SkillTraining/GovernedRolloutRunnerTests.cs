@@ -107,6 +107,23 @@ public sealed class GovernedRolloutRunnerTests
     }
 
     [Fact]
+    public async Task Run_ABadCaseInASplitThisBatchDoesNotDraw_IsStillRefusedBeforeAnyTurn()
+    {
+        // The training loop's first batch is validation (it scores the starting skill), so a check that
+        // looked only at the batch's own cases would let validation turns run, and be paid for, before a
+        // bad training case surfaced.
+        var invoker = new FakeInvoker();
+        var sut = Sut(invoker, new FakeLoader(
+            Case("v1"),
+            Case("t1", split: "train", overrides: new Dictionary<string, string> { ["system_prompt"] = "x" })));
+
+        var act = () => sut.RunAsync(Candidate, Batch(split: "val"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("skill_training.rollout_case_overrides_candidate*");
+        invoker.Calls.Should().BeEmpty("the whole dataset is checked before the first turn, whichever split runs first");
+    }
+
+    [Fact]
     public async Task Run_ACaseOverridingOnlyTemperature_IsFine()
     {
         var sut = Sut(new FakeInvoker(), new FakeLoader(Case("a", overrides: new Dictionary<string, string> { ["temperature"] = "0.2" })));
