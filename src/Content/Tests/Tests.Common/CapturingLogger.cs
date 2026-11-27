@@ -21,6 +21,9 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public bool Logged(LogLevel level, string fragment) =>
         _entries.Any(e => e.Level == level && e.Message.Contains(fragment, StringComparison.Ordinal));
 
+    /// <summary>Every entry written so far, with its level, oldest first.</summary>
+    public IReadOnlyList<(LogLevel Level, string Message)> Entries => [.. _entries];
+
     /// <summary>Every rendered message written so far, at any level, oldest first.</summary>
     public IReadOnlyList<string> Messages => _entries.Select(e => e.Message).ToList();
 

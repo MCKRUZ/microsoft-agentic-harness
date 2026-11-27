@@ -19,9 +19,11 @@ using Domain.Common.Config.AI.DirectToolInvocation;
 using FluentAssertions;
 using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using static Application.AI.Common.Tests.CQRS.Changes.Support.TestHelpers;
 using Xunit;
 
@@ -67,6 +69,7 @@ public sealed class DirectToolInvokerTests
     private readonly DirectToolInvocationConfig _config = new() { Enabled = true };
     private int? _pipelineOutputCeiling;
     private readonly Mock<IApprovalExecutionReporter> _executionReporter = new();
+    private readonly CapturingLogger<DirectToolInvoker> _log = new();
     private FakeClassificationGate? _classificationGate;
     private FakeObserverChain? _observerChain;
 
@@ -229,6 +232,10 @@ public sealed class DirectToolInvokerTests
         outcome.Status.Should().Be(DirectToolInvocationStatus.NotFound);
         tool.Executions.Should().Be(0);
         builds.Should().BeGreaterThan(1, "the test must reach the invocation's own build, not stop at the catalog");
+
+        // One failure, one line, and it carries the reason the build failed.
+        _log.Entries.Where(e => e.Level >= LogLevel.Warning).Should().ContainSingle();
+        _log.Exceptions.Should().ContainSingle().Which.Message.Should().Contain("IClientToolBridge");
     }
 
     [Fact]
@@ -926,7 +933,7 @@ public sealed class DirectToolInvokerTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             new ToolCatalog(provider, [tool.Name], NullLogger<ToolCatalog>.Instance),
             new StaticOptionsMonitor<DirectToolInvocationConfig>(_config),
-            NullLogger<DirectToolInvoker>.Instance);
+            _log);
 
         return await sut.InvokeAsync(request, cancellationToken);
     }
