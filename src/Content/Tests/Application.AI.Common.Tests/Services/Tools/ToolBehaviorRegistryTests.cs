@@ -33,6 +33,22 @@ public sealed class ToolBehaviorRegistryTests
     }
 
     [Fact]
+    public void Resolve_RegisteredToolThisHostCannotBuild_IsUnknownRatherThanThrowing()
+    {
+        // #1072: the render tools are registered in every host but need IClientToolBridge, which only AgentHub
+        // registers. A tool nothing could inspect has declared nothing, so it gets no approval exemption.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("render_image", (_, _) =>
+            throw new InvalidOperationException("No service for type 'IClientToolBridge' has been registered."));
+        var sut = new ToolBehaviorRegistry(services.BuildServiceProvider());
+
+        var resolved = sut.Resolve("render_image");
+
+        resolved.Should().Be(ToolBehavior.Unknown);
+        resolved.IsExemptFromApproval.Should().BeFalse();
+    }
+
+    [Fact]
     public void Resolve_RegisteredTool_ReadsItsOwnDeclaration()
     {
         var sut = CreateRegistry(

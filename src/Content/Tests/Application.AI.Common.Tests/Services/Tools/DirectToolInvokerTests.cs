@@ -213,6 +213,25 @@ public sealed class DirectToolInvokerTests
     }
 
     [Fact]
+    public async Task A_cataloged_tool_this_scope_cannot_build_is_reported_as_absent()
+    {
+        // #1072: the tool built once for the catalog, then its factory fails in the invocation's own scope. The
+        // failure comes back from the tool helper instead of escaping the invoker, and is answered the way the
+        // catalog answers a tool it cannot build: as absence.
+        var tool = Tool("alpha");
+        var builds = 0;
+
+        var outcome = await Invoke(Request("alpha"), tool, registerTool: services =>
+            services.AddKeyedTransient<ITool>(tool.Name, (_, _) => ++builds == 1
+                ? tool
+                : throw new InvalidOperationException("No service for type 'IClientToolBridge' has been registered.")));
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.NotFound);
+        tool.Executions.Should().Be(0);
+        builds.Should().BeGreaterThan(1, "the test must reach the invocation's own build, not stop at the catalog");
+    }
+
+    [Fact]
     public async Task An_operation_the_tool_does_not_declare_is_rejected_before_it_runs()
     {
         var tool = Tool("alpha", operations: ["read"]);
@@ -875,7 +894,10 @@ public sealed class DirectToolInvokerTests
     /// keyed tool resolution are the production ones rather than stand-ins.
     /// </summary>
     private async Task<DirectToolInvocationOutcome> Invoke(
-        DirectToolInvocationRequest request, ExecutableTool tool, CancellationToken cancellationToken = default)
+        DirectToolInvocationRequest request,
+        ExecutableTool tool,
+        CancellationToken cancellationToken = default,
+        Action<IServiceCollection>? registerTool = null)
     {
         // #532: the chain bounds tool output and reads its ceiling from AppConfig. Most tests leave
         // _pipelineOutputCeiling unset, which binds the shipped 50,000-character default, far above the
@@ -893,7 +915,10 @@ public sealed class DirectToolInvokerTests
             classificationGate: _classificationGate,
             observerChain: _observerChain,
             appConfig: new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
-        services.AddKeyedSingleton<ITool>(tool.Name, tool);
+        if (registerTool is null)
+            services.AddKeyedSingleton<ITool>(tool.Name, tool);
+        else
+            registerTool(services);
 
         var provider = services.BuildServiceProvider();
 

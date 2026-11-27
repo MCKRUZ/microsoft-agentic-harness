@@ -62,15 +62,11 @@ public sealed class ClientWidgetCatalogParityTests : IClassFixture<TestWebApplic
         var unbuilt = new List<string>();
         foreach (var key in provider.GetRequiredService<FirstPartyToolLookup>().RegisteredFirstPartyToolKeys)
         {
-            try
-            {
-                if (KeyedToolResolution.Resolve(provider, key) is SingleRenderProxyTool tool)
-                    renderTools.Add(tool.Name);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
-            {
-                unbuilt.Add($"{key}: {ex.Message}");
-            }
+            var resolved = KeyedToolResolution.Resolve(provider, key, out var constructionError);
+            if (resolved is SingleRenderProxyTool tool)
+                renderTools.Add(tool.Name);
+            else if (constructionError is not null)
+                unbuilt.Add($"{key}: {constructionError.Message}");
         }
 
         unbuilt.Should().BeEmpty("a tool this host cannot build could be an unchecked render tool");

@@ -162,7 +162,9 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         ITool? tool;
         try
         {
-            tool = KeyedToolResolution.Resolve(armed.Scope.ServiceProvider, armed.ToolName);
+            tool = KeyedToolResolution.Resolve(armed.Scope.ServiceProvider, armed.ToolName, out var constructionError);
+            if (constructionError is not null)
+                _logger.LogWarning(constructionError, "Tool {ToolName} could not be built in this scope for invocation", armed.ToolName);
         }
         catch (ToolNameMismatchException ex)
         {

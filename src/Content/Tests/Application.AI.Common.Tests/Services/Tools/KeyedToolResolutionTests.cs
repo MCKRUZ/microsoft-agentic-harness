@@ -25,7 +25,7 @@ public sealed class KeyedToolResolutionTests
     [Fact]
     public void Resolve_ToolNamedByItsKey_ReturnsTheTool()
     {
-        var tool = KeyedToolResolution.Resolve(Register("file_system", "file_system"), "file_system");
+        var tool = KeyedToolResolution.Resolve(Register("file_system", "file_system"), "file_system", out _);
 
         tool.Should().NotBeNull();
         tool!.Name.Should().Be("file_system");
@@ -35,7 +35,7 @@ public sealed class KeyedToolResolutionTests
     public void Resolve_NameDiffersOnlyInCase_IsTheSameToolAndResolves()
     {
         // Grants and deny rules compare names case-insensitively, so a casing difference names one tool.
-        var tool = KeyedToolResolution.Resolve(Register("file_system", "File_System"), "file_system");
+        var tool = KeyedToolResolution.Resolve(Register("file_system", "File_System"), "file_system", out _);
 
         tool.Should().NotBeNull();
     }
@@ -43,7 +43,7 @@ public sealed class KeyedToolResolutionTests
     [Fact]
     public void Resolve_NameDiffersFromKey_ThrowsCarryingBothNames()
     {
-        var act = () => KeyedToolResolution.Resolve(Register("registered_key", "published_name"), "registered_key");
+        var act = () => KeyedToolResolution.Resolve(Register("registered_key", "published_name"), "registered_key", out _);
 
         var thrown = act.Should().Throw<ToolNameMismatchException>().Which;
         thrown.Key.Should().Be("registered_key");
@@ -53,8 +53,24 @@ public sealed class KeyedToolResolutionTests
     [Fact]
     public void Resolve_NothingRegisteredUnderTheKey_ReturnsNull()
     {
-        var tool = KeyedToolResolution.Resolve(new ServiceCollection().BuildServiceProvider(), "absent");
+        var tool = KeyedToolResolution.Resolve(new ServiceCollection().BuildServiceProvider(), "absent", out var error);
 
         tool.Should().BeNull();
+        error.Should().BeNull("a name nobody registered is not a failure to build anything");
+    }
+
+    [Fact]
+    public void Resolve_FactoryNeedsAServiceThisHostLacks_ReturnsNullAndHandsBackTheReason()
+    {
+        // #1072: the render tools are registered in every host but need IClientToolBridge, which only AgentHub
+        // registers. Thrown, that failure escaped callers that expected only "no such tool" and failed whole turns.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("render_image", (_, _) =>
+            throw new InvalidOperationException("No service for type 'IClientToolBridge' has been registered."));
+
+        var tool = KeyedToolResolution.Resolve(services.BuildServiceProvider(), "render_image", out var error);
+
+        tool.Should().BeNull();
+        error.Should().BeOfType<InvalidOperationException>().Which.Message.Should().Contain("IClientToolBridge");
     }
 }

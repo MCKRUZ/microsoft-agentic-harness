@@ -45,6 +45,28 @@ public sealed class ToolChainBuilderUnresolvedToolTests
 
         tools.Should().BeEmpty();
         logger.Logged(LogLevel.Warning, "'no_such_tool' " + Fragment).Should().BeTrue();
+        logger.Logged(LogLevel.Warning, "could not be built in this host").Should().BeFalse(
+            "a name nobody registered must not be reported as a tool this host failed to build");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_AllowedToolThatCannotBeBuiltInThisHost_IsDroppedRatherThanFailingTheTurn()
+    {
+        // A tool registered in every host whose factory needs a service only one host provides (the render tools
+        // need IClientToolBridge, which only AgentHub registers). Building it elsewhere used to throw out of the
+        // agent's turn (#1072); it is unavailable here, the same as a tool that was never registered.
+        var logger = new CapturingLogger<ToolChainBuilder>();
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("render_image", (_, _) =>
+            throw new InvalidOperationException("No service for type 'IClientToolBridge' has been registered."));
+        var builder = new ToolChainBuilder(logger, services.BuildServiceProvider());
+        var skill = new SkillDefinition { Id = "s", Name = "s", Instructions = "Test", AllowedTools = ["render_image"] };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+        logger.Logged(LogLevel.Warning, "'render_image' is registered but could not be built in this host").Should().BeTrue();
+        logger.Logged(LogLevel.Warning, "IClientToolBridge").Should().BeTrue("the warning must say why the tool is missing");
     }
 
     [Fact]
