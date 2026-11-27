@@ -3,10 +3,13 @@ using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Application.Core.CQRS.Evaluation.RunEvalSuite;
 using Domain.AI.Evaluation;
+using Domain.Common.Config;
 using Infrastructure.AI.Evaluation;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Presentation.Common.Extensions;
+using Presentation.Common.Helpers;
 
 namespace Presentation.EvalRunner;
 
@@ -105,6 +108,11 @@ public static class Program
         var services = new ServiceCollection();
         services.GetServices(includeHealthChecksUI: false);
         services.AddEvaluationDependencies();
+
+        // Console logging is off in this host so reports own stdout; errors still need somewhere to go (#1070).
+        var loggingConfig = AppConfigHelper.LoadAppConfig().GetSection("AppConfig:Logging").Get<LoggingConfig>()
+            ?? new LoggingConfig();
+        services.AddErrorsToStandardError(loggingConfig, Console.Error);
 
         // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2).
         // The real IEvalRunner registered by AddEvaluationDependencies above wins over the
