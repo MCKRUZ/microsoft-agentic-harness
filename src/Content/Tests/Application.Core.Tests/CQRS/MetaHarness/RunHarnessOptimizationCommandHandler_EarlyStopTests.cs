@@ -95,11 +95,10 @@ public sealed class RunHarnessOptimizationCommandHandler_EarlyStopTests : IDispo
     [Fact]
     public async Task Handle_ConsecutiveNoImprovement_StopsEarlyAtLimit()
     {
-        // Arrange: limit=3, MaxIterations=10, all iterations produce same score (no improvement)
-        // Iter 1: IsBetter(vs null) = true → accepted as best → reset counter to 0
-        // Iter 2: IsBetter(vs iter1, same score/cost, iter2>iter1) = false → counter=1
-        // Iter 3: counter=2
-        // Iter 4: counter=3 → early stop
+        // Arrange: limit=3, MaxIterations=10, the seed and every iteration produce the same score (no improvement)
+        // Iter 1: IsBetter(vs seed, same score/cost, iter1>0) = false → counter=1
+        // Iter 2: counter=2
+        // Iter 3: counter=3 → early stop
         var runId = Guid.NewGuid();
         CreateEvalTaskFile();
         _proposer.Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
@@ -134,9 +133,9 @@ public sealed class RunHarnessOptimizationCommandHandler_EarlyStopTests : IDispo
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
             {
                 callCount++;
-                // Iter 1 starts with no best → IsBetter = true → accepted, counter=0
-                // Iter 2: 0.6 > 0.5+0.1 threshold, so IsBetter=true → accepted, counter=0
-                // Iter 3-5: 0.6 same, no improvement → counter hits 3 → early stop at iter 5
+                // Call 1 is the seed: 0.3, the baseline.
+                // Iter 1 (call 2): 0.6 > 0.3+0.1 threshold → accepted, counter=0
+                // Iter 2-4: 0.6 same, no improvement → counter hits 3 → early stop at iter 4
                 var score = callCount <= 2 ? callCount * 0.3 : 0.6;
                 return new EvaluationResult(c.CandidateId, score, 100, []);
             });
@@ -207,6 +206,10 @@ public sealed class RunHarnessOptimizationCommandHandler_EarlyStopTests : IDispo
         CreateEvalTaskFile();
         _proposer.Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Application.AI.Common.Exceptions.HarnessProposalParsingException("bad"));
+        // Only the seed is evaluated: every proposal fails before evaluation.
+        _evaluator.Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
+                new EvaluationResult(c.CandidateId, 0.5, 100, []));
 
         var handler = BuildHandler();
 

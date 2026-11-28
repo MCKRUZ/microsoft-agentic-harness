@@ -193,10 +193,11 @@ public sealed class RunHarnessOptimizationCommandHandler_RegressionTests : IDisp
         var result = await handler.Handle(
             new RunHarnessOptimizationCommand { OptimizationRunId = runId, MaxIterations = 3 }, default);
 
-        // Assert: PromoteAsync called 3 times — empty suite passed the gate every time
+        // Assert: PromoteAsync called for all 3 proposals — empty suite passed the gate every time.
+        // (The seed's own promotion, which seeds the suite, is the one call with no previous best.)
         _regressionService.Verify(x => x.PromoteAsync(
             It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>(),
-            It.IsAny<EvaluationResult?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            It.Is<EvaluationResult?>(r => r != null), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Exactly(3));
     }
 

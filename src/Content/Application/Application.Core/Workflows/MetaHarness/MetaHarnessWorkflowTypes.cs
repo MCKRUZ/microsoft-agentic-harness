@@ -12,8 +12,9 @@ namespace Application.Core.Workflows.MetaHarness;
 /// the current candidate, run directory, prior candidates, and accumulated learnings.
 /// </param>
 /// <param name="CurrentBest">
-/// The best-scoring candidate so far, or <c>null</c> on the first iteration (seed).
-/// Used by <see cref="ScoreCandidateExecutor"/> to determine if the new candidate is an improvement.
+/// The best-scoring candidate so far, or <c>null</c> on the first iteration (seed). Informational:
+/// <see cref="ScoreCandidateExecutor"/> compares against the best evaluated candidate persisted
+/// for the run, and refuses when there is none.
 /// </param>
 /// <param name="Iteration">Zero-based iteration index within the optimization run.</param>
 public sealed record OptimizationIterationInput(
@@ -57,7 +58,7 @@ public sealed record EvaluationStepOutput(
 /// <param name="Candidate">The fully evaluated and persisted candidate.</param>
 /// <param name="Score">The candidate's pass rate in the range [0.0, 1.0].</param>
 /// <param name="IsImprovement">
-/// <c>true</c> if the candidate's score exceeds the current best (or is the first candidate).
+/// <c>true</c> if the candidate's score exceeds the best evaluated candidate already in the run.
 /// </param>
 /// <param name="Reasoning">The proposer agent's explanation of why the changes were made.</param>
 public sealed record IterationOutcome(

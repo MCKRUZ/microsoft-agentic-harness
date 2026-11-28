@@ -243,14 +243,13 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
             .Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BuildProposal());
 
-        var evalCallCount = 0;
+        // The first proposal's evaluation throws; the seed (iteration 0) evaluates normally.
         _evaluator
             .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() =>
+            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
             {
-                evalCallCount++;
-                if (evalCallCount == 1) throw new InvalidOperationException("eval blew up");
-                return new EvaluationResult(Guid.NewGuid(), 0.8, 100, []);
+                if (c.Iteration == 1) throw new InvalidOperationException("eval blew up");
+                return new EvaluationResult(c.CandidateId, 0.8, 100, []);
             });
 
         var handler = BuildHandler();
@@ -284,6 +283,11 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         _proposer
             .Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HarnessProposalParsingException("bad"));
+        // Only the seed is ever evaluated: every proposal fails before evaluation.
+        _evaluator
+            .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
+                new EvaluationResult(c.CandidateId, 0.5, 100, []));
 
         var handler = BuildHandler();
 
@@ -300,7 +304,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
     [Fact]
     public async Task Handle_ScoreBelowThreshold_DoesNotUpdateBest()
     {
-        // Arrange: threshold=0.1, iter1=0.5, iter2=0.505 (improvement < threshold)
+        // Arrange: threshold=0.1, seed=0.3, iter1=0.5 (beats the seed), iter2=0.505 (improvement < threshold)
         _cfg.ScoreImprovementThreshold = 0.1;
 
         var runId = Guid.NewGuid();
@@ -313,17 +317,15 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
             .Callback<HarnessCandidate, CancellationToken>((c, _) => savedCandidates.Add(c))
             .Returns(Task.CompletedTask);
 
-        var iter = 0;
         _proposer
             .Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BuildProposal());
         _evaluator
             .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() =>
+            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
             {
-                iter++;
-                var score = iter == 1 ? 0.5 : 0.505;
-                return new EvaluationResult(Guid.NewGuid(), score, 100, []);
+                var score = c.Iteration switch { 0 => 0.3, 1 => 0.5, _ => 0.505 };
+                return new EvaluationResult(c.CandidateId, score, 100, []);
             });
 
         _repository
@@ -362,7 +364,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
     [Fact]
     public async Task Handle_TieOnPassRate_PicksLowerTokenCostCandidate()
     {
-        // Arrange: both iterations return same pass rate, iter2 has lower token cost
+        // Arrange: seed scores lower; both iterations return the same pass rate, iter2 has lower token cost
         var runId = Guid.NewGuid();
         CreateEvalTaskFile();
         SetupSeedCandidate(runId);
@@ -373,17 +375,16 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
             .Callback<HarnessCandidate, CancellationToken>((c, _) => savedCandidates.Add(c))
             .Returns(Task.CompletedTask);
 
-        var iter = 0;
         _proposer
             .Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BuildProposal());
         _evaluator
             .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
+            .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) => c.Iteration switch
             {
-                iter++;
-                var cost = iter == 1 ? 200L : 100L; // iter2 has lower cost
-                return new EvaluationResult(c.CandidateId, 0.8, cost, []);
+                0 => new EvaluationResult(c.CandidateId, 0.5, 300, []),
+                1 => new EvaluationResult(c.CandidateId, 0.8, 200, []),
+                _ => new EvaluationResult(c.CandidateId, 0.8, 100, []), // iter2 has lower cost
             });
         _repository
             .Setup(x => x.GetBestAsync(runId, It.IsAny<CancellationToken>()))
@@ -404,7 +405,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         var manifestBest = manifest.GetProperty("bestCandidateId").GetString();
 
         var iter2Candidate = savedCandidates
-            .Where(c => c.Status == HarnessCandidateStatus.Evaluated && c.TokenCost == 100)
+            .Where(c => c.Status == HarnessCandidateStatus.Evaluated && c.Iteration == 2)
             .LastOrDefault();
         Assert.NotNull(iter2Candidate);
         Assert.Equal(iter2Candidate.CandidateId.ToString(), manifestBest);
@@ -413,7 +414,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
     [Fact]
     public async Task Handle_TieOnBoth_PicksEarlierIterationCandidate()
     {
-        // Arrange: both iterations return same pass rate and same token cost
+        // Arrange: seed scores lower; both iterations return the same pass rate and token cost
         var runId = Guid.NewGuid();
         CreateEvalTaskFile();
         SetupSeedCandidate(runId);
@@ -430,7 +431,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         _evaluator
             .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
-                new EvaluationResult(c.CandidateId, 0.8, 100, []));
+                new EvaluationResult(c.CandidateId, c.Iteration == 0 ? 0.5 : 0.8, 100, []));
         _repository
             .Setup(x => x.GetBestAsync(runId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((HarnessCandidate?)null);
@@ -546,8 +547,8 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
 
         // The handler now snapshots the gate-validated currentBestCandidate produced by the loop —
         // not the repository's ungated GetBestAsync pick (which could be a gate-failing regression).
-        // Drive a gate-passing candidate (score 0.9; the fixture's regression gate passes) whose
-        // snapshot carries the expected SKILL.md content.
+        // Drive a gate-passing candidate (score 0.9, above the seed's 0.5; the fixture's regression
+        // gate passes) whose snapshot carries the expected SKILL.md content.
         var skillContent = "# Best SKILL.md content";
         _snapshotBuilder
             .Setup(x => x.BuildAsync(It.IsAny<string>(), It.IsAny<string>(),
@@ -563,7 +564,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         _evaluator
             .Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
-                new EvaluationResult(c.CandidateId, 0.9, 100, []));
+                new EvaluationResult(c.CandidateId, c.Iteration == 0 ? 0.5 : 0.9, 100, []));
 
         var handler = BuildHandler();
 

@@ -118,13 +118,11 @@ public sealed class RunHarnessOptimizationCommandHandlerSolutionReviewFixTests :
         _proposer.Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BuildProposal());
 
-        // iter1 pass rate 0.6, iter2 pass rate 0.9 (strictly higher → IsBetter true on raw score)
-        var evalCall = 0;
+        // seed 0.3, iter1 pass rate 0.6, iter2 pass rate 0.9 (strictly higher → IsBetter true on raw score)
         _evaluator.Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
             {
-                evalCall++;
-                var passRate = evalCall == 1 ? 0.6 : 0.9;
+                var passRate = c.Iteration switch { 0 => 0.3, 1 => 0.6, _ => 0.9 };
                 return new EvaluationResult(c.CandidateId, passRate, 100, []);
             });
 
@@ -193,12 +191,12 @@ public sealed class RunHarnessOptimizationCommandHandlerSolutionReviewFixTests :
             .ReturnsAsync(BuildProposal());
         _evaluator.Setup(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(), It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
-                new EvaluationResult(c.CandidateId, 0.9, 100, []));
+                new EvaluationResult(c.CandidateId, c.Iteration == 0 ? 0.5 : 0.9, 100, []));
 
         var suite = EmptySuite();
         _regressionService.Setup(x => x.LoadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(suite);
 
-        // Every gate check fails.
+        // Every proposal beats the seed on score, and every gate check fails.
         _regressionService.Setup(x => x.Check(It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>()))
             .Returns(new RegressionCheckResult { Passed = false, PassRate = 0.0, FailedTaskIds = ["task-1"] });
 
@@ -219,9 +217,11 @@ public sealed class RunHarnessOptimizationCommandHandlerSolutionReviewFixTests :
         // Assert: no gated best, no proposed artifact emitted.
         Assert.Null(result.BestCandidateId);
         Assert.Equal(string.Empty, result.ProposedChangesPath);
+        // No proposal was promoted. (The seed's own promotion, which seeds the suite, is the one call
+        // with no previous best.)
         _regressionService.Verify(x => x.PromoteAsync(
             It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>(),
-            It.IsAny<EvaluationResult?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            It.Is<EvaluationResult?>(r => r != null), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

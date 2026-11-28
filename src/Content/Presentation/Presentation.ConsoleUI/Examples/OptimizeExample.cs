@@ -70,8 +70,12 @@ public class OptimizeExample
 		}
 
 		AnsiConsole.MarkupLine(
-			$"\n[bold green]Optimization complete.[/] Ran {result.IterationCount} iteration(s). " +
-			$"Best score: [bold]{result.BestScore:P1}[/]");
+			$"\n[bold green]Optimization complete.[/] Ran {result.IterationCount} iteration(s).");
+		if (result.SeedScore is { } seedScore)
+			AnsiConsole.MarkupLine($"Starting score (seed): [bold]{seedScore:P1}[/]");
+		AnsiConsole.MarkupLine(result.BestCandidateId is null
+			? "No proposal beat the starting point."
+			: $"Best score: [bold]{result.BestScore:P1}[/]");
 
 		if (!string.IsNullOrEmpty(result.ProposedChangesPath))
 		{
@@ -84,7 +88,7 @@ public class OptimizeExample
 		}
 		else
 		{
-			AnsiConsole.MarkupLine("[grey]No proposed changes written (no successful candidates).[/]");
+			AnsiConsole.MarkupLine("[grey]No proposed changes written (no proposal beat the seed and passed the regression gate).[/]");
 		}
 	}
 }

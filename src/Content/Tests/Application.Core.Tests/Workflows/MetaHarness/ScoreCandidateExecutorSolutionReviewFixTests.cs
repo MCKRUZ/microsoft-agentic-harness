@@ -44,23 +44,36 @@ public sealed class ScoreCandidateExecutorSolutionReviewFixTests
     }
 
     [Fact]
-    public async Task HandleAsync_FirstCandidate_ReportsImprovement()
+    public async Task HandleAsync_NoEvaluatedBaselineInTheRun_RefusesToScore()
     {
+        // Issue #1075: with nothing measured in the run, any candidate used to count as an improvement,
+        // however low it scored. There is nothing to compare it to, so the executor must refuse.
         var runId = Guid.NewGuid();
         var repository = new FakeHarnessCandidateRepository();
 
-        var candidate = CreateEvaluated(runId, iteration: 0, score: 0.40);
+        var candidate = CreateEvaluated(runId, iteration: 1, score: 0.40);
         var executor = new ScoreCandidateExecutor(repository);
 
-        var outcome = await executor.HandleAsync(
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await executor.HandleAsync(
             new EvaluationStepOutput(CreateEvaluationResult(candidate), candidate),
             _workflowContext.Object,
-            CancellationToken.None);
+            CancellationToken.None));
+    }
 
-        // With the bug, the just-saved seed candidate is its own "best", so the
-        // currentBest-is-null branch never fires and IsImprovement is false. The fix
-        // fetches before saving, so the first candidate has no prior best and improves.
-        Assert.True(outcome.IsImprovement);
+    [Fact]
+    public async Task HandleAsync_NoEvaluatedBaselineInTheRun_DoesNotPersistTheCandidate()
+    {
+        var runId = Guid.NewGuid();
+        var repository = new FakeHarnessCandidateRepository();
+        var candidate = CreateEvaluated(runId, iteration: 1, score: 0.40);
+        var executor = new ScoreCandidateExecutor(repository);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await executor.HandleAsync(
+            new EvaluationStepOutput(CreateEvaluationResult(candidate), candidate),
+            _workflowContext.Object,
+            CancellationToken.None));
+
+        Assert.Null(await repository.GetAsync(candidate.CandidateId));
     }
 
     [Fact]
@@ -86,7 +99,8 @@ public sealed class ScoreCandidateExecutorSolutionReviewFixTests
     {
         var runId = Guid.NewGuid();
         var repository = new FakeHarnessCandidateRepository();
-        var candidate = CreateEvaluated(runId, iteration: 0, score: 0.60);
+        await repository.SaveAsync(CreateEvaluated(runId, iteration: 0, score: 0.50));
+        var candidate = CreateEvaluated(runId, iteration: 1, score: 0.60);
         var executor = new ScoreCandidateExecutor(repository);
 
         await executor.HandleAsync(

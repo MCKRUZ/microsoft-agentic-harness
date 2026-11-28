@@ -39,13 +39,24 @@ public sealed record OptimizationResult
     public required Guid OptimizationRunId { get; init; }
 
     /// <summary>
-    /// <see cref="Domain.Common.MetaHarness.HarnessCandidate.CandidateId"/> of the
-    /// best-scoring candidate, or null when no candidates were evaluated.
+    /// <see cref="Domain.Common.MetaHarness.HarnessCandidate.CandidateId"/> of the best accepted
+    /// proposal, or null when no proposal beat the seed and cleared the regression gate. The seed
+    /// itself is never reported here: it is the unchanged starting point, not a change to propose.
     /// </summary>
     public Guid? BestCandidateId { get; init; }
 
-    /// <summary>Pass rate [0.0, 1.0] of the best candidate; 0.0 when no candidates evaluated.</summary>
+    /// <summary>
+    /// Pass rate [0.0, 1.0] of the candidate named by <see cref="BestCandidateId"/>; 0.0 when it is
+    /// null. See <see cref="SeedScore"/> for what the starting point scored.
+    /// </summary>
     public double BestScore { get; init; }
+
+    /// <summary>
+    /// Pass rate [0.0, 1.0] of the seed candidate, measured by this invocation as the baseline every
+    /// proposal had to beat. Null when the seed was not evaluated: no eval tasks were found, or a
+    /// resumed run restored the best it had already accepted and compared against that instead.
+    /// </summary>
+    public double? SeedScore { get; init; }
 
     /// <summary>Total number of iterations executed (including failure iterations).</summary>
     public int IterationCount { get; init; }

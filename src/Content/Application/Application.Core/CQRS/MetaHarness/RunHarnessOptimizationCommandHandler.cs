@@ -20,7 +20,11 @@ namespace Application.Core.CQRS.MetaHarness;
 /// <list type="number">
 ///   <item>Load eval tasks from <see cref="MetaHarnessConfig.EvalTasksPath"/>.</item>
 ///   <item>Resolve or build the seed candidate.</item>
-///   <item>For each iteration: propose → build snapshot → evaluate → score → track best.</item>
+///   <item>Establish the baseline: restore the best a resumed run already accepted, or evaluate the seed and seed
+///   the regression suite from it. A seed that cannot be evaluated fails the run with
+///   <see cref="InvalidOperationException"/>, because no proposal can be judged without a baseline.</item>
+///   <item>For each iteration: propose → build snapshot → evaluate → score against the baseline or the best so far →
+///   track best.</item>
 ///   <item>Write final <c>_proposed/</c> snapshot and <c>summary.md</c>.</item>
 /// </list>
 /// </para>
@@ -110,17 +114,24 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         var manifest = await LoadOrCreateRunManifest(runDir, command.OptimizationRunId);
         var startIteration = manifest.LastCompletedIteration + 1;
 
-        var currentCandidate = await ResolveSeedCandidateAsync(command, cfg, cancellationToken);
-        HarnessCandidate? currentBestCandidate = null;
+        var seed = await ResolveSeedCandidateAsync(command, cfg, cancellationToken);
+
+        // Pre-loop: every comparison needs a measured side, so the run restores the best it already accepted or
+        // scores the seed before the first proposal (issue #1075).
+        var baseline = await EstablishBaselineAsync(
+            command, manifest.BestCandidateId, seed, evalTasks,
+            await _regressionService.LoadAsync(runDir, cancellationToken), runDir, cancellationToken);
+        var currentCandidate = baseline.EvaluatedSeed ?? seed;
+        var toBeat = baseline.ToBeat;
+        var currentBestCandidate = baseline.RestoredBest;
+        var regressionSuite = baseline.RegressionSuite;
+        var previousBestEvalResult = baseline.ToBeatEvaluation;
         var priorCandidateIds = new List<Guid>();
         var executedIterations = 0;
 
-        // Pre-loop: load regression suite, learnings, and early-stop counter
-        var regressionSuite = await _regressionService.LoadAsync(runDir, cancellationToken);
         var priorLearnings = await ReadLearningsFileAsync(runDir);
         var consecutiveNoImprovement = 0;
         var noImprovementLimit = cfg.ConsecutiveNoImprovementLimit;
-        EvaluationResult? previousBestEvalResult = null;
         string? earlyStopReason = null;
 
         for (var i = startIteration; i <= maxIterations; i++)
@@ -235,7 +246,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             priorCandidateIds.Add(evaluated.CandidateId);
 
             var acceptedAsNewBest = false;
-            if (IsBetter(evaluated, currentBestCandidate, cfg.ScoreImprovementThreshold))
+            if (IsBetter(evaluated, toBeat, cfg.ScoreImprovementThreshold))
             {
                 var regressionCheck = _regressionService.Check(regressionSuite, evalResult);
                 if (regressionCheck.Passed)
@@ -244,6 +255,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
                         regressionSuite, evalResult, previousBestEvalResult, runDir, cancellationToken);
                     previousBestEvalResult = evalResult;
                     currentBestCandidate = evaluated;
+                    toBeat = evaluated;
                     acceptedAsNewBest = true;
                     _logger.LogInformation(
                         "Iteration {Iteration}: accepted as new best (pass rate: {PassRate:P2}, regression gate: {RegressionPassRate:P0})",
@@ -287,10 +299,11 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         // _candidateRepository.GetBestAsync selects purely by PassRate among all Evaluated
         // candidates and has no knowledge of regression-gate outcomes, so it can return a
         // candidate whose regression check FAILED. currentBestCandidate is only advanced inside
-        // the passed-gate branch above, so it is the only selection consistent with the run
-        // manifest's bestCandidateId and the documented promotion contract. If no candidate ever
-        // cleared the gate, this stays null and no _proposed/ snapshot is written — the correct,
-        // safe outcome rather than emitting a gate-failing (regressive) artifact.
+        // the passed-gate branch above (or restored from the manifest on resume), so it is the only
+        // selection consistent with the run manifest's bestCandidateId and the documented promotion
+        // contract. If no proposal beat the seed and cleared the gate, this stays null and no
+        // _proposed/ snapshot is written: the seed is the unchanged starting point, not a change to
+        // propose, and a gate-failing (regressive) artifact is never emitted.
         var bestCandidate = currentBestCandidate;
         var proposedDir = Path.Combine(runDir, "_proposed");
         WriteProposedSnapshot(proposedDir, bestCandidate, _directoryCreator, _logger);
@@ -301,6 +314,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             OptimizationRunId = command.OptimizationRunId,
             BestCandidateId = bestCandidate?.CandidateId,
             BestScore = bestCandidate?.BestScore ?? 0.0,
+            SeedScore = baseline.EvaluatedSeed?.BestScore,
             IterationCount = executedIterations,
             ProposedChangesPath = bestCandidate is not null ? proposedDir : string.Empty,
             EarlyStopReason = earlyStopReason,
