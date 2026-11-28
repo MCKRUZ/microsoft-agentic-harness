@@ -33,6 +33,11 @@ namespace Infrastructure.AI.RAG.GraphRag;
 /// without external synchronization. For concurrent access, create separate instances
 /// pointing to the same file (SQLite WAL mode is enabled).
 /// </para>
+/// <para>
+/// The file stays in WAL mode on disk after <see cref="Dispose"/>. A clean shutdown leaves <c>graph.db</c> complete on
+/// its own, so it can be copied while nothing has it open; opening a copy on read-only storage needs SQLite's
+/// <c>immutable=1</c> URI option, because WAL mode needs a writable <c>-shm</c> file.
+/// </para>
 /// </remarks>
 [PersonalDataStore(
     "The SQLite file {GraphDatabase:DataDirectory}/graph.db (not Kuzu): GraphRAG entities, relations and community summaries from ingested documents (no owner) and cross-session memory nodes stamped with the owner. Memory nodes unused for Rag:CrossSessionMemory:Retention:RetainFor (default two years) are deleted, and owner erasure removes them. The document-derived GraphRAG content is kept by design with its documents, as the organisation's business content: removing a document deletes what only it produced and every community summary built over it. A person's copy of their data holds their memory nodes, read by cross-session memory.",
@@ -82,18 +87,16 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
     /// <inheritdoc />
     public void Dispose()
     {
-        // Checkpoint WAL and revert to DELETE journal mode so the -wal and -shm sidecar
-        // files are removed before the connection closes. Without this, Windows file locks
-        // on those sidecars prevent callers from deleting the data directory immediately
-        // after Dispose (relevant to test teardown and container restart scenarios).
-        // The lock wait is turned off first, so disposal behaves exactly as it did before SqliteLockWait: with another
-        // connection mid-read the checkpoint gives up at once, and the journal-mode switch is retried only by the
-        // driver's own loop, as before, rather than also waiting in SQLite's busy handler. The connection closes next,
-        // so nothing needs restoring.
+        // Copy the write-ahead log into the database without waiting: SQLite's lock wait is turned off first, so a
+        // checkpoint blocked by another connection's read reports "busy" in its result row and returns at once. The
+        // file is deliberately left in WAL mode. Switching it back needs an exclusive lock that every other open
+        // instance blocks (several instances on one file is supported), and the driver would retry that for its full
+        // 30-second command timeout (#1059). When the last read-write handle on the file, in any process, closes,
+        // SQLite checkpoints and removes the -wal and -shm files without it.
         try
         {
             using var checkpoint = _connection.CreateCommand();
-            checkpoint.CommandText = SqliteLockWait.NoWaitPragma + " PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;";
+            checkpoint.CommandText = SqliteLockWait.NoWaitPragma + " PRAGMA wal_checkpoint(TRUNCATE);";
             checkpoint.ExecuteNonQuery();
         }
         catch (Exception ex)
@@ -105,8 +108,9 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
 
         // On Windows, the native SQLite file handles are pooled and not released until the
         // connection pool is cleared. Without this call, Directory.Delete() immediately after
-        // Dispose() fails with IOException (file in use). ClearAllPools() flushes the pool
-        // for this connection string, releasing the OS-level file locks synchronously.
+        // Dispose() fails with IOException (file in use). ClearAllPools() empties every SQLite
+        // pool in the process, closing this instance's handle and releasing its OS-level file
+        // locks; when it was the file's last handle, that close is what removes the sidecars.
         SqliteConnection.ClearAllPools();
 
         _logger.LogDebug("KuzuGraphBackend disposed");
