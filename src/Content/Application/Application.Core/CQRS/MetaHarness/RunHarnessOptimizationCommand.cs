@@ -52,9 +52,10 @@ public sealed record OptimizationResult
     public double BestScore { get; init; }
 
     /// <summary>
-    /// Pass rate [0.0, 1.0] of the seed candidate, measured by this invocation as the baseline every
-    /// proposal had to beat. Null when the seed was not evaluated: no eval tasks were found, or a
-    /// resumed run restored the best it had already accepted and compared against that instead.
+    /// Pass rate [0.0, 1.0] of the seed candidate, the baseline every proposal had to beat: measured
+    /// by this invocation, or before the restart when a resumed run reuses its recorded seed. Null
+    /// when no eval tasks were found, or when a resumed run restored the best it had already
+    /// accepted and compared against that instead.
     /// </summary>
     public double? SeedScore { get; init; }
 

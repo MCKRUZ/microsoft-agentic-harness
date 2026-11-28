@@ -241,6 +241,28 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
     }
 
     [Fact]
+    public async Task Handle_RecordedSeedThatIsAnEarlierProposal_IsNotOverwritten()
+    {
+        // A resume restores the seed its manifest recorded. When an earlier invocation used one of the run's own
+        // proposals as the seed, that record is a proposal, not the run's own seed, so measuring it must not re-save it
+        // as iteration 0.
+        var runId = Guid.NewGuid();
+        var proposal = EvaluatedCandidate(runId, iteration: 4, score: 0.3) with
+        {
+            Status = HarnessCandidateStatus.Proposed,
+            BestScore = null,
+        };
+        _repository.Setup(x => x.GetAsync(proposal.CandidateId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(proposal);
+        WriteManifest(runId, lastCompletedIteration: 4, bestCandidateId: null, seedCandidateId: proposal.CandidateId);
+        ScoreSeedAndProposals(seed: SeedScore, proposal: 0.5);
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 5), default);
+
+        Assert.DoesNotContain(_saved, c => c.CandidateId == proposal.CandidateId);
+    }
+
+    [Fact]
     public async Task Handle_ProposalTiesASeedImportedFromALaterIteration_IsNotAccepted()
     {
         // The imported seed was iteration 4 of its own run. In this run it is the starting point, so an equal
@@ -340,7 +362,8 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
                 new EvaluationResult(c.CandidateId, c.Iteration == 0 ? seed : proposal, 100, []));
 
-    private void WriteManifest(Guid runId, int lastCompletedIteration, Guid? bestCandidateId)
+    private void WriteManifest(
+        Guid runId, int lastCompletedIteration, Guid? bestCandidateId, Guid? seedCandidateId = null)
     {
         var runDir = Path.Combine(_tempDir, "optimizations", runId.ToString());
         Directory.CreateDirectory(runDir);
@@ -349,6 +372,7 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
             optimizationRunId = runId,
             lastCompletedIteration,
             bestCandidateId,
+            seedCandidateId,
             startedAt = DateTimeOffset.UtcNow,
             writeCompleted = true,
         }));
