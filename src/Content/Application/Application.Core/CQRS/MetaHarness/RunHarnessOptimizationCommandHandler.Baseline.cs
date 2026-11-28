@@ -34,7 +34,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         if (restored is not null)
             return new RunBaseline(restored, restored, EvaluatedSeed: null, ToBeatEvaluation: null, suite);
 
-        var (evaluatedSeed, seedResult) = await EvaluateSeedAsync(command.OptimizationRunId, seed, evalTasks, ct);
+        var (evaluatedSeed, seedResult) = await EvaluateSeedAsync(
+            command.OptimizationRunId, seed, seedBuiltByThisRun: command.SeedCandidateId is null, evalTasks, ct);
 
         // The seed is the first configuration the run stands behind, so the tasks it already solves seed the regression
         // suite: a later proposal cannot win by breaking them.
@@ -69,7 +70,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
     }
 
     private async Task<(HarnessCandidate Seed, EvaluationResult Result)> EvaluateSeedAsync(
-        Guid optimizationRunId, HarnessCandidate seed, IReadOnlyList<EvalTask> evalTasks, CancellationToken ct)
+        Guid optimizationRunId, HarnessCandidate seed, bool seedBuiltByThisRun, IReadOnlyList<EvalTask> evalTasks,
+        CancellationToken ct)
     {
         EvaluationResult result;
         try
@@ -93,9 +95,9 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             Status = HarnessCandidateStatus.Evaluated,
         };
 
-        // Only the run's own seed is saved. An imported seed's record belongs to the run that made it, and this score
-        // comes from this run's eval tasks.
-        if (seed.OptimizationRunId == optimizationRunId)
+        // Only a seed this invocation built is saved. A seed named by SeedCandidateId is an existing record, from this
+        // run or another, and re-saving it as iteration 0 would rewrite the proposal it was.
+        if (seedBuiltByThisRun)
             await _candidateRepository.SaveAsync(evaluated, ct);
 
         _logger.LogInformation(

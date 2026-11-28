@@ -220,6 +220,27 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
     }
 
     [Fact]
+    public async Task Handle_SeedReusedFromTheSameRun_IsNotOverwritten()
+    {
+        // An earlier proposal of this run reused as the seed keeps its own stored iteration and score: re-saving it as
+        // iteration 0 would rewrite the record of the proposal it is.
+        var runId = Guid.NewGuid();
+        var reused = EvaluatedCandidate(runId, iteration: 4, score: 0.3);
+        _repository.Setup(x => x.GetAsync(reused.CandidateId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(reused);
+        ScoreSeedAndProposals(seed: SeedScore, proposal: 0.5);
+
+        await BuildHandler().Handle(
+            new RunHarnessOptimizationCommand
+            {
+                OptimizationRunId = runId, MaxIterations = 1, SeedCandidateId = reused.CandidateId,
+            },
+            default);
+
+        Assert.DoesNotContain(_saved, c => c.CandidateId == reused.CandidateId);
+    }
+
+    [Fact]
     public async Task Handle_ProposalTiesASeedImportedFromALaterIteration_IsNotAccepted()
     {
         // The imported seed was iteration 4 of its own run. In this run it is the starting point, so an equal
