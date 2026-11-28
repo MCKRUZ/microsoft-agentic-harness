@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
@@ -31,8 +30,6 @@ public static class McpServerExtensions
         this IServiceCollection services, AppConfig appConfig)
     {
         var mcpConfig = appConfig.AI.MCP;
-        var subscriptions = new ConcurrentDictionary<string, byte>();
-        services.AddSingleton(subscriptions);
 
         // AddMcpAuthentication is fail-closed: the host only boots with a configured
         // scheme or the explicit AllowAnonymous opt-in. Unless that opt-in is set,
@@ -51,8 +48,20 @@ public static class McpServerExtensions
                 };
                 options.ServerInstructions = mcpConfig.ServerInstructions;
                 options.InitializationTimeout = mcpConfig.InitializationTimeout;
+                // An explicit empty resources capability keeps resources/list and resources/read
+                // served when no resource assembly is configured, and leaves Subscribe unset so
+                // subscriptions are not advertised. The filters below refuse subscribe/unsubscribe.
+                options.Capabilities ??= new ServerCapabilities();
+                options.Capabilities.Resources = new ResourcesCapability();
             })
-            .WithHttpTransport()
+            // Chosen on purpose, not inherited from the library default, so an SDK upgrade cannot
+            // change it silently. Stateless serves 2026-07-28 clients (no initialize, no
+            // Mcp-Session-Id) and still answers 2025-11-25 clients' initialize per request. It
+            // needs no session affinity and keeps no in-memory session state, so the server
+            // scales out behind a plain load balancer. Stateful would refuse 2026-07-28 requests
+            // (-32022); StatefulForInitializeClients also passes both revisions but keeps
+            // per-client sessions in memory. McpServerProtocolVersionTests pins this behaviour.
+            .WithHttpTransport(transport => transport.SessionMode = HttpServerSessionMode.Stateless)
             // Enable [Authorize]/[AllowAnonymous] attributes on individual tools so a
             // high-risk tool can be locked to a role without touching the baseline gate.
             .AddAuthorizationFilters()
@@ -62,12 +71,15 @@ public static class McpServerExtensions
             .LoadToolsFromAssemblies(mcpConfig)
             .LoadPromptsFromAssemblies(mcpConfig)
             .LoadResourcesFromAssemblies(mcpConfig)
-            .WithSubscribeToResourcesHandler(CreateSubscribeHandler(subscriptions))
-            .WithUnsubscribeFromResourcesHandler(CreateUnsubscribeHandler(subscriptions))
-            .WithSetLoggingLevelHandler(CreateSetLoggingLevelHandler())
             // Baseline per-tool-call authorization gate (defense-in-depth) + audit.
             .WithRequestFilters(filters =>
             {
+                // Nothing ever sends notifications/resources/updated, and a stateless server has
+                // no session to send one on, so subscribing fails fast instead of promising
+                // updates that never come. 2026-07-28 requests are already refused by the SDK.
+                filters.AddSubscribeToResourcesFilter(_ => (_, _) => throw ResourceSubscriptionsNotSupported());
+                filters.AddUnsubscribeFromResourcesFilter(_ => (_, _) => throw ResourceSubscriptionsNotSupported());
+
                 filters.AddCallToolFilter(next => async (context, cancellationToken) =>
                 {
                     var logger = context.Services?
@@ -116,6 +128,9 @@ public static class McpServerExtensions
 
         return services;
     }
+
+    private static McpProtocolException ResourceSubscriptionsNotSupported() =>
+        new("Resource subscriptions are not supported by this server.", McpErrorCode.MethodNotFound);
 
     /// <summary>
     /// Configures fail-closed authentication for the MCP server host: ApiKey, static
@@ -284,54 +299,5 @@ public static class McpServerExtensions
                     ClockSkew = TimeSpan.Zero
                 };
             });
-    }
-
-    private static McpRequestHandler<SubscribeRequestParams, EmptyResult>
-        CreateSubscribeHandler(ConcurrentDictionary<string, byte> subscriptions)
-    {
-        return (ctx, ct) =>
-        {
-            var uri = ctx.Params?.Uri;
-            if (uri is not null)
-                subscriptions.TryAdd(uri, 0);
-
-            return new ValueTask<EmptyResult>(new EmptyResult());
-        };
-    }
-
-    private static McpRequestHandler<UnsubscribeRequestParams, EmptyResult>
-        CreateUnsubscribeHandler(ConcurrentDictionary<string, byte> subscriptions)
-    {
-        return (ctx, ct) =>
-        {
-            var uri = ctx.Params?.Uri;
-            if (uri is not null)
-                subscriptions.TryRemove(uri, out _);
-
-            return new ValueTask<EmptyResult>(new EmptyResult());
-        };
-    }
-
-    private static McpRequestHandler<SetLevelRequestParams, EmptyResult>
-        CreateSetLoggingLevelHandler()
-    {
-        return async (ctx, ct) =>
-        {
-            var level = ctx.Params?.Level;
-            if (level is null)
-                throw new McpException("Missing required argument 'level'");
-
-            await ctx.Server.SendNotificationAsync(
-                method: "notifications/message",
-                parameters: new
-                {
-                    Level = "debug",
-                    Logger = "agentic-harness",
-                    Data = $"Logging level set to {level}",
-                },
-                cancellationToken: ct);
-
-            return new EmptyResult();
-        };
     }
 }

@@ -39,17 +39,18 @@ public sealed class McpServerExtensionsTests
     // -- AddMcpServerServices --
 
     [Fact]
-    public void AddMcpServerServices_RegistersConcurrentDictionarySingleton()
+    public void AddMcpServerServices_DoesNotRegisterResourceSubscriptionStore()
     {
+        // Resource subscriptions are not supported: nothing ever sent notifications/resources/updated,
+        // and a stateless server has no session to send one on. The old in-memory URI store must not
+        // come back for anyone to build on.
         var services = new ServiceCollection();
         var appConfig = CreateAppConfig();
 
         services.AddMcpServerServices(appConfig);
 
-        var descriptor = services.FirstOrDefault(d =>
+        services.Should().NotContain(d =>
             d.ServiceType == typeof(ConcurrentDictionary<string, byte>));
-        descriptor.Should().NotBeNull();
-        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
     }
 
     [Fact]
