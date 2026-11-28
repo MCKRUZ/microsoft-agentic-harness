@@ -114,6 +114,17 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         var manifest = await LoadOrCreateRunManifest(runDir, command.OptimizationRunId);
         var startIteration = manifest.LastCompletedIteration + 1;
 
+        // A resumed run with no iterations left has no proposal to judge, so it reports the best it already accepted
+        // without measuring the seed or seeding the regression suite.
+        if (startIteration > maxIterations)
+        {
+            var recordedBest = await RestoreRecordedBestAsync(
+                manifest.BestCandidateId, command.OptimizationRunId, cancellationToken);
+            return await CompleteRunAsync(
+                command.OptimizationRunId, runDir, recordedBest, seedScore: null, iterationCount: 0,
+                earlyStopReason: null, cancellationToken);
+        }
+
         var seed = await ResolveSeedCandidateAsync(command, cfg, cancellationToken);
 
         // Pre-loop: every comparison needs a measured side, so the run restores the best it already accepted or
@@ -304,18 +315,28 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         // contract. If no proposal beat the seed and cleared the gate, this stays null and no
         // _proposed/ snapshot is written: the seed is the unchanged starting point, not a change to
         // propose, and a gate-failing (regressive) artifact is never emitted.
-        var bestCandidate = currentBestCandidate;
+        return await CompleteRunAsync(
+            command.OptimizationRunId, runDir, currentBestCandidate, baseline.EvaluatedSeed?.BestScore,
+            executedIterations, earlyStopReason, cancellationToken);
+    }
+
+    // Writes the run's closing artifacts and result. bestCandidate is the gate-validated best (or null when no proposal
+    // was accepted), never the seed.
+    private async Task<OptimizationResult> CompleteRunAsync(
+        Guid optimizationRunId, string runDir, HarnessCandidate? bestCandidate, double? seedScore,
+        int iterationCount, string? earlyStopReason, CancellationToken ct)
+    {
         var proposedDir = Path.Combine(runDir, "_proposed");
         WriteProposedSnapshot(proposedDir, bestCandidate, _directoryCreator, _logger);
-        await WriteSummaryMarkdownAsync(runDir, command.OptimizationRunId, cancellationToken);
+        await WriteSummaryMarkdownAsync(runDir, optimizationRunId, ct);
 
         return new OptimizationResult
         {
-            OptimizationRunId = command.OptimizationRunId,
+            OptimizationRunId = optimizationRunId,
             BestCandidateId = bestCandidate?.CandidateId,
             BestScore = bestCandidate?.BestScore ?? 0.0,
-            SeedScore = baseline.EvaluatedSeed?.BestScore,
-            IterationCount = executedIterations,
+            SeedScore = seedScore,
+            IterationCount = iterationCount,
             ProposedChangesPath = bestCandidate is not null ? proposedDir : string.Empty,
             EarlyStopReason = earlyStopReason,
         };

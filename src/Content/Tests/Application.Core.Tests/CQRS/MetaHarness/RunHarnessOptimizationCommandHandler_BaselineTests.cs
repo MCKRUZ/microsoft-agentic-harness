@@ -268,6 +268,36 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
             It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task Handle_ResumedRunWithNoIterationsLeft_DoesNotMeasureTheSeed()
+    {
+        // Every iteration already ran and none was accepted. With nothing left to compare, measuring the seed would
+        // only spend a full evaluation and write its tasks into the regression suite.
+        var runId = Guid.NewGuid();
+        WriteManifest(runId, lastCompletedIteration: 3, bestCandidateId: null);
+        ScoreSeedAndProposals(seed: SeedScore, proposal: 0.5);
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 3), default);
+
+        _evaluator.Verify(x => x.EvaluateAsync(It.IsAny<HarnessCandidate>(),
+            It.IsAny<IReadOnlyList<EvalTask>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_ResumedRunWithNoIterationsLeft_StillReportsItsBest()
+    {
+        var runId = Guid.NewGuid();
+        var earlierBest = EvaluatedCandidate(runId, iteration: 2, score: 0.9);
+        _repository.Setup(x => x.GetAsync(earlierBest.CandidateId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(earlierBest);
+        WriteManifest(runId, lastCompletedIteration: 3, earlierBest.CandidateId);
+        ScoreSeedAndProposals(seed: SeedScore, proposal: 0.5);
+
+        var result = await BuildHandler().Handle(Command(runId, maxIterations: 3), default);
+
+        Assert.Equal(earlierBest.CandidateId, result.BestCandidateId);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); }
@@ -289,7 +319,7 @@ public sealed class RunHarnessOptimizationCommandHandler_BaselineTests : IDispos
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
                 new EvaluationResult(c.CandidateId, c.Iteration == 0 ? seed : proposal, 100, []));
 
-    private void WriteManifest(Guid runId, int lastCompletedIteration, Guid bestCandidateId)
+    private void WriteManifest(Guid runId, int lastCompletedIteration, Guid? bestCandidateId)
     {
         var runDir = Path.Combine(_tempDir, "optimizations", runId.ToString());
         Directory.CreateDirectory(runDir);
