@@ -31,9 +31,9 @@ public interface IApprovalExecutionReporter
     /// <summary>Reports that an approved action ran and completed successfully.</summary>
     /// <param name="reportedBy">
     /// A stable identifier for the calling site (<c>"direct-invocation"</c>, <c>"agent-turn"</c>,
-    /// or <c>"plan-executor"</c> — the three sites wired to <see cref="IApprovalExecutionReporter"/>
-    /// today), carried onto the audit record so a future auditor can tell which raising sites
-    /// implement execution reporting and which don't.
+    /// <c>"plan-executor"</c>, <c>"delegation"</c>, or <c>"magentic-plan-review"</c> — the five sites
+    /// wired to <see cref="IApprovalExecutionReporter"/> today), carried onto the audit record so a
+    /// future auditor can tell which raising sites implement execution reporting and which don't.
     /// </param>
     ValueTask ReportSucceededAsync(ApprovedCall call, string reportedBy, CancellationToken ct);
 
@@ -58,8 +58,15 @@ public interface IApprovalExecutionReporter
 /// </summary>
 /// <param name="EscalationId">The escalation whose approval permitted this call.</param>
 /// <param name="Key">
-/// The failure-memory key for this call. Carried alongside the escalation id rather than
+/// The failure-memory key for this call, or null when the approved action has no tool call that
+/// failure memory could ever be consulted for. Carried alongside the escalation id rather than
 /// re-derived at report time, because the code path that finally learns the outcome (deep inside
 /// a tool invocation) is not always the code path that raised the escalation.
+/// <para>
+/// Null for a delegation or a Magentic plan review (#395): the only reader of failure memory,
+/// <c>EscalationToolApprovalRouter</c>, looks keys up by the name of a real tool about to be
+/// approved, so a key built from <c>delegate:…</c> or <c>magentic.plan_review</c> would never be
+/// read — it would only take a slot in the bounded memory and push out an entry that is.
+/// </para>
 /// </param>
-public readonly record struct ApprovedCall(Guid EscalationId, ApprovalFailureKey Key);
+public readonly record struct ApprovedCall(Guid EscalationId, ApprovalFailureKey? Key);

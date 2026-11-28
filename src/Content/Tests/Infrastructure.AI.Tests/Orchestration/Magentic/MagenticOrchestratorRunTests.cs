@@ -248,6 +248,36 @@ public sealed class MagenticOrchestratorRunTests
             "the answer is the manager's own final message, not a type name or a participant's reply");
     }
 
+    [Fact]
+    public async Task RunAsync_ApprovedPlanRunsToSatisfied_ReportsSucceededToItsApproverOnce()
+    {
+        // #395, through the real workflow engine: sign-off is required, the reviewer approves, and the run
+        // finishes satisfied. The approver hears exactly one outcome, at the run's end — nothing the
+        // framework emits between the approval and the end may close it early.
+        var manager = new ScriptedAgent(
+            "manager", ScriptedBehavior.Reply, "facts", "the plan", SatisfiedLedger, "the final answer");
+        var request = BuildRequest(manager) with
+        {
+            Participants = [new ScriptedAgent("researcher", ScriptedBehavior.Reply, "researched")],
+            RequirePlanSignoff = true
+        };
+        var escalationId = Guid.NewGuid();
+        var bridge = new Mock<IMagenticPlanReviewBridge>();
+        bridge.Setup(b => b.RequestPlanReviewAsync(It.IsAny<MagenticPlanReviewInput>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MagenticPlanReviewOutcome { Approved = true, EscalationId = escalationId });
+        var reporter = new RecordingApprovalReporter();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await BuildOrchestrator(bridge: bridge.Object, approvalReporter: reporter).RunAsync(request, cts.Token);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        bridge.Verify(b => b.RequestPlanReviewAsync(It.IsAny<MagenticPlanReviewInput>(), It.IsAny<CancellationToken>()), Times.Once);
+        var report = reporter.Reports.Should().ContainSingle().Subject;
+        report.EscalationId.Should().Be(escalationId);
+        report.Status.Should().Be(Domain.AI.Escalation.EscalationExecutionStatus.Succeeded);
+        report.ReportedBy.Should().Be(MagenticEventSubscriber.ApprovalReportedBy);
+    }
+
     private static MagenticWorkflowRequest BuildRequest(AIAgent manager) => new()
     {
         Manager = manager,
@@ -259,7 +289,10 @@ public sealed class MagenticOrchestratorRunTests
         RequirePlanSignoff = false
     };
 
-    private static MagenticOrchestrator BuildOrchestrator(IMagenticProgressNotifier? progress = null)
+    private static MagenticOrchestrator BuildOrchestrator(
+        IMagenticProgressNotifier? progress = null,
+        IMagenticPlanReviewBridge? bridge = null,
+        RecordingApprovalReporter? approvalReporter = null)
     {
         var mediator = new Mock<IMediator>();
         var router = new MagenticChangeProposalRouter(
@@ -268,12 +301,13 @@ public sealed class MagenticOrchestratorRunTests
 
         return new MagenticOrchestrator(
             new MagenticSpanEmitter(),
-            Mock.Of<IMagenticPlanReviewBridge>(),
+            bridge ?? Mock.Of<IMagenticPlanReviewBridge>(),
             router,
             Mock.Of<IContentCapturePolicy>(),
             PermissiveAdmission.PermissiveSanitizer(),
             PermissiveAdmission.PermissiveRedactionFilter(),
             progress ?? NoOpMagenticProgressNotifier.Instance,
+            (approvalReporter ?? new RecordingApprovalReporter()).ScopeFactory(),
             NullLoggerFactory.Instance);
     }
 

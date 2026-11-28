@@ -9,6 +9,8 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services.Escalation;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using Domain.AI.Telemetry.Conventions;
@@ -119,6 +121,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         _logger = logger;
         _modelRouter = modelRouter;
         _escalationService = escalationService;
+        _approvalReporter = new ScopedApprovalExecutionReporter(scopeFactory, logger);
 
         var maxConcurrent = options.CurrentValue.AI?.Orchestration?.Subagent?.MaxConcurrentDelegations ?? 5;
         _concurrencySemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
@@ -132,12 +135,29 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         int currentDelegationDepth = 0,
         IReadOnlyList<string>? toolOverrides = null,
         CancellationToken ct = default)
+        => (await DelegateCoreAsync(
+            taskDescription, requiredCapabilities, minimumTier, currentDelegationDepth, toolOverrides, ct)).Result;
+
+    /// <summary>
+    /// <see cref="DelegateAsync"/>'s body, returning what actually happened alongside the caller's
+    /// result: an approved-escalation retry (#395) has to tell "never started" from "ran and failed",
+    /// and <see cref="DelegationResult"/> uses one shape for both.
+    /// </summary>
+    private async Task<DelegationAttempt> DelegateCoreAsync(
+        string taskDescription,
+        IReadOnlyList<string> requiredCapabilities,
+        AutonomyLevel minimumTier,
+        int currentDelegationDepth,
+        IReadOnlyList<string>? toolOverrides,
+        CancellationToken ct)
     {
         var subagentConfig = _options.CurrentValue.AI?.Orchestration?.Subagent;
         var maxDepth = subagentConfig?.MaxDelegationDepth ?? 3;
 
         if (currentDelegationDepth >= maxDepth)
-            return DelegationResult.Fail($"Delegation depth limit ({maxDepth}) exceeded.");
+            return DelegationAttempt.NotStarted(
+                DelegationResult.Fail($"Delegation depth limit ({maxDepth}) exceeded."),
+                EscalationNotExecutedReason.DelegationDepthExceeded);
 
         var context = await BuildDecisionContextAsync(taskDescription, requiredCapabilities, minimumTier, currentDelegationDepth, maxDepth, ct);
         var selection = _strategy.SelectAgent(context);
@@ -154,11 +174,13 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
                     taskDescription, requiredCapabilities, minimumTier,
                     currentDelegationDepth, toolOverrides, escalationConfig, ct);
 
-                if (escalationResult is not null)
-                    return escalationResult;
+                if (escalationResult is { } approved)
+                    return approved;
             }
 
-            return DelegationResult.Fail("No capable agent found for the requested task and tier requirements.");
+            return DelegationAttempt.NotStarted(
+                DelegationResult.Fail("No capable agent found for the requested task and tier requirements."),
+                EscalationNotExecutedReason.NoAgentAvailable);
         }
 
         return await RecordAndExecuteAsync(
@@ -202,11 +224,11 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
             Reasoning = "explicit target agent named by the caller"
         };
 
-        return await RecordAndExecuteAsync(
+        return (await RecordAndExecuteAsync(
             selection, taskDescription, [], toolOverrides, currentDelegationDepth,
             subagentConfig?.DelegationTimeoutSeconds ?? 300,
             $"named target (reason: {selection.Reasoning})",
-            ct);
+            ct)).Result;
     }
 
     /// <summary>
@@ -216,7 +238,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     /// lookup). Only the audit message differs between callers, since the two selection paths mean
     /// different things by "why this agent."
     /// </summary>
-    private async Task<DelegationResult> RecordAndExecuteAsync(
+    private async Task<DelegationAttempt> RecordAndExecuteAsync(
         AgentSelection selection,
         string taskDescription,
         IReadOnlyList<string> requiredCapabilities,

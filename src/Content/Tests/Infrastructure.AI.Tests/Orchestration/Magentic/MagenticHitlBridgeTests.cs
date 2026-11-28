@@ -80,6 +80,8 @@ public sealed class MagenticHitlBridgeTests
 
         outcome.Approved.Should().BeTrue();
         capturedRequest.Should().NotBeNull();
+        outcome.EscalationId.Should().Be(capturedRequest!.EscalationId,
+            "the subscriber reports the approved plan's outcome to this escalation's approver (#395)");
         capturedRequest!.RiskLevel.Should().Be(RiskLevel.High);
         capturedRequest.Priority.Should().Be(EscalationPriority.Blocking);
         capturedRequest.ToolName.Should().Be("magentic.plan_review");
@@ -127,6 +129,7 @@ public sealed class MagenticHitlBridgeTests
             CancellationToken.None);
 
         outcome.Approved.Should().BeFalse();
+        outcome.EscalationId.Should().BeNull("a plan that was not approved has no approved outcome to report");
         AssertRelaysFeedback(outcome.RevisionFeedback, "needs more detail", "magentic.plan_review.approver");
     }
 

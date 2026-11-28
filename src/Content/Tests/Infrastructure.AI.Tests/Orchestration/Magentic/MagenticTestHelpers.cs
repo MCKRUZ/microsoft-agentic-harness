@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Infrastructure.AI.Orchestration.Magentic;
+using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Tests.Support;
 using MediatR;
@@ -92,7 +93,8 @@ internal static class MagenticTestHelpers
         ICompositeResponseSanitizer? sanitizer = null,
         IContentRedactionFilter? redactionFilter = null,
         IMagenticProgressNotifier? progress = null,
-        TimeSpan? terminalReportTimeout = null)
+        TimeSpan? terminalReportTimeout = null,
+        RecordingApprovalReporter? approvalReporter = null)
     {
         bridge = new Mock<IMagenticPlanReviewBridge>();
         mediator = new Mock<IMediator>();
@@ -111,6 +113,7 @@ internal static class MagenticTestHelpers
             sanitizer ?? PermissiveAdmission.PermissiveSanitizer(),
             redactionFilter ?? Mock.Of<IContentRedactionFilter>(),
             progress ?? Application.AI.Common.Services.Orchestration.NoOpMagenticProgressNotifier.Instance,
+            (approvalReporter ?? new RecordingApprovalReporter()).AsScoped(),
             NullLogger<MagenticEventSubscriber>.Instance,
             terminalReportTimeout);
     }

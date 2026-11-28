@@ -58,6 +58,15 @@ public sealed record MagenticPlanReviewOutcome
     public required bool Approved { get; init; }
 
     /// <summary>
+    /// The escalation whose approval this is, when <see cref="Approved"/> is <see langword="true"/> and
+    /// the approval came from a human escalation. The subscriber reports the approved plan's outcome to
+    /// that escalation's approver when the workflow ends (#395). <see langword="null"/> for a revision,
+    /// and for a bridge with no escalation behind it: then nothing is reported, because there is no
+    /// approver to report to.
+    /// </summary>
+    public Guid? EscalationId { get; init; }
+
+    /// <summary>
     /// Revision text to apply, when <see cref="Approved"/> is <see langword="false"/>.
     /// Mapped to <c>MagenticPlanReviewResponse.Revise(string)</c>.
     /// </summary>

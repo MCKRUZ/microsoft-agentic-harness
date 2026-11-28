@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -14,7 +15,9 @@ namespace Infrastructure.AI.Tests.Helpers;
 internal static class FakeGovernanceScopeFactory
 {
     public static IServiceScopeFactory Create(
-        out Mock<IAgentExecutionContext> context, out Mock<IToolCallAdmissionPipeline> pipeline)
+        out Mock<IAgentExecutionContext> context,
+        out Mock<IToolCallAdmissionPipeline> pipeline,
+        IApprovalExecutionReporter? approvalReporter = null)
     {
         context = new Mock<IAgentExecutionContext>();
         context.Setup(c => c.ReassertAttribution())
@@ -24,6 +27,8 @@ internal static class FakeGovernanceScopeFactory
         var provider = new Mock<IServiceProvider>();
         provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(context.Object);
         provider.Setup(p => p.GetService(typeof(IToolCallAdmissionPipeline))).Returns(pipeline.Object);
+        // The same scope factory serves the supervisor's approval reports (#395), as a host's would.
+        provider.Setup(p => p.GetService(typeof(IApprovalExecutionReporter))).Returns(approvalReporter);
 
         var scope = new Mock<IServiceScope>();
         scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);

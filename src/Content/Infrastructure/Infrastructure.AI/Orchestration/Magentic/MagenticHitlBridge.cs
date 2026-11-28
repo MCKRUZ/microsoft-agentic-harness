@@ -97,7 +97,7 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
 
         if (outcome.IsApproved)
         {
-            return new MagenticPlanReviewOutcome { Approved = true };
+            return new MagenticPlanReviewOutcome { Approved = true, EscalationId = outcome.EscalationId };
         }
 
         // Instructions first, Reason as fallback: a Revise decision carries its steering text on
