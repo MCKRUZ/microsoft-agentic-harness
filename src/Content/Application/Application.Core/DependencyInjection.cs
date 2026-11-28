@@ -132,7 +132,9 @@ public static class DependencyInjection
 	///     (<c>IHarnessProposer</c>, <c>IEvaluationService</c>). Resolve it from a created scope's
 	///     provider, e.g.
 	///     <c>scope.ServiceProvider.GetRequiredKeyedService&lt;Workflow&gt;("optimization-iteration")</c>,
-	///     never from the root provider.
+	///     never from the root provider. Before the first iteration, save the run's seed as an
+	///     <c>Evaluated</c> candidate with its score: the scoring step compares each proposal against
+	///     the best evaluated candidate already in the run, and refuses to score when there is none.
 	///   </item>
 	/// </list>
 	/// <para>

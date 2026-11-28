@@ -9,6 +9,14 @@ namespace Application.Core.Workflows.MetaHarness;
 /// represents an improvement, and persists the final scored candidate.
 /// Final step in the optimization iteration workflow.
 /// </summary>
+/// <remarks>
+/// The current best is the highest-scoring evaluated candidate already persisted for the run.
+/// The run must contain one before its first proposal is scored: evaluate the seed candidate and
+/// save it with <see cref="HarnessCandidateStatus.Evaluated"/> status, as
+/// <c>RunHarnessOptimizationCommandHandler</c> does. With nothing measured there is nothing to
+/// compare against, so the executor refuses rather than calling any score an improvement
+/// (issue #1075).
+/// </remarks>
 public sealed class ScoreCandidateExecutor(
     IHarnessCandidateRepository candidateRepository)
     : Executor<EvaluationStepOutput, IterationOutcome>("ScoreCandidate")
@@ -21,6 +29,9 @@ public sealed class ScoreCandidateExecutor(
     /// <param name="context">The MAF workflow context.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An <see cref="IterationOutcome"/> indicating whether the candidate is an improvement.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The run has no evaluated candidate to compare against. The candidate is not persisted.
+    /// </exception>
     public override async ValueTask<IterationOutcome> HandleAsync(
         EvaluationStepOutput message,
         IWorkflowContext context,
@@ -32,13 +43,17 @@ public sealed class ScoreCandidateExecutor(
         // itself and never report an improvement.
         var currentBest = await candidateRepository.GetBestAsync(
             message.Candidate.OptimizationRunId,
-            cancellationToken);
+            cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"Optimization run {message.Candidate.OptimizationRunId} has no evaluated candidate to compare " +
+                $"candidate {message.Candidate.CandidateId} against. Evaluate the seed and save it as Evaluated " +
+                "before scoring the first proposal.");
 
         await candidateRepository.SaveAsync(message.Candidate, cancellationToken);
 
         var score = message.Candidate.BestScore ?? 0.0;
-        var bestScore = currentBest?.BestScore ?? 0.0;
-        var isImprovement = currentBest is null || score > bestScore;
+        var bestScore = currentBest.BestScore ?? 0.0;
+        var isImprovement = score > bestScore;
 
         return new IterationOutcome(
             Candidate: message.Candidate,

@@ -36,6 +36,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
     /// Returns true when <paramref name="candidate"/> should replace <paramref name="currentBest"/>.
     /// </summary>
     /// <remarks>
+    /// <paramref name="currentBest"/> is never null: a run always compares against something measured, the evaluated
+    /// seed or the best accepted so far (issue #1075).
     /// Tie-breaking order:
     /// <list type="number">
     ///   <item>Pass rate exceeds current best by more than <paramref name="threshold"/> → clear improvement.</item>
@@ -45,12 +47,9 @@ public sealed partial class RunHarnessOptimizationCommandHandler
     /// </remarks>
     private static bool IsBetter(
         HarnessCandidate candidate,
-        HarnessCandidate? currentBest,
+        HarnessCandidate currentBest,
         double threshold)
     {
-        if (currentBest is null)
-            return true;
-
         var delta = candidate.BestScore.GetValueOrDefault()
                     - currentBest.BestScore.GetValueOrDefault();
 
