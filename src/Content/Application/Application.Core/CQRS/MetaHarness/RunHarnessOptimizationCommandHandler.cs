@@ -119,7 +119,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         var recordedBest = await RestoreRecordedBestAsync(
             manifest.BestCandidateId, command.OptimizationRunId, cancellationToken);
         var noImprovementLimit = cfg.ConsecutiveNoImprovementLimit;
-        var consecutiveNoImprovement = NoImprovementCountSoFar(manifest.LastCompletedIteration, recordedBest);
+        var consecutiveNoImprovement = NoImprovementCountSoFar(
+            manifest.LastCompletedIteration, manifest.BestCandidateId, recordedBest);
 
         // A resumed run with no iterations left, or one that had already stopped for lack of improvement, has no
         // proposal to judge. It reports the best it already accepted without measuring the seed or seeding the
@@ -147,16 +148,19 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             await _regressionService.LoadAsync(runDir, cancellationToken), runDir, cancellationToken);
 
         // A resumed run carries on from the state the uninterrupted run would have had (#1077).
+        // A working candidate that is the seed itself is already in hand, freshly scored when it came from another run.
         var resuming = startIteration > 1;
-        var currentCandidate = await RestoreWorkingCandidateAsync(
-                manifest.WorkingCandidateId, command.OptimizationRunId, cancellationToken)
+        var workingIsTheSeed = manifest.WorkingCandidateId is null || manifest.WorkingCandidateId == seed.CandidateId;
+        var currentCandidate = (workingIsTheSeed
+                ? null
+                : await RestoreWorkingCandidateAsync(manifest.WorkingCandidateId, command.OptimizationRunId, cancellationToken))
             ?? baseline.EvaluatedSeed ?? seed;
         var toBeat = baseline.ToBeat;
         var currentBestCandidate = baseline.RestoredBest;
         var regressionSuite = baseline.RegressionSuite;
         var previousBestEvalResult = baseline.ToBeatEvaluation;
         var priorCandidateIds = resuming
-            ? await ListPriorCandidateIdsAsync(command.OptimizationRunId, cancellationToken)
+            ? await ListPriorCandidateIdsAsync(command.OptimizationRunId, manifest.LastCompletedIteration, cancellationToken)
             : [];
         var executedIterations = 0;
 

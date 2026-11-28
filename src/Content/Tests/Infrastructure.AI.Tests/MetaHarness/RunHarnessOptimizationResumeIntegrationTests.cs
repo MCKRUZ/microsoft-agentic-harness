@@ -200,6 +200,75 @@ public sealed class RunHarnessOptimizationResumeIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Handle_ResumedRunStartedFromAnImportedSeed_DoesNotBuildANewSeed()
+    {
+        // The first invocation named a seed from another run; the resume does not name it again. The run's seed is
+        // still the imported one, so no seed of this run's own may appear.
+        var runId = Guid.NewGuid();
+        var imported = await SaveImportedSeedAsync();
+        await BuildHandler().Handle(Command(runId, maxIterations: 1) with { SeedCandidateId = imported.CandidateId }, default);
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 2), default);
+
+        Assert.DoesNotContain(await _repository.ListAsync(runId), c => c.Iteration == 0);
+    }
+
+    [Fact]
+    public async Task Handle_ResumedRunStartedFromAnImportedSeed_MeasuresItAgain()
+    {
+        // The imported seed's stored score came from another run's eval tasks, so it is never this run's bar.
+        _passRateByIteration = iteration => iteration switch { 4 => 0.8, _ => 0.5 };
+        var runId = Guid.NewGuid();
+        var imported = await SaveImportedSeedAsync();
+        await BuildHandler().Handle(Command(runId, maxIterations: 1) with { SeedCandidateId = imported.CandidateId }, default);
+        _evaluated.Clear();
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 2), default);
+
+        Assert.Contains(_evaluated, c => c.CandidateId == imported.CandidateId);
+    }
+
+    [Fact]
+    public async Task Handle_ResumedRunWithAnUncommittedIteration_LeavesItOutOfTheProposerHistory()
+    {
+        // A crash after an iteration's candidate was saved but before the manifest recorded the iteration leaves an
+        // evaluated candidate the manifest never counted. That iteration runs again, so the orphan is not history.
+        var runId = Guid.NewGuid();
+        await BuildHandler().Handle(Command(runId, maxIterations: 2), default);
+        var committed = _evaluated.Where(c => c.Iteration > 0).Select(c => c.CandidateId).ToList();
+        var storedIteration2 = (await _repository.ListAsync(runId)).Single(c => c.Iteration == 2);
+        Assert.Equal(HarnessCandidateStatus.Evaluated, storedIteration2.Status);
+        await _repository.SaveAsync(storedIteration2 with { CandidateId = Guid.NewGuid(), Iteration = 3 });
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 3), default);
+
+        Assert.Equal(committed, _priorIdsSeenByIteration[3]);
+    }
+
+    [Fact]
+    public async Task Handle_ResumedRunWhoseRecordedBestIsMissing_DoesNotStopEarlyOnAGuess()
+    {
+        // The manifest names a best that cannot be read back, so how many iterations passed since the last improvement
+        // is unknown. Counting every completed iteration as a failure would silently stop the run.
+        _cfg.ConsecutiveNoImprovementLimit = 3;
+        var runId = Guid.NewGuid();
+        var runDir = Path.Combine(_tempDir, "optimizations", runId.ToString());
+        Directory.CreateDirectory(runDir);
+        File.WriteAllText(Path.Combine(runDir, "run_manifest.json"), JsonSerializer.Serialize(new
+        {
+            optimizationRunId = runId,
+            lastCompletedIteration = 3,
+            bestCandidateId = Guid.NewGuid(),
+            startedAt = DateTimeOffset.UtcNow,
+            writeCompleted = true,
+        }));
+
+        await BuildHandler().Handle(Command(runId, maxIterations: 4), default);
+
+        Assert.Contains(_evaluated, c => c.Iteration == 4);
+    }
+
+    [Fact]
     public async Task Handle_ResumedRun_TellsTheProposerAboutTheEarlierCandidates()
     {
         var runId = Guid.NewGuid();
@@ -274,6 +343,31 @@ public sealed class RunHarnessOptimizationResumeIntegrationTests : IDisposable
             Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(o => o.CurrentValue == _cfg),
             NullLogger<RunHarnessOptimizationCommandHandler>.Instance,
             new PlainDirectoryCreator());
+    }
+
+    // An evaluated candidate from another run, at iteration 4 of that run, offered as this run's seed.
+    private async Task<HarnessCandidate> SaveImportedSeedAsync()
+    {
+        var imported = new HarnessCandidate
+        {
+            CandidateId = Guid.NewGuid(),
+            OptimizationRunId = Guid.NewGuid(),
+            ParentCandidateId = Guid.NewGuid(),
+            Iteration = 4,
+            CreatedAt = DateTimeOffset.UtcNow,
+            Snapshot = new HarnessSnapshot
+            {
+                SkillFileSnapshots = new Dictionary<string, string>(),
+                SystemPromptSnapshot = "imported",
+                ConfigSnapshot = new Dictionary<string, string>(),
+                SnapshotManifest = [],
+            },
+            BestScore = 0.95,
+            TokenCost = 100,
+            Status = HarnessCandidateStatus.Evaluated,
+        };
+        await _repository.SaveAsync(imported);
+        return imported;
     }
 
     // The seed is measured, then the host stops while the first proposal is evaluated, before any iteration completes.

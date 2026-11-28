@@ -22,20 +22,22 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         EvaluationResult? ToBeatEvaluation,
         RegressionSuite RegressionSuite);
 
-    // A resumed run reuses the seed it recorded, so it neither builds a second seed nor measures one again (#1077). An
-    // explicit SeedCandidateId always wins: it names an existing record, which is never rebuilt or re-saved.
+    // A resumed run reuses the seed it recorded, so it neither builds a second seed nor measures one again (#1077). The
+    // recorded seed may be a candidate imported from another run by the first invocation's SeedCandidateId; it is still
+    // this run's seed, though its stored score is not this run's bar (see EstablishBaselineAsync). An explicit
+    // SeedCandidateId always wins: it names an existing record, which is never rebuilt or re-saved.
     private async Task<(HarnessCandidate Seed, bool Restored)> ResolveRunSeedAsync(
         RunHarnessOptimizationCommand command, MetaHarnessConfig cfg, Guid? recordedSeedId, CancellationToken ct)
     {
         if (command.SeedCandidateId is null && recordedSeedId is Guid id)
         {
             var recorded = await _candidateRepository.GetAsync(id, ct);
-            if (recorded is not null && recorded.OptimizationRunId == command.OptimizationRunId)
+            if (recorded is not null)
                 return (recorded, true);
 
             _logger.LogWarning(
-                "Optimization run {RunId} recorded seed candidate {CandidateId}, but it is missing or from another " +
-                "run; building a new seed instead", command.OptimizationRunId, id);
+                "Optimization run {RunId} recorded seed candidate {CandidateId}, but it is missing; building a new " +
+                "seed instead", command.OptimizationRunId, id);
         }
 
         return (await ResolveSeedCandidateAsync(command, cfg, ct), false);
@@ -60,14 +62,22 @@ public sealed partial class RunHarnessOptimizationCommandHandler
     }
 
     // Iterations since the last accepted proposal. Every iteration that is not accepted adds one, and the recorded best
-    // is the last one accepted, so the count before a restart is derived rather than stored.
-    private static int NoImprovementCountSoFar(int lastCompletedIteration, HarnessCandidate? restoredBest) =>
-        lastCompletedIteration - (restoredBest?.Iteration ?? 0);
+    // is the last one accepted, so the count before a restart is derived rather than stored. When the manifest names a
+    // best that cannot be restored, when the last improvement happened is unknown: the count starts again at zero rather
+    // than treating every completed iteration as a failure, which would silently stop the run.
+    private static int NoImprovementCountSoFar(
+        int lastCompletedIteration, Guid? recordedBestId, HarnessCandidate? restoredBest) =>
+        recordedBestId is not null && restoredBest is null
+            ? 0
+            : lastCompletedIteration - (restoredBest?.Iteration ?? 0);
 
-    // The proposer's view of the attempts already made in this run, rebuilt after a restart.
-    private async Task<List<Guid>> ListPriorCandidateIdsAsync(Guid optimizationRunId, CancellationToken ct) =>
+    // The proposer's view of the attempts already made in this run, rebuilt after a restart. Only iterations the
+    // manifest recorded as completed count: a candidate saved by an iteration interrupted before its manifest write is
+    // about to be attempted again, so it is not history.
+    private async Task<List<Guid>> ListPriorCandidateIdsAsync(
+        Guid optimizationRunId, int lastCompletedIteration, CancellationToken ct) =>
         (await _candidateRepository.ListAsync(optimizationRunId, ct))
-            .Where(c => c.Iteration > 0
+            .Where(c => c.Iteration > 0 && c.Iteration <= lastCompletedIteration
                 && c.Status is HarnessCandidateStatus.Evaluated or HarnessCandidateStatus.Failed)
             .OrderBy(c => c.Iteration)
             .Select(c => c.CandidateId)
@@ -87,8 +97,10 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             return new RunBaseline(restored, restored, EvaluatedSeed: null, ToBeatEvaluation: null, suite);
 
         // The run's own seed was measured before the restart: its score is the bar, and the regression suite was seeded
-        // from it then, so neither is redone (#1077).
-        if (seedRestored && seed is { Status: HarnessCandidateStatus.Evaluated, BestScore: not null })
+        // from it then, so neither is redone (#1077). A seed imported from another run keeps that run's score on its
+        // record, measured against that run's eval tasks, so it is measured again below.
+        if (seedRestored && seed is { Status: HarnessCandidateStatus.Evaluated, BestScore: not null }
+            && seed.OptimizationRunId == command.OptimizationRunId)
         {
             var measuredSeed = seed with { Iteration = 0 };
             _logger.LogInformation(
