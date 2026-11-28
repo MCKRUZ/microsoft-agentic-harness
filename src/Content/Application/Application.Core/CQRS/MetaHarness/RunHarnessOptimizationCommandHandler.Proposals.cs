@@ -39,19 +39,23 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         };
     }
 
+    // Every field a resume needs is a required parameter, so no write site can leave one stale (#1077).
     private static void UpdateRunManifest(
         string runDir,
+        RunManifest manifest,
         int lastCompletedIteration,
         Guid? bestCandidateId,
-        Guid optimizationRunId,
-        DateTimeOffset startedAt)
+        Guid seedCandidateId,
+        Guid workingCandidateId)
     {
         var updated = new RunManifest
         {
-            OptimizationRunId = optimizationRunId,
+            OptimizationRunId = manifest.OptimizationRunId,
             LastCompletedIteration = lastCompletedIteration,
             BestCandidateId = bestCandidateId,
-            StartedAt = startedAt,
+            SeedCandidateId = seedCandidateId,
+            WorkingCandidateId = workingCandidateId,
+            StartedAt = manifest.StartedAt,
             WriteCompleted = true,
         };
         var json = JsonSerializer.Serialize(updated, JsonOptions);

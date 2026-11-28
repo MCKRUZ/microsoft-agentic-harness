@@ -19,10 +19,12 @@ namespace Application.Core.CQRS.MetaHarness;
 /// Orchestrates the full propose-evaluate iteration cycle:
 /// <list type="number">
 ///   <item>Load eval tasks from <see cref="MetaHarnessConfig.EvalTasksPath"/>.</item>
-///   <item>Resolve or build the seed candidate.</item>
-///   <item>Establish the baseline: restore the best a resumed run already accepted, or evaluate the seed and seed
-///   the regression suite from it. A seed that cannot be evaluated fails the run with
-///   <see cref="InvalidOperationException"/>, because no proposal can be judged without a baseline.</item>
+///   <item>Resolve or build the seed candidate. A resumed run reuses the seed its <c>run_manifest.json</c> recorded.</item>
+///   <item>Establish the baseline: restore the best a resumed run already accepted, reuse a resumed run's measured
+///   seed, or evaluate the seed and seed the regression suite from it. A seed that cannot be evaluated fails the run
+///   with <see cref="InvalidOperationException"/>, because no proposal can be judged without a baseline.</item>
+///   <item>On resume, restore the loop state an uninterrupted run would have had: the candidate the next proposal is
+///   built from, the iterations since the last improvement, and the ids of the earlier candidates.</item>
 ///   <item>For each iteration: propose → build snapshot → evaluate → score against the baseline or the best so far →
 ///   track best.</item>
 ///   <item>Write final <c>_proposed/</c> snapshot and <c>summary.md</c>.</item>
@@ -114,35 +116,51 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         var manifest = await LoadOrCreateRunManifest(runDir, command.OptimizationRunId);
         var startIteration = manifest.LastCompletedIteration + 1;
 
-        // A resumed run with no iterations left has no proposal to judge, so it reports the best it already accepted
-        // without measuring the seed or seeding the regression suite.
-        if (startIteration > maxIterations)
+        var recordedBest = await RestoreRecordedBestAsync(
+            manifest.BestCandidateId, command.OptimizationRunId, cancellationToken);
+        var noImprovementLimit = cfg.ConsecutiveNoImprovementLimit;
+        var consecutiveNoImprovement = NoImprovementCountSoFar(manifest.LastCompletedIteration, recordedBest);
+
+        // A resumed run with no iterations left, or one that had already stopped for lack of improvement, has no
+        // proposal to judge. It reports the best it already accepted without measuring the seed or seeding the
+        // regression suite, exactly where the uninterrupted run would have stopped (#1077).
+        var alreadyStoppedEarly = noImprovementLimit > 0 && consecutiveNoImprovement >= noImprovementLimit;
+        if (startIteration > maxIterations || alreadyStoppedEarly)
         {
-            var recordedBest = await RestoreRecordedBestAsync(
-                manifest.BestCandidateId, command.OptimizationRunId, cancellationToken);
             return await CompleteRunAsync(
                 command.OptimizationRunId, runDir, recordedBest, seedScore: null, iterationCount: 0,
-                earlyStopReason: null, cancellationToken);
+                earlyStopReason: startIteration > maxIterations ? null : "no_improvement", cancellationToken);
         }
 
-        var seed = await ResolveSeedCandidateAsync(command, cfg, cancellationToken);
+        var (seed, seedRestored) = await ResolveRunSeedAsync(
+            command, cfg, manifest.SeedCandidateId, cancellationToken);
+
+        // Record the seed before it is measured, so a run interrupted before its first iteration completes still
+        // resumes with this seed instead of building a second one.
+        UpdateRunManifest(runDir, manifest, manifest.LastCompletedIteration, manifest.BestCandidateId,
+            seed.CandidateId, workingCandidateId: manifest.WorkingCandidateId ?? seed.CandidateId);
 
         // Pre-loop: every comparison needs a measured side, so the run restores the best it already accepted or
         // scores the seed before the first proposal (issue #1075).
         var baseline = await EstablishBaselineAsync(
-            command, manifest.BestCandidateId, seed, evalTasks,
+            command, recordedBest, seed, seedRestored, evalTasks,
             await _regressionService.LoadAsync(runDir, cancellationToken), runDir, cancellationToken);
-        var currentCandidate = baseline.EvaluatedSeed ?? seed;
+
+        // A resumed run carries on from the state the uninterrupted run would have had (#1077).
+        var resuming = startIteration > 1;
+        var currentCandidate = await RestoreWorkingCandidateAsync(
+                manifest.WorkingCandidateId, command.OptimizationRunId, cancellationToken)
+            ?? baseline.EvaluatedSeed ?? seed;
         var toBeat = baseline.ToBeat;
         var currentBestCandidate = baseline.RestoredBest;
         var regressionSuite = baseline.RegressionSuite;
         var previousBestEvalResult = baseline.ToBeatEvaluation;
-        var priorCandidateIds = new List<Guid>();
+        var priorCandidateIds = resuming
+            ? await ListPriorCandidateIdsAsync(command.OptimizationRunId, cancellationToken)
+            : [];
         var executedIterations = 0;
 
         var priorLearnings = await ReadLearningsFileAsync(runDir);
-        var consecutiveNoImprovement = 0;
-        var noImprovementLimit = cfg.ConsecutiveNoImprovementLimit;
         string? earlyStopReason = null;
 
         for (var i = startIteration; i <= maxIterations; i++)
@@ -181,8 +199,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
                 priorCandidateIds.Add(failed.CandidateId);
                 _logger.LogWarning(
                     "Iteration {Iteration}: proposer parsing failure — {Message}", i, ex.Message);
-                UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
-                    command.OptimizationRunId, manifest.StartedAt);
+                UpdateRunManifest(runDir, manifest, i, currentBestCandidate?.CandidateId,
+                    seed.CandidateId, workingCandidateId: currentCandidate.CandidateId);
                 await AppendLearningsAsync(runDir, BuildFailedLearningsEntry(i, ex.Message));
                 priorLearnings = await ReadLearningsFileAsync(runDir);
                 consecutiveNoImprovement++;
@@ -230,8 +248,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
                 priorCandidateIds.Add(failed.CandidateId);
                 _logger.LogWarning(
                     "Iteration {Iteration}: evaluation exception — {Message}", i, ex.Message);
-                UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
-                    command.OptimizationRunId, manifest.StartedAt);
+                UpdateRunManifest(runDir, manifest, i, currentBestCandidate?.CandidateId,
+                    seed.CandidateId, workingCandidateId: currentCandidate.CandidateId);
                 await AppendLearningsAsync(runDir, BuildFailedLearningsEntry(i, ex.Message));
                 priorLearnings = await ReadLearningsFileAsync(runDir);
                 consecutiveNoImprovement++;
@@ -288,10 +306,11 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             else
                 consecutiveNoImprovement++;
 
-            // Step 5: Persist run state and learnings
-            UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
-                command.OptimizationRunId, manifest.StartedAt);
+            // Step 5: Persist run state and learnings. The next proposal is built from this candidate, so it is the
+            // working candidate the manifest records for a resume.
             currentCandidate = evaluated;
+            UpdateRunManifest(runDir, manifest, i, currentBestCandidate?.CandidateId,
+                seed.CandidateId, workingCandidateId: currentCandidate.CandidateId);
 
             await AppendLearningsAsync(runDir, BuildLearningsEntry(i, proposal, evalResult, acceptedAsNewBest));
             priorLearnings = await ReadLearningsFileAsync(runDir);
@@ -352,6 +371,16 @@ public sealed partial class RunHarnessOptimizationCommandHandler
 
         [JsonPropertyName("bestCandidateId")]
         public Guid? BestCandidateId { get; init; }
+
+        // The run's seed, so a resume reuses it rather than building and measuring a second one. Null in manifests
+        // written before #1077.
+        [JsonPropertyName("seedCandidateId")]
+        public Guid? SeedCandidateId { get; init; }
+
+        // The candidate the next proposal is built from: the latest evaluated one, or the seed. Null in manifests
+        // written before #1077.
+        [JsonPropertyName("workingCandidateId")]
+        public Guid? WorkingCandidateId { get; init; }
 
         [JsonPropertyName("startedAt")]
         public DateTimeOffset StartedAt { get; init; }
